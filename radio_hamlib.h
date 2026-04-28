@@ -65,6 +65,12 @@ void set_power_knob(radio *radio_h, uint16_t power_level, uint32_t profile);
 /* Set digital voice flag */
 void set_digital_voice(radio *radio_h, bool digital_voice, uint32_t profile);
 
+/* Set frequency step */
+void set_step_size(radio *radio_h, uint32_t step_size);
+
+/* Set transmit tone flag */
+void set_tone_generation(radio *radio_h, bool tone_generation);
+
 /* Switch to a different profile */
 void set_profile(radio *radio_h, uint32_t profile);
 

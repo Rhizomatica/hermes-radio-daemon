@@ -345,6 +345,31 @@ void set_digital_voice(radio *radio_h, bool digital_voice, uint32_t profile)
     radio_h->cfg_user_dirty = true;
 }
 
+void set_step_size(radio *radio_h, uint32_t step_size)
+{
+    if (radio_h->step_size == step_size)
+        return;
+
+    radio_h->step_size = step_size;
+
+    char val[32];
+    snprintf(val, sizeof(val), "%u", step_size);
+    cfg_set(radio_h, radio_h->cfg_user, "main:step_size", val);
+    radio_h->cfg_user_dirty = true;
+}
+
+void set_tone_generation(radio *radio_h, bool tone_generation)
+{
+    if (radio_h->tone_generation == tone_generation)
+        return;
+
+    radio_h->tone_generation = tone_generation;
+
+    cfg_set(radio_h, radio_h->cfg_user, "main:tone_generation",
+            tone_generation ? "1" : "0");
+    radio_h->cfg_user_dirty = true;
+}
+
 void set_profile(radio *radio_h, uint32_t profile)
 {
     if (radio_h->profile_active_idx == profile)

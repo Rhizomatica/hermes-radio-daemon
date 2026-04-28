@@ -35,6 +35,8 @@ bool cfg_init(radio *radio_h, const char *cfg_radio, const char *cfg_user,
               pthread_t *config_tid)
 {
     pthread_mutex_init(&radio_h->cfg_mutex, NULL);
+    snprintf(radio_h->cfg_radio_path, sizeof(radio_h->cfg_radio_path), "%s", cfg_radio);
+    snprintf(radio_h->cfg_user_path, sizeof(radio_h->cfg_user_path), "%s", cfg_user);
 
     init_config_radio(radio_h, cfg_radio);
     init_config_user(radio_h, cfg_user);
@@ -65,13 +67,13 @@ void *config_thread(void *radio_h_v)
     {
         if (radio_h->cfg_radio_dirty)
         {
-            write_config_radio(radio_h, CFG_RADIO_PATH);
+            write_config_radio(radio_h, radio_h->cfg_radio_path);
             radio_h->cfg_radio_dirty = false;
         }
 
         if (radio_h->cfg_user_dirty)
         {
-            write_config_user(radio_h, CFG_USER_PATH);
+            write_config_user(radio_h, radio_h->cfg_user_path);
             radio_h->cfg_user_dirty = false;
         }
 
@@ -132,6 +134,34 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     int b = iniparser_getboolean(ini, "main:enable_shm_control", 1);
     radio_h->enable_shm_control = (bool) b;
 
+    /* Websocket / media bridge */
+    b = iniparser_getboolean(ini, "main:enable_websocket", 0);
+    radio_h->enable_websocket = (bool) b;
+
+    s = iniparser_getstring(ini, "main:websocket_bind", "0.0.0.0:8080");
+    snprintf(radio_h->websocket_bind, sizeof(radio_h->websocket_bind), "%s", s);
+
+    b = iniparser_getboolean(ini, "main:enable_audio_bridge", 0);
+    radio_h->enable_audio_bridge = (bool) b;
+
+    s = iniparser_getstring(ini, "main:capture_device", "default");
+    snprintf(radio_h->capture_device, sizeof(radio_h->capture_device), "%s", s);
+
+    s = iniparser_getstring(ini, "main:playback_device", "default");
+    snprintf(radio_h->playback_device, sizeof(radio_h->playback_device), "%s", s);
+
+    i = iniparser_getint(ini, "main:audio_sample_rate", 8000);
+    radio_h->audio_sample_rate = (uint32_t) i;
+
+    i = iniparser_getint(ini, "main:audio_period_size", 160);
+    radio_h->audio_period_size = (uint32_t) i;
+
+    i = iniparser_getint(ini, "main:audio_queue_samples", 16000);
+    radio_h->audio_queue_samples = (uint32_t) i;
+
+    s = iniparser_getstring(ini, "main:recording_dir", "/var/lib/hermes-radio-daemon");
+    snprintf(radio_h->recording_dir, sizeof(radio_h->recording_dir), "%s", s);
+
     return true;
 }
 
@@ -140,6 +170,7 @@ bool init_config_user(radio *radio_h, const char *ini_name)
     dictionary *ini;
     const char *s;
     int i;
+    int b;
 
     radio_h->cfg_user = NULL;
     ini = iniparser_load(ini_name);
@@ -161,6 +192,9 @@ bool init_config_user(radio *radio_h, const char *ini_name)
 
     i = iniparser_getint(ini, "main:step_size", 100);
     radio_h->step_size = (uint32_t) i;
+
+    b = iniparser_getboolean(ini, "main:tone_generation", 0);
+    radio_h->tone_generation = (bool) b;
 
     /* Count profile sections (everything except [main]) */
     int sec_count = iniparser_getnsec(ini) - 1;

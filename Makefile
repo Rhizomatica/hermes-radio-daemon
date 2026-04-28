@@ -8,7 +8,7 @@
 CC      = gcc
 CFLAGS  = -Ofast -Wall -std=gnu11 -fstack-protector \
           -I/usr/include/iniparser -Iinclude
-LDFLAGS = -liniparser -lhamlib -lpthread -lm
+LDFLAGS = -liniparser -lhamlib -lasound -lcrypto -lfftw3f -lpthread -lm
 
 # Detect architecture for tuning flags
 uname_p := $(shell uname -m)
@@ -25,22 +25,32 @@ all: radio_daemon sbitx_client
 # ── daemon ──────────────────────────────────────────────────────
 DAEMON_OBJS = radio_daemon.o \
               radio_hamlib.o \
+              radio_media.o  \
               radio_shm.o    \
+              radio_websocket.o \
               cfg_utils.o    \
               shm_utils.o
 
 radio_daemon: $(DAEMON_OBJS)
 	$(CC) -o radio_daemon $(DAEMON_OBJS) $(LDFLAGS)
 
-radio_daemon.o: radio_daemon.c radio.h radio_hamlib.h radio_shm.h cfg_utils.h
+radio_daemon.o: radio_daemon.c radio.h radio_hamlib.h radio_media.h \
+                radio_shm.h radio_websocket.h cfg_utils.h
 	$(CC) -c $(CFLAGS) radio_daemon.c -o radio_daemon.o
 
 radio_hamlib.o: radio_hamlib.c radio_hamlib.h radio.h cfg_utils.h
 	$(CC) -c $(CFLAGS) radio_hamlib.c -o radio_hamlib.o
 
+radio_media.o: radio_media.c radio_media.h radio.h
+	$(CC) -c $(CFLAGS) radio_media.c -o radio_media.o
+
 radio_shm.o: radio_shm.c radio_shm.h radio.h radio_hamlib.h \
              include/sbitx_io.h include/radio_cmds.h shm_utils.h
 	$(CC) -c $(CFLAGS) radio_shm.c -o radio_shm.o
+
+radio_websocket.o: radio_websocket.c radio_websocket.h radio.h \
+                   radio_hamlib.h radio_media.h
+	$(CC) -c $(CFLAGS) radio_websocket.c -o radio_websocket.o
 
 cfg_utils.o: cfg_utils.c cfg_utils.h radio.h
 	$(CC) -c $(CFLAGS) cfg_utils.c -o cfg_utils.o

@@ -32,7 +32,9 @@
 
 #include "radio.h"
 #include "radio_hamlib.h"
+#include "radio_media.h"
 #include "radio_shm.h"
+#include "radio_websocket.h"
 #include "cfg_utils.h"
 
 _Atomic bool shutdown_ = false;
@@ -68,6 +70,9 @@ int main(int argc, char *argv[])
     pthread_t cfg_tid;      /* configuration writer thread */
     pthread_t io_tid;       /* periodic I/O / timer thread */
     pthread_t shm_tid;      /* SHM command thread */
+    pthread_t capture_tid;  /* ALSA capture thread */
+    pthread_t playback_tid; /* ALSA playback thread */
+    pthread_t websocket_tid;/* websocket server thread */
 
     const char *cfg_radio_path = CFG_RADIO_PATH;
     const char *cfg_user_path  = CFG_USER_PATH;
@@ -100,6 +105,7 @@ int main(int argc, char *argv[])
     signal(SIGPIPE, SIG_IGN);
 
     memset(&radio_h, 0, sizeof(radio));
+    pthread_mutex_init(&radio_h.message_mutex, NULL);
 
     if (cpu_nr >= 0)
     {
@@ -130,19 +136,44 @@ int main(int argc, char *argv[])
     /* 3. Start the periodic I/O thread */
     pthread_create(&io_tid, NULL, radio_io_thread, (void *) &radio_h);
 
-    /* 4. Start the SHM control interface */
+    /* 4. Start media services */
+    if (!radio_media_init(&radio_h, &capture_tid, &playback_tid))
+    {
+        fprintf(stderr, "Failed to initialize media bridge. Exiting.\n");
+        shutdown_ = true;
+        pthread_join(io_tid, NULL);
+        radio_hamlib_shutdown(&radio_h);
+        cfg_shutdown(&radio_h, &cfg_tid);
+        return EXIT_FAILURE;
+    }
+
+    if (!radio_websocket_init(&radio_h, &websocket_tid))
+    {
+        fprintf(stderr, "Failed to initialize websocket service. Exiting.\n");
+        shutdown_ = true;
+        pthread_join(io_tid, NULL);
+        radio_media_shutdown(&radio_h, &capture_tid, &playback_tid);
+        radio_hamlib_shutdown(&radio_h);
+        cfg_shutdown(&radio_h, &cfg_tid);
+        return EXIT_FAILURE;
+    }
+
+    /* 5. Start the SHM control interface */
     if (radio_h.enable_shm_control)
         shm_controller_init(&radio_h, &shm_tid);
 
-    /* 5. Wait for shutdown signal */
+    /* 6. Wait for shutdown signal */
     pthread_join(io_tid, NULL);
 
-    /* 6. Teardown in reverse order */
+    /* 7. Teardown in reverse order */
     if (radio_h.enable_shm_control)
         shm_controller_shutdown(&shm_tid);
 
+    radio_websocket_shutdown(&websocket_tid);
+    radio_media_shutdown(&radio_h, &capture_tid, &playback_tid);
     radio_hamlib_shutdown(&radio_h);
     cfg_shutdown(&radio_h, &cfg_tid);
+    pthread_mutex_destroy(&radio_h.message_mutex);
 
     printf("radio_daemon: clean shutdown complete.\n");
     return EXIT_SUCCESS;
