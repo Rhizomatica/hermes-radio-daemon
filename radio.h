@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdio.h>
 
 #include <iniparser.h>
 
@@ -54,6 +55,31 @@
 
 /* Maximum number of radio profiles */
 #define MAX_RADIO_PROFILES 4
+#define AUDIO_DEVICE_NAME_MAX 256
+#define WEBSOCKET_BIND_MAX 128
+#define RECORDING_PATH_MAX 512
+#define WATERFALL_BINS 128
+#define RADIO_MESSAGE_MAX 128
+#define CONFIG_PATH_MAX 512
+
+typedef struct {
+    int16_t *samples;
+    size_t capacity;
+    size_t read_pos;
+    size_t write_pos;
+    size_t count;
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+} audio_ring_buffer;
+
+typedef struct {
+    FILE *fp;
+    char path[RECORDING_PATH_MAX];
+    uint32_t sample_rate;
+    uint32_t data_bytes;
+    pthread_mutex_t mutex;
+    bool active;
+} wav_recording;
 
 /* PTT type values (mirrors Hamlib ptt_type_t values) */
 #define PTT_NONE    0  /* No PTT available */
@@ -93,6 +119,9 @@ typedef struct {
     _Atomic uint32_t reflected_threshold; /* vswr * 10 */
     _Atomic bool swr_protection_enabled;
     _Atomic bool tone_generation;
+    pthread_mutex_t message_mutex;
+    char message[RADIO_MESSAGE_MAX];
+    _Atomic bool message_available;
 
     /* Power measurements */
     _Atomic uint32_t fwd_power;
@@ -117,6 +146,17 @@ typedef struct {
 
     /* SHM control enable flag */
     _Atomic bool enable_shm_control;
+    _Atomic bool enable_websocket;
+    char websocket_bind[WEBSOCKET_BIND_MAX];
+
+    /* Generic ALSA media bridge */
+    _Atomic bool enable_audio_bridge;
+    char capture_device[AUDIO_DEVICE_NAME_MAX];
+    char playback_device[AUDIO_DEVICE_NAME_MAX];
+    _Atomic uint32_t audio_sample_rate;
+    _Atomic uint32_t audio_period_size;
+    _Atomic uint32_t audio_queue_samples;
+    char recording_dir[RECORDING_PATH_MAX];
 
     /* Profile management */
     _Atomic uint32_t profile_active_idx;
@@ -129,8 +169,26 @@ typedef struct {
     pthread_mutex_t cfg_mutex;
     dictionary *cfg_radio; /* core / hardware config */
     dictionary *cfg_user;  /* user / profile config */
+    char cfg_radio_path[CONFIG_PATH_MAX];
+    char cfg_user_path[CONFIG_PATH_MAX];
     _Atomic bool cfg_radio_dirty;
     _Atomic bool cfg_user_dirty;
+
+    /* Media queues and recording */
+    audio_ring_buffer rx_audio_ring;
+    audio_ring_buffer tx_audio_ring;
+    wav_recording rx_recording;
+    wav_recording tx_recording;
+
+    /* Waterfall / spectrum publication */
+    pthread_mutex_t spectrum_mutex;
+    float rx_spectrum[WATERFALL_BINS];
+    float tx_spectrum[WATERFALL_BINS];
+    _Atomic uint32_t rx_spectrum_seq;
+    _Atomic uint32_t tx_spectrum_seq;
+    _Atomic bool rx_spectrum_valid;
+    _Atomic bool tx_spectrum_valid;
+    _Atomic uint32_t spectrum_sample_rate;
 
 } radio;
 

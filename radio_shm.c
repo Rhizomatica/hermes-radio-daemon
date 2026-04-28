@@ -160,6 +160,10 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
         {
             connector_local->message_available = true;
             connector_local->message[0] = 0;
+            pthread_mutex_lock(&radio_h->message_mutex);
+            radio_h->message[0] = 0;
+            pthread_mutex_unlock(&radio_h->message_mutex);
+            radio_h->message_available = true;
         }
         radio_h->system_is_connected = cmd[0];
         break;
@@ -202,8 +206,8 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
 
     case CMD_SET_STEPHZ:
         response[0] = CMD_RESP_ACK;
-        memcpy(&radio_h->step_size, cmd, 4);
-        radio_h->cfg_user_dirty = true;
+        memcpy(&frequency, cmd, 4);
+        set_step_size(radio_h, frequency);
         break;
 
     case CMD_GET_REF_THRESHOLD:
@@ -335,7 +339,7 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
 
     case CMD_SET_TONE:
         response[0] = CMD_RESP_ACK;
-        memcpy(&radio_h->tone_generation, cmd, 1);
+        set_tone_generation(radio_h, cmd[0] != 0);
         break;
 
     case CMD_GET_BITRATE:
