@@ -1,22 +1,18 @@
 # hermes-radio-daemon
 
-A radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-net) network.  It is a re-write and extension of [hermes-net/trx_v2-userland](https://github.com/Rhizomatica/hermes-net/tree/main/trx_v2-userland) that adds support for **all [Hamlib](https://hamlib.github.io/) radios** while keeping full compatibility with the existing userland API and CLI (`sbitx_client`).
+A radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-net) network. `radio_daemon` is the current daemon binary and the process-level replacement for `sbitx_controller`: the shared-memory API and `sbitx_client` CLI stay compatible, while backend selection now lives inside one daemon entrypoint.
 
 ## Features
 
-* Frequency, mode, and PTT control via the Hamlib library (supports 200+ radio models)
-* Multi-profile support (up to 4 independent frequency/mode/power profiles)
-* SHM-based IPC – the same `sbitx_client` CLI and shared-memory protocol used by the original sBitx userland
-* `hfsignals` backend that bootstraps the copied `legacy_sbitx` controller stack in-process, preserving its sBitx/zBitx feature set and ALSA/DSP path without an external exec hop
-* Optional websocket control plane with binary RX/TX audio streaming
-* Optional Hamlib ALSA audio bridge for native-SSB rigs
-* Explicit pipeline registry for analog vs. RADEv2 flows across Hamlib and HF Signals backends
-* RX and TX WAV recording hooks
-* RX and TX spectrum/waterfall publication for web clients
-* Profile auto-return timeout
-* SWR / reflected-power protection (via Hamlib level readings where available)
+* `radio_daemon` replaces `sbitx_controller`; `sbitx_client` and the SHM protocol stay compatible
+* `hamlib` backend for CAT/PTT control of Hamlib-supported radios
+* `hfsignals` backend that embeds the vendored `legacy_sbitx` controller stack in-process for sBitx/zBitx compatibility
+* Up to 4 profiles with frequency, mode, power, timeout, and digital-voice state
+* Optional plain websocket control/media API on the native Hamlib path
+* Optional Hamlib ALSA bridge for RX/TX audio streaming, spectrum, and WAV recording
+* Embedded legacy websocket/web UI path on the `hfsignals` backend
+* Explicit analog vs. RADEv2 pipeline metadata for clients and future modem wiring
 * INI configuration files (`/etc/hermes/radio.ini` and `/etc/hermes/user.ini`)
-* Modem status fields: bitrate, SNR, TX/RX byte counters (written by the modem, read by the daemon)
 * Optional CPU affinity pinning
 
 ## Binaries
@@ -49,17 +45,63 @@ Binaries are placed in the current directory.
 sudo make install
 ```
 
-Default install prefix is `/usr/local`.  Config files are installed to
-`/etc/hermes/` (only if they do not already exist).
+Default install prefix is `/usr/local`. Config files are installed to
+`/etc/hermes/` only when they do not already exist, so an upgrade will not
+overwrite local edits.
+
+`make install` installs:
+
+* `/usr/local/bin/radio_daemon`
+* `/usr/local/bin/sbitx_client`
+* `/etc/hermes/radio.ini`
+* `/etc/hermes/user.ini`
+
+It does **not** install legacy web assets; if you run the `hfsignals` backend
+with the embedded legacy web UI, keep a `web/` directory next to the radio
+config you pass with `-r`.
+
+## Migrating from `sbitx_controller`
+
+### What changes
+
+Old daemon entrypoint:
+
+```bash
+sbitx_controller [-c cpu_nr]
+```
+
+New daemon entrypoint:
+
+```bash
+radio_daemon [-r /path/to/radio.ini] [-u /path/to/user.ini] [-c cpu_nr]
+```
+
+### What stays the same
+
+* `sbitx_client` commands stay the same
+* SHM control stays enabled by `enable_shm_control = 1`
+* profile settings remain in `user.ini`
+
+### Backend choice during migration
+
+* `radio_backend = hfsignals`: use this for existing sBitx/zBitx deployments.
+  `radio_daemon` embeds the vendored `legacy_sbitx` controller in-process, so
+  there is no external `sbitx_controller` exec hop anymore.
+* `radio_backend = hamlib`: use this for Hamlib-controlled radios and the new
+  daemon-managed websocket/audio/recording path.
+
+`hfsignals_controller_path` is kept only for migration compatibility. In the
+embedded `hfsignals` mode it is ignored.
 
 ## Configuration
 
-### `/etc/hermes/radio.ini` (hardware / Hamlib settings)
+### `/etc/hermes/radio.ini`
+
+#### Hamlib example
 
 ```ini
 [main]
 radio_backend = hamlib
-hfsignals_controller_path = sbitx_controller
 radio_model   = 3011         ; Hamlib model (alias: hamlib_model)
 rig_pathname  = /dev/ttyUSB0 ; alias: rig_path
 serial_rate   = 19200
@@ -74,16 +116,33 @@ audio_sample_rate = 8000
 recording_dir = /var/lib/hermes-radio-daemon
 ```
 
-`radio_backend = hfsignals` now boots the copied `legacy_sbitx` controller
-stack inside the `radio_daemon` process, so sBitx/zBitx keeps the same
-ALSA/DSP implementation and legacy behavior without spawning a separate
-controller binary. In embedded mode it now uses the `-r`/`-u` config files
-passed to `radio_daemon`, and serves legacy web assets from a sibling `web/`
-directory next to the selected radio config path (for example
-`/etc/sbitx/core.ini` → `/etc/sbitx/web`). The Hamlib ALSA bridge implemented
-in this repo remains for the native Hamlib path only. The
-`hfsignals_controller_path` knob is still ignored in this embedded mode and is
-kept only for migration compatibility.
+Use `enable_audio_bridge = 1` on the Hamlib backend when you want live RX/TX
+audio over websocket, RX/TX spectrum, or WAV recording.
+
+#### Embedded legacy sBitx / HF Signals example
+
+```ini
+[main]
+radio_backend = hfsignals
+enable_shm_control = 1
+enable_websocket = 1
+hfsignals_controller_path = sbitx_controller ; ignored, kept for compatibility
+```
+
+With `radio_backend = hfsignals`, `radio_daemon` boots the vendored
+`legacy_sbitx` stack in-process. That keeps the original sBitx/zBitx ALSA/DSP
+behavior and legacy websocket/web UI path, but removes the separate
+`sbitx_controller` process.
+
+Operational notes for `hfsignals` mode:
+
+* the selected `-r` radio config path determines the legacy web root:
+  `/path/to/radio.ini` → `/path/to/web`
+* `enable_websocket = 1` keeps the embedded legacy HTTPS/WSS server path
+* `websocket_bind`, `enable_audio_bridge`, and the daemon WAV recorder are for
+  the native Hamlib path, not the embedded legacy media path
+* the legacy web server still expects TLS material at
+  `/etc/ssl/certs/hermes.radio.crt` and `/etc/ssl/private/hermes.radio.key`
 
 To list all supported Hamlib model numbers:
 
@@ -113,13 +172,16 @@ power_level_percentage = 100
 radio_daemon [-r /path/to/radio.ini] [-u /path/to/user.ini] [-c cpu_nr] [-h]
 ```
 
-## Websocket API
+## Websocket control, audio, and recording
 
-When `enable_websocket = 1`, the daemon exposes a plain websocket service on
-`websocket_bind`.
+### Native Hamlib backend
 
-Text frames use compact JSON commands. The command names mirror the existing
-`sbitx_client` surface, so web clients can reuse the same vocabulary:
+When `radio_backend = hamlib` and `enable_websocket = 1`, the daemon exposes a
+plain websocket service on `websocket_bind`. For practical RX/TX audio
+streaming and recording on this backend, also enable the ALSA bridge with
+`enable_audio_bridge = 1`.
+
+Text frames use compact JSON commands. Command names mirror `sbitx_client`:
 
 ```json
 {"cmd":"get_state"}
@@ -130,6 +192,7 @@ Text frames use compact JSON commands. The command names mirror the existing
 {"cmd":"set_freqstep","value":250}
 {"cmd":"ptt_on"}
 {"cmd":"start_recording","stream":"both"}
+{"cmd":"stop_recording","stream":"both"}
 ```
 
 The daemon sends an initial `hello` frame followed by a full `state` frame when
@@ -139,11 +202,10 @@ a client connects. Getter responses are shaped like:
 {"ok":true,"cmd":"get_frequency","value":7100000}
 ```
 
-`state` frames now also include pipeline metadata such as `backend`,
+`state` frames also include backend/pipeline metadata: `backend`,
 `digital_voice`, `pipeline`, `pipeline_mode`, `pipeline_media`,
-`pipeline_runtime`, and booleans advertising whether websocket audio,
-recording, spectrum, and the daemon ALSA bridge are active for the current
-profile.
+`pipeline_runtime`, plus booleans for websocket audio, recording, spectrum, and
+the daemon ALSA bridge.
 
 Setter responses are shaped like:
 
@@ -160,12 +222,27 @@ Binary frames are used for audio and waterfall data:
 | `0x02` | server → client | RX spectrum: `u32 sample_rate`, `u16 bins`, `float32[bins]` |
 | `0x03` | server → client | TX spectrum: `u32 sample_rate`, `u16 bins`, `float32[bins]` |
 
-That gives the web interface a direct path to:
+That gives Hamlib web clients a direct path to:
 
 * hear live RX audio
 * inject TX audio back into the daemon
 * render RX and TX waterfall/spectrum views
 * start and stop RX/TX recordings remotely
+
+Recordings are written as `rx-*.wav` and `tx-*.wav` files under
+`recording_dir`. The daemon creates that directory if its parent already
+exists and the process can write there.
+
+### Embedded `hfsignals` backend
+
+`enable_websocket = 1` keeps the vendored legacy websocket/web UI path inside
+the embedded `legacy_sbitx` runtime. That path is separate from the native
+Hamlib websocket API above:
+
+* it serves the legacy web UI from the sibling `web/` directory
+* it keeps the legacy HTTPS/WSS listener behavior
+* it does not use `websocket_bind`
+* it does not switch media ownership to the daemon audio bridge
 
 ## `sbitx_client` commands
 
@@ -189,6 +266,16 @@ sbitx_client -c radio_reset
 ```
 
 Run `sbitx_client -h` for a full list of commands.
+
+## Vendored RADEv2 scope
+
+`vendor/radev2` contains the pure-C subset currently vendored into this tree.
+
+* `radio_backend = hfsignals` + `digital_voice = 1` uses the embedded
+  `legacy_sbitx` RADEv2 DSP/audio path in-process
+* `radio_backend = hamlib` + `digital_voice = 1` currently selects the
+  `hamlib-radev2` pipeline metadata/slot for external modem integration; it
+  does not replace the Hamlib path with the embedded legacy DSP stack
 
 ## License
 
