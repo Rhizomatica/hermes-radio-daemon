@@ -61,6 +61,7 @@
 #define WATERFALL_BINS 128
 #define RADIO_MESSAGE_MAX 128
 #define CONFIG_PATH_MAX 512
+#define BACKEND_PATH_MAX 512
 
 typedef struct {
     int16_t *samples;
@@ -91,6 +92,14 @@ typedef struct {
 #define PTT_GPIO     6    /* PTT via GPIO */
 #define PTT_RIG_MICDATA 7 /* PTT via Mic data port */
 
+typedef enum {
+    RADIO_BACKEND_HAMLIB = 0,
+    RADIO_BACKEND_HFSIGNALS = 1,
+} radio_backend_kind;
+
+struct radio_backend_ops;
+struct radio_pipeline_descriptor;
+
 /* Per-profile radio configuration */
 typedef struct {
     _Atomic uint32_t freq;
@@ -104,6 +113,12 @@ typedef struct {
 
 /* Main radio handle structure */
 typedef struct {
+    /* Selected radio backend */
+    radio_backend_kind backend_kind;
+    const struct radio_backend_ops *backend_ops;
+    _Atomic(const struct radio_pipeline_descriptor *) pipeline;
+    char hfsignals_controller_path[BACKEND_PATH_MAX];
+
     /* Hamlib configuration */
     int hamlib_model;          /* Hamlib rig model number */
     char rig_pathname[256];    /* Serial port or hostname:port */
@@ -149,7 +164,8 @@ typedef struct {
     _Atomic bool enable_websocket;
     char websocket_bind[WEBSOCKET_BIND_MAX];
 
-    /* Generic ALSA media bridge */
+    /* Hamlib-only ALSA media bridge. HF Signals backends keep the vendored
+     * legacy_sbitx ALSA path instead of using this bridge. */
     _Atomic bool enable_audio_bridge;
     char capture_device[AUDIO_DEVICE_NAME_MAX];
     char playback_device[AUDIO_DEVICE_NAME_MAX];

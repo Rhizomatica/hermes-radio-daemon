@@ -34,8 +34,9 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "radio_hamlib.h"
+#include "radio_backend.h"
 #include "radio_media.h"
+#include "radio_pipeline.h"
 #include "radio_websocket.h"
 
 extern _Atomic bool shutdown_;
@@ -85,6 +86,18 @@ static const char *mode_to_string(uint16_t mode)
     case MODE_LSB: return "LSB";
     case MODE_CW:  return "CW";
     default:       return "USB";
+    }
+}
+
+static const char *backend_to_string(radio_backend_kind backend_kind)
+{
+    switch (backend_kind)
+    {
+    case RADIO_BACKEND_HFSIGNALS:
+        return "hfsignals";
+    case RADIO_BACKEND_HAMLIB:
+    default:
+        return "hamlib";
     }
 }
 
@@ -392,16 +405,22 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
 
     snprintf(json, json_len,
              "{\"type\":\"state\",\"profile\":%u,\"frequency\":%u,"
-             "\"mode\":\"%s\",\"tx\":%s,\"bitrate\":%u,\"snr\":%d,"
-             "\"bytes_transmitted\":%u,\"bytes_received\":%u,"
-             "\"system_is_connected\":%s,\"system_is_ok\":%s,"
-             "\"bfo\":%u,\"serial\":%u,\"step_size\":%u,\"tone\":%s,"
-             "\"reflected_threshold\":%u,\"timeout\":%d,"
-             "\"recording_rx\":%s,\"recording_tx\":%s,"
-             "\"audio_sample_rate\":%u,\"message_available\":%s}",
-             active,
-             radio_h->profiles[active].freq,
-             mode_to_string(radio_h->profiles[active].mode),
+              "\"mode\":\"%s\",\"tx\":%s,\"bitrate\":%u,\"snr\":%d,"
+              "\"bytes_transmitted\":%u,\"bytes_received\":%u,"
+              "\"system_is_connected\":%s,\"system_is_ok\":%s,"
+              "\"bfo\":%u,\"serial\":%u,\"step_size\":%u,\"tone\":%s,"
+              "\"reflected_threshold\":%u,\"timeout\":%d,"
+              "\"recording_rx\":%s,\"recording_tx\":%s,"
+              "\"audio_sample_rate\":%u,\"message_available\":%s,"
+              "\"backend\":\"%s\",\"digital_voice\":%s,"
+              "\"pipeline\":\"%s\",\"pipeline_mode\":\"%s\","
+              "\"pipeline_media\":\"%s\",\"pipeline_runtime\":\"%s\","
+              "\"stream_rx_audio\":%s,\"stream_tx_audio\":%s,"
+              "\"stream_spectrum\":%s,\"stream_recording\":%s,"
+              "\"audio_bridge\":%s}",
+              active,
+              radio_h->profiles[active].freq,
+              mode_to_string(radio_h->profiles[active].mode),
              radio_h->txrx_state == IN_TX ? "true" : "false",
              radio_h->bitrate,
              radio_h->snr,
@@ -415,10 +434,24 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
              radio_h->tone_generation ? "true" : "false",
              radio_h->reflected_threshold,
              radio_h->profile_timeout,
-             radio_h->rx_recording.active ? "true" : "false",
-             radio_h->tx_recording.active ? "true" : "false",
-             radio_h->audio_sample_rate,
-             radio_h->message_available ? "true" : "false");
+              radio_h->rx_recording.active ? "true" : "false",
+              radio_h->tx_recording.active ? "true" : "false",
+              radio_h->audio_sample_rate,
+              radio_h->message_available ? "true" : "false",
+              backend_to_string(radio_h->backend_kind),
+              radio_h->profiles[active].digital_voice ? "true" : "false",
+              radio_pipeline_name(radio_h),
+              radio_pipeline_domain_name(radio_h),
+              radio_pipeline_media_owner_name(radio_h),
+              radio_pipeline_runtime_name(radio_h),
+              radio_pipeline_supports_websocket_rx_audio(radio_h) ? "true" : "false",
+              radio_pipeline_supports_websocket_tx_audio(radio_h) ? "true" : "false",
+              (radio_pipeline_supports_spectrum(radio_h, false) ||
+               radio_pipeline_supports_spectrum(radio_h, true)) ? "true" : "false",
+              (radio_pipeline_has_capability(radio_h, RADIO_PIPELINE_CAP_RX_RECORDING) ||
+               radio_pipeline_has_capability(radio_h, RADIO_PIPELINE_CAP_TX_RECORDING)) ?
+              "true" : "false",
+              radio_pipeline_uses_daemon_audio_bridge(radio_h) ? "true" : "false");
 }
 
 static long normalize_profile(radio *radio_h, const char *payload)
@@ -461,7 +494,7 @@ static void handle_ws_command(radio *radio_h, ws_client *client, const char *pay
             send_cmd_result(client, cmd, false, "NOK");
         else
         {
-            tr_switch(radio_h, IN_TX);
+            radio_backend_set_txrx_state(radio_h, IN_TX);
             send_cmd_result(client, cmd, true, "OK");
         }
         return;
@@ -475,7 +508,7 @@ static void handle_ws_command(radio *radio_h, ws_client *client, const char *pay
             send_cmd_result(client, cmd, false, "NOK");
         else
         {
-            tr_switch(radio_h, IN_RX);
+            radio_backend_set_txrx_state(radio_h, IN_RX);
             send_cmd_result(client, cmd, true, "OK");
         }
         return;
@@ -499,7 +532,7 @@ static void handle_ws_command(radio *radio_h, ws_client *client, const char *pay
             send_cmd_error(client, cmd, "invalid profile");
             return;
         }
-        set_profile(radio_h, (uint32_t) value);
+        radio_backend_set_profile(radio_h, (uint32_t) value);
         send_cmd_result(client, cmd, true, "OK");
         return;
     }
@@ -513,7 +546,7 @@ static void handle_ws_command(radio *radio_h, ws_client *client, const char *pay
     if (!strcmp(cmd, "set_frequency") &&
         extract_json_int_any(payload, "frequency", "value", &value))
     {
-        set_frequency(radio_h, (uint32_t) value, (uint32_t) profile);
+        radio_backend_set_frequency(radio_h, (uint32_t) value, (uint32_t) profile);
         send_cmd_result(client, cmd, true, "OK");
         return;
     }
@@ -537,7 +570,7 @@ static void handle_ws_command(radio *radio_h, ws_client *client, const char *pay
             mode_v = MODE_LSB;
         else if (!strcasecmp(mode, "CW"))
             mode_v = MODE_CW;
-        set_mode(radio_h, mode_v, (uint32_t) profile);
+        radio_backend_set_mode(radio_h, mode_v, (uint32_t) profile);
         send_cmd_result(client, cmd, true, "OK");
         return;
     }
@@ -555,7 +588,7 @@ static void handle_ws_command(radio *radio_h, ws_client *client, const char *pay
             send_cmd_error(client, cmd, "power out of range");
             return;
         }
-        set_power_knob(radio_h, (uint16_t) value, (uint32_t) profile);
+        radio_backend_set_power_level(radio_h, (uint16_t) value, (uint32_t) profile);
         send_cmd_result(client, cmd, true, "OK");
         return;
     }
@@ -573,7 +606,7 @@ static void handle_ws_command(radio *radio_h, ws_client *client, const char *pay
             send_cmd_error(client, cmd, "volume out of range");
             return;
         }
-        set_speaker_volume(radio_h, (uint32_t) value, (uint32_t) profile);
+        radio_backend_set_speaker_volume(radio_h, (uint32_t) value, (uint32_t) profile);
         send_cmd_result(client, cmd, true, "OK");
         return;
     }
@@ -587,7 +620,7 @@ static void handle_ws_command(radio *radio_h, ws_client *client, const char *pay
     if (!strcmp(cmd, "set_digital_voice") &&
         extract_json_int_any(payload, "enabled", "value", &value))
     {
-        set_digital_voice(radio_h, value != 0, (uint32_t) profile);
+        radio_backend_set_digital_voice(radio_h, value != 0, (uint32_t) profile);
         send_cmd_result(client, cmd, true, "OK");
         return;
     }
@@ -615,7 +648,7 @@ static void handle_ws_command(radio *radio_h, ws_client *client, const char *pay
 
     if (!strcmp(cmd, "reset_timeout"))
     {
-        timer_reset = true;
+        radio_backend_reset_timeout_timer();
         send_cmd_result(client, cmd, true, "OK");
         return;
     }
@@ -628,20 +661,20 @@ static void handle_ws_command(radio *radio_h, ws_client *client, const char *pay
 
     if (!strcmp(cmd, "set_bfo") && extract_json_int_any(payload, "frequency", "value", &value))
     {
-        set_bfo(radio_h, (uint32_t) value);
+        radio_backend_set_bfo(radio_h, (uint32_t) value);
         send_cmd_result(client, cmd, true, "OK");
         return;
     }
 
     if (!strcmp(cmd, "get_fwd"))
     {
-        send_value_number(client, cmd, get_fwd_power(radio_h));
+        send_value_number(client, cmd, radio_backend_get_fwd_power(radio_h));
         return;
     }
 
     if (!strcmp(cmd, "get_ref"))
     {
-        send_value_number(client, cmd, get_swr(radio_h));
+        send_value_number(client, cmd, radio_backend_get_swr(radio_h));
         return;
     }
 
@@ -689,7 +722,7 @@ static void handle_ws_command(radio *radio_h, ws_client *client, const char *pay
 
     if (!strcmp(cmd, "set_serial") && extract_json_int_any(payload, "serial", "value", &value))
     {
-        set_serial(radio_h, (uint32_t) value);
+        radio_backend_set_serial(radio_h, (uint32_t) value);
         send_cmd_result(client, cmd, true, "OK");
         return;
     }
@@ -703,7 +736,7 @@ static void handle_ws_command(radio *radio_h, ws_client *client, const char *pay
     if (!strcmp(cmd, "set_freqstep") &&
         extract_json_int_any(payload, "step_size", "value", &value))
     {
-        set_step_size(radio_h, (uint32_t) value);
+        radio_backend_set_step_size(radio_h, (uint32_t) value);
         send_cmd_result(client, cmd, true, "OK");
         return;
     }
@@ -716,7 +749,7 @@ static void handle_ws_command(radio *radio_h, ws_client *client, const char *pay
 
     if (!strcmp(cmd, "set_tone") && extract_json_int_any(payload, "tone", "value", &value))
     {
-        set_tone_generation(radio_h, value != 0);
+        radio_backend_set_tone_generation(radio_h, value != 0);
         send_cmd_result(client, cmd, true, "OK");
         return;
     }
@@ -730,7 +763,7 @@ static void handle_ws_command(radio *radio_h, ws_client *client, const char *pay
     if (!strcmp(cmd, "set_timeout") &&
         extract_json_int_any(payload, "timeout", "value", &value))
     {
-        set_profile_timeout(radio_h, (int32_t) value);
+        radio_backend_set_profile_timeout(radio_h, (int32_t) value);
         send_cmd_result(client, cmd, true, "OK");
         return;
     }
@@ -744,7 +777,7 @@ static void handle_ws_command(radio *radio_h, ws_client *client, const char *pay
     if (!strcmp(cmd, "set_ref_threshold") &&
         extract_json_int_any(payload, "ref_threshold", "value", &value))
     {
-        set_reflected_threshold(radio_h, (uint32_t) value);
+        radio_backend_set_reflected_threshold(radio_h, (uint32_t) value);
         send_cmd_result(client, cmd, true, "OK");
         return;
     }
@@ -890,6 +923,8 @@ static void handle_client_frame(radio *radio_h, ws_client *client)
 
     if (opcode == WS_OPCODE_BINARY && payload_len > 1 && payload[0] == WS_STREAM_RX_AUDIO)
     {
+        if (!radio_pipeline_supports_websocket_tx_audio(radio_h))
+            return;
         size_t nsamples = (payload_len - 1) / sizeof(int16_t);
         radio_media_push_tx_audio(radio_h, (const int16_t *) (payload + 1), nsamples);
         return;
@@ -898,7 +933,7 @@ static void handle_client_frame(radio *radio_h, ws_client *client)
 
 static void broadcast_status(websocket_ctx *ctx)
 {
-    char json[512];
+    char json[1024];
     time_t now = time(NULL);
 
     build_status_json(ctx->radio_h, json, sizeof(json));
@@ -920,6 +955,10 @@ static void broadcast_rx_audio(websocket_ctx *ctx)
 {
     int16_t samples[WS_RX_CHUNK_SAMPLES];
     uint8_t frame[1 + sizeof(samples)];
+
+    if (!radio_pipeline_supports_websocket_rx_audio(ctx->radio_h))
+        return;
+
     size_t nsamples = radio_media_pop_rx_audio(ctx->radio_h, samples, WS_RX_CHUNK_SAMPLES);
 
     if (nsamples == 0)

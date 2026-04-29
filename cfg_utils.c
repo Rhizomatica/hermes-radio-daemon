@@ -24,12 +24,123 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 
 #include "cfg_utils.h"
 #include "radio.h"
 
 extern _Atomic bool shutdown_;
+
+static int cfg_getint_alias(dictionary *ini,
+                            const char *primary,
+                            const char *fallback,
+                            int default_value)
+{
+    if (primary && iniparser_find_entry(ini, primary))
+        return iniparser_getint(ini, primary, default_value);
+
+    if (fallback && iniparser_find_entry(ini, fallback))
+        return iniparser_getint(ini, fallback, default_value);
+
+    return default_value;
+}
+
+static const char *cfg_getstring_alias(dictionary *ini,
+                                       const char *primary,
+                                       const char *fallback,
+                                       const char *default_value)
+{
+    if (primary && iniparser_find_entry(ini, primary))
+        return iniparser_getstring(ini, primary, (char *) default_value);
+
+    if (fallback && iniparser_find_entry(ini, fallback))
+        return iniparser_getstring(ini, fallback, (char *) default_value);
+
+    return default_value;
+}
+
+static void cfg_copy_string(char *dst, size_t dst_len, const char *src)
+{
+    if (!dst || dst_len == 0)
+        return;
+
+    snprintf(dst, dst_len, "%s", src ? src : "");
+}
+
+static int cfg_ptt_type_from_string(const char *value, int default_value)
+{
+    char *end = NULL;
+    long parsed;
+
+    if (!value || !value[0])
+        return default_value;
+
+    parsed = strtol(value, &end, 10);
+    if (end && *end == '\0')
+        return (int) parsed;
+
+    if (!strcasecmp(value, "NONE"))
+        return PTT_NONE;
+    if (!strcasecmp(value, "RIG") || !strcasecmp(value, "CAT"))
+        return PTT_RIG;
+    if (!strcasecmp(value, "SERIAL_RTS") || !strcasecmp(value, "RTS"))
+        return PTT_SERIAL_RTS;
+    if (!strcasecmp(value, "SERIAL_DTR") || !strcasecmp(value, "DTR"))
+        return PTT_SERIAL_DTR;
+    if (!strcasecmp(value, "PARALLEL"))
+        return PTT_PARALLEL;
+    if (!strcasecmp(value, "CM108"))
+        return PTT_CM108;
+    if (!strcasecmp(value, "GPIO"))
+        return PTT_GPIO;
+    if (!strcasecmp(value, "RIG_MICDATA") ||
+        !strcasecmp(value, "MICDATA") ||
+        !strcasecmp(value, "DATA"))
+        return PTT_RIG_MICDATA;
+
+    return default_value;
+}
+
+radio_backend_kind cfg_backend_kind_from_string(const char *backend_name)
+{
+    if (!backend_name)
+        return RADIO_BACKEND_HAMLIB;
+
+    if (!strcmp(backend_name, "hfsignals") ||
+        !strcmp(backend_name, "sbitx") ||
+        !strcmp(backend_name, "zbitx"))
+        return RADIO_BACKEND_HFSIGNALS;
+
+    return RADIO_BACKEND_HAMLIB;
+}
+
+bool cfg_detect_backend(const char *cfg_radio, radio_backend_kind *backend_kind,
+                        char *controller_path, size_t controller_path_len)
+{
+    dictionary *ini;
+    const char *backend;
+    const char *path;
+
+    if (!backend_kind || !controller_path || controller_path_len == 0)
+        return false;
+
+    *backend_kind = RADIO_BACKEND_HAMLIB;
+    snprintf(controller_path, controller_path_len, "%s", "sbitx_controller");
+
+    ini = iniparser_load(cfg_radio);
+    if (!ini)
+        return false;
+
+    backend = iniparser_getstring(ini, "main:radio_backend", "hamlib");
+    *backend_kind = cfg_backend_kind_from_string(backend);
+
+    path = iniparser_getstring(ini, "main:hfsignals_controller_path", "sbitx_controller");
+    snprintf(controller_path, controller_path_len, "%s", path);
+
+    iniparser_freedict(ini);
+    return true;
+}
 
 bool cfg_init(radio *radio_h, const char *cfg_radio, const char *cfg_user,
               pthread_t *config_tid)
@@ -38,13 +149,25 @@ bool cfg_init(radio *radio_h, const char *cfg_radio, const char *cfg_user,
     snprintf(radio_h->cfg_radio_path, sizeof(radio_h->cfg_radio_path), "%s", cfg_radio);
     snprintf(radio_h->cfg_user_path, sizeof(radio_h->cfg_user_path), "%s", cfg_user);
 
-    init_config_radio(radio_h, cfg_radio);
-    init_config_user(radio_h, cfg_user);
+    if (!init_config_radio(radio_h, cfg_radio) ||
+        !init_config_user(radio_h, cfg_user))
+    {
+        close_config_radio(radio_h);
+        close_config_user(radio_h);
+        pthread_mutex_destroy(&radio_h->cfg_mutex);
+        return false;
+    }
 
     radio_h->cfg_radio_dirty = false;
     radio_h->cfg_user_dirty  = false;
 
-    pthread_create(config_tid, NULL, config_thread, (void *) radio_h);
+    if (pthread_create(config_tid, NULL, config_thread, (void *) radio_h) != 0)
+    {
+        close_config_radio(radio_h);
+        close_config_user(radio_h);
+        pthread_mutex_destroy(&radio_h->cfg_mutex);
+        return false;
+    }
 
     return true;
 }
@@ -97,26 +220,32 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
         return false;
     }
     radio_h->cfg_radio = ini;
+    radio_h->backend_kind = cfg_backend_kind_from_string(
+        iniparser_getstring(ini, "main:radio_backend", "hamlib"));
+    snprintf(radio_h->hfsignals_controller_path,
+             sizeof(radio_h->hfsignals_controller_path),
+             "%s",
+             iniparser_getstring(ini, "main:hfsignals_controller_path", "sbitx_controller"));
 
     /* Hamlib rig model */
-    i = iniparser_getint(ini, "main:radio_model", 1);
+    i = cfg_getint_alias(ini, "main:radio_model", "main:hamlib_model", 1);
     radio_h->hamlib_model = i;
 
     /* Rig port */
-    s = iniparser_getstring(ini, "main:rig_pathname", "");
-    strncpy(radio_h->rig_pathname, s, sizeof(radio_h->rig_pathname) - 1);
+    s = cfg_getstring_alias(ini, "main:rig_pathname", "main:rig_path", "");
+    cfg_copy_string(radio_h->rig_pathname, sizeof(radio_h->rig_pathname), s);
 
     /* Serial rate */
     i = iniparser_getint(ini, "main:serial_rate", 9600);
     radio_h->serial_rate = i;
 
     /* PTT type */
-    i = iniparser_getint(ini, "main:ptt_type", PTT_NONE);
-    radio_h->ptt_type = i;
+    s = cfg_getstring_alias(ini, "main:ptt_type", "main:ptt_mode", "0");
+    radio_h->ptt_type = cfg_ptt_type_from_string(s, PTT_NONE);
 
     /* PTT port */
-    s = iniparser_getstring(ini, "main:ptt_pathname", "");
-    strncpy(radio_h->ptt_pathname, s, sizeof(radio_h->ptt_pathname) - 1);
+    s = cfg_getstring_alias(ini, "main:ptt_pathname", "main:ptt_path", "");
+    cfg_copy_string(radio_h->ptt_pathname, sizeof(radio_h->ptt_pathname), s);
 
     /* Serial number (informational) */
     i = iniparser_getint(ini, "main:serial_number", 0);
@@ -198,7 +327,10 @@ bool init_config_user(radio *radio_h, const char *ini_name)
 
     /* Count profile sections (everything except [main]) */
     int sec_count = iniparser_getnsec(ini) - 1;
-    if (sec_count < 0) sec_count = 0;
+    if (sec_count <= 0)
+        sec_count = 1;
+    if (sec_count > MAX_RADIO_PROFILES)
+        sec_count = MAX_RADIO_PROFILES;
     radio_h->profiles_count = (uint32_t) sec_count;
 
     for (int k = 0; k < sec_count && k < MAX_RADIO_PROFILES; k++)
@@ -242,6 +374,12 @@ bool init_config_user(radio *radio_h, const char *ini_name)
         int b = iniparser_getboolean(ini, key, 0);
         radio_h->profiles[k].digital_voice = (bool) b;
     }
+
+    if (radio_h->profile_active_idx >= radio_h->profiles_count)
+        radio_h->profile_active_idx = 0;
+
+    if (radio_h->profile_default_idx >= radio_h->profiles_count)
+        radio_h->profile_default_idx = 0;
 
     return true;
 }
