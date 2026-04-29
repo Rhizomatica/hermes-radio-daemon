@@ -35,9 +35,206 @@
 #include "radio.h"
 #include "radio_hamlib.h"
 #include "cfg_utils.h"
+#include "radio_pipeline.h"
 
 _Atomic bool timer_reset = true;
 _Atomic time_t timeout_counter = 0;
+
+static rmode_t mode_to_hamlib(uint16_t mode);
+static uint16_t hamlib_to_mode(rmode_t hmode);
+
+static void hamlib_copy_path(char *dst, size_t dst_len, const char *src)
+{
+    if (!dst || dst_len == 0)
+        return;
+
+    snprintf(dst, dst_len, "%s", src ? src : "");
+}
+
+static ptt_type_t hamlib_ptt_type_from_radio(const radio *radio_h)
+{
+    switch (radio_h->ptt_type)
+    {
+    case PTT_RIG:          return RIG_PTT_RIG;
+    case PTT_SERIAL_RTS:   return RIG_PTT_SERIAL_RTS;
+    case PTT_SERIAL_DTR:   return RIG_PTT_SERIAL_DTR;
+    case PTT_PARALLEL:     return RIG_PTT_PARALLEL;
+    case PTT_CM108:        return RIG_PTT_CM108;
+    case PTT_GPIO:         return RIG_PTT_GPIO;
+    case PTT_RIG_MICDATA:  return RIG_PTT_RIG_MICDATA;
+    default:               return RIG_PTT_NONE;
+    }
+}
+
+static void hamlib_configure_ports(RIG *rig, const radio *radio_h)
+{
+    const char *ptt_path = radio_h->ptt_pathname;
+
+    if (radio_h->rig_pathname[0])
+        hamlib_copy_path(rig->state.rigport.pathname,
+                         HAMLIB_FILPATHLEN,
+                         radio_h->rig_pathname);
+
+    if (radio_h->serial_rate > 0)
+        rig->state.rigport.parm.serial.rate = radio_h->serial_rate;
+
+    rig->state.pttport.type.ptt = hamlib_ptt_type_from_radio(radio_h);
+
+    if ((radio_h->ptt_type == PTT_SERIAL_RTS || radio_h->ptt_type == PTT_SERIAL_DTR) &&
+        !ptt_path[0])
+        ptt_path = radio_h->rig_pathname;
+
+    if (ptt_path[0] && radio_h->ptt_type != PTT_NONE &&
+        radio_h->ptt_type != PTT_RIG && radio_h->ptt_type != PTT_RIG_MICDATA)
+    {
+        hamlib_copy_path(rig->state.pttport.pathname, HAMLIB_FILPATHLEN, ptt_path);
+        if (radio_h->serial_rate > 0)
+            rig->state.pttport.parm.serial.rate = radio_h->serial_rate;
+    }
+}
+
+static bool hamlib_read_level_float(RIG *rig, setting_t level, float *out)
+{
+    value_t val;
+
+    if (!rig || !out || !rig_has_get_level(rig, level))
+        return false;
+
+    memset(&val, 0, sizeof(val));
+    if (rig_get_level(rig, RIG_VFO_CURR, level, &val) != RIG_OK)
+        return false;
+
+    *out = val.f;
+    return true;
+}
+
+static bool hamlib_set_level_float(RIG *rig,
+                                   setting_t level,
+                                   float value,
+                                   const char *label)
+{
+    value_t val;
+    int ret;
+
+    if (!rig || !rig_has_set_level(rig, level))
+        return false;
+
+    memset(&val, 0, sizeof(val));
+    val.f = value;
+    ret = rig_set_level(rig, RIG_VFO_CURR, level, val);
+    if (ret != RIG_OK)
+        fprintf(stderr, "%s: rig_set_level failed: %s\n",
+                label ? label : "hamlib_set_level_float",
+                rigerror(ret));
+
+    return ret == RIG_OK;
+}
+
+static void hamlib_update_reflected_from_swr(radio *radio_h, float swr)
+{
+    float gamma;
+
+    if (!radio_h || swr <= 0.0f)
+        return;
+
+    if (swr <= 1.0f || radio_h->fwd_power == 0)
+    {
+        radio_h->ref_power = 0;
+        return;
+    }
+
+    gamma = (swr - 1.0f) / (swr + 1.0f);
+    if (gamma < 0.0f)
+        gamma = 0.0f;
+    if (gamma > 1.0f)
+        gamma = 1.0f;
+
+    radio_h->ref_power = (uint32_t) lrintf((float) radio_h->fwd_power *
+                                           gamma * gamma);
+}
+
+static bool hamlib_update_measurements(radio *radio_h)
+{
+    RIG *rig;
+    float meter_value = 0.0f;
+    float swr = 0.0f;
+    bool updated = false;
+
+    if (!radio_h || !radio_h->rig)
+        return false;
+
+    rig = (RIG *) radio_h->rig;
+
+    if (hamlib_read_level_float(rig, RIG_LEVEL_RFPOWER_METER_WATTS, &meter_value) &&
+        meter_value >= 0.0f)
+    {
+        radio_h->fwd_power = (uint32_t) lrintf(meter_value * 10.0f);
+        updated = true;
+    }
+    else if (hamlib_read_level_float(rig, RIG_LEVEL_RFPOWER_METER, &meter_value) &&
+             meter_value >= 0.0f)
+    {
+        if (meter_value > 1.0f)
+            meter_value = 1.0f;
+        radio_h->fwd_power = (uint32_t) lrintf(meter_value * 1000.0f);
+        updated = true;
+    }
+
+    if (hamlib_read_level_float(rig, RIG_LEVEL_SWR, &swr) && swr > 0.0f)
+    {
+        hamlib_update_reflected_from_swr(radio_h, swr);
+        updated = true;
+    }
+
+    return updated;
+}
+
+static void hamlib_sync_txrx_state(radio *radio_h, bool fallback_state)
+{
+    ptt_t ptt_state = RIG_PTT_OFF;
+    RIG *rig;
+
+    if (!radio_h || !radio_h->rig)
+    {
+        if (radio_h)
+            radio_h->txrx_state = fallback_state;
+        return;
+    }
+
+    rig = (RIG *) radio_h->rig;
+    if (rig_get_ptt(rig, RIG_VFO_CURR, &ptt_state) == RIG_OK)
+        radio_h->txrx_state = (ptt_state == RIG_PTT_OFF) ? IN_RX : IN_TX;
+    else
+        radio_h->txrx_state = fallback_state;
+}
+
+static void hamlib_apply_profile(radio *radio_h, uint32_t profile)
+{
+    RIG *rig;
+    int ret;
+
+    if (!radio_h || !radio_h->rig || profile >= radio_h->profiles_count)
+        return;
+
+    rig = (RIG *) radio_h->rig;
+
+    ret = rig_set_freq(rig, RIG_VFO_CURR, (freq_t) radio_h->profiles[profile].freq);
+    if (ret != RIG_OK)
+        fprintf(stderr, "hamlib_apply_profile: rig_set_freq failed: %s\n",
+                rigerror(ret));
+
+    ret = rig_set_mode(rig, RIG_VFO_CURR,
+                       mode_to_hamlib(radio_h->profiles[profile].mode),
+                       RIG_PASSBAND_NORMAL);
+    if (ret != RIG_OK)
+        fprintf(stderr, "hamlib_apply_profile: rig_set_mode failed: %s\n",
+                rigerror(ret));
+
+    hamlib_set_level_float(rig,
+                           RIG_LEVEL_RFPOWER,
+                           (float) radio_h->profiles[profile].power_level_percentage / 100.0f,
+                           "hamlib_apply_profile");
+}
 
 /* Map internal MODE_* to Hamlib rmode_t */
 static rmode_t mode_to_hamlib(uint16_t mode)
@@ -77,34 +274,7 @@ bool radio_hamlib_init(radio *radio_h)
         return false;
     }
 
-    /* Serial port / network address */
-    if (radio_h->rig_pathname[0])
-        strncpy(rig->state.rigport.pathname, radio_h->rig_pathname,
-                HAMLIB_FILPATHLEN - 1);
-
-    /* Serial baud rate */
-    if (radio_h->serial_rate > 0)
-        rig->state.rigport.parm.serial.rate = radio_h->serial_rate;
-
-    /* PTT type */
-    switch (radio_h->ptt_type)
-    {
-    case PTT_RIG:          rig->state.pttport.type.ptt = RIG_PTT_RIG;         break;
-    case PTT_SERIAL_RTS:   rig->state.pttport.type.ptt = RIG_PTT_SERIAL_RTS;  break;
-    case PTT_SERIAL_DTR:   rig->state.pttport.type.ptt = RIG_PTT_SERIAL_DTR;  break;
-    case PTT_PARALLEL:     rig->state.pttport.type.ptt = RIG_PTT_PARALLEL;    break;
-    case PTT_CM108:        rig->state.pttport.type.ptt = RIG_PTT_CM108;       break;
-    case PTT_GPIO:         rig->state.pttport.type.ptt = RIG_PTT_GPIO;        break;
-    case PTT_RIG_MICDATA:  rig->state.pttport.type.ptt = RIG_PTT_RIG_MICDATA; break;
-    default:               rig->state.pttport.type.ptt = RIG_PTT_NONE;        break;
-    }
-
-    if (radio_h->ptt_pathname[0] && radio_h->ptt_type != PTT_NONE &&
-        radio_h->ptt_type != PTT_RIG && radio_h->ptt_type != PTT_RIG_MICDATA)
-    {
-        strncpy(rig->state.pttport.pathname, radio_h->ptt_pathname,
-                HAMLIB_FILPATHLEN - 1);
-    }
+    hamlib_configure_ports(rig, radio_h);
 
     int ret = rig_open(rig);
     if (ret != RIG_OK)
@@ -117,11 +287,17 @@ bool radio_hamlib_init(radio *radio_h)
 
     radio_h->rig = (void *) rig;
 
-    /* Sync initial frequency and mode from radio to our profile state */
+    /* Apply the selected profile to the rig, then mirror the resulting state. */
     freq_t hfreq = 0;
     rmode_t hmode = RIG_MODE_NONE;
     pbwidth_t width = 0;
     uint32_t profile = radio_h->profile_active_idx;
+
+    if (profile >= radio_h->profiles_count)
+        profile = 0;
+
+    if (radio_h->profiles_count > 0)
+        hamlib_apply_profile(radio_h, profile);
 
     if (rig_get_freq(rig, RIG_VFO_CURR, &hfreq) == RIG_OK && hfreq > 0)
         radio_h->profiles[profile].freq = (uint32_t) hfreq;
@@ -129,8 +305,8 @@ bool radio_hamlib_init(radio *radio_h)
     if (rig_get_mode(rig, RIG_VFO_CURR, &hmode, &width) == RIG_OK)
         radio_h->profiles[profile].mode = hamlib_to_mode(hmode);
 
-    /* Ensure we start in RX */
-    radio_h->txrx_state = IN_RX;
+    hamlib_sync_txrx_state(radio_h, IN_RX);
+    hamlib_update_measurements(radio_h);
 
     printf("radio_hamlib_init: rig model %d opened successfully\n",
            radio_h->hamlib_model);
@@ -156,6 +332,9 @@ void radio_hamlib_shutdown(radio *radio_h)
 
 void set_frequency(radio *radio_h, uint32_t frequency, uint32_t profile)
 {
+    if (profile >= radio_h->profiles_count)
+        return;
+
     _Atomic uint32_t *radio_freq = &radio_h->profiles[profile].freq;
 
     if (*radio_freq == frequency)
@@ -183,6 +362,9 @@ void set_frequency(radio *radio_h, uint32_t frequency, uint32_t profile)
 
 void set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
 {
+    if (profile >= radio_h->profiles_count)
+        return;
+
     _Atomic uint16_t *radio_mode = &radio_h->profiles[profile].mode;
 
     if (*radio_mode == mode)
@@ -223,11 +405,20 @@ void tr_switch(radio *radio_h, bool txrx_state)
     if (radio_h->rig)
     {
         RIG *rig = (RIG *) radio_h->rig;
-        ptt_t ptt_val = (txrx_state == IN_TX) ? RIG_PTT_ON : RIG_PTT_OFF;
+        ptt_t ptt_val = RIG_PTT_OFF;
+        if (txrx_state == IN_TX)
+            ptt_val = (radio_h->ptt_type == PTT_RIG_MICDATA) ? RIG_PTT_ON_DATA
+                                                             : RIG_PTT_ON;
         int ret = rig_set_ptt(rig, RIG_VFO_CURR, ptt_val);
         if (ret != RIG_OK)
+        {
             fprintf(stderr, "tr_switch: rig_set_ptt failed: %s\n",
                     rigerror(ret));
+            return;
+        }
+
+        hamlib_sync_txrx_state(radio_h, txrx_state);
+        return;
     }
 
     radio_h->txrx_state = txrx_state;
@@ -317,9 +508,9 @@ void set_power_knob(radio *radio_h, uint16_t power_level, uint32_t profile)
     if (profile == radio_h->profile_active_idx && radio_h->rig)
     {
         RIG *rig = (RIG *) radio_h->rig;
-        value_t val;
-        val.f = (float) power_level / 100.0f;
-        rig_set_level(rig, RIG_VFO_CURR, RIG_LEVEL_RFPOWER, val);
+        hamlib_set_level_float(rig, RIG_LEVEL_RFPOWER,
+                               (float) power_level / 100.0f,
+                               "set_power_knob");
     }
 
     char key[64];
@@ -336,6 +527,7 @@ void set_digital_voice(radio *radio_h, bool digital_voice, uint32_t profile)
         return;
 
     radio_h->profiles[profile].digital_voice = digital_voice;
+    radio_pipeline_refresh(radio_h);
 
     char key[64];
     char val[4];
@@ -375,23 +567,12 @@ void set_profile(radio *radio_h, uint32_t profile)
     if (radio_h->profile_active_idx == profile)
         return;
 
+    if (profile >= radio_h->profiles_count)
+        return;
+
     radio_h->profile_active_idx = profile;
-
-    /* Apply the new profile's frequency and mode to the rig */
-    uint32_t freq = radio_h->profiles[profile].freq;
-    uint16_t mode = radio_h->profiles[profile].mode;
-
-    if (radio_h->rig)
-    {
-        RIG *rig = (RIG *) radio_h->rig;
-        rig_set_freq(rig, RIG_VFO_CURR, (freq_t) freq);
-        rig_set_mode(rig, RIG_VFO_CURR, mode_to_hamlib(mode),
-                     RIG_PASSBAND_NORMAL);
-
-        value_t rfval;
-        rfval.f = (float) radio_h->profiles[profile].power_level_percentage / 100.0f;
-        rig_set_level(rig, RIG_VFO_CURR, RIG_LEVEL_RFPOWER, rfval);
-    }
+    radio_pipeline_refresh(radio_h);
+    hamlib_apply_profile(radio_h, profile);
 
     /* Save current profile index */
     char val[32];
@@ -405,22 +586,14 @@ uint32_t get_fwd_power(radio *radio_h)
     if (!radio_h->rig)
         return radio_h->fwd_power;
 
-    RIG *rig = (RIG *) radio_h->rig;
-    value_t val;
-    val.f = 0.0f;
-
-    int ret = rig_get_level(rig, RIG_VFO_CURR, RIG_LEVEL_RFPOWER_METER, &val);
-    if (ret == RIG_OK)
-    {
-        /* Hamlib returns 0..1 normalized; scale to W*10 (assume 100W max) */
-        radio_h->fwd_power = (uint32_t)(val.f * 1000.0f);
-    }
+    hamlib_update_measurements(radio_h);
 
     return radio_h->fwd_power;
 }
 
 uint32_t get_ref_power(radio *radio_h)
 {
+    hamlib_update_measurements(radio_h);
     return radio_h->ref_power;
 }
 
@@ -430,12 +603,13 @@ uint32_t get_swr(radio *radio_h)
         return 10; /* 1.0 SWR */
 
     RIG *rig = (RIG *) radio_h->rig;
-    value_t val;
-    val.f = 0.0f;
+    float swr = 0.0f;
 
-    int ret = rig_get_level(rig, RIG_VFO_CURR, RIG_LEVEL_SWR, &val);
-    if (ret == RIG_OK)
-        return (uint32_t)(val.f * 10.0f);
+    if (hamlib_read_level_float(rig, RIG_LEVEL_SWR, &swr) && swr > 0.0f)
+    {
+        hamlib_update_reflected_from_swr(radio_h, swr);
+        return (uint32_t) lrintf(swr * 10.0f);
+    }
 
     /* Fallback: compute from fwd/ref voltages if available */
     uint32_t vfwd = radio_h->fwd_power;
@@ -452,13 +626,14 @@ uint32_t get_swr(radio *radio_h)
 
 bool update_power_measurements(radio *radio_h)
 {
-    /* For radios that expose the SWR meter via Hamlib */
-    get_fwd_power(radio_h);
-    return true;
+    return hamlib_update_measurements(radio_h);
 }
 
 void swr_protection_check(radio *radio_h)
 {
+    if (radio_h->reflected_threshold == 0)
+        return;
+
     uint32_t vswr = get_swr(radio_h);
 
     static _Atomic uint16_t peak_counter = 0;
