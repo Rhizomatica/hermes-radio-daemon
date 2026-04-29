@@ -21,9 +21,13 @@ else
 	CFLAGS += -march=x86-64-v2
 endif
 
-.PHONY: all clean install legacy_sbitx_controller
+.PHONY: all clean install legacy_sbitx_controller test compat-tests
 
 all: radio_daemon sbitx_client
+
+TEST_CFLAGS = -O0 -Wall -Wextra -std=gnu11 -fstack-protector \
+              -I. -I/usr/include/iniparser -Iinclude
+TEST_BINS = tests/backend_selection_test tests/compat_surface_test
 
 # ── daemon ──────────────────────────────────────────────────────
 DAEMON_OBJS = radio_daemon.o \
@@ -127,6 +131,26 @@ $(LEGACY_EMBED_OBJ): $(LEGACY_SBITX_SRCS) $(LEGACY_GPIOLIB_SRCS) $(LEGACY_HDRS)
 legacy_sbitx_controller: $(LEGACY_SBITX_SRCS) $(LEGACY_GPIOLIB_SRCS) include/sbitx_io.h include/radio_cmds.h
 	$(CC) $(LEGACY_CFLAGS) $(LEGACY_SBITX_SRCS) $(LEGACY_GPIOLIB_SRCS) -o legacy_sbitx_controller $(LEGACY_LDFLAGS)
 
+# ── regression tests ───────────────────────────────────────────────
+test: compat-tests
+
+compat-tests: $(TEST_BINS)
+	./tests/backend_selection_test
+	./tests/compat_surface_test
+
+tests/backend_selection_test: tests/backend_selection_test.c cfg_utils.c cfg_utils.h \
+                              radio_backend.c radio_backend.h radio_daemon_core.h \
+                              radio_hamlib.h legacy_sbitx_bootstrap.h radio.h \
+                              tests/fixtures/backend-default.ini \
+                              tests/fixtures/backend-zbitx.ini
+	$(CC) $(TEST_CFLAGS) tests/backend_selection_test.c -o $@ -liniparser -lpthread
+
+tests/compat_surface_test: tests/compat_surface_test.c radio_shm.c radio_shm.h \
+                           radio_websocket.c radio_websocket.h radio_pipeline.c \
+                           radio_pipeline.h radio_backend.h radio_media.h radio.h \
+                           shm_utils.h include/sbitx_io.h include/radio_cmds.h
+	$(CC) $(TEST_CFLAGS) tests/compat_surface_test.c -o $@ -lcrypto -lpthread
+
 # ── install ─────────────────────────────────────────────────────
 prefix     ?= /usr/local
 sysconfdir ?= /etc
@@ -143,4 +167,5 @@ install: radio_daemon sbitx_client
 # ── clean ───────────────────────────────────────────────────────
 clean:
 	rm -f radio_daemon sbitx_client legacy_sbitx_controller $(DAEMON_OBJS) \
-	      $(LEGACY_EMBED_RAW) $(LEGACY_EMBED_MAP) $(LEGACY_EMBED_OBJ)
+	      $(LEGACY_EMBED_RAW) $(LEGACY_EMBED_MAP) $(LEGACY_EMBED_OBJ) \
+	      $(TEST_BINS)
