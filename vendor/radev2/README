@@ -2,11 +2,15 @@
 
 Source: `/home/rafael2k/files/rhizomatica/hermes/radae` @ `38e354f7a83cb1a9970630a00a479132d65f34d7`.
 
-This directory carries the pure-C RADEv2 TX/RX subset needed for later in-process linkage inside `hermes-radio-daemon`:
+This directory carries the pure-C RADEv2 TX/RX subset vendored into `hermes-radio-daemon`:
 - upstream RADEv2 encoder/decoder, RX/TX wrappers, DSP, and generated model blobs
 - a pure-C-only `src/rade_api_pure_c.c` extracted from upstream `src/rade_api.c`
 - a minimal `src/rade_nnet.c` runtime covering the float-weight DNN helpers used by the compiled 250725 model
 - `sources.mk` and a standalone `Makefile` so later linkage can consume the vendored sources without shelling out to external binaries
+
+Current runtime scope:
+- used by the embedded `legacy_sbitx` path when the active profile enables digital voice / RADEv2
+- not yet used as a standalone daemon-managed Hamlib DSP path; the Hamlib backend currently exposes an explicit RADEv2 pipeline slot/metadata for external modem integration
 
 Notes:
 - use `rade_tx_v2_pure_c_open()` / `rade_rx_v2_pure_c_open()` from `src/rade_api.h`
