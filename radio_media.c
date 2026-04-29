@@ -31,6 +31,7 @@
 #include <unistd.h>
 
 #include "radio_media.h"
+#include "radio_pipeline.h"
 
 extern _Atomic bool shutdown_;
 
@@ -42,6 +43,8 @@ typedef struct {
     radio *radio_h;
     bool capture;
 } media_thread_ctx;
+
+static bool stream_matches(const char *stream_name, const char *candidate);
 
 static void wav_write_header(FILE *fp, uint32_t sample_rate, uint32_t data_bytes)
 {
@@ -447,6 +450,43 @@ static void *playback_thread(void *ctx_v)
     return NULL;
 }
 
+static bool daemon_audio_bridge_enabled(radio *radio_h)
+{
+    if (!radio_h->enable_audio_bridge)
+        return false;
+
+    if (!radio_pipeline_uses_daemon_audio_bridge(radio_h))
+    {
+        fprintf(stderr,
+                "radio_media: ignoring enable_audio_bridge for pipeline %s; "
+                "media remains on the %s path.\n",
+                radio_pipeline_name(radio_h),
+                radio_pipeline_media_owner_name(radio_h));
+        return false;
+    }
+
+    return true;
+}
+
+static bool recording_supported(radio *radio_h, const char *stream_name)
+{
+    uint32_t caps = radio_pipeline_capabilities(radio_h);
+
+    if (stream_matches(stream_name, "rx"))
+        return (caps & RADIO_PIPELINE_CAP_RX_RECORDING) != 0;
+
+    if (stream_matches(stream_name, "tx"))
+        return (caps & RADIO_PIPELINE_CAP_TX_RECORDING) != 0;
+
+    if (stream_matches(stream_name, "both"))
+        return (caps & (RADIO_PIPELINE_CAP_RX_RECORDING |
+                        RADIO_PIPELINE_CAP_TX_RECORDING)) ==
+               (RADIO_PIPELINE_CAP_RX_RECORDING |
+                RADIO_PIPELINE_CAP_TX_RECORDING);
+
+    return false;
+}
+
 bool radio_media_init(radio *radio_h, pthread_t *capture_tid, pthread_t *playback_tid)
 {
     static media_thread_ctx capture_ctx;
@@ -469,7 +509,7 @@ bool radio_media_init(radio *radio_h, pthread_t *capture_tid, pthread_t *playbac
         return false;
     }
 
-    if (!radio_h->enable_audio_bridge)
+    if (!daemon_audio_bridge_enabled(radio_h))
         return true;
 
     capture_ctx.radio_h = radio_h;
@@ -495,7 +535,7 @@ bool radio_media_init(radio *radio_h, pthread_t *capture_tid, pthread_t *playbac
 
 void radio_media_shutdown(radio *radio_h, pthread_t *capture_tid, pthread_t *playback_tid)
 {
-    if (radio_h->enable_audio_bridge)
+    if (daemon_audio_bridge_enabled(radio_h))
     {
         pthread_cond_broadcast(&radio_h->tx_audio_ring.cond);
         pthread_join(*capture_tid, NULL);
@@ -511,9 +551,12 @@ void radio_media_shutdown(radio *radio_h, pthread_t *capture_tid, pthread_t *pla
 
 void radio_media_push_tx_audio(radio *radio_h, const int16_t *samples, size_t nsamples)
 {
+    if (!radio_pipeline_supports_websocket_tx_audio(radio_h))
+        return;
+
     ring_push(&radio_h->tx_audio_ring, samples, nsamples);
 
-    if (!radio_h->enable_audio_bridge)
+    if (!daemon_audio_bridge_enabled(radio_h))
     {
         recording_write(&radio_h->tx_recording, samples, nsamples);
         if (nsamples >= SPECTRUM_FFT_SIZE)
@@ -523,6 +566,9 @@ void radio_media_push_tx_audio(radio *radio_h, const int16_t *samples, size_t ns
 
 size_t radio_media_pop_rx_audio(radio *radio_h, int16_t *samples, size_t max_samples)
 {
+    if (!radio_pipeline_supports_websocket_rx_audio(radio_h))
+        return 0;
+
     return ring_pop(&radio_h->rx_audio_ring, samples, max_samples);
 }
 
@@ -535,6 +581,9 @@ bool radio_media_start_recording(radio *radio_h, const char *stream_name)
 {
     bool ok = false;
     uint32_t sample_rate = radio_h->audio_sample_rate ? radio_h->audio_sample_rate : 8000;
+
+    if (!recording_supported(radio_h, stream_name))
+        return false;
 
     if (stream_matches(stream_name, "rx"))
         return recording_open(&radio_h->rx_recording, radio_h->recording_dir, "rx", sample_rate);
@@ -580,6 +629,9 @@ bool radio_media_get_spectrum(radio *radio_h, bool tx, float *out_bins, size_t b
                               uint32_t *seq, uint32_t *sample_rate)
 {
     bool valid;
+
+    if (!radio_pipeline_supports_spectrum(radio_h, tx))
+        return false;
 
     if (bins < WATERFALL_BINS)
         return false;

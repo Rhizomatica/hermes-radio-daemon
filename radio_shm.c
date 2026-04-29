@@ -28,9 +28,9 @@
 #include <unistd.h>
 #include <pthread.h>
 
+#include "radio_backend.h"
 #include "radio.h"
 #include "radio_shm.h"
-#include "radio_hamlib.h"
 #include "shm_utils.h"
 #include "include/sbitx_io.h"
 #include "include/radio_cmds.h"
@@ -60,7 +60,7 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
         }
         else if (radio_h->txrx_state == IN_RX)
         {
-            tr_switch(radio_h, IN_TX);
+            radio_backend_set_txrx_state(radio_h, IN_TX);
             response[0] = CMD_RESP_ACK;
         }
         else
@@ -76,7 +76,7 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
         }
         else if (radio_h->txrx_state == IN_TX)
         {
-            tr_switch(radio_h, IN_RX);
+            radio_backend_set_txrx_state(radio_h, IN_RX);
             response[0] = CMD_RESP_ACK;
         }
         else
@@ -98,7 +98,7 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
 
     case CMD_TIMEOUT_RESET:
         response[0] = CMD_RESP_ACK;
-        timer_reset = true;
+        radio_backend_reset_timeout_timer();
         break;
 
     case CMD_GET_PROTECTION_STATUS:
@@ -117,14 +117,14 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
         response[0] = CMD_RESP_ACK;
         uint32_t bfo_freq;
         memcpy(&bfo_freq, cmd, 4);
-        set_bfo(radio_h, bfo_freq);
+        radio_backend_set_bfo(radio_h, bfo_freq);
         break;
     }
 
     case CMD_GET_FWD:
     {
         response[0] = CMD_RESP_GET_FWD_ACK;
-        uint16_t fwdpower = (uint16_t) get_fwd_power(radio_h);
+        uint16_t fwdpower = (uint16_t) radio_backend_get_fwd_power(radio_h);
         memcpy(response + 1, &fwdpower, 2);
         break;
     }
@@ -132,7 +132,7 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
     case CMD_GET_REF:
     {
         response[0] = CMD_RESP_GET_REF_ACK;
-        uint16_t vswr = (uint16_t) get_swr(radio_h);
+        uint16_t vswr = (uint16_t) radio_backend_get_swr(radio_h);
         memcpy(response + 1, &vswr, 2);
         break;
     }
@@ -186,7 +186,7 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
         response[0] = CMD_RESP_ACK;
         profile = cmd[4] >> 6;
         if (profile < radio_h->profiles_count)
-            set_digital_voice(radio_h, cmd[0], profile);
+            radio_backend_set_digital_voice(radio_h, cmd[0], profile);
         break;
 
     case CMD_GET_SERIAL:
@@ -196,7 +196,7 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
 
     case CMD_SET_SERIAL:
         response[0] = CMD_RESP_ACK;
-        set_serial(radio_h, *(uint32_t *) cmd);
+        radio_backend_set_serial(radio_h, *(uint32_t *) cmd);
         break;
 
     case CMD_GET_STEPHZ:
@@ -207,7 +207,7 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
     case CMD_SET_STEPHZ:
         response[0] = CMD_RESP_ACK;
         memcpy(&frequency, cmd, 4);
-        set_step_size(radio_h, frequency);
+        radio_backend_set_step_size(radio_h, frequency);
         break;
 
     case CMD_GET_REF_THRESHOLD:
@@ -223,7 +223,7 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
         response[0] = CMD_RESP_ACK;
         uint16_t thr;
         memcpy(&thr, cmd, 2);
-        set_reflected_threshold(radio_h, (uint32_t) thr);
+        radio_backend_set_reflected_threshold(radio_h, (uint32_t) thr);
         break;
     }
 
@@ -237,7 +237,7 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
         {
             uint32_t prof_set = (uint32_t) cmd[0];
             if (prof_set < radio_h->profiles_count)
-                set_profile(radio_h, prof_set);
+                radio_backend_set_profile(radio_h, prof_set);
         }
         break;
 
@@ -260,7 +260,7 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
         if (profile < radio_h->profiles_count)
         {
             memcpy(&frequency, cmd, 4);
-            set_frequency(radio_h, frequency, profile);
+            radio_backend_set_frequency(radio_h, frequency, profile);
         }
         break;
 
@@ -278,7 +278,7 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
         if (profile < radio_h->profiles_count)
         {
             memcpy(&power, cmd, 4);
-            set_power_knob(radio_h, (uint16_t) power, profile);
+            radio_backend_set_power_level(radio_h, (uint16_t) power, profile);
         }
         break;
 
@@ -286,11 +286,11 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
         response[0] = CMD_RESP_ACK;
         profile = cmd[4] >> 6;
         if (cmd[0] == 0x00 || cmd[0] == 0x03)
-            set_mode(radio_h, MODE_LSB, profile);
+            radio_backend_set_mode(radio_h, MODE_LSB, profile);
         else if (cmd[0] == 0x01)
-            set_mode(radio_h, MODE_USB, profile);
+            radio_backend_set_mode(radio_h, MODE_USB, profile);
         else if (cmd[0] == 0x04)
-            set_mode(radio_h, MODE_CW, profile);
+            radio_backend_set_mode(radio_h, MODE_CW, profile);
         break;
 
     case CMD_GET_MODE:
@@ -318,7 +318,7 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
         memcpy(&speaker_level, cmd, 4);
         if (speaker_level > 100)
             speaker_level = 100;
-        set_speaker_volume(radio_h, speaker_level, profile);
+        radio_backend_set_speaker_volume(radio_h, speaker_level, profile);
         break;
     }
 
@@ -329,7 +329,7 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
 
     case CMD_SET_TIMEOUT:
         response[0] = CMD_RESP_ACK;
-        set_profile_timeout(radio_h, *(int32_t *) cmd);
+        radio_backend_set_profile_timeout(radio_h, *(int32_t *) cmd);
         break;
 
     case CMD_GET_TONE:
@@ -339,7 +339,7 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
 
     case CMD_SET_TONE:
         response[0] = CMD_RESP_ACK;
-        set_tone_generation(radio_h, cmd[0] != 0);
+        radio_backend_set_tone_generation(radio_h, cmd[0] != 0);
         break;
 
     case CMD_GET_BITRATE:

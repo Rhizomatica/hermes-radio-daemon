@@ -25,6 +25,7 @@
 
 #include <stdbool.h>
 #include <pthread.h>
+#include <stddef.h>
 
 #include "radio.h"
 #include <iniparser.h>
@@ -32,6 +33,11 @@
 /* Initialize config subsystem and start the writer thread */
 bool cfg_init(radio *radio_h, const char *cfg_radio, const char *cfg_user,
               pthread_t *config_tid);
+
+/* Read just the backend selection early, before daemon threads start */
+bool cfg_detect_backend(const char *cfg_radio, radio_backend_kind *backend_kind,
+                        char *controller_path, size_t controller_path_len);
+radio_backend_kind cfg_backend_kind_from_string(const char *backend_name);
 
 /* Signal the writer thread to exit and wait */
 bool cfg_shutdown(radio *radio_h, pthread_t *config_tid);

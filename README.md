@@ -7,8 +7,10 @@ A radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-ne
 * Frequency, mode, and PTT control via the Hamlib library (supports 200+ radio models)
 * Multi-profile support (up to 4 independent frequency/mode/power profiles)
 * SHM-based IPC – the same `sbitx_client` CLI and shared-memory protocol used by the original sBitx userland
+* `hfsignals` backend that bootstraps the copied `legacy_sbitx` controller stack in-process, preserving its sBitx/zBitx feature set and ALSA/DSP path without an external exec hop
 * Optional websocket control plane with binary RX/TX audio streaming
-* Optional ALSA audio bridge for native-SSB/Hamlib radios
+* Optional Hamlib ALSA audio bridge for native-SSB rigs
+* Explicit pipeline registry for analog vs. RADEv2 flows across Hamlib and HF Signals backends
 * RX and TX WAV recording hooks
 * RX and TX spectrum/waterfall publication for web clients
 * Profile auto-return timeout
@@ -21,7 +23,7 @@ A radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-ne
 
 | Binary | Description |
 |--------|-------------|
-| `radio_daemon` | Radio control daemon (replaces `sbitx_controller`) |
+| `radio_daemon` | Radio control daemon (replaces `sbitx_controller`, including embedded legacy_sbitx bootstrap for HF Signals radios) |
 | `sbitx_client` | Command-line client (identical API to original) |
 
 ## Dependencies
@@ -29,7 +31,8 @@ A radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-ne
 On a Debian/Ubuntu system:
 
 ```bash
-apt-get install libhamlib-dev libiniparser-dev libasound2-dev libfftw3-dev libssl-dev
+apt-get install libhamlib-dev libiniparser-dev libasound2-dev libfftw3-dev \
+                libssl-dev libi2c-dev libcsdr-dev
 ```
 
 ## Compilation
@@ -55,10 +58,12 @@ Default install prefix is `/usr/local`.  Config files are installed to
 
 ```ini
 [main]
-radio_model   = 3011        ; Hamlib model (3011 = Icom IC-7300); use 1 for dummy/test
-rig_pathname  = /dev/ttyUSB0
+radio_backend = hamlib
+hfsignals_controller_path = sbitx_controller
+radio_model   = 3011         ; Hamlib model (alias: hamlib_model)
+rig_pathname  = /dev/ttyUSB0 ; alias: rig_path
 serial_rate   = 19200
-ptt_type      = 1           ; 1 = PTT via CAT command
+ptt_type      = RIG          ; accepts numeric or symbolic values, alias: ptt_mode
 enable_shm_control = 1
 enable_websocket = 1
 websocket_bind = 0.0.0.0:8080
@@ -68,6 +73,17 @@ playback_device = hw:1,0
 audio_sample_rate = 8000
 recording_dir = /var/lib/hermes-radio-daemon
 ```
+
+`radio_backend = hfsignals` now boots the copied `legacy_sbitx` controller
+stack inside the `radio_daemon` process, so sBitx/zBitx keeps the same
+ALSA/DSP implementation and legacy behavior without spawning a separate
+controller binary. In embedded mode it now uses the `-r`/`-u` config files
+passed to `radio_daemon`, and serves legacy web assets from a sibling `web/`
+directory next to the selected radio config path (for example
+`/etc/sbitx/core.ini` → `/etc/sbitx/web`). The Hamlib ALSA bridge implemented
+in this repo remains for the native Hamlib path only. The
+`hfsignals_controller_path` knob is still ignored in this embedded mode and is
+kept only for migration compatibility.
 
 To list all supported Hamlib model numbers:
 
@@ -122,6 +138,12 @@ a client connects. Getter responses are shaped like:
 ```json
 {"ok":true,"cmd":"get_frequency","value":7100000}
 ```
+
+`state` frames now also include pipeline metadata such as `backend`,
+`digital_voice`, `pipeline`, `pipeline_mode`, `pipeline_media`,
+`pipeline_runtime`, and booleans advertising whether websocket audio,
+recording, spectrum, and the daemon ALSA bridge are active for the current
+profile.
 
 Setter responses are shaped like:
 
