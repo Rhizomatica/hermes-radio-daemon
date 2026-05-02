@@ -77,6 +77,12 @@
 #define COMPRESSOR_OFF 0
 #define COMPRESSOR_ON 1
 
+#define TX_PREEMPHASIS_OFF 0
+#define TX_PREEMPHASIS_ON 1
+
+#define NOISE_REDUCTION_OFF 0
+#define NOISE_REDUCTION_ON 1
+
 /* tx/rx states */
 #define IN_RX 0
 #define IN_TX 1
@@ -132,6 +138,12 @@ typedef struct {
     bool enable_knob_volume;
     bool enable_knob_frequency;
     bool enable_ptt;
+
+    // TX pre-emphasis: OFF/ON (6 dB/octave treble boost above 2 kHz)
+    _Atomic uint16_t tx_preemphasis;
+
+    // RX noise reduction: OFF/ON (libspecbleach adaptive denoiser)
+    _Atomic uint16_t noise_reduction;
 
     // digital voice mode
     _Atomic bool digital_voice;

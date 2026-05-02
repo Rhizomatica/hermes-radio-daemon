@@ -344,10 +344,24 @@ bool init_config_user(radio *radio_h, const char *ini_name)
         sprintf(profile_field, "%s:compressor", profile_name);
         s = iniparser_getstring(ini, profile_field, "OFF");
         // printf("%s:     [%s]\n", profile_field, s);
-        if (!strcmp(s, "OFF"))
+        if (!strcmp(s, "ON"))
+            radio_h->profiles[k].compressor = COMPRESSOR_ON;
+        else
             radio_h->profiles[k].compressor = COMPRESSOR_OFF;
-        else if (!strcmp(s, "ON"))
-            radio_h->profiles[k].compressor = COMPRESSOR_OFF;
+
+        sprintf(profile_field, "%s:tx_preemphasis", profile_name);
+        s = iniparser_getstring(ini, profile_field, "OFF");
+        if (!strcmp(s, "ON"))
+            radio_h->profiles[k].tx_preemphasis = TX_PREEMPHASIS_ON;
+        else
+            radio_h->profiles[k].tx_preemphasis = TX_PREEMPHASIS_OFF;
+
+        sprintf(profile_field, "%s:noise_reduction", profile_name);
+        s = iniparser_getstring(ini, profile_field, "OFF");
+        if (!strcmp(s, "ON"))
+            radio_h->profiles[k].noise_reduction = NOISE_REDUCTION_ON;
+        else
+            radio_h->profiles[k].noise_reduction = NOISE_REDUCTION_OFF;
 
         sprintf(profile_field, "%s:bpf_low", profile_name);
         i = iniparser_getint(ini, profile_field, 50);

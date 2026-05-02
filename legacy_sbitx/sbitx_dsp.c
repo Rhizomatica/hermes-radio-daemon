@@ -41,6 +41,7 @@
 #include <fft_fftw.h>
 #include <libcsdr.h>
 #include <libcsdr_gpl.h>
+#include <specbleach_adenoiser.h>
 
 
 #include "sbitx_dsp.h"
@@ -116,6 +117,40 @@ static float radae_speech_out[2048];    // 16kHz speech output
 static float radae_modem_iq[4096];      // 8kHz complex IQ (interleaved I,Q)
 static double radae_baseband_i[2048];   // 96kHz I component (complex IQ, upsampled)
 static double radae_baseband_q[2048];   // 96kHz Q component (complex IQ, upsampled)
+
+static dcblock_preserve_t rx_dc_state = {0.0f, 0.0f};
+static dcblock_preserve_t tx_dc_state = {0.0f, 0.0f};
+
+static SpectralBleachHandle nr_handle = NULL;
+static uint32_t nr_latency = 0;
+static uint64_t nr_total_samples = 0;
+static bool nr_initialized = false;
+
+static void tx_process_chain(float *audio_buf, int n);
+
+static float rx_float_buf[1024];
+static float rx_float_out[1024];
+
+typedef struct {
+    float b0, b1, b2, a1, a2;
+    float z1, z2;
+} biquad;
+
+static biquad tx_eq_lowshelf;
+static biquad tx_eq_peaking;
+static biquad tx_eq_highshelf;
+static biquad tx_preemp;
+static bool tx_eq_init_done = false;
+
+static float tx_comp_env;
+static bool tx_comp_init_done = false;
+
+static float tx_float_buf[1024];
+static float tx_float_out[1024];
+
+static rational_resampler_ff_t rs_state = {0, 0, 0};
+static float *rs_taps = NULL;
+static int rs_taps_len = 0;
 
 static void maybe_dump_tx_modem_iq(const float *iq_samples, int n_complex_samples)
 {
@@ -391,31 +426,21 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     //STEP 7: convert back to time domain
     fftw_execute(plan_rev);
 
-    //STEP 8 : AGC
-    if (radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].agc != AGC_OFF)
-        dsp_process_agc();
-
-    // STEP 8.5: Digital voice RX processing using RADAE
+	//STEP 8 : Digital voice RX (before voice DSP to get clean complex IQ)
     if (radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].digital_voice)
     {
-        // Extract demodulated complex IQ from SSB pipeline for RADAE processing
-        // The IFFT output (fft_time) contains complex signal; RADAE needs both components.
         static double rx_baseband_i[MAX_BINS/2];
         static double rx_baseband_q[MAX_BINS/2];
         static double speech_out[MAX_BINS/2];
-        
+
         for (int k = 0; k < MAX_BINS/2; k++)
         {
             rx_baseband_i[k] = creal(fft_time[k + (MAX_BINS/2)]);
             rx_baseband_q[k] = cimag(fft_time[k + (MAX_BINS/2)]);
         }
-        
-        // Process through RADAE digital voice decoder
+
         dsp_process_digital_voice_rx(rx_baseband_i, rx_baseband_q, block_size, speech_out);
-        
-        // Output decoded speech. FARGAN output arrives at roughly -18 dBFS
-        // peak / -28 dBFS mean -- inaudible against typical SSB voice RX. Boost
-        // by 5x and clip to [-0.95, 0.95] to stay well under int32 overflow.
+
         int32_t *output_speaker_int = (int32_t *)output_speaker;
         int32_t *output_loopback_int = (int32_t *)output_loopback;
 
@@ -433,12 +458,67 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             }
             output_speaker_int[k] <<= 8;
         }
-        
+
         memset(output_tx, 0, block_size * (snd_pcm_format_width(format) / 8));
         return;
     }
 
-	//STEP 9: send the output back to where it needs to go
+    // STEP 9 : Voice RX DSP chain
+    for (int i = 0; i < MAX_BINS / 2; i++)
+        rx_float_buf[i] = (float) cimag(fft_time[i + (MAX_BINS / 2)]);
+
+    // 9a: DC block
+    rx_dc_state = dcblock_ff(rx_float_buf, rx_float_out, MAX_BINS / 2, 0.999f, rx_dc_state);
+
+    // 9b: Noise reduction (libspecbleach adaptive denoiser)
+    bool nr_enabled = (radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].noise_reduction == NOISE_REDUCTION_ON);
+    if (nr_enabled)
+    {
+        if (!nr_initialized)
+        {
+            nr_handle = specbleach_adaptive_initialize(96000, 20.0f);
+            if (nr_handle)
+            {
+                SpectralBleachParameters nr_params;
+                nr_params.residual_listen = false;
+                nr_params.reduction_amount = 12.0f;
+                nr_params.smoothing_factor = 0.0f;
+                nr_params.whitening_factor = 0.0f;
+                nr_params.noise_scaling_type = 0;
+                nr_params.noise_rescale = 3.0f;
+                nr_params.post_filter_threshold = -10.0f;
+                specbleach_adaptive_load_parameters(nr_handle, nr_params);
+                nr_latency = specbleach_adaptive_get_latency(nr_handle);
+            }
+            nr_initialized = true;
+        }
+
+        if (nr_handle)
+        {
+            specbleach_adaptive_process(nr_handle, MAX_BINS / 2, rx_float_out, rx_float_buf);
+            nr_total_samples += MAX_BINS / 2;
+
+            if (nr_total_samples < nr_latency + MAX_BINS / 2)
+            {
+                for (int i = 0; i < MAX_BINS / 2; i++)
+                    rx_float_buf[i] = rx_float_out[i];
+            }
+        }
+    }
+
+    // 9c: AGC
+    if (radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].agc != AGC_OFF)
+    {
+        dsp_process_agc_float(rx_float_buf);
+    }
+
+    // 9d: Soft limiter
+    limit_ff(rx_float_buf, rx_float_buf, MAX_BINS / 2, 0.95f);
+
+    for (int i = 0; i < MAX_BINS / 2; i++)
+        __imag__ (fft_time[i + (MAX_BINS / 2)]) = (double) rx_float_buf[i];
+
+    // STEP 10: output conversion
     int32_t *output_speaker_int = (int32_t *)output_speaker;
     int32_t *output_loopback_int = (int32_t *) output_loopback;
     for (i = 0; i < block_size; i++)
@@ -446,10 +526,9 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
         output_speaker_int[i] = (int32_t) (cimag(fft_time[i+(MAX_BINS/2)]) * MAX_SAMPLE_VALUE);
         if ((i % 2) == 0)
         {
-            output_loopback_int[i] = output_speaker_int[i] << 4; // we give a small gain here for the loopback
-            output_loopback_int[i + 1] = output_loopback_int[i];     // 96 kHz mono to 48 kHz stereo decimation, L=R        }
+            output_loopback_int[i] = output_speaker_int[i] << 4;
+            output_loopback_int[i + 1] = output_loopback_int[i];
         }
-        // we shift 8 bit right to revert to wm8731 32-bit sample format (only 24-bit MSB valid)
         output_speaker_int[i] <<= 8;
     }
 
@@ -502,10 +581,28 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     {
         for (i = 0; i < block_size; i = i + 2)
         {
-            // just left channel
             loopback_in[i/2] = (1.0 * (signal_input_int[i] >> 8)) / MAX_SAMPLE_VALUE;
         }
-        rational_resampler(loopback_in, block_size / 2, signal_input_f, 2, INTERPOLATION);
+
+        if (!rs_taps)
+        {
+            float transition_bw = 0.05f;
+            rs_taps_len = firdes_filter_len(transition_bw);
+            rs_taps = malloc(rs_taps_len * sizeof(float));
+            rational_resampler_get_lowpass_f(rs_taps, rs_taps_len, 2, 1, WINDOW_BLACKMAN);
+        }
+
+        float loop_f[512];
+        float resamp_out[1024];
+        for (i = 0; i < block_size / 2; i++)
+            loop_f[i] = (float) loopback_in[i];
+
+        rs_state = rational_resampler_ff(loop_f, resamp_out, block_size / 2,
+                                         2, 1, rs_taps, rs_taps_len,
+                                         rs_state.last_taps_delay);
+
+        for (i = 0; i < rs_state.output_size; i++)
+            signal_input_f[i] = (double) resamp_out[i];
     }
     else // mic input from wm8731
     {
@@ -513,6 +610,17 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
         {
             signal_input_f[i] = (1.0 * (signal_input_int[i] >> 8)) / MAX_SAMPLE_VALUE;
         }
+    }
+
+    if (!radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].digital_voice)
+    {
+        for (i = 0; i < block_size; i++)
+            tx_float_buf[i] = (float) signal_input_f[i];
+
+        tx_process_chain(tx_float_buf, block_size);
+
+        for (i = 0; i < block_size; i++)
+            signal_input_f[i] = (double) tx_float_buf[i];
     }
 
     bool digital_voice = radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].digital_voice;
@@ -766,25 +874,39 @@ int filter_tune(struct filter *f, double const low, double const high, double co
     assert(fabs(high) <= 0.5);
 
     double gain = 1./((float)f->N);
-    //printf("# Gain is %lf\n", gain);
-	//printf("# filter elements %d\n", f->N);
+
+    double const transition_bins = 4.0;
+    double const transition = transition_bins / (double)f->N;
+    double const lo_edge = low + transition * 0.5;
+    double const hi_edge = high - transition * 0.5;
 
     for(int n = 0; n < f->N; n++)
     {
         double s;
-        //the first half is +ve frequencies in frequency domain
-        if(n <= f->N/2)
+        if (n <= f->N/2)
             s = (double) n / f->N;
-        else	//the second half is -ve frequencies, inverted
+        else
             s = (double) (n-f->N) / f->N;
 
-        if(s >= low && s <= high)
-            f->fir_coeff[n] = gain;
-        else
-            f->fir_coeff[n] = 0;
-        // printf("#1 %d  %g  %g %g before windowing: %g,%g\n", n, s, low, high, creal(f->fir_coeff[n]), cimag(f->fir_coeff[n]));
-  }
+        double response = 0.0;
 
+        if (s >= lo_edge && s <= hi_edge)
+        {
+            response = 1.0;
+        }
+        else if (s >= low && s < lo_edge)
+        {
+            double t = (s - low) / transition;
+            response = 0.5 * (1.0 - cos(M_PI * t));
+        }
+        else if (s > hi_edge && s <= high)
+        {
+            double t = (s - hi_edge) / transition;
+            response = 0.5 * (1.0 - cos(M_PI * t));
+        }
+
+        f->fir_coeff[n] = gain * response;
+    }
 
     window_filter(f->L, f->M, f->fir_coeff, kaiser_beta);
     return 0;
@@ -969,141 +1091,250 @@ int vfo_read(struct vfo *v)
 }
 
 
-// TODO: We need to define our reference and implement the ALC in the rx alsa input
-//
-// TODO: Add to DSP a de-noise function with libspecbleach
-//       https://github.com/Rhizomatica/libspecbleach/blob/main/example/adenoiser_demo.c
-
-void dsp_process_agc()
+void dsp_process_agc_float(float *audio_buf)
 {
-    static float input_buffer[1024]; // block_size == 1024
-    static float output_buffer[1024]; // block_size == 1024
+    static float output_buffer[1024];
 
-    int block_size = MAX_BINS / 2;
+    uint16_t agc_setting = radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].agc;
+    short hang_time;
+    float attack_rate;
+    float decay_rate;
+    float max_gain;
+    float filter_alpha;
 
-    // TODO: define the SLOW, MEDIUM and FAST AGCs
-    short hang_time=400; // in frames
-    float reference=0.2; // reference level
-    float attack_rate=0.02;
-    float decay_rate=0.0002;
-    float max_gain=20; // in db
-    short attack_wait=0;
-    float filter_alpha=0.999;//0.001;
-
-    static float last_gain=1.0;
-
-    for (int i = 0; i < MAX_BINS / 2; i++)
+    switch (agc_setting)
     {
-        input_buffer[i] = (float) cimag(fft_time[i + (MAX_BINS / 2)]);
-    }
-
-    last_gain = agc_ff(input_buffer, output_buffer, block_size, reference, attack_rate, decay_rate, max_gain, hang_time, attack_wait, filter_alpha, last_gain);
-
-    for (int i = 0; i < MAX_BINS / 2; i++)
-    {
-        __imag__ (fft_time[i + (MAX_BINS / 2)]) = (double) output_buffer[i];
-    }
-
-}
-
-// old tests for AGC
-#if 0
-
-void dsp_process_agc_old_fastagc()
-{
-    static bool first_call = true;
-    static fastagc_ff_t input;
-    static float* agc_output_buffer;
-
-    // TODO: this is just a test... move these init stuff to appropriate _init and _free functions...
-    if (first_call)
-    {
-        input.input_size = MAX_BINS/2;
-
-        input.reference = 0.2;
-
-        input.buffer_1 = (float*) calloc(input.input_size,sizeof(float));
-        input.buffer_2 = (float*) calloc(input.input_size,sizeof(float));
-        input.buffer_input = (float*) malloc(sizeof(float)*input.input_size);
-        agc_output_buffer = (float*) malloc(sizeof(float)*input.input_size);
-
-        first_call = false;
-    }
-
-    for (int i = 0; i < MAX_BINS / 2; i++)
-    {
-        input.buffer_input[i] = (float) cimag(fft_time[i + (MAX_BINS / 2)]);
-    }
-    fastagc_ff(&input, agc_output_buffer);
-    for (int i = 0; i < MAX_BINS / 2; i++)
-    {
-        __imag__ (fft_time[i + (MAX_BINS / 2)]) = (double) agc_output_buffer[i];
-    }
-
-}
-
-void dsp_process_agc_old()
-{
-    double signal_strength, agc_gain_should_be;
-    int agc_speed;
-
-    static double agc_gain = 0.0;
-    static int agc_loop = 0;
-
-    _Atomic uint16_t agc = radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].agc;
-    switch (agc)
-    {
-    case AGC_OFF:
-        return;
-        break;
-    case AGC_SLOW:
-        agc_speed = 100;
+    case AGC_FAST:
+        hang_time = 100;
+        attack_rate = 0.05f;
+        decay_rate = 0.002f;
+        max_gain = 20.0f;
+        filter_alpha = 0.99f;
         break;
     case AGC_MEDIUM:
-        agc_speed = 33;
+        hang_time = 400;
+        attack_rate = 0.02f;
+        decay_rate = 0.0005f;
+        max_gain = 25.0f;
+        filter_alpha = 0.995f;
         break;
-    case AGC_FAST:
-        agc_speed = 10;
-        break;
+    case AGC_SLOW:
     default:
-        return;
+        hang_time = 800;
+        attack_rate = 0.005f;
+        decay_rate = 0.0001f;
+        max_gain = 30.0f;
+        filter_alpha = 0.999f;
+        break;
     }
 
-    //find the peak signal amplitude
-    signal_strength = 0.0;
-    for (int i = 0; i < MAX_BINS/2; i++)
-    {
-        double s = cimag(fft_time[i+(MAX_BINS/2)]);
-        if (signal_strength < s)
-            signal_strength = s;
-    }
+    short attack_wait = 0;
+    float reference = 0.2f;
+    static float last_gain = 1.0f;
 
-    if (signal_strength < 0.00001 && signal_strength > -0.00001)
-        agc_gain_should_be = 1;
-    else
-        agc_gain_should_be = 0.5 / signal_strength;
+    last_gain = agc_ff(audio_buf, output_buffer, MAX_BINS / 2,
+                       reference, attack_rate, decay_rate, max_gain,
+                       hang_time, attack_wait, filter_alpha, last_gain);
 
-    double agc_ramp = 0.0;
-
-    if (agc_gain_should_be < agc_gain)
-    {
-        agc_gain = agc_gain_should_be;
-        agc_loop = agc_speed;
-    }
-    else if (agc_loop <= 0)
-    {
-        agc_ramp = (agc_gain_should_be - agc_gain) / (MAX_BINS/2);
-    }
-
-    for (int i = 0; i < MAX_BINS/2; i++)
-    {
-        __imag__ (fft_time[i+(MAX_BINS/2)]) *= agc_gain;
-    }
-    agc_gain += agc_ramp;
-
-    agc_loop--;
-
-    return;
+    for (int i = 0; i < MAX_BINS / 2; i++)
+        audio_buf[i] = output_buffer[i];
 }
 
-#endif
+static void biquad_design_lowshelf(biquad *bq, float f0, float Q, float gain_db, float fs)
+{
+    float A = powf(10.0f, gain_db / 40.0f);
+    float w0 = 2.0f * (float)M_PI * f0 / fs;
+    float cos_w0 = cosf(w0);
+    float sin_w0 = sinf(w0);
+    float alpha = sin_w0 / (2.0f * Q);
+    float sqrtA = sqrtf(A);
+
+    float b0 = A * ((A + 1.0f) - (A - 1.0f) * cos_w0 + 2.0f * sqrtA * alpha);
+    float b1 = 2.0f * A * ((A - 1.0f) - (A + 1.0f) * cos_w0);
+    float b2 = A * ((A + 1.0f) - (A - 1.0f) * cos_w0 - 2.0f * sqrtA * alpha);
+    float a0 = (A + 1.0f) + (A - 1.0f) * cos_w0 + 2.0f * sqrtA * alpha;
+    float a1 = -2.0f * ((A - 1.0f) + (A + 1.0f) * cos_w0);
+    float a2 = (A + 1.0f) + (A - 1.0f) * cos_w0 - 2.0f * sqrtA * alpha;
+
+    bq->b0 = b0 / a0;
+    bq->b1 = b1 / a0;
+    bq->b2 = b2 / a0;
+    bq->a1 = a1 / a0;
+    bq->a2 = a2 / a0;
+    bq->z1 = 0.0f;
+    bq->z2 = 0.0f;
+}
+
+static void biquad_design_peaking(biquad *bq, float f0, float Q, float gain_db, float fs)
+{
+    float A = powf(10.0f, gain_db / 40.0f);
+    float w0 = 2.0f * (float)M_PI * f0 / fs;
+    float cos_w0 = cosf(w0);
+    float sin_w0 = sinf(w0);
+    float alpha = sin_w0 / (2.0f * Q);
+
+    float b0 = 1.0f + alpha * A;
+    float b1 = -2.0f * cos_w0;
+    float b2 = 1.0f - alpha * A;
+    float a0 = 1.0f + alpha / A;
+    float a1 = -2.0f * cos_w0;
+    float a2 = 1.0f - alpha / A;
+
+    bq->b0 = b0 / a0;
+    bq->b1 = b1 / a0;
+    bq->b2 = b2 / a0;
+    bq->a1 = a1 / a0;
+    bq->a2 = a2 / a0;
+    bq->z1 = 0.0f;
+    bq->z2 = 0.0f;
+}
+
+static void biquad_design_highshelf(biquad *bq, float f0, float Q, float gain_db, float fs)
+{
+    float A = powf(10.0f, gain_db / 40.0f);
+    float w0 = 2.0f * (float)M_PI * f0 / fs;
+    float cos_w0 = cosf(w0);
+    float sin_w0 = sinf(w0);
+    float alpha = sin_w0 / (2.0f * Q);
+    float sqrtA = sqrtf(A);
+
+    float b0 = A * ((A + 1.0f) + (A - 1.0f) * cos_w0 + 2.0f * sqrtA * alpha);
+    float b1 = -2.0f * A * ((A - 1.0f) + (A + 1.0f) * cos_w0);
+    float b2 = A * ((A + 1.0f) + (A - 1.0f) * cos_w0 - 2.0f * sqrtA * alpha);
+    float a0 = (A + 1.0f) - (A - 1.0f) * cos_w0 + 2.0f * sqrtA * alpha;
+    float a1 = 2.0f * ((A - 1.0f) - (A + 1.0f) * cos_w0);
+    float a2 = (A + 1.0f) - (A - 1.0f) * cos_w0 - 2.0f * sqrtA * alpha;
+
+    bq->b0 = b0 / a0;
+    bq->b1 = b1 / a0;
+    bq->b2 = b2 / a0;
+    bq->a1 = a1 / a0;
+    bq->a2 = a2 / a0;
+    bq->z1 = 0.0f;
+    bq->z2 = 0.0f;
+}
+
+static float biquad_process(biquad *bq, float in)
+{
+    float out = bq->b0 * in + bq->b1 * bq->z1 + bq->b2 * bq->z2
+              - bq->a1 * bq->z1 - bq->a2 * bq->z2;
+    bq->z2 = bq->z1;
+    bq->z1 = in;
+    return out;
+}
+
+static void biquad_design_preemphasis(biquad *bq, float f0, float gain_db, float fs)
+{
+    float A = powf(10.0f, gain_db / 20.0f);
+    float w0 = 2.0f * (float)M_PI * f0 / fs;
+    float cos_w0 = cosf(w0);
+    float sin_w0 = sinf(w0);
+
+    float b0 = 1.0f + A * sin_w0;
+    float b1 = A * sin_w0 - cos_w0 * (1.0f + A);
+    float b2 = A * cos_w0 * cos_w0 - sin_w0 * (A * cos_w0 + cos_w0);
+    float a0 = 1.0f + sin_w0;
+    float a1 = sin_w0 - 2.0f * cos_w0;
+    float a2 = cos_w0 * cos_w0 - sin_w0 * cos_w0;
+
+    bq->b0 = b0 / a0;
+    bq->b1 = b1 / a0;
+    bq->b2 = b2 / a0;
+    bq->a1 = a1 / a0;
+    bq->a2 = a2 / a0;
+    bq->z1 = 0.0f;
+    bq->z2 = 0.0f;
+}
+
+static void tx_eq_init(void)
+{
+    if (tx_eq_init_done)
+        return;
+
+    biquad_design_lowshelf(&tx_eq_lowshelf, 300.0f, 0.707f, 0.0f, 96000.0f);
+    biquad_design_peaking(&tx_eq_peaking, 1500.0f, 1.0f, 0.0f, 96000.0f);
+    biquad_design_highshelf(&tx_eq_highshelf, 3000.0f, 0.707f, 0.0f, 96000.0f);
+    biquad_design_preemphasis(&tx_preemp, 2000.0f, 6.0f, 96000.0f);
+
+    tx_comp_env = 0.0f;
+    tx_comp_init_done = true;
+    tx_eq_init_done = true;
+}
+
+static void tx_process_compressor(float *buf, int n)
+{
+    const float threshold = 0.1f;
+    const float ratio = 4.0f;
+    const float knee = 0.05f;
+    const float attack_coeff = 0.004f;
+    const float release_coeff = 0.0001f;
+    const float makeup_db = 6.0f;
+    const float makeup = powf(10.0f, makeup_db / 20.0f);
+
+    for (int i = 0; i < n; i++)
+    {
+        float level = fabsf(buf[i]);
+        float coeff = (level > tx_comp_env) ? attack_coeff : release_coeff;
+        tx_comp_env = coeff * level + (1.0f - coeff) * tx_comp_env;
+
+        float env_db = 20.0f * log10f(tx_comp_env + 1e-10f);
+        float threshold_db = 20.0f * log10f(threshold);
+        float knee_half = knee * 0.5f;
+        float gain_db;
+
+        float below = env_db - (threshold_db - knee_half);
+        if (below <= 0.0f)
+        {
+            gain_db = 0.0f;
+        }
+        else if (below < knee)
+        {
+            float t = below / knee;
+            gain_db = (1.0f / ratio - 1.0f) * below * t * 0.5f;
+        }
+        else
+        {
+            gain_db = (1.0f / ratio - 1.0f) * (env_db - threshold_db);
+        }
+
+        float gain_linear = powf(10.0f, gain_db / 20.0f) * makeup;
+        buf[i] *= gain_linear;
+    }
+}
+
+static void tx_process_chain(float *audio_buf, int n)
+{
+    tx_eq_init();
+
+    tx_dc_state = dcblock_ff(audio_buf, tx_float_out, n, 0.999f, tx_dc_state);
+
+    bool comp_on = (radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].compressor == COMPRESSOR_ON);
+    bool preemp_on = (radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].tx_preemphasis == TX_PREEMPHASIS_ON);
+
+    if (comp_on)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            float s = tx_float_out[i];
+            s = biquad_process(&tx_eq_lowshelf, s);
+            s = biquad_process(&tx_eq_peaking, s);
+            s = biquad_process(&tx_eq_highshelf, s);
+            audio_buf[i] = s;
+        }
+
+        tx_process_compressor(audio_buf, n);
+    }
+    else
+    {
+        for (int i = 0; i < n; i++)
+            audio_buf[i] = tx_float_out[i];
+    }
+
+    if (preemp_on)
+    {
+        for (int i = 0; i < n; i++)
+            audio_buf[i] = biquad_process(&tx_preemp, audio_buf[i]);
+    }
+
+    limit_ff(audio_buf, audio_buf, n, 0.95f);
+}

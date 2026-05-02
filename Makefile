@@ -42,7 +42,7 @@ DAEMON_OBJS = radio_daemon.o \
               cfg_utils.o    \
               shm_utils.o    \
               legacy_sbitx/embedded_prefixed.o
-RADIO_DAEMON_LDFLAGS = $(LDFLAGS) -li2c -lssl -lcsdr -lfftw3
+RADIO_DAEMON_LDFLAGS = $(LDFLAGS) -li2c -lssl -lcsdr -lfftw3 -lspecbleach
 
 radio_daemon: $(DAEMON_OBJS)
 	$(CC) -o radio_daemon $(DAEMON_OBJS) $(RADIO_DAEMON_LDFLAGS)
@@ -94,7 +94,7 @@ sbitx_client: sbitx_client.c sbitx_io.c shm_utils.c help.h \
 LEGACY_CFLAGS = $(CFLAGS) -I. -Ilegacy_sbitx -Ilegacy_sbitx/gpiolib -I/usr/include/csdr \
                 $(RADEV2_EMBED_CPPFLAGS) $(RADEV2_EMBED_CFLAGS) \
                 -Wno-deprecated-declarations
-LEGACY_LDFLAGS = -liniparser -li2c -lssl -lcrypto -lpthread -lasound -lm -lfftw3 -lcsdr
+LEGACY_LDFLAGS = -liniparser -li2c -lssl -lcrypto -lpthread -lasound -lm -lfftw3 -lcsdr -lspecbleach
 LEGACY_HDRS = $(wildcard legacy_sbitx/*.h legacy_sbitx/gpiolib/*.h include/*.h \
                 vendor/radev2/src/*.h vendor/radev2/support/*.h) shm_utils.h
 LEGACY_GPIOLIB_SRCS = legacy_sbitx/gpiolib/gpiolib.c \

@@ -65,7 +65,7 @@ void fft_reset_m_bins();
 void dsp_set_filters();
 
 // call the agc code
-void dsp_process_agc();
+void dsp_process_agc_float(float *audio_buf);
 
 // the the tx band multiplier
 double get_band_multiplier();
