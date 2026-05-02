@@ -41,7 +41,7 @@
 #include <fft_fftw.h>
 #include <libcsdr.h>
 #include <libcsdr_gpl.h>
-#include <specbleach_adenoiser.h>
+#include <specbleach_denoiser.h>
 
 
 #include "sbitx_dsp.h"
@@ -476,26 +476,30 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     {
         if (!nr_initialized)
         {
-            nr_handle = specbleach_adaptive_initialize(96000, 20.0f);
+            nr_handle = specbleach_initialize(96000, 20.0f);
             if (nr_handle)
             {
-                SpectralBleachParameters nr_params;
+                SpectralBleachDenoiserParameters nr_params;
+                nr_params.learn_noise = 0;
                 nr_params.residual_listen = false;
                 nr_params.reduction_amount = 12.0f;
                 nr_params.smoothing_factor = 0.0f;
                 nr_params.whitening_factor = 0.0f;
-                nr_params.noise_scaling_type = 0;
-                nr_params.noise_rescale = 3.0f;
-                nr_params.post_filter_threshold = -10.0f;
-                specbleach_adaptive_load_parameters(nr_handle, nr_params);
-                nr_latency = specbleach_adaptive_get_latency(nr_handle);
+                nr_params.adaptive_noise = 1;
+                nr_params.noise_estimation_method = 0;
+                nr_params.masking_depth = 0.5f;
+                nr_params.suppression_strength = 0.5f;
+                nr_params.aggressiveness = 0.0f;
+                nr_params.tonal_reduction = 0.0f;
+                specbleach_load_parameters(nr_handle, nr_params);
+                nr_latency = specbleach_get_latency(nr_handle);
             }
             nr_initialized = true;
         }
 
         if (nr_handle)
         {
-            specbleach_adaptive_process(nr_handle, MAX_BINS / 2, rx_float_out, rx_float_buf);
+            specbleach_process(nr_handle, MAX_BINS / 2, rx_float_out, rx_float_buf);
             nr_total_samples += MAX_BINS / 2;
 
             if (nr_total_samples < nr_latency + MAX_BINS / 2)
@@ -831,6 +835,16 @@ void dsp_free(radio *radio_h)
     fftw_free(buffer_filter);
     free(rx_filter);
     free(tx_filter);
+
+    if (nr_handle)
+    {
+        specbleach_free(nr_handle);
+        nr_handle = NULL;
+        nr_initialized = false;
+    }
+
+    free(rs_taps);
+    rs_taps = NULL;
 }
 
 void dsp_set_filters()
