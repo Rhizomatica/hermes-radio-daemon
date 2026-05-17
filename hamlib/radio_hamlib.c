@@ -37,6 +37,7 @@
 #include "radio_pipeline.h"
 #include "cfg_utils.h"
 #include "radio_backend.h"
+#include "hamlib_digi.h"
 
 _Atomic bool timer_reset = true;
 _Atomic time_t timeout_counter = 0;
@@ -352,11 +353,17 @@ static bool radio_hamlib_init(radio *radio_h)
     printf("radio_hamlib_init: rig model %d opened successfully\n",
            radio_h->hamlib_model);
 
+    /* FT8 / CW / RTTY pump (text-mode encoders + decoders against the
+     * daemon audio rings). Idle when the active mode isn't digital. */
+    hamlib_digi_start(radio_h);
+
     return true;
 }
 
 static void radio_hamlib_shutdown(radio *radio_h)
 {
+    hamlib_digi_stop(radio_h);
+
     if (!radio_h->rig)
         return;
 
