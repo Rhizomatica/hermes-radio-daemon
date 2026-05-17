@@ -134,9 +134,23 @@ enable_shm_control = 1
 websocket_url = ws://0.0.0.0:8080
 
 ; Audio bridge (works with both backends — hfsignals taps the
-; embedded ALSA path, hamlib opens capture_device/playback_device)
+; embedded ALSA path; hamlib opens capture_device/playback_device
+; as the rig USB codec and pumps audio through audio_bridge.c).
 enable_audio_bridge = 0
-audio_sample_rate = 8000
+audio_sample_rate = 48000      ; rate the daemon audio rings carry
+rig_audio_rate    = 0          ; 0 = same as audio_sample_rate; set to
+                               ;  the rig USB codec's native rate (e.g.
+                               ;  48000) when it differs from the ring
+                               ;  rate. audio_bridge resamples.
+audio_period_size = 480        ; ALSA period, must be >= 256 for spectrum
+
+; Optional operator-side headset (hardware) audio path. When BOTH
+; device names are non-empty the daemon opens a second pair of ALSA
+; devices and bridges them onto rx/tx_audio_ring, so an operator can
+; run with a wired headset instead of (or in addition to) the browser.
+; headset_capture_device  = hw:Headset,0
+; headset_playback_device = hw:Headset,0
+; headset_sample_rate     = 48000
 
 ; Dream DRM receiver binary path
 dream_path = /usr/bin/dream
@@ -434,10 +448,44 @@ RTTY tx 14.080: CQ CQ DE HERMES TEST
 
 The audio bridge streams RX/TX audio over websocket and works with **both backends**:
 
-- **hamlib**: `radio_media.c` captures from `capture_device` ALSA → `rx_audio_ring` → websocket broadcast; websocket TX → `tx_audio_ring` → `playback_device`
-- **hfsignals/sBitx**: DSP control thread pushes RX audio to `rx_audio_ring`, pulls TX from `tx_audio_ring` (replaces mic input when websocket audio is available)
+- **hamlib**: `radio_media.c` captures from `capture_device` ALSA (the rig
+  USB codec at `rig_audio_rate`) → `audio_bridge` → `rx_audio_ring` at
+  `audio_sample_rate` → websocket broadcast. Websocket TX → `tx_audio_ring`
+  → `audio_bridge` → `playback_device`. `audio_bridge.c` owns the rate
+  conversion via csdr's `rational_resampler_ff` (windowed-sinc polyphase
+  taps — same call pattern as the existing 48→96 kHz loopback path in
+  `dsp/sbitx_dsp.c`), so the rig native rate can differ from the daemon
+  ring rate.
+- **hfsignals/sBitx**: DSP control thread pushes RX audio (96 kHz mono int16)
+  through the same `audio_bridge` (configured pass-through, native==ring rate)
+  into `rx_audio_ring`; pulls TX from `tx_audio_ring`.
 
-Enable with `enable_audio_bridge = 1` in `core.ini`. Sample rate configurable via `audio_sample_rate` (default 8000).
+Enable with `enable_audio_bridge = 1` in `core.ini`. Common knobs:
+
+- `audio_sample_rate` (default 48000) — rate of the daemon audio rings,
+  recording WAVs, spectrum FFT, and websocket binary frames.
+- `rig_audio_rate` (default 0 = same as `audio_sample_rate`) — native rate
+  of the rig-facing ALSA device. Use when the rig USB codec forces a rate
+  that differs from the ring rate.
+- `audio_period_size` (default 480) — ALSA period frames; ≥ 256 keeps the
+  spectrum waterfall fed.
+
+### Optional local headset (operator hardware audio)
+
+For operators who run the daemon on a dedicated box and want a wired headset
+instead of monitoring through the browser, set:
+
+```ini
+headset_capture_device  = hw:Headset,0
+headset_playback_device = hw:Headset,0
+headset_sample_rate     = 48000
+```
+
+The daemon then opens a second pair of ALSA devices and bridges the headset
+onto `rx_audio_ring` (operator hears) and `tx_audio_ring` (operator mic).
+Audio paths use the same `audio_bridge` resampler. The browser and the local
+headset both consume from `rx_audio_ring`; pick one or the other for
+monitoring to avoid splitting samples between them.
 
 ## Websocket Control
 

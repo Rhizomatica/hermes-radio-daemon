@@ -261,13 +261,19 @@ static rmode_t mode_to_hamlib(uint16_t mode)
     }
 }
 
-/* Map Hamlib rmode_t to internal MODE_* */
+/* Map Hamlib rmode_t to internal MODE_*. We surface PKTUSB as MODE_FT8 by
+ * default — that matches our set_mode (FT8 -> PKTUSB) so the round-trip
+ * preserves the DATA-mode state on rigs the operator is using for digi work.
+ * Users running RTTY on PKTUSB get MODE_FT8 on read; they can still distinguish
+ * RTTY via the RIG_MODE_RTTY path. */
 static uint16_t hamlib_to_mode(rmode_t hmode)
 {
-    if (hmode == RIG_MODE_USB || hmode == RIG_MODE_PKTUSB)
+    if (hmode == RIG_MODE_USB)
         return MODE_USB;
-    if (hmode == RIG_MODE_LSB || hmode == RIG_MODE_PKTLSB)
+    if (hmode == RIG_MODE_LSB)
         return MODE_LSB;
+    if (hmode == RIG_MODE_PKTUSB || hmode == RIG_MODE_PKTLSB)
+        return MODE_FT8;
     if (hmode == RIG_MODE_CW || hmode == RIG_MODE_CWR)
         return MODE_CW;
     if (hmode == RIG_MODE_FM || hmode == RIG_MODE_FMN)

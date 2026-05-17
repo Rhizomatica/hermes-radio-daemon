@@ -307,7 +307,19 @@ typedef struct {
 
     char capture_device[AUDIO_DEVICE_NAME_MAX];
     char playback_device[AUDIO_DEVICE_NAME_MAX];
+    /* Optional operator-side headset (hardware) audio path. When both
+     * device names are non-empty, the daemon spawns capture+playback threads
+     * that mirror the websocket browser audio path onto a local ALSA device. */
+    char headset_capture_device[AUDIO_DEVICE_NAME_MAX];
+    char headset_playback_device[AUDIO_DEVICE_NAME_MAX];
+    _Atomic uint32_t headset_sample_rate;
+    /* audio_sample_rate: rate the daemon audio rings carry (consumed by
+     * recording, spectrum FFT and the websocket binary frames). */
     _Atomic uint32_t audio_sample_rate;
+    /* rig_audio_rate: native rate of the rig-facing ALSA device. Set to 0
+     * to mean "same as audio_sample_rate" (back-compat). When different, the
+     * audio_bridge resamples between rig native and ring rate. */
+    _Atomic uint32_t rig_audio_rate;
     _Atomic uint32_t audio_period_size;
     _Atomic uint32_t audio_queue_samples;
 

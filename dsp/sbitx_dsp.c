@@ -47,6 +47,7 @@
 #include "sbitx_dsp.h"
 #include "sbitx_core.h"
 #include "sbitx_alsa.h"
+#include "sbitx_buffer.h"
 #include "sbitx_radae.h"
 #include "sbitx_drm.h"
 #include "sbitx_ft8.h"
@@ -1226,6 +1227,11 @@ void dsp_init(radio *radio_h)
 
     if (radio_h->profiles[radio_h->profile_active_idx].operating_mode == OPERATING_MODE_CONTROLS_ONLY)
         return;
+
+    /* Ring buffers the DSP needs even when no hfsignals ALSA threads are
+     * running (e.g. hamlib backend). Idempotent — sound_system_init also
+     * calls it on hfsignals. */
+    initialize_buffers();
 
     fft_m = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * MAX_BINS/2);
     fft_in = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * MAX_BINS);

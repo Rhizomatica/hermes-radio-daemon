@@ -22,6 +22,7 @@
 #include "radio_pipeline.h"
 #include "radio_shm.h"
 #include "radio_websocket.h"
+#include "audio_headset.h"
 
 extern _Atomic bool shutdown_;
 
@@ -91,6 +92,7 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     bool media_started = false;
     bool websocket_started = false;
     bool shm_started = false;
+    bool headset_started = false;
 
     shutdown_ = false;
     install_signal_handlers();
@@ -148,9 +150,15 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
         shm_started = true;
     }
 
+    /* Optional local-headset path. No-op when devices aren't configured. */
+    if (audio_headset_init(&radio_h))
+        headset_started = true;
+
     pthread_join(io_tid, NULL);
     io_started = false;
 
+    if (headset_started)
+        audio_headset_shutdown(&radio_h);
     if (shm_started)
         shm_controller_shutdown(&shm_tid);
     if (websocket_started)
@@ -169,6 +177,8 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
 fail:
     if (io_started)
         pthread_join(io_tid, NULL);
+    if (headset_started)
+        audio_headset_shutdown(&radio_h);
     if (shm_started)
         shm_controller_shutdown(&shm_tid);
     if (websocket_started)

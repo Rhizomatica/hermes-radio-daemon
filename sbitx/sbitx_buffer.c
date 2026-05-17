@@ -118,6 +118,11 @@ void clear_buffer (buffer *buffer)
 
 void initialize_buffers()
 {
+    /* Idempotent. Called from both dsp_init (any backend) and
+     * sound_system_init (hfsignals only) — the second caller is a no-op. */
+    if (radio_to_dsp)
+        return;
+
     static buffer radio_to_dsp_int;
     radio_to_dsp = &radio_to_dsp_int;
     static buffer dsp_to_radio_int;

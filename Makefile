@@ -52,6 +52,8 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   radio_media.o \
                   radio_shm.o \
                   radio_websocket.o \
+                  audio_bridge.o \
+                  audio_headset.o \
                   cfg_utils.o \
                   shm_utils.o \
                   mongoose.o

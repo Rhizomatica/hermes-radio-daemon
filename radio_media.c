@@ -32,6 +32,7 @@
 
 #include "radio_media.h"
 #include "radio_pipeline.h"
+#include "audio_bridge.h"
 
 extern _Atomic bool shutdown_;
 
@@ -330,22 +331,32 @@ static void *capture_thread(void *ctx_v)
 {
     media_thread_ctx *ctx = (media_thread_ctx *) ctx_v;
     radio *radio_h = ctx->radio_h;
-    uint32_t sample_rate = radio_h->audio_sample_rate ? radio_h->audio_sample_rate : 8000;
+    uint32_t ring_rate   = radio_h->audio_sample_rate ? radio_h->audio_sample_rate : 48000;
+    uint32_t native_rate = radio_h->rig_audio_rate ? radio_h->rig_audio_rate : ring_rate;
     uint32_t frames = radio_h->audio_period_size ? radio_h->audio_period_size : DEFAULT_PERIOD_FRAMES;
     int16_t *buffer = calloc(frames, sizeof(int16_t));
-    int16_t spectrum_window[SPECTRUM_FFT_SIZE] = {0};
-    size_t spectrum_fill = 0;
     snd_pcm_t *pcm;
+    audio_bridge bridge;
 
     if (!buffer)
         return NULL;
 
-    pcm = open_pcm_device(radio_h->capture_device, SND_PCM_STREAM_CAPTURE, sample_rate);
-    if (!pcm)
-    {
+    if (!audio_bridge_init(&bridge, native_rate, ring_rate)) {
+        fprintf(stderr, "radio_media: audio_bridge_init(capture) failed\n");
         free(buffer);
         return NULL;
     }
+
+    pcm = open_pcm_device(radio_h->capture_device, SND_PCM_STREAM_CAPTURE, native_rate);
+    if (!pcm)
+    {
+        audio_bridge_shutdown(&bridge);
+        free(buffer);
+        return NULL;
+    }
+
+    fprintf(stderr, "radio_media: capture %s @ %u Hz -> ring @ %u Hz\n",
+            radio_h->capture_device, native_rate, ring_rate);
 
     while (!shutdown_)
     {
@@ -355,36 +366,29 @@ static void *capture_thread(void *ctx_v)
             snd_pcm_prepare(pcm);
             continue;
         }
+        if (got == -EAGAIN || got == 0)
+        {
+            /* Virtual ALSA devices (e.g. `null`) return 0 immediately
+             * instead of blocking for the period; sleep one period to
+             * avoid a 100% CPU spin. Real codecs never hit this path. */
+            usleep(2000);
+            continue;
+        }
         if (got < 0)
         {
             fprintf(stderr, "radio_media: capture read failed: %s\n", snd_strerror((int) got));
             usleep(20000);
             continue;
         }
-        if (got == 0)
-            continue;
 
-        ring_push(&radio_h->rx_audio_ring, buffer, (size_t) got);
-        recording_write(&radio_h->rx_recording, buffer, (size_t) got);
-        for (size_t i = 0; i < (size_t) got; i++)
-        {
-            if (spectrum_fill < SPECTRUM_FFT_SIZE)
-            {
-                spectrum_window[spectrum_fill++] = buffer[i];
-            }
-            else
-            {
-                memmove(spectrum_window, spectrum_window + 1,
-                        (SPECTRUM_FFT_SIZE - 1) * sizeof(int16_t));
-                spectrum_window[SPECTRUM_FFT_SIZE - 1] = buffer[i];
-            }
-        }
-        if (spectrum_fill == SPECTRUM_FFT_SIZE)
-            compute_spectrum(radio_h, false, spectrum_window, SPECTRUM_FFT_SIZE);
+        /* Pushes to rx_audio_ring at ring_rate (after resample), taps recording
+         * and feeds the spectrum FFT. */
+        audio_bridge_push_rx_native(&bridge, radio_h, buffer, (size_t) got);
     }
 
     snd_pcm_drain(pcm);
     snd_pcm_close(pcm);
+    audio_bridge_shutdown(&bridge);
     free(buffer);
     return NULL;
 }
@@ -393,26 +397,38 @@ static void *playback_thread(void *ctx_v)
 {
     media_thread_ctx *ctx = (media_thread_ctx *) ctx_v;
     radio *radio_h = ctx->radio_h;
-    uint32_t sample_rate = radio_h->audio_sample_rate ? radio_h->audio_sample_rate : 8000;
+    uint32_t ring_rate   = radio_h->audio_sample_rate ? radio_h->audio_sample_rate : 48000;
+    uint32_t native_rate = radio_h->rig_audio_rate ? radio_h->rig_audio_rate : ring_rate;
     uint32_t frames = radio_h->audio_period_size ? radio_h->audio_period_size : DEFAULT_PERIOD_FRAMES;
     int16_t *buffer = calloc(frames, sizeof(int16_t));
-    int16_t spectrum_window[SPECTRUM_FFT_SIZE] = {0};
-    size_t spectrum_fill = 0;
     snd_pcm_t *pcm;
+    audio_bridge bridge;
 
     if (!buffer)
         return NULL;
 
-    pcm = open_pcm_device(radio_h->playback_device, SND_PCM_STREAM_PLAYBACK, sample_rate);
-    if (!pcm)
-    {
+    if (!audio_bridge_init(&bridge, native_rate, ring_rate)) {
+        fprintf(stderr, "radio_media: audio_bridge_init(playback) failed\n");
         free(buffer);
         return NULL;
     }
 
+    pcm = open_pcm_device(radio_h->playback_device, SND_PCM_STREAM_PLAYBACK, native_rate);
+    if (!pcm)
+    {
+        audio_bridge_shutdown(&bridge);
+        free(buffer);
+        return NULL;
+    }
+
+    fprintf(stderr, "radio_media: playback %s @ %u Hz <- ring @ %u Hz\n",
+            radio_h->playback_device, native_rate, ring_rate);
+
     while (!shutdown_)
     {
-        size_t got = ring_pop(&radio_h->tx_audio_ring, buffer, frames);
+        /* Pops from tx_audio_ring (ring_rate), resamples to native_rate, taps
+         * TX recording, returns native-rate samples in `buffer`. */
+        size_t got = audio_bridge_pop_tx_native(&bridge, radio_h, buffer, frames);
         if (got == 0)
         {
             memset(buffer, 0, frames * sizeof(int16_t));
@@ -424,27 +440,16 @@ static void *playback_thread(void *ctx_v)
             got = frames;
         }
 
-        recording_write(&radio_h->tx_recording, buffer, got);
-        for (size_t i = 0; i < got; i++)
-        {
-            if (spectrum_fill < SPECTRUM_FFT_SIZE)
-            {
-                spectrum_window[spectrum_fill++] = buffer[i];
-            }
-            else
-            {
-                memmove(spectrum_window, spectrum_window + 1,
-                        (SPECTRUM_FFT_SIZE - 1) * sizeof(int16_t));
-                spectrum_window[SPECTRUM_FFT_SIZE - 1] = buffer[i];
-            }
-        }
-        if (spectrum_fill == SPECTRUM_FFT_SIZE)
-            compute_spectrum(radio_h, true, spectrum_window, SPECTRUM_FFT_SIZE);
-
         snd_pcm_sframes_t wrote = snd_pcm_writei(pcm, buffer, got);
         if (wrote == -EPIPE)
         {
             snd_pcm_prepare(pcm);
+            continue;
+        }
+        if (wrote == -EAGAIN || wrote == 0)
+        {
+            /* See capture_thread: virtual devices don't block on write. */
+            usleep(2000);
             continue;
         }
         if (wrote < 0)
@@ -457,6 +462,7 @@ static void *playback_thread(void *ctx_v)
 
     snd_pcm_drain(pcm);
     snd_pcm_close(pcm);
+    audio_bridge_shutdown(&bridge);
     free(buffer);
     return NULL;
 }

@@ -274,10 +274,29 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     s = iniparser_getstring(ini, "main:playback_device", "default");
     snprintf(radio_h->playback_device, sizeof(radio_h->playback_device), "%s", s);
 
-    i = iniparser_getint(ini, "main:audio_sample_rate", 8000);
+    /* Operator-side headset. Empty -> headset path disabled. */
+    s = iniparser_getstring(ini, "main:headset_capture_device", "");
+    snprintf(radio_h->headset_capture_device,
+             sizeof(radio_h->headset_capture_device), "%s", s);
+    s = iniparser_getstring(ini, "main:headset_playback_device", "");
+    snprintf(radio_h->headset_playback_device,
+             sizeof(radio_h->headset_playback_device), "%s", s);
+    i = iniparser_getint(ini, "main:headset_sample_rate", 48000);
+    radio_h->headset_sample_rate = (uint32_t) i;
+
+    i = iniparser_getint(ini, "main:audio_sample_rate", 48000);
     radio_h->audio_sample_rate = (uint32_t) i;
 
-    i = iniparser_getint(ini, "main:audio_period_size", 160);
+    /* Rate at which the rig-facing ALSA device is opened. 0 means "same as
+     * audio_sample_rate" (legacy behaviour). Set this when the rig USB codec
+     * forces a specific rate (e.g. 48000) that differs from the daemon ring
+     * rate; the audio_bridge resamples between them. */
+    i = iniparser_getint(ini, "main:rig_audio_rate", 0);
+    radio_h->rig_audio_rate = (uint32_t) i;
+
+    /* 480 samples = 10 ms at 48 kHz; also ≥ SPECTRUM_FFT_SIZE so the spectrum
+     * waterfall stays alive on the daemon audio bridge. */
+    i = iniparser_getint(ini, "main:audio_period_size", 480);
     radio_h->audio_period_size = (uint32_t) i;
 
     i = iniparser_getint(ini, "main:audio_queue_samples", 16000);
