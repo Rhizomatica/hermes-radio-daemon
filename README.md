@@ -10,7 +10,8 @@ Radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-net)
 - **Digital text modes**: FT8 (8-FSK), CW (Morse via unixcw), RTTY (Baudot FSK) with unified websocket API and a real outbound text queue (`digi_send`)
 - **SSB voice DSP chain**: 3-band pre-EQ, wideband compressor, pre-emphasis, DC block, limiter
 - **RX voice DSP chain**: DC block, adaptive noise reduction (libspecbleach), AGC (SLOW/MEDIUM/FAST), soft limiter
-- **Audio bridge** for websocket RX/TX streaming, RX/TX spectrum waterfall, and `.wav` recording — on both backends, sharing the same audio rings
+- **Audio bridge** for websocket RX/TX streaming, RX/TX spectrum waterfall, and `.wav` recording — on both backends, sharing the same audio rings. csdr-based polyphase resampler (`audio_bridge.c`) decouples the rig USB codec rate from the daemon ring rate.
+- **Optional operator-side headset** (`audio_headset.c`) — second pair of ALSA devices for users running the daemon on a dedicated box with a wired headset instead of (or in addition to) the browser audio.
 - **Up to 9 profiles** with frequency, mode, power, timeout, and digital-voice state
 - **Single mongoose-based websocket server** speaking one JSON dialect for both backends, with `ws://` and `wss://` (TLS) support out of the box
 - WAV recording with remote start/stop on both backends
@@ -36,6 +37,8 @@ hermes-radio-daemon/
 ├── radio_daemon_core.c      Backend-neutral run loop (signal handler, init, join)
 ├── radio_websocket.c        Mongoose-based ws/wss server (one for both backends)
 ├── radio_media.c            Audio rings, WAV recording, spectrum FFT
+├── audio_bridge.{c,h}       Rate-converting bridge between backend ALSA rate and ring rate (csdr polyphase)
+├── audio_headset.{c,h}      Optional operator-side hardware headset (second ALSA device pair)
 ├── radio_pipeline.c         Per-backend capability descriptor
 ├── radio_shm.c              SHM command dispatcher (sbitx_client wire protocol)
 ├── cfg_utils.c              INI parser, dirty-flag writer thread, digi_tx_queue
