@@ -426,9 +426,33 @@ static void *playback_thread(void *ctx_v)
 
     while (!shutdown_)
     {
-        /* Pops from tx_audio_ring (ring_rate), resamples to native_rate, taps
-         * TX recording, returns native-rate samples in `buffer`. */
-        size_t got = audio_bridge_pop_tx_native(&bridge, radio_h, buffer, frames);
+        /* When digital_voice is active on the hamlib backend, the
+         * RADAE pump produces the rig-bound modulated audio into
+         * tx_radae_ring; bypass tx_audio_ring (which carries raw
+         * browser speech destined for the RADAE encoder). */
+        uint32_t prof = radio_h->profile_active_idx;
+        bool radae_active = (radio_h->backend_kind == RADIO_BACKEND_HAMLIB) &&
+                            radio_h->profiles[prof].digital_voice;
+        size_t got;
+        if (radae_active) {
+            audio_ring_buffer *r = &radio_h->tx_radae_ring;
+            pthread_mutex_lock(&r->mutex);
+            size_t take = 0;
+            while (take < frames && r->count > 0) {
+                buffer[take++] = r->samples[r->read_pos];
+                r->read_pos = (r->read_pos + 1) % r->capacity;
+                r->count--;
+            }
+            pthread_mutex_unlock(&r->mutex);
+            got = take;
+            if (got > 0)
+                radio_media_tap_tx_audio(radio_h, buffer, got);
+        } else {
+            /* Pops from tx_audio_ring (ring_rate), resamples to
+             * native_rate, taps TX recording, returns native-rate
+             * samples in `buffer`. */
+            got = audio_bridge_pop_tx_native(&bridge, radio_h, buffer, frames);
+        }
         if (got == 0)
         {
             memset(buffer, 0, frames * sizeof(int16_t));
@@ -533,7 +557,9 @@ bool radio_media_init(radio *radio_h, pthread_t *capture_tid, pthread_t *playbac
         fprintf(stderr, "radio_media: warning: spectrum FFT plan unavailable\n");
 
     if (!ring_init(&radio_h->rx_audio_ring, queue_samples) ||
-        !ring_init(&radio_h->tx_audio_ring, queue_samples))
+        !ring_init(&radio_h->tx_audio_ring, queue_samples) ||
+        !ring_init(&radio_h->rx_radae_ring, queue_samples) ||
+        !ring_init(&radio_h->tx_radae_ring, queue_samples))
     {
         fprintf(stderr, "radio_media: failed to allocate audio queues\n");
         return false;
@@ -576,6 +602,8 @@ void radio_media_shutdown(radio *radio_h, pthread_t *capture_tid, pthread_t *pla
     recording_destroy(&radio_h->tx_recording);
     ring_destroy(&radio_h->rx_audio_ring);
     ring_destroy(&radio_h->tx_audio_ring);
+    ring_destroy(&radio_h->rx_radae_ring);
+    ring_destroy(&radio_h->tx_radae_ring);
     pthread_mutex_destroy(&radio_h->spectrum_mutex);
 
     pthread_mutex_lock(&g_spectrum_plan_mutex);

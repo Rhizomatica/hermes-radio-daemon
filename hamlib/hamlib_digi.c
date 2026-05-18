@@ -31,11 +31,20 @@
 #include "../dsp/sbitx_cw.h"
 #include "../dsp/sbitx_ft8.h"
 #include "../dsp/sbitx_rtty.h"
+#include "../dsp/sbitx_radae.h"
 
 extern _Atomic bool shutdown_;
 
 #define DIGI_DECODE_RATE 12000     /* CW/FT8/RTTY decoders all expect 12 kHz */
 #define FT8_SLOT_SECONDS 15
+
+/* RADAE modem audio rate (matches the 8 kHz IQ baseband the encoder/decoder
+ * use internally; see dsp/sbitx_dsp.c). After freq-shift to the SSB
+ * passband centre this becomes 8 kHz real audio that we resample up to the
+ * ring rate. */
+#define RADAE_MODEM_RATE   8000
+#define RADAE_SPEECH_RATE  16000
+#define RADAE_CARRIER_HZ   1500.0f   /* centre in SSB audio passband */
 
 /* Small wrapper around csdr's rational_resampler_ff for one direction. */
 typedef struct {
@@ -182,6 +191,20 @@ typedef struct {
     float    *rtty_rx_buf;
     int       rtty_rx_buf_n;
     int       rtty_rx_buf_block;
+
+    /* RADAE: resamplers between the ring rate and the modem/speech rates. */
+    resamp_state ring_to_radae_speech;   /* ring rate -> 16k speech (TX in) */
+    resamp_state radae_modem_to_ring;    /* 8k real audio -> ring rate (TX out) */
+    resamp_state ring_to_radae_modem;    /* ring rate -> 8k real audio (RX in) */
+    resamp_state radae_speech_to_ring;   /* 16k speech -> ring rate (RX out) */
+    radae_context radae_ctx;
+    bool radae_inited;
+    bool radae_tx_running;
+    bool radae_rx_running;
+    /* Phase accumulators for the freq-shift (mixer) at 1500 Hz, 8 kHz fs.
+     * Carried across calls so consecutive blocks stay phase-continuous. */
+    double radae_tx_phase;
+    double radae_rx_phase;
 } hamlib_digi_state;
 
 static hamlib_digi_state g_state;
@@ -456,6 +479,175 @@ static void do_rtty_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_h
     }
 }
 
+/* ─── RADAE: complex IQ ↔ real audio at the SSB passband centre ──
+ *
+ * The rig itself does the SSB modulation/demodulation. All we need is to
+ * place the RADAE modem signal inside the audio passband (USB sideband)
+ * as a real-valued audio stream, and inverse on RX. That's a single
+ * complex-to-real frequency shift; no Hilbert / SSB modulator required.
+ *
+ * TX shift (USB): real[n] = I[n]*cos(2π·fc·n/fs) − Q[n]*sin(2π·fc·n/fs)
+ * RX shift (USB demod): I'[n] + jQ'[n] = real[n] * exp(−j·2π·fc·n/fs)
+ */
+
+static void mix_iq_to_real(const float *iq_interleaved, int n_complex,
+                           float *real_out, double *phase_io,
+                           uint32_t fs)
+{
+    double dphi = 2.0 * M_PI * RADAE_CARRIER_HZ / (double) fs;
+    double phi = *phase_io;
+    for (int n = 0; n < n_complex; n++) {
+        float I = iq_interleaved[2*n];
+        float Q = iq_interleaved[2*n + 1];
+        real_out[n] = (float)(I * cos(phi) - Q * sin(phi));
+        phi += dphi;
+        if (phi > 2.0 * M_PI) phi -= 2.0 * M_PI;
+    }
+    *phase_io = phi;
+}
+
+static void demod_real_to_iq(const float *real_in, int n,
+                             float *iq_interleaved, double *phase_io,
+                             uint32_t fs)
+{
+    double dphi = 2.0 * M_PI * RADAE_CARRIER_HZ / (double) fs;
+    double phi = *phase_io;
+    for (int i = 0; i < n; i++) {
+        /* multiply by exp(-j*phi) = cos(phi) - j*sin(phi) */
+        float c = (float) cos(phi);
+        float s = (float) sin(phi);
+        iq_interleaved[2*i]     = real_in[i] * c;
+        iq_interleaved[2*i + 1] = real_in[i] * (-s);
+        phi += dphi;
+        if (phi > 2.0 * M_PI) phi -= 2.0 * M_PI;
+    }
+    *phase_io = phi;
+}
+
+static void do_radae_tx(hamlib_digi_state *s, uint32_t ring_rate)
+{
+    /* Pull a chunk of speech (browser mic) from tx_audio_ring. ~40 ms. */
+    static int16_t pull_i16[4096];
+    size_t want = ring_rate / 25;  /* 40 ms */
+    if (want > sizeof(pull_i16)/sizeof(pull_i16[0])) want = sizeof(pull_i16)/sizeof(pull_i16[0]);
+    size_t got_speech = ring_pop_i16(&s->radio_h->tx_audio_ring, pull_i16, want);
+    if (!got_speech)
+        return;
+
+    /* int16 -> float */
+    static float speech_f[4096];
+    for (size_t i = 0; i < got_speech; i++)
+        speech_f[i] = (float) pull_i16[i] / 32768.0f;
+
+    /* Resample ring_rate -> 16 kHz. */
+    if (s->ring_to_radae_speech.taps_len == 0 && ring_rate != RADAE_SPEECH_RATE)
+        if (!resamp_init(&s->ring_to_radae_speech, ring_rate, RADAE_SPEECH_RATE))
+            return;
+    const float *speech_16k;
+    size_t n_16k;
+    if (ring_rate == RADAE_SPEECH_RATE) {
+        speech_16k = speech_f;
+        n_16k = got_speech;
+    } else {
+        n_16k = resamp_apply(&s->ring_to_radae_speech, speech_f, got_speech);
+        speech_16k = s->ring_to_radae_speech.out;
+    }
+    if (!n_16k)
+        return;
+
+    radae_tx_write_speech(&s->radae_ctx, speech_16k, (int) n_16k);
+
+    /* Read modem IQ (interleaved float at 8 kHz). RADAE emits in
+     * fixed-size frames; we may get nothing on any given call. */
+    static float iq_buf[4096];
+    int n_complex = radae_tx_read_modem_iq(&s->radae_ctx, iq_buf,
+                                           (int)(sizeof(iq_buf)/sizeof(iq_buf[0])));
+    if (n_complex <= 0)
+        return;
+
+    /* IQ at 8 kHz -> real audio at 8 kHz, shifted to RADAE_CARRIER_HZ. */
+    static float real_8k[4096];
+    if (n_complex > (int)(sizeof(real_8k)/sizeof(real_8k[0])))
+        n_complex = (int)(sizeof(real_8k)/sizeof(real_8k[0]));
+    mix_iq_to_real(iq_buf, n_complex, real_8k, &s->radae_tx_phase, RADAE_MODEM_RATE);
+
+    /* Resample 8 kHz -> ring rate and push to tx_radae_ring. */
+    if (s->radae_modem_to_ring.taps_len == 0 && ring_rate != RADAE_MODEM_RATE)
+        if (!resamp_init(&s->radae_modem_to_ring, RADAE_MODEM_RATE, ring_rate))
+            return;
+    const float *ring_audio;
+    size_t n_ring;
+    if (ring_rate == RADAE_MODEM_RATE) {
+        ring_audio = real_8k;
+        n_ring = (size_t) n_complex;
+    } else {
+        n_ring = resamp_apply(&s->radae_modem_to_ring, real_8k, (size_t) n_complex);
+        ring_audio = s->radae_modem_to_ring.out;
+    }
+    ring_push_f(&s->radio_h->tx_radae_ring, ring_audio, n_ring);
+}
+
+static void do_radae_rx(hamlib_digi_state *s, uint32_t ring_rate)
+{
+    /* Pull a chunk of rig audio (post-SSB-demod) from rx_audio_ring. */
+    static int16_t pull_i16[4096];
+    size_t want = ring_rate / 25;  /* 40 ms */
+    if (want > sizeof(pull_i16)/sizeof(pull_i16[0])) want = sizeof(pull_i16)/sizeof(pull_i16[0]);
+    size_t got = ring_pop_i16(&s->radio_h->rx_audio_ring, pull_i16, want);
+    if (!got)
+        return;
+
+    static float real_f[4096];
+    for (size_t i = 0; i < got; i++)
+        real_f[i] = (float) pull_i16[i] / 32768.0f;
+
+    /* Resample ring_rate -> 8 kHz so the freq-shift / RADAE rate matches. */
+    if (s->ring_to_radae_modem.taps_len == 0 && ring_rate != RADAE_MODEM_RATE)
+        if (!resamp_init(&s->ring_to_radae_modem, ring_rate, RADAE_MODEM_RATE))
+            return;
+    const float *real_8k;
+    size_t n_8k;
+    if (ring_rate == RADAE_MODEM_RATE) {
+        real_8k = real_f;
+        n_8k = got;
+    } else {
+        n_8k = resamp_apply(&s->ring_to_radae_modem, real_f, got);
+        real_8k = s->ring_to_radae_modem.out;
+    }
+    if (!n_8k)
+        return;
+
+    /* Real -> complex baseband at 8 kHz via freq-shift down from 1500 Hz. */
+    static float iq_buf[8192];
+    if (n_8k * 2 > sizeof(iq_buf)/sizeof(iq_buf[0]))
+        n_8k = (sizeof(iq_buf)/sizeof(iq_buf[0])) / 2;
+    demod_real_to_iq(real_8k, (int) n_8k, iq_buf, &s->radae_rx_phase, RADAE_MODEM_RATE);
+
+    radae_rx_write_modem_iq(&s->radae_ctx, iq_buf, (int) n_8k);
+
+    /* Read decoded speech (16 kHz float). */
+    static float speech_16k[8192];
+    int n_speech = radae_rx_read_speech(&s->radae_ctx, speech_16k,
+                                        (int)(sizeof(speech_16k)/sizeof(speech_16k[0])));
+    if (n_speech <= 0)
+        return;
+
+    /* Resample 16 kHz -> ring rate and push to rx_radae_ring. */
+    if (s->radae_speech_to_ring.taps_len == 0 && ring_rate != RADAE_SPEECH_RATE)
+        if (!resamp_init(&s->radae_speech_to_ring, RADAE_SPEECH_RATE, ring_rate))
+            return;
+    const float *ring_audio;
+    size_t n_ring;
+    if (ring_rate == RADAE_SPEECH_RATE) {
+        ring_audio = speech_16k;
+        n_ring = (size_t) n_speech;
+    } else {
+        n_ring = resamp_apply(&s->radae_speech_to_ring, speech_16k, (size_t) n_speech);
+        ring_audio = s->radae_speech_to_ring.out;
+    }
+    ring_push_f(&s->radio_h->rx_radae_ring, ring_audio, n_ring);
+}
+
 /* ─── thread loop ────────────────────────────────────────────── */
 
 static void *hamlib_digi_thread(void *radio_h_v)
@@ -471,6 +663,45 @@ static void *hamlib_digi_thread(void *radio_h_v)
         bool in_tx = (radio_h->txrx_state == IN_TX);
         uint32_t ring_rate = radio_h->audio_sample_rate ?
                              radio_h->audio_sample_rate : 48000;
+
+        bool digital_voice = radio_h->profiles[profile].digital_voice;
+
+        /* RADAE digital-voice path. Runs in parallel with whatever rig
+         * mode is selected — typically the operator parks the rig on a
+         * USB voice frequency and toggles digital_voice on. */
+        if (digital_voice) {
+            if (!s->radae_inited) {
+                if (radae_init(&s->radae_ctx, radio_h, RADAE_DIR)) {
+                    s->radae_inited = true;
+                    radae_rx_start(&s->radae_ctx);
+                    s->radae_rx_running = true;
+                    fprintf(stderr, "hamlib_digi: RADAE up\n");
+                } else {
+                    fprintf(stderr, "hamlib_digi: radae_init failed; "
+                                    "digital_voice disabled\n");
+                    /* avoid retry spam */
+                    usleep(500000);
+                    continue;
+                }
+            }
+            if (in_tx && !s->radae_tx_running) {
+                radae_tx_start(&s->radae_ctx);
+                s->radae_tx_running = true;
+            }
+            if (!in_tx && s->radae_tx_running) {
+                radae_tx_emit_eoo(&s->radae_ctx);
+                radae_tx_stop(&s->radae_ctx);
+                s->radae_tx_running = false;
+            }
+
+            if (in_tx)
+                do_radae_tx(s, ring_rate);
+            else
+                do_radae_rx(s, ring_rate);
+
+            usleep(5000);
+            continue;
+        }
 
         if (mode != MODE_FT8 && mode != MODE_CW && mode != MODE_RTTY) {
             usleep(50000);
@@ -531,12 +762,21 @@ static void *hamlib_digi_thread(void *radio_h_v)
     resamp_free(&s->rtty_to_ring);
     resamp_free(&s->ft8_to_ring);
     resamp_free(&s->ring_to_12k);
+    resamp_free(&s->ring_to_radae_speech);
+    resamp_free(&s->radae_modem_to_ring);
+    resamp_free(&s->ring_to_radae_modem);
+    resamp_free(&s->radae_speech_to_ring);
     free(s->cw_rx_buf);
     free(s->ft8_rx_buf);
     free(s->rtty_rx_buf);
     if (s->cw_inited) sbitx_cw_shutdown();
     if (s->ft8_inited) sbitx_ft8_shutdown();
     if (s->rtty_inited) sbitx_rtty_shutdown();
+    if (s->radae_inited) {
+        if (s->radae_tx_running) radae_tx_stop(&s->radae_ctx);
+        if (s->radae_rx_running) radae_rx_stop(&s->radae_ctx);
+        radae_shutdown(&s->radae_ctx);
+    }
     memset(s, 0, sizeof(*s));
 
     return NULL;

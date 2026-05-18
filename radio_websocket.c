@@ -554,7 +554,28 @@ static void broadcast_rx_audio(websocket_ctx *ctx)
     if (!radio_pipeline_supports_websocket_rx_audio(ctx->radio_h)) return;
 
     int16_t samples[WS_RX_CHUNK_SAMPLES];
-    size_t  n = radio_media_pop_rx_audio(ctx->radio_h, samples, WS_RX_CHUNK_SAMPLES);
+    size_t  n;
+
+    /* When RADAE is active on hamlib, the hamlib_digi pump decodes the
+     * rig audio into rx_radae_ring; broadcast from there instead of
+     * the raw rx_audio_ring (which carries pre-decode rig audio). */
+    uint32_t prof = ctx->radio_h->profile_active_idx;
+    bool radae_active = (ctx->radio_h->backend_kind == RADIO_BACKEND_HAMLIB) &&
+                        ctx->radio_h->profiles[prof].digital_voice;
+    if (radae_active) {
+        audio_ring_buffer *r = &ctx->radio_h->rx_radae_ring;
+        pthread_mutex_lock(&r->mutex);
+        size_t take = 0;
+        while (take < WS_RX_CHUNK_SAMPLES && r->count > 0) {
+            samples[take++] = r->samples[r->read_pos];
+            r->read_pos = (r->read_pos + 1) % r->capacity;
+            r->count--;
+        }
+        pthread_mutex_unlock(&r->mutex);
+        n = take;
+    } else {
+        n = radio_media_pop_rx_audio(ctx->radio_h, samples, WS_RX_CHUNK_SAMPLES);
+    }
     if (n == 0) return;
 
     uint8_t frame[1 + sizeof(samples)];

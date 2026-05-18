@@ -354,6 +354,16 @@ typedef struct {
     /* ── media: rings, recording, spectrum ───────────────────────── */
     audio_ring_buffer rx_audio_ring;
     audio_ring_buffer tx_audio_ring;
+    /* RADAE bypass rings (digital voice). When `digital_voice` is active
+     * on a backend that doesn't do its own SDR IF processing (hamlib),
+     * the RADAE pump consumes tx_audio_ring (browser speech) and produces
+     * the modem-real audio into tx_radae_ring, which the rig playback
+     * pump then drains in place of tx_audio_ring. RX side is symmetric:
+     * capture writes raw rig audio to rx_audio_ring; the RADAE pump
+     * consumes that, decodes speech, and writes to rx_radae_ring for the
+     * websocket to broadcast. */
+    audio_ring_buffer rx_radae_ring;
+    audio_ring_buffer tx_radae_ring;
     wav_recording     rx_recording;
     wav_recording     tx_recording;
 
