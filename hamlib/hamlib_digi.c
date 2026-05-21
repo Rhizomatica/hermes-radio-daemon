@@ -136,7 +136,8 @@ static size_t ring_pop_i16(audio_ring_buffer *ring, int16_t *out, size_t n_want)
     return got;
 }
 
-static void ring_push_f(audio_ring_buffer *ring, const float *in, size_t n)
+static void ring_push_f_gain(audio_ring_buffer *ring, const float *in, size_t n,
+                             float gain)
 {
     if (!ring->samples || !ring->capacity || !in || !n)
         return;
@@ -146,7 +147,7 @@ static void ring_push_f(audio_ring_buffer *ring, const float *in, size_t n)
             ring->read_pos = (ring->read_pos + 1) % ring->capacity;
             ring->count--;
         }
-        float v = in[i] * 32767.0f;
+        float v = in[i] * gain * 32767.0f;
         if (v >  32767.0f) v =  32767.0f;
         if (v < -32768.0f) v = -32768.0f;
         ring->samples[ring->write_pos] = (int16_t) v;
@@ -155,6 +156,11 @@ static void ring_push_f(audio_ring_buffer *ring, const float *in, size_t n)
     }
     pthread_cond_signal(&ring->cond);
     pthread_mutex_unlock(&ring->mutex);
+}
+
+static void ring_push_f(audio_ring_buffer *ring, const float *in, size_t n)
+{
+    ring_push_f_gain(ring, in, n, 1.0f);
 }
 
 /* ─── per-mode init/teardown ──────────────────────────────────── */
@@ -253,7 +259,8 @@ static void do_cw_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz,
         out_n = resamp_apply(&s->cw_to_ring, cw_audio, (size_t) n96);
         ring_audio = s->cw_to_ring.out;
     }
-    ring_push_f(&s->radio_h->tx_audio_ring, ring_audio, out_n);
+    ring_push_f_gain(&s->radio_h->tx_audio_ring, ring_audio, out_n,
+                     s->radio_h->digi_tx_gain);
     digi_spool_log("CW", "tx", freq_hz, text);
 }
 
@@ -284,7 +291,8 @@ static void do_ft8_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz
         out_n = resamp_apply(&s->ft8_to_ring, ft8_audio, (size_t) n12);
         ring_audio = s->ft8_to_ring.out;
     }
-    ring_push_f(&s->radio_h->tx_audio_ring, ring_audio, out_n);
+    ring_push_f_gain(&s->radio_h->tx_audio_ring, ring_audio, out_n,
+                     s->radio_h->digi_tx_gain);
     digi_spool_log("FT8", "tx", freq_hz, text);
 }
 
@@ -316,7 +324,8 @@ static void do_rtty_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_h
         out_n = resamp_apply(&s->rtty_to_ring, rtty_audio, (size_t) n96);
         ring_audio = s->rtty_to_ring.out;
     }
-    ring_push_f(&s->radio_h->tx_audio_ring, ring_audio, out_n);
+    ring_push_f_gain(&s->radio_h->tx_audio_ring, ring_audio, out_n,
+                     s->radio_h->digi_tx_gain);
     digi_spool_log("RTTY", "tx", freq_hz, text);
 }
 
@@ -584,7 +593,8 @@ static void do_radae_tx(hamlib_digi_state *s, uint32_t ring_rate)
         n_ring = resamp_apply(&s->radae_modem_to_ring, real_8k, (size_t) n_complex);
         ring_audio = s->radae_modem_to_ring.out;
     }
-    ring_push_f(&s->radio_h->tx_radae_ring, ring_audio, n_ring);
+    ring_push_f_gain(&s->radio_h->tx_radae_ring, ring_audio, n_ring,
+                     s->radio_h->digi_tx_gain);
 }
 
 static void do_radae_rx(hamlib_digi_state *s, uint32_t ring_rate)

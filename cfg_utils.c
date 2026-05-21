@@ -302,6 +302,10 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     i = iniparser_getint(ini, "main:audio_queue_samples", 16000);
     radio_h->audio_queue_samples = (uint32_t) i;
 
+    radio_h->digi_tx_gain = (float) iniparser_getdouble(ini, "main:digi_tx_gain", 1.0);
+    if (radio_h->digi_tx_gain <= 0.0f)
+        radio_h->digi_tx_gain = 1.0f;
+
     i = iniparser_getint(ini, "main:cw_wpm", 20);
     radio_h->cw_wpm = (uint16_t) i;
     i = iniparser_getint(ini, "main:cw_pitch", 700);

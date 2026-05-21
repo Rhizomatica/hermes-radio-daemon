@@ -845,10 +845,14 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             }
         }
 
+        float g = radio_h_dsp->digi_tx_gain;
         for (i = MAX_BINS/2; i < MAX_BINS; i++)
         {
             float tone = (cw_audio_pos < cw_audio_len)
                          ? cw_audio[cw_audio_pos++] : 0.0f;
+            tone *= g;
+            if (tone >  1.0f) tone =  1.0f;
+            if (tone < -1.0f) tone = -1.0f;
             int k = i - MAX_BINS/2;
             fft_in[i] = (double) tone;
             fft_m[k]  = fft_in[i];
@@ -944,10 +948,14 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             }
         }
 
+        float g = radio_h_dsp->digi_tx_gain;
         for (i = MAX_BINS/2; i < MAX_BINS; i++)
         {
             float tone = (ft8_audio_96k_pos < ft8_audio_96k_len)
                          ? ft8_audio_96k[ft8_audio_96k_pos++] : 0.0f;
+            tone *= g;
+            if (tone >  1.0f) tone =  1.0f;
+            if (tone < -1.0f) tone = -1.0f;
             int k = i - MAX_BINS/2;
             fft_in[i] = (double) tone;
             fft_m[k]  = fft_in[i];
@@ -1002,10 +1010,14 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             }
         }
 
+        float g = radio_h_dsp->digi_tx_gain;
         for (i = MAX_BINS/2; i < MAX_BINS; i++)
         {
             float tone = (rtty_audio_pos < rtty_audio_len)
                          ? rtty_audio[rtty_audio_pos++] : 0.0f;
+            tone *= g;
+            if (tone >  1.0f) tone =  1.0f;
+            if (tone < -1.0f) tone = -1.0f;
             int k = i - MAX_BINS/2;
             fft_in[i] = (double) tone;
             fft_m[k]  = fft_in[i];

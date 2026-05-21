@@ -333,6 +333,11 @@ typedef struct {
     /* Outbound text queue for FT8/CW/RTTY (filled by digi_send) */
     digi_tx_queue digi_tx;
 
+    /* TX drive gain applied to the digi-mode audio (CW/FT8/RTTY/RADAE)
+     * before it reaches the rig. 1.0 = encoder native level; raise to push
+     * more audio into the rig USB codec. Clipped at full scale on push. */
+    float digi_tx_gain;
+
     char recording_dir[RECORDING_PATH_MAX];
 
     /* ── profile management ──────────────────────────────────────── */
