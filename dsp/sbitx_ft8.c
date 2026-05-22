@@ -100,10 +100,14 @@ int sbitx_ft8_encode(const char *message, float *signal, int max_samples,
                      float tone_freq)
 {
     ftx_message_t msg;
-    ftx_callsign_hash_interface_t hash_if;
-    memset(&hash_if, 0, sizeof(hash_if));
 
-    ftx_message_rc_t rc = ftx_message_encode(&msg, &hash_if, message);
+    /* Pass NULL for the callsign-hash interface. ft8_lib guards every
+     * callback with `if (hash_if != NULL)`, so NULL safely disables the
+     * hash table (we don't need it for plain CQ/standard messages). The
+     * old code passed a zeroed struct, which is non-NULL but has NULL
+     * function pointers — pack28() then called save_hash() == NULL and
+     * segfaulted. */
+    ftx_message_rc_t rc = ftx_message_encode(&msg, NULL, message);
     if (rc != FTX_MESSAGE_RC_OK)
         return -1;
 
