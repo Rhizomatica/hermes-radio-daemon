@@ -478,7 +478,11 @@ static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, in
             sbitx_ft8_decode(slot, slot_samples, decoded, sizeof(decoded));
             if (decoded[0])
                 digi_rx_spool("FT8", freq_khz, decoded);
-            int shift = slot_samples / 2;       /* 50% overlap */
+            /* Slide by only 2 s. FT8 here isn't UTC-slot-aligned, so the
+             * ~12.6 s burst sits at an arbitrary offset in the 15 s window;
+             * a small step guarantees some window contains the full burst
+             * (the decoder searches time offset within the window). */
+            int shift = DIGI_RX_RATE * 2;
             memmove(slot, slot + shift, (slotn - shift) * sizeof(float));
             slotn -= shift;
         }
