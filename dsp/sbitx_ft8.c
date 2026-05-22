@@ -19,9 +19,11 @@
 
 #include "ft8/constants.h"
 #include "ft8/encode.h"
+#include "ft8/decode.h"
 #include "ft8/message.h"
 #include "ft8/text.h"
 #include "common/wave.h"
+#include "common/monitor.h"
 
 #include "sbitx_ft8.h"
 
@@ -121,50 +123,79 @@ int sbitx_ft8_encode(const char *message, float *signal, int max_samples,
     return n;
 }
 
+/* In-process FT8 decode using the linked ft8_lib (monitor + find_candidates
+ * + decode). Replaces the old popen("decode_ft8") shell-out, which depended
+ * on an external binary that isn't installed. Input is 12 kHz mono float.
+ * Decoded messages are newline-separated in `decoded`; returns the length. */
 int sbitx_ft8_decode(float *audio_12k, int nsamples, char *decoded,
                      int max_decoded_len)
 {
-    char tmp_path[256];
-    snprintf(tmp_path, sizeof(tmp_path), "%s/tmp_%d.wav", digi_spool_dir, getpid());
+    const int   kSampleRate    = 12000;
+    const int   kTimeOSR       = 2;
+    const int   kFreqOSR       = 2;
+    const int   kMaxCandidates = 140;
+    const int   kMinScore      = 10;
+    const int   kLDPCIters     = 25;
+    const int   kMaxDecoded    = 50;
 
-    save_wav(audio_12k, nsamples, 12000, tmp_path);
-
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd), "decode_ft8 %s 2>/dev/null", tmp_path);
-
-    FILE *p = popen(cmd, "r");
-    if (!p)
-    {
-        unlink(tmp_path);
+    decoded[0] = '\0';
+    if (!audio_12k || nsamples <= 0)
         return 0;
+
+    monitor_config_t mon_cfg = {
+        .f_min       = 100.0f,
+        .f_max       = 3000.0f,
+        .sample_rate = kSampleRate,
+        .time_osr    = kTimeOSR,
+        .freq_osr    = kFreqOSR,
+        .protocol    = FTX_PROTOCOL_FT8,
+    };
+
+    monitor_t mon;
+    monitor_init(&mon, &mon_cfg);
+
+    /* Feed the slot audio one symbol-block at a time. */
+    int frame_pos = 0;
+    while (frame_pos + mon.block_size <= nsamples) {
+        monitor_process(&mon, audio_12k + frame_pos);
+        frame_pos += mon.block_size;
     }
 
-    int len = 0;
-    while (len < max_decoded_len - 1 && fgets(decoded + len, max_decoded_len - len - 1, p))
-        len = strlen(decoded);
+    ftx_candidate_t candidates[kMaxCandidates];
+    int num_candidates = ftx_find_candidates(&mon.wf, kMaxCandidates, candidates, kMinScore);
 
-    pclose(p);
-    unlink(tmp_path);
+    uint16_t seen_hash[kMaxDecoded];
+    int      num_seen = 0;
+    int      len = 0;
 
-    if (len > 0 && decoded[len - 1] == '\n')
-        decoded[len - 1] = '\0';
+    for (int i = 0; i < num_candidates && num_seen < kMaxDecoded; i++) {
+        ftx_message_t       msg;
+        ftx_decode_status_t status;
+        if (!ftx_decode_candidate(&mon.wf, &candidates[i], kLDPCIters, &msg, &status))
+            continue;
 
-    if (len > 0)
-    {
-        char *msg_start = strrchr(decoded, '~');
-        if (msg_start)
-        {
-            msg_start += 2;
-            char clean[256];
-            snprintf(clean, sizeof(clean), "%s", msg_start);
-            snprintf(decoded, max_decoded_len, "%s", clean);
-            len = strlen(decoded);
-        }
+        bool dup = false;
+        for (int j = 0; j < num_seen; j++)
+            if (seen_hash[j] == msg.hash) { dup = true; break; }
+        if (dup)
+            continue;
+        seen_hash[num_seen++] = msg.hash;
+
+        char text[64];
+        ftx_message_offsets_t offsets;   /* ftx_message_decode dereferences
+                                          * this without a NULL check. */
+        if (ftx_message_decode(&msg, NULL, text, &offsets) != FTX_MESSAGE_RC_OK)
+            continue;
+
+        int n = snprintf(decoded + len, max_decoded_len - len,
+                         "%s%s", (len > 0 ? "\n" : ""), text);
+        if (n > 0) len += n;
+        if (len >= max_decoded_len - 1) break;
+
+        sbitx_ft8_spool_add("FT8", "rx", 0, text);
     }
 
-    if (len > 0)
-        sbitx_ft8_spool_add("FT8", "rx", 0, decoded);
-
+    monitor_free(&mon);
     return len;
 }
 
