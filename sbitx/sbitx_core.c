@@ -393,15 +393,22 @@ static void set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
         dsp_set_filters();
     }
 
-    char tmp1[64]; char tmp2[64];
+    char tmp1[64];
+    const char *mode_str;
+    switch (mode)
+    {
+    case MODE_USB:  mode_str = "USB";  break;
+    case MODE_LSB:  mode_str = "LSB";  break;
+    case MODE_CW:   mode_str = "CW";   break;
+    case MODE_FM:   mode_str = "FM";   break;
+    case MODE_AM:   mode_str = "AM";   break;
+    case MODE_DRM:  mode_str = "DRM";  break;
+    case MODE_FT8:  mode_str = "FT8";  break;
+    case MODE_RTTY: mode_str = "RTTY"; break;
+    default:        mode_str = "USB";  break;
+    }
     sprintf(tmp1, "profile%u:mode", profile);
-    if (mode == MODE_USB)
-        sprintf(tmp2, "USB");
-    if (mode == MODE_LSB)
-        sprintf(tmp2, "LSB");
-    if (mode == MODE_CW)
-        sprintf(tmp2, "CW");
-    int rc = cfg_set(radio_h, radio_h->cfg_user, tmp1, tmp2);
+    int rc = cfg_set(radio_h, radio_h->cfg_user, tmp1, mode_str);
     if (rc != 0)
         printf("Error modifying config file\n");
 
