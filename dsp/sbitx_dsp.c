@@ -348,6 +348,143 @@ static void dsp_process_digital_voice_rx(double *rx_baseband_i, double *rx_baseb
     }
 }
 
+/* ─── Digital-mode RX decode (hfsignals) ─────────────────────────
+ *
+ * The FT8/CW/RTTY decoders all want 12 kHz mono float audio. The voice
+ * RX chain produces demodulated USB audio at 96 kHz; we decimate 8:1
+ * here (csdr polyphase) and feed the active mode's decoder, logging
+ * decodes to the digi spool the same way the TX path does. Decoders
+ * live in dsp/sbitx_{ft8,cw,rtty}.c. */
+static void digi_rx_spool(const char *mode, int freq_khz, const char *text)
+{
+    FILE *f = fopen("/var/spool/hermes-digi/spool.log", "a");
+    if (!f) return;
+    fprintf(f, "%s rx %d.%03d: %s%s",
+            mode, freq_khz / 1000, freq_khz % 1000, text,
+            (text[0] && text[strlen(text)-1] == '\n') ? "" : "\n");
+    fclose(f);
+}
+
+static char     g_rtty_rx_line[256];
+static int      g_rtty_rx_pos;
+static int      g_rtty_rx_freq_khz;
+static void     digi_rtty_char_cb(char c)
+{
+    if (c == '\r' || c == '\n') {
+        if (g_rtty_rx_pos > 0) {
+            g_rtty_rx_line[g_rtty_rx_pos] = '\0';
+            digi_rx_spool("RTTY", g_rtty_rx_freq_khz, g_rtty_rx_line);
+            g_rtty_rx_pos = 0;
+        }
+        return;
+    }
+    if (g_rtty_rx_pos < (int) sizeof(g_rtty_rx_line) - 1)
+        g_rtty_rx_line[g_rtty_rx_pos++] = c;
+}
+
+static char g_cw_rx_line[256];
+static int  g_cw_rx_pos;
+static void digi_cw_char_cb(char c)
+{
+    if (c == ' ' || c == '\n') {
+        if (g_cw_rx_pos > 0) {
+            g_cw_rx_line[g_cw_rx_pos] = '\0';
+            digi_rx_spool("CW", 0, g_cw_rx_line);
+            g_cw_rx_pos = 0;
+        }
+        return;
+    }
+    if (g_cw_rx_pos < (int) sizeof(g_cw_rx_line) - 1)
+        g_cw_rx_line[g_cw_rx_pos++] = c;
+}
+
+#define DIGI_RX_DECIM   8           /* 96 kHz -> 12 kHz */
+#define DIGI_RX_RATE    12000
+#define FT8_RX_SLOT_S   15
+
+static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, int freq_khz)
+{
+    static float                   *rs_taps12 = NULL;
+    static int                      rs_taps12_len = 0;
+    static rational_resampler_ff_t  rs12 = {0, 0, 0};
+    static float                    out12[2048];
+
+    if (mode != MODE_FT8 && mode != MODE_CW && mode != MODE_RTTY)
+        return;
+
+    if (!rs_taps12) {
+        rs_taps12_len = firdes_filter_len(0.05f);
+        rs_taps12 = malloc(rs_taps12_len * sizeof(float));
+        if (!rs_taps12) return;
+        rational_resampler_get_lowpass_f(rs_taps12, rs_taps12_len, 1, DIGI_RX_DECIM,
+                                         WINDOW_BLACKMAN);
+    }
+
+    rs12 = rational_resampler_ff((float *) audio96k, out12, n96,
+                                 1, DIGI_RX_DECIM, rs_taps12, rs_taps12_len,
+                                 rs12.last_taps_delay);
+    int n12 = rs12.output_size;
+    if (n12 <= 0)
+        return;
+
+    if (mode == MODE_CW) {
+        static bool inited = false;
+        if (!inited) { sbitx_cw_init(radio_h_dsp->cw_wpm, radio_h_dsp->cw_pitch); inited = true; }
+        int block = sbitx_cw_rx_samples_per_block();
+        static float acc[8192]; static int accn = 0;
+        for (int i = 0; i < n12 && accn < (int) (sizeof(acc)/sizeof(acc[0])); i++)
+            acc[accn++] = out12[i];
+        while (accn >= block) {
+            char decoded[64] = {0};
+            int got = sbitx_cw_rx_process(acc, block, decoded, sizeof(decoded),
+                                          radio_h_dsp->cw_wpm, radio_h_dsp->cw_pitch);
+            for (int i = 0; i < got && decoded[i]; i++)
+                digi_cw_char_cb(decoded[i]);
+            memmove(acc, acc + block, (accn - block) * sizeof(float));
+            accn -= block;
+        }
+    }
+    else if (mode == MODE_RTTY) {
+        static bool inited = false;
+        if (!inited) {
+            sbitx_rtty_init(radio_h_dsp->rtty_baud, radio_h_dsp->rtty_mark,
+                            radio_h_dsp->rtty_shift);
+            inited = true;
+        }
+        int block = sbitx_rtty_rx_samples_per_block();
+        static float acc[16384]; static int accn = 0;
+        for (int i = 0; i < n12 && accn < (int) (sizeof(acc)/sizeof(acc[0])); i++)
+            acc[accn++] = out12[i];
+        g_rtty_rx_freq_khz = freq_khz;
+        while (accn >= block) {
+            sbitx_rtty_rx_process(acc, block, radio_h_dsp->rtty_baud,
+                                  radio_h_dsp->rtty_mark, radio_h_dsp->rtty_shift,
+                                  digi_rtty_char_cb);
+            memmove(acc, acc + block, (accn - block) * sizeof(float));
+            accn -= block;
+        }
+    }
+    else if (mode == MODE_FT8) {
+        static bool inited = false;
+        if (!inited) { sbitx_ft8_init(); inited = true; }
+        static float *slot = NULL; static int slotn = 0;
+        static const int slot_cap = DIGI_RX_RATE * (FT8_RX_SLOT_S + 1);
+        if (!slot) { slot = calloc(slot_cap, sizeof(float)); if (!slot) return; }
+        for (int i = 0; i < n12 && slotn < slot_cap; i++)
+            slot[slotn++] = out12[i];
+        int slot_samples = DIGI_RX_RATE * FT8_RX_SLOT_S;
+        if (slotn >= slot_samples) {
+            char decoded[1024] = {0};
+            sbitx_ft8_decode(slot, slot_samples, decoded, sizeof(decoded));
+            if (decoded[0])
+                digi_rx_spool("FT8", freq_khz, decoded);
+            int shift = slot_samples / 2;       /* 50% overlap */
+            memmove(slot, slot + shift, (slotn - shift) * sizeof(float));
+            slotn -= shift;
+        }
+    }
+}
+
 // - signal_input: 96 kHz mono from radio, get the "slice" between 24 kHz and 27 kHz (USB) or 21 kHz to 24 kHz (LSB), and bring this slice to 0 and 3 kHz
 // - out output_speaker: 96 kHz mono output for speaker
 // - out output_loopback: 48 kHz stereo for loopback input
@@ -426,6 +563,7 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
 
 	// STEP 5:zero out the other sideband
 	uint16_t rx_mode = radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].mode;
+	uint16_t orig_rx_mode = rx_mode;   /* FT8/CW/RTTY get rewritten to USB below */
 	if (rx_mode == MODE_LSB)
         memset(fft_freq, 0, sizeof(fftw_complex) * (MAX_BINS/2));
 	else if (rx_mode != MODE_FM && rx_mode != MODE_AM && rx_mode != MODE_DRM)
@@ -647,6 +785,11 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     // STEP 9 : Voice RX DSP chain
     for (int i = 0; i < MAX_BINS / 2; i++)
         rx_float_buf[i] = (float) cimag(fft_time[i + (MAX_BINS / 2)]);
+
+    /* Digital-mode RX decode taps the clean demod here (pre NR/AGC, which
+     * would distort FSK/CW timing). No-op for voice/FM/AM/DRM modes. */
+    dsp_digi_rx_decode(orig_rx_mode, rx_float_buf, MAX_BINS / 2,
+                       (int)(radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].freq / 1000));
 
     // 9a: DC block
     rx_dc_state = dcblock_ff(rx_float_buf, rx_float_out, MAX_BINS / 2, 0.999f, rx_dc_state);
