@@ -1111,7 +1111,9 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     else if (tx_mode == MODE_RTTY)
     {
         static bool  rtty_inited      = false;
-        static float rtty_audio[8192];
+        /* 8 s at 96 kHz. The old 8192-sample (~0.085 s) buffer truncated
+         * RTTY to less than one Baudot character. */
+        static float rtty_audio[96000 * 8];
         static int   rtty_audio_len   = 0;
         static int   rtty_audio_pos   = 0;
 
