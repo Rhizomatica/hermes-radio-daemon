@@ -47,7 +47,9 @@
 #define MODE_FT8  6
 #define MODE_RTTY 7
 
-/* Internal "operating mode" — applies only to hfsignals embedded ALSA path. */
+/* Per-profile "operating mode". For the hfsignals backend it selects the
+ * ALSA/DSP signal path. For the hamlib backend it picks voice vs data SSB on
+ * the rig: FULL_VOICE → USB/LSB; anything else → PKTUSB/PKTLSB (DATA-U/L). */
 #define OPERATING_MODE_FULL_VOICE     0 /* IO+ALSA+DSP, TX from MIC */
 #define OPERATING_MODE_FULL_LOOPBACK  1 /* IO+ALSA+DSP, TX from ALSA loopback */
 #define OPERATING_MODE_CONTROLS_ONLY  2 /* just IO, no ALSA */
@@ -196,8 +198,8 @@ typedef struct {
 typedef struct {
     _Atomic uint32_t freq;
 
-    /* sbitx ALSA path: full / loopback / controls-only / external. Hamlib
-     * backend ignores. */
+    /* sbitx ALSA path: full / loopback / controls-only / external. On the
+     * hamlib backend it picks voice vs data SSB (USB↔PKTUSB, LSB↔PKTLSB). */
     uint16_t operating_mode;
 
     _Atomic uint16_t mode;                   /* MODE_* */

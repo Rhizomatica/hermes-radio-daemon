@@ -42,8 +42,9 @@
 _Atomic bool timer_reset = true;
 _Atomic time_t timeout_counter = 0;
 
-static rmode_t mode_to_hamlib(uint16_t mode);
+static rmode_t mode_to_hamlib(uint16_t mode, bool data_path);
 static uint16_t hamlib_to_mode(rmode_t hmode);
+static bool profile_data_path(const radio_profile *p);
 static void wait_next_activation(void);
 static int  start_periodic_timer(uint64_t offset_us);
 
@@ -228,7 +229,8 @@ static void hamlib_apply_profile(radio *radio_h, uint32_t profile)
                 rigerror(ret));
 
     ret = rig_set_mode(rig, RIG_VFO_CURR,
-                       mode_to_hamlib(radio_h->profiles[profile].mode),
+                       mode_to_hamlib(radio_h->profiles[profile].mode,
+                                      profile_data_path(&radio_h->profiles[profile])),
                        RIG_PASSBAND_NORMAL);
     if (ret != RIG_OK)
         fprintf(stderr, "hamlib_apply_profile: rig_set_mode failed: %s\n",
@@ -240,46 +242,82 @@ static void hamlib_apply_profile(radio *radio_h, uint32_t profile)
                            "hamlib_apply_profile");
 }
 
+/* True when the profile feeds the rig from the digital path (rear-panel DATA
+ * input / USB codec) rather than the mic input. Two independent signals can
+ * select the data path:
+ *
+ *   - `operating_mode != FULL_VOICE` — hfsignals-style routing override; also
+ *     used on the hamlib backend to request DATA-mode on the rig.
+ *   - `digital_voice == true` — RADAE / digital-voice codec output: the audio
+ *     is codec-generated, not mic-sourced, so it must go through DATA-U even
+ *     when the operator left operating_mode at FULL_VOICE.
+ *
+ * Either signal flips the rig to its data-side mode (PKTUSB/PKTLSB/PKTFM/…). */
+static bool profile_data_path(const radio_profile *p)
+{
+    return (p->operating_mode != OPERATING_MODE_FULL_VOICE) || p->digital_voice;
+}
+
 /* Map internal MODE_* to Hamlib rmode_t.
  *
- * FM/AM/RTTY have direct Hamlib counterparts. DRM has no Hamlib mode (DRM is
- * decoded externally by Dream from a USB/IQ stream), so the rig is parked in
- * USB. FT8 is just SSB with audio decoded externally; we use PKTUSB so radios
- * that distinguish data from voice select the data audio path. */
-static rmode_t mode_to_hamlib(uint16_t mode)
+ * Two questions decide the rig mode:
+ *   (a) Does this internal MODE_* have a voice equivalent at all?
+ *   (b) When the daemon's software modem is generating the audio (data_path
+ *       true), the rig must be a transparent SSB/FM/AM data path — NOT in its
+ *       own internal CW/RTTY/FT8 mode, which would replace our audio with the
+ *       rig's own keyer/FSK/etc.
+ *
+ *   - FT8, DRM, RADAE: no voice variant exists. FT8 is USB worldwide
+ *     (WSJT-X enforces this). DRM/RADAE TX audio is OFDM/codec — always USB-
+ *     side. All three → RIG_MODE_PKTUSB regardless of data_path.
+ *   - CW: with our software keyer (sbitx_cw, audio-domain DDS into data port)
+ *     the rig must be PKTUSB so it passes our tone unmodified. Only when the
+ *     daemon is NOT pushing audio (data_path false, e.g. operator wired a
+ *     mechanical key into the rig) do we switch the rig into RIG_MODE_CW so
+ *     its internal keyer handles transmission.
+ *   - RTTY: same logic. Our minimodem-based AFSK lives in audio; on the data
+ *     path → PKTLSB (AFSK RTTY convention is LSB so mark>space comes out
+ *     true-FSK on air). If data_path is off the rig's internal FSK keyer is
+ *     used → RIG_MODE_RTTY.
+ *   - USB/LSB/FM/AM: voice when data_path false, DATA-* variant otherwise.
+ *
+ * Narrow data variants (RIG_MODE_PKTFMN, FMN, AMN) need a separate narrow-
+ * bandwidth flag in our MODE_* set; not wired yet. */
+static rmode_t mode_to_hamlib(uint16_t mode, bool data_path)
 {
     switch (mode)
     {
-    case MODE_USB:  return RIG_MODE_USB;
-    case MODE_LSB:  return RIG_MODE_LSB;
-    case MODE_CW:   return RIG_MODE_CW;
-    case MODE_FM:   return RIG_MODE_FM;
-    case MODE_AM:   return RIG_MODE_AM;
-    case MODE_RTTY: return RIG_MODE_RTTY;
-    case MODE_DRM:  return RIG_MODE_USB;
-    case MODE_FT8:  return RIG_MODE_PKTUSB;
-    default:        return RIG_MODE_USB;
+    case MODE_USB:  return data_path ? RIG_MODE_PKTUSB : RIG_MODE_USB;
+    case MODE_LSB:  return data_path ? RIG_MODE_PKTLSB : RIG_MODE_LSB;
+    case MODE_FM:   return data_path ? RIG_MODE_PKTFM  : RIG_MODE_FM;
+    case MODE_AM:   return data_path ? RIG_MODE_PKTAM  : RIG_MODE_AM;
+    case MODE_CW:   return data_path ? RIG_MODE_PKTUSB : RIG_MODE_CW;
+    case MODE_RTTY: return data_path ? RIG_MODE_PKTLSB : RIG_MODE_RTTY;
+    case MODE_DRM:  return RIG_MODE_PKTUSB;   /* digital only, no voice DRM   */
+    case MODE_FT8:  return RIG_MODE_PKTUSB;   /* USB worldwide by convention  */
+    default:        return data_path ? RIG_MODE_PKTUSB : RIG_MODE_USB;
     }
 }
 
-/* Map Hamlib rmode_t to internal MODE_*. We surface PKTUSB as MODE_FT8 by
- * default — that matches our set_mode (FT8 -> PKTUSB) so the round-trip
- * preserves the DATA-mode state on rigs the operator is using for digi work.
- * Users running RTTY on PKTUSB get MODE_FT8 on read; they can still distinguish
- * RTTY via the RIG_MODE_RTTY path. */
+/* Map Hamlib rmode_t to internal MODE_*. PKTUSB → USB / PKTLSB → LSB: the
+ * data/voice distinction is carried by the profile's `operating_mode`, not by
+ * the user-facing MODE_USB label, so reading PKTUSB back from the rig must
+ * stay as MODE_USB (otherwise applying a "USB on digi profile" would round-
+ * trip to MODE_FT8 and overwrite the operator's selection). MODE_FT8 is a
+ * daemon-side modulator choice, not something inferred from rig state. */
 static uint16_t hamlib_to_mode(rmode_t hmode)
 {
-    if (hmode == RIG_MODE_USB)
+    if (hmode == RIG_MODE_USB || hmode == RIG_MODE_PKTUSB)
         return MODE_USB;
-    if (hmode == RIG_MODE_LSB)
+    if (hmode == RIG_MODE_LSB || hmode == RIG_MODE_PKTLSB)
         return MODE_LSB;
-    if (hmode == RIG_MODE_PKTUSB || hmode == RIG_MODE_PKTLSB)
-        return MODE_FT8;
     if (hmode == RIG_MODE_CW || hmode == RIG_MODE_CWR)
         return MODE_CW;
-    if (hmode == RIG_MODE_FM || hmode == RIG_MODE_FMN)
+    if (hmode == RIG_MODE_FM || hmode == RIG_MODE_FMN ||
+        hmode == RIG_MODE_PKTFM || hmode == RIG_MODE_PKTFMN)
         return MODE_FM;
-    if (hmode == RIG_MODE_AM || hmode == RIG_MODE_AMS)
+    if (hmode == RIG_MODE_AM || hmode == RIG_MODE_AMS ||
+        hmode == RIG_MODE_AMN || hmode == RIG_MODE_PKTAM)
         return MODE_AM;
     if (hmode == RIG_MODE_RTTY || hmode == RIG_MODE_RTTYR)
         return MODE_RTTY;
@@ -424,7 +462,8 @@ static void set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
     if (profile == radio_h->profile_active_idx && radio_h->rig)
     {
         RIG *rig = (RIG *) radio_h->rig;
-        rmode_t hmode = mode_to_hamlib(mode);
+        rmode_t hmode = mode_to_hamlib(mode,
+                                       profile_data_path(&radio_h->profiles[profile]));
         int ret = rig_set_mode(rig, RIG_VFO_CURR, hmode, RIG_PASSBAND_NORMAL);
         if (ret != RIG_OK)
             fprintf(stderr, "set_mode: rig_set_mode failed: %s\n",
@@ -574,6 +613,20 @@ static void set_digital_voice(radio *radio_h, bool digital_voice, uint32_t profi
 
     radio_h->profiles[profile].digital_voice = digital_voice;
     radio_pipeline_refresh(radio_h);
+
+    /* Toggling RADAE flips data_path → re-apply the rig mode so the rig
+     * follows the audio source (USB ↔ PKTUSB on USB-side profiles, etc.).
+     * Only meaningful for the active profile; others get applied on switch. */
+    if (profile == radio_h->profile_active_idx && radio_h->rig)
+    {
+        RIG *rig = (RIG *) radio_h->rig;
+        rmode_t hmode = mode_to_hamlib(radio_h->profiles[profile].mode,
+                                       profile_data_path(&radio_h->profiles[profile]));
+        int ret = rig_set_mode(rig, RIG_VFO_CURR, hmode, RIG_PASSBAND_NORMAL);
+        if (ret != RIG_OK)
+            fprintf(stderr, "set_digital_voice: rig_set_mode failed: %s\n",
+                    rigerror(ret));
+    }
 
     char key[64];
     char val[4];
