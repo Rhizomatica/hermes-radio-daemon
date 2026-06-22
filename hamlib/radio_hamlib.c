@@ -83,6 +83,10 @@ static void hamlib_configure_ports(RIG *rig, const radio *radio_h)
     if (radio_h->serial_rate > 0)
         rig->state.rigport.parm.serial.rate = radio_h->serial_rate;
 
+    /* Yaesu FT-710 (and other modern Yaesu rigs) need DTR asserted on
+     * the CAT port for serial communication to work. */
+    rig->state.rigport.parm.serial.dtr_state = RIG_SIGNAL_ON;
+
     rig->state.pttport.type.ptt = hamlib_ptt_type_from_radio(radio_h);
 
     if ((radio_h->ptt_type == PTT_SERIAL_RTS || radio_h->ptt_type == PTT_SERIAL_DTR) &&
