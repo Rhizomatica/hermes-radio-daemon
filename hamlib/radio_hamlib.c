@@ -821,6 +821,38 @@ static void swr_protection_check(radio *radio_h)
     }
 }
 
+/* Refresh the active profile's cached freq/mode from the rig so that manual
+ * front-panel changes on the radio are reflected in the daemon's reported
+ * state (clients read these atomics directly; nothing else reads them back).
+ * RX-only: in TX the serial link is busy with metering and the operator
+ * shouldn't be retuning anyway. Serialized via the rig lock like every other
+ * CAT access. In-memory only — we deliberately do not rewrite user.ini here,
+ * so spinning the VFO knob doesn't churn the config; the configured profile
+ * value is still what's restored on restart. */
+static void hamlib_poll_vfo_state(radio *radio_h)
+{
+    RIG *rig = (RIG *) radio_h->rig;
+    uint32_t profile = radio_h->profile_active_idx;
+
+    if (!rig || profile >= radio_h->profiles_count)
+        return;
+
+    freq_t    hfreq = 0;
+    rmode_t   hmode = RIG_MODE_NONE;
+    pbwidth_t width = 0;
+
+    RIG_LOCK();
+    int fr = rig_get_freq(rig, RIG_VFO_CURR, &hfreq);
+    int mr = rig_get_mode(rig, RIG_VFO_CURR, &hmode, &width);
+    RIG_UNLOCK();
+
+    if (fr == RIG_OK && hfreq > 0)
+        radio_h->profiles[profile].freq = (uint32_t) hfreq;
+
+    if (mr == RIG_OK)
+        radio_h->profiles[profile].mode = hamlib_to_mode(hmode);
+}
+
 static void *radio_io_thread(void *radio_h_v)
 {
     radio *radio_h = (radio *) radio_h_v;
@@ -849,6 +881,15 @@ static void *radio_io_thread(void *radio_h_v)
             {
                 radio_h->fwd_power = 0;
                 radio_h->ref_power = 0;
+            }
+
+            /* Sync freq/mode from the rig ~every 500 ms (every 5th 100 ms
+             * tick) so front-panel changes show up in the daemon state. */
+            static int vfo_tick = 0;
+            if (++vfo_tick >= 5)
+            {
+                vfo_tick = 0;
+                hamlib_poll_vfo_state(radio_h);
             }
         }
 
