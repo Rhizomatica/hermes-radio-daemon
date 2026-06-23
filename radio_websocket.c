@@ -647,10 +647,10 @@ static void fn(struct mg_connection *c, int ev, void *ev_data)
     else if (ev == MG_EV_HTTP_MSG)
     {
         struct mg_http_message *hm = (struct mg_http_message *) ev_data;
-        if (mg_match(hm->uri, mg_str("/websocket"), NULL))
-        {
+        /* Upgrade to WebSocket if the client sent a WS handshake.
+         * Otherwise serve static files from the web root. */
+        if (mg_http_get_header(hm, "Sec-WebSocket-Key") != NULL)
             mg_ws_upgrade(c, hm, NULL);
-        }
         else
         {
             struct mg_http_serve_opts opts = { .root_dir = ctx->web_root };
