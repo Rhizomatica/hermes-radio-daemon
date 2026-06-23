@@ -29,6 +29,7 @@
 #include <time.h>
 #include <math.h>
 #include <errno.h>
+#include <pthread.h>
 
 #include <hamlib/rig.h>
 
@@ -47,6 +48,30 @@ static uint16_t hamlib_to_mode(rmode_t hmode);
 static bool profile_data_path(const radio_profile *p);
 static void wait_next_activation(void);
 static int  start_periodic_timer(uint64_t offset_us);
+
+/* Serializes ALL access to the rig's serial port. Several threads reach this
+ * backend concurrently — the 100 ms meter poll in radio_io_thread, the SHM
+ * control thread, and the websocket thread — and a Hamlib RIG handle is not
+ * thread-safe. Without this lock a meter read (RM5;/RM6;/SWR) from the poll
+ * can interleave on the wire with a PTT command from the control thread,
+ * desyncing the serial buffer and dropping the PTT. That was the real cause
+ * of the "FT-710 breaks PTT" symptom previously worked around by disabling
+ * meter reads for that model. Recursive, so an entry point may call a helper
+ * that locks again on the same thread (e.g. get_swr -> read_level_float,
+ * tr_switch -> sync_txrx_state). */
+static pthread_mutex_t hl_serial_lock;
+
+static void hl_serial_lock_init(void)
+{
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&hl_serial_lock, &attr);
+    pthread_mutexattr_destroy(&attr);
+}
+
+#define RIG_LOCK()   pthread_mutex_lock(&hl_serial_lock)
+#define RIG_UNLOCK() pthread_mutex_unlock(&hl_serial_lock)
 
 static void hamlib_copy_path(char *dst, size_t dst_len, const char *src)
 {
@@ -106,7 +131,10 @@ static bool hamlib_read_level_float(RIG *rig, setting_t level, float *out)
         return false;
 
     memset(&val, 0, sizeof(val));
-    if (rig_get_level(rig, RIG_VFO_CURR, level, &val) != RIG_OK)
+    RIG_LOCK();
+    int ret = rig_get_level(rig, RIG_VFO_CURR, level, &val);
+    RIG_UNLOCK();
+    if (ret != RIG_OK)
         return false;
 
     *out = val.f;
@@ -126,7 +154,9 @@ static bool hamlib_set_level_float(RIG *rig,
 
     memset(&val, 0, sizeof(val));
     val.f = value;
+    RIG_LOCK();
     ret = rig_set_level(rig, RIG_VFO_CURR, level, val);
+    RIG_UNLOCK();
     if (ret != RIG_OK)
         fprintf(stderr, "%s: rig_set_level failed: %s\n",
                 label ? label : "hamlib_set_level_float",
@@ -168,13 +198,11 @@ static bool hamlib_update_measurements(radio *radio_h)
     if (!radio_h || !radio_h->rig)
         return false;
 
-    /* FT-710 does not support RM (Read Meter) commands — the radio
-     * echoes them back as mode-register commands, corrupting the
-     * serial buffer and breaking PTT. */
-    if (radio_h->hamlib_model == 1049)
-        return false;
-
     rig = (RIG *) radio_h->rig;
+
+    /* Group the PO + SWR reads under one lock hold so a single poll sees a
+     * consistent pair and no control command splits them. */
+    RIG_LOCK();
 
     if (hamlib_read_level_float(rig, RIG_LEVEL_RFPOWER_METER_WATTS, &meter_value) &&
         meter_value >= 0.0f)
@@ -197,6 +225,8 @@ static bool hamlib_update_measurements(radio *radio_h)
         updated = true;
     }
 
+    RIG_UNLOCK();
+
     return updated;
 }
 
@@ -213,7 +243,10 @@ static void hamlib_sync_txrx_state(radio *radio_h, bool fallback_state)
     }
 
     rig = (RIG *) radio_h->rig;
-    if (rig_get_ptt(rig, RIG_VFO_CURR, &ptt_state) == RIG_OK)
+    RIG_LOCK();
+    int ret = rig_get_ptt(rig, RIG_VFO_CURR, &ptt_state);
+    RIG_UNLOCK();
+    if (ret == RIG_OK)
         radio_h->txrx_state = (ptt_state == RIG_PTT_OFF) ? IN_RX : IN_TX;
     else
         radio_h->txrx_state = fallback_state;
@@ -228,6 +261,10 @@ static void hamlib_apply_profile(radio *radio_h, uint32_t profile)
         return;
 
     rig = (RIG *) radio_h->rig;
+
+    /* Apply freq + mode + power as one transaction so a concurrent poll can't
+     * slip a meter read between the commands. */
+    RIG_LOCK();
 
     ret = rig_set_freq(rig, RIG_VFO_CURR, (freq_t) radio_h->profiles[profile].freq);
     if (ret != RIG_OK)
@@ -246,6 +283,8 @@ static void hamlib_apply_profile(radio *radio_h, uint32_t profile)
                            RIG_LEVEL_RFPOWER,
                            (float) radio_h->profiles[profile].power_level_percentage / 100.0f,
                            "hamlib_apply_profile");
+
+    RIG_UNLOCK();
 }
 
 /* True when the profile feeds the rig from the digital path (rear-panel DATA
@@ -362,6 +401,8 @@ static bool radio_hamlib_init(radio *radio_h)
 
     hamlib_configure_ports(rig, radio_h);
 
+    hl_serial_lock_init();
+
     int ret = rig_open(rig);
     if (ret != RIG_OK)
     {
@@ -385,11 +426,13 @@ static bool radio_hamlib_init(radio *radio_h)
     if (radio_h->profiles_count > 0)
         hamlib_apply_profile(radio_h, profile);
 
+    RIG_LOCK();
     if (rig_get_freq(rig, RIG_VFO_CURR, &hfreq) == RIG_OK && hfreq > 0)
         radio_h->profiles[profile].freq = (uint32_t) hfreq;
 
     if (rig_get_mode(rig, RIG_VFO_CURR, &hmode, &width) == RIG_OK)
         radio_h->profiles[profile].mode = hamlib_to_mode(hmode);
+    RIG_UNLOCK();
 
     hamlib_sync_txrx_state(radio_h, IN_RX);
     hamlib_update_measurements(radio_h);
@@ -414,11 +457,13 @@ static void radio_hamlib_shutdown(radio *radio_h)
     RIG *rig = (RIG *) radio_h->rig;
 
     /* Make sure we are in RX before closing */
+    RIG_LOCK();
     if (radio_h->txrx_state == IN_TX)
         rig_set_ptt(rig, RIG_VFO_CURR, RIG_PTT_OFF);
 
     rig_close(rig);
     rig_cleanup(rig);
+    RIG_UNLOCK();
     radio_h->rig = NULL;
 }
 
@@ -438,7 +483,9 @@ static void set_frequency(radio *radio_h, uint32_t frequency, uint32_t profile)
     if (profile == radio_h->profile_active_idx && radio_h->rig)
     {
         RIG *rig = (RIG *) radio_h->rig;
+        RIG_LOCK();
         int ret = rig_set_freq(rig, RIG_VFO_CURR, (freq_t) frequency);
+        RIG_UNLOCK();
         if (ret != RIG_OK)
             fprintf(stderr, "set_frequency: rig_set_freq failed: %s\n",
                     rigerror(ret));
@@ -470,7 +517,9 @@ static void set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
         RIG *rig = (RIG *) radio_h->rig;
         rmode_t hmode = mode_to_hamlib(mode,
                                        profile_data_path(&radio_h->profiles[profile]));
+        RIG_LOCK();
         int ret = rig_set_mode(rig, RIG_VFO_CURR, hmode, RIG_PASSBAND_NORMAL);
+        RIG_UNLOCK();
         if (ret != RIG_OK)
             fprintf(stderr, "set_mode: rig_set_mode failed: %s\n",
                     rigerror(ret));
@@ -500,7 +549,9 @@ static void tr_switch(radio *radio_h, bool txrx_state)
         if (txrx_state == IN_TX)
             ptt_val = (radio_h->ptt_type == PTT_RIG_MICDATA) ? RIG_PTT_ON_DATA
                                                              : RIG_PTT_ON;
+        RIG_LOCK();
         int ret = rig_set_ptt(rig, RIG_VFO_CURR, ptt_val);
+        RIG_UNLOCK();
         if (ret != RIG_OK)
         {
             fprintf(stderr, "tr_switch: rig_set_ptt failed: %s\n",
@@ -628,7 +679,9 @@ static void set_digital_voice(radio *radio_h, bool digital_voice, uint32_t profi
         RIG *rig = (RIG *) radio_h->rig;
         rmode_t hmode = mode_to_hamlib(radio_h->profiles[profile].mode,
                                        profile_data_path(&radio_h->profiles[profile]));
+        RIG_LOCK();
         int ret = rig_set_mode(rig, RIG_VFO_CURR, hmode, RIG_PASSBAND_NORMAL);
+        RIG_UNLOCK();
         if (ret != RIG_OK)
             fprintf(stderr, "set_digital_voice: rig_set_mode failed: %s\n",
                     rigerror(ret));
