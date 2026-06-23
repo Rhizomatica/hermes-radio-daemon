@@ -172,6 +172,12 @@ static bool hamlib_update_measurements(radio *radio_h)
     if (!radio_h || !radio_h->rig)
         return false;
 
+    /* FT-710 does not support RM (Read Meter) commands — the radio
+     * echoes them back as mode-register commands, corrupting the
+     * serial buffer and breaking PTT. */
+    if (radio_h->hamlib_model == 1049)
+        return false;
+
     rig = (RIG *) radio_h->rig;
 
     if (hamlib_read_level_float(rig, RIG_LEVEL_RFPOWER_METER_WATTS, &meter_value) &&
