@@ -239,6 +239,11 @@ static bool hamlib_update_measurements(radio *radio_h)
     return updated;
 }
 
+/* noinline: called from the radio_io_thread hot loop; letting -Ofast inline it
+ * there makes GCC's object-size analysis on the _Atomic radio_h fields go
+ * sideways and emit bogus -Wstringop-overflow warnings. Keeping it out-of-line
+ * costs one call per ~200 ms and keeps the build clean. */
+__attribute__((noinline))
 static void hamlib_sync_txrx_state(radio *radio_h, bool fallback_state)
 {
     ptt_t ptt_state = RIG_PTT_OFF;
@@ -868,6 +873,20 @@ static void *radio_io_thread(void *radio_h_v)
     while (!shutdown_)
     {
         wait_next_activation();
+
+        /* Reflect the rig's ACTUAL PTT — including manual front-panel or mic
+         * keying the daemon didn't initiate — by polling rig_get_ptt ~every
+         * 200 ms. Without this, txrx_state only changed when the daemon keyed
+         * via tr_switch, so a hand-keyed TX never showed up in the daemon or
+         * its clients. Once txrx_state flips to IN_TX the block below starts
+         * metering FWD/SWR for that manual transmission too. */
+        static int ptt_tick = 0;
+        if (++ptt_tick >= 2)
+        {
+            ptt_tick = 0;
+            bool cur_state = radio_h->txrx_state;
+            hamlib_sync_txrx_state(radio_h, cur_state);
+        }
 
         /* Poll power measurements while transmitting */
         if (radio_h->txrx_state == IN_TX)
