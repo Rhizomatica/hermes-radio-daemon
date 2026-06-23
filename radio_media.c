@@ -250,21 +250,37 @@ static snd_pcm_t *open_pcm_device(const char *device, snd_pcm_stream_t stream,
         return NULL;
     }
 
-    err = snd_pcm_set_params(pcm,
-                             SND_PCM_FORMAT_S16_LE,
-                             SND_PCM_ACCESS_RW_INTERLEAVED,
-                             1,
-                             sample_rate,
-                             1,
-                             500000);
-    if (err < 0)
+    /* Negotiate hw params explicitly rather than via snd_pcm_set_params():
+     * the helper's latency argument let ALSA pick a buffer/period that some
+     * USB codecs (e.g. the C-Media dongle on the Yaesu) reject at I/O time
+     * with -EIO even though open succeeds. Setting a concrete period/buffer
+     * (matching what mercury and sbitx_alsa do) makes those codecs work.
+     * S16_LE / mono / RW_INTERLEAVED is the daemon's ring format; a real
+     * codec exposes it natively (capture) and plughw: converts where the
+     * device differs (e.g. stereo-only playback). */
+    snd_pcm_hw_params_t *hw;
+    snd_pcm_hw_params_alloca(&hw);
+
+    unsigned int    rate    = sample_rate;
+    snd_pcm_uframes_t period = 1024;
+    unsigned int    periods = 4;
+
+    if ((err = snd_pcm_hw_params_any(pcm, hw)) < 0 ||
+        (err = snd_pcm_hw_params_set_access(pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0 ||
+        (err = snd_pcm_hw_params_set_format(pcm, hw, SND_PCM_FORMAT_S16_LE)) < 0 ||
+        (err = snd_pcm_hw_params_set_channels(pcm, hw, 1)) < 0 ||
+        (err = snd_pcm_hw_params_set_rate_near(pcm, hw, &rate, 0)) < 0 ||
+        (err = snd_pcm_hw_params_set_period_size_near(pcm, hw, &period, 0)) < 0 ||
+        (err = snd_pcm_hw_params_set_periods_near(pcm, hw, &periods, 0)) < 0 ||
+        (err = snd_pcm_hw_params(pcm, hw)) < 0)
     {
-        fprintf(stderr, "radio_media: snd_pcm_set_params(%s) failed: %s\n",
+        fprintf(stderr, "radio_media: hw_params(%s) failed: %s\n",
                 device, snd_strerror(err));
         snd_pcm_close(pcm);
         return NULL;
     }
 
+    snd_pcm_prepare(pcm);
     return pcm;
 }
 
@@ -376,8 +392,24 @@ static void *capture_thread(void *ctx_v)
         }
         if (got < 0)
         {
-            fprintf(stderr, "radio_media: capture read failed: %s\n", snd_strerror((int) got));
-            usleep(20000);
+            /* snd_pcm_recover handles xrun (-EPIPE) and suspend (-ESTRPIPE).
+             * For harder errors — e.g. -EIO from a USB codec that needs a
+             * fresh stream — it returns the error, so close and reopen rather
+             * than spin forever on a dead handle (the old code looped on EIO
+             * at 50 Hz, producing no audio and flooding the log). */
+            if (snd_pcm_recover(pcm, (int) got, 1) == 0)
+                continue;
+
+            fprintf(stderr, "radio_media: capture read failed: %s — reopening %s\n",
+                    snd_strerror((int) got), radio_h->capture_device);
+            snd_pcm_close(pcm);
+            pcm = NULL;
+            while (!shutdown_ && !pcm)
+            {
+                usleep(500000);
+                pcm = open_pcm_device(radio_h->capture_device,
+                                      SND_PCM_STREAM_CAPTURE, native_rate);
+            }
             continue;
         }
 
@@ -386,8 +418,11 @@ static void *capture_thread(void *ctx_v)
         audio_bridge_push_rx_native(&bridge, radio_h, buffer, (size_t) got);
     }
 
-    snd_pcm_drain(pcm);
-    snd_pcm_close(pcm);
+    if (pcm)
+    {
+        snd_pcm_drain(pcm);
+        snd_pcm_close(pcm);
+    }
     audio_bridge_shutdown(&bridge);
     free(buffer);
     return NULL;
