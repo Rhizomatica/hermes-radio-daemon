@@ -262,8 +262,8 @@ static snd_pcm_t *open_pcm_device(const char *device, snd_pcm_stream_t stream,
     snd_pcm_hw_params_alloca(&hw);
 
     unsigned int    rate    = sample_rate;
-    snd_pcm_uframes_t period = 1024;
-    unsigned int    periods = 4;
+    snd_pcm_uframes_t period = 1024;          /* matches asound.conf dsnoop/dmix */
+    unsigned int    periods = 8;              /* -> 8192-frame buffer, same as the slave */
 
     if ((err = snd_pcm_hw_params_any(pcm, hw)) < 0 ||
         (err = snd_pcm_hw_params_set_access(pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0 ||
