@@ -38,7 +38,10 @@ extern _Atomic bool shutdown_;
 
 #define DEFAULT_PERIOD_FRAMES 160
 #define DEFAULT_QUEUE_SAMPLES 16000
-#define SPECTRUM_FFT_SIZE 256
+/* 2048-pt FFT at 48 kHz = 23.4 Hz/bin; the first WATERFALL_BINS (128) bins
+ * then span 0..3 kHz — i.e. the SSB/data audio passband fills the whole
+ * waterfall instead of being squeezed into the left 1/8 of a 0..24 kHz view. */
+#define SPECTRUM_FFT_SIZE 2048
 
 typedef struct {
     radio *radio_h;
@@ -262,8 +265,9 @@ static snd_pcm_t *open_pcm_device(const char *device, snd_pcm_stream_t stream,
     snd_pcm_hw_params_alloca(&hw);
 
     unsigned int    rate    = sample_rate;
-    snd_pcm_uframes_t period = 1024;          /* matches asound.conf dsnoop/dmix */
-    unsigned int    periods = 8;              /* -> 8192-frame buffer, same as the slave */
+    snd_pcm_uframes_t period = 480;           /* 10 ms @ 48k, USB-frame aligned;
+                                               * matches asound.conf + mercury */
+    unsigned int    periods = 8;              /* -> 3840-frame buffer, same as the slave */
 
     if ((err = snd_pcm_hw_params_any(pcm, hw)) < 0 ||
         (err = snd_pcm_hw_params_set_access(pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0 ||
@@ -679,22 +683,41 @@ size_t radio_media_pop_rx_audio(radio *radio_h, int16_t *samples, size_t max_sam
  * sbitx_bridge_pop_tx); these helpers just add the recording write +
  * spectrum compute on top of that flow. The wav_recording mutex makes
  * recording_write zero-overhead when no recording is active. */
+/* Accumulate samples up to one FFT window before computing, since a single
+ * capture period (480 frames) is now smaller than SPECTRUM_FFT_SIZE (2048). */
+static void spectrum_accumulate(radio *radio_h, bool tx,
+                                const int16_t *samples, size_t nsamples)
+{
+    static int16_t rx_acc[SPECTRUM_FFT_SIZE], tx_acc[SPECTRUM_FFT_SIZE];
+    static size_t  rx_n = 0, tx_n = 0;
+    int16_t *acc = tx ? tx_acc : rx_acc;
+    size_t  *n   = tx ? &tx_n  : &rx_n;
+
+    for (size_t i = 0; i < nsamples; i++)
+    {
+        acc[(*n)++] = samples[i];
+        if (*n >= SPECTRUM_FFT_SIZE)
+        {
+            compute_spectrum(radio_h, tx, acc, *n);
+            *n = 0;
+        }
+    }
+}
+
 void radio_media_tap_rx_audio(radio *radio_h, const int16_t *samples, size_t nsamples)
 {
     if (radio_h->rx_recording.active)
         recording_write(&radio_h->rx_recording, samples, nsamples);
-    if (nsamples >= SPECTRUM_FFT_SIZE &&
-        radio_pipeline_supports_spectrum(radio_h, false))
-        compute_spectrum(radio_h, false, samples, nsamples);
+    if (radio_pipeline_supports_spectrum(radio_h, false))
+        spectrum_accumulate(radio_h, false, samples, nsamples);
 }
 
 void radio_media_tap_tx_audio(radio *radio_h, const int16_t *samples, size_t nsamples)
 {
     if (radio_h->tx_recording.active)
         recording_write(&radio_h->tx_recording, samples, nsamples);
-    if (nsamples >= SPECTRUM_FFT_SIZE &&
-        radio_pipeline_supports_spectrum(radio_h, true))
-        compute_spectrum(radio_h, true, samples, nsamples);
+    if (radio_pipeline_supports_spectrum(radio_h, true))
+        spectrum_accumulate(radio_h, true, samples, nsamples);
 }
 
 static bool stream_matches(const char *stream_name, const char *candidate)
