@@ -24,7 +24,7 @@ label { color: #080; }
 .connected { color: #0f0; }
 .disconnected { color: #f00; }
 #audio-status { font-size: 11px; }
-#spectrum canvas { width: 100%; height: 120px; background: #000; border: 1px solid #333; }
+#spectrum canvas { width: 100%; height: 240px; background: #000; border: 1px solid #333; image-rendering: pixelated; }
 .tab { display: inline-block; padding: 4px 12px; cursor: pointer; border: 1px solid #333; border-bottom: none; background: #1a1a1a; }
 .tab.active { background: #222; color: #0f0; }
 .tab-content { display: none; }
@@ -137,7 +137,7 @@ label { color: #080; }
 <!-- Spectrum tab -->
 <div id="tab-spectrum-tab" class="tab-content">
   <div class="panel">
-    <h2>RX Spectrum</h2>
+    <h2>RX Waterfall</h2>
     <div id="spectrum"><canvas id="spec-canvas"></canvas></div>
     <div id="audio-status">No audio data yet</div>
   </div>
@@ -295,6 +295,8 @@ function start_spectrum() {
   if (!audio_ctx) audio_ctx = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 8000});
 }
 
+// Scrolling waterfall: each frame becomes a new top row, older rows scroll
+// down. dB is mapped to colour (blue=weak -> red=strong).
 function draw_spectrum(data) {
   var canvas = $('spec-canvas');
   if (!canvas) return;
@@ -305,26 +307,26 @@ function draw_spectrum(data) {
   var n = (dv.byteLength - 6) / 4;
   if (n !== bins) return;
 
-  canvas.width = canvas.offsetWidth || 600;
-  canvas.height = canvas.offsetHeight || 120;
   var ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.strokeStyle = '#0f0';
-  ctx.beginPath();
+  // Size the drawing buffer once: width = bins (CSS stretches to 100%),
+  // height = time history. Re-init clears to black.
+  if (canvas.width !== bins) {
+    canvas.width = bins;
+    canvas.height = 240;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
 
-  var h = canvas.height;
-  var w = canvas.width;
+  // Scroll everything down one pixel, then paint the new row at the top.
+  ctx.drawImage(canvas, 0, 1);
   for (var i = 0; i < n; i++) {
     var db = dv.getFloat32(6 + i * 4, true);
-    var x = (i / n) * w;
-    var y = h - ((db + 120) / 120) * h;
-    if (y < 0) y = 0;
-    if (y > h) y = h;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+    var t = (db + 100) / 70;            // ~-100 dB floor .. -30 dB peak -> 0..1
+    if (t < 0) t = 0; if (t > 1) t = 1;
+    ctx.fillStyle = 'hsl(' + Math.round((1 - t) * 240) + ',100%,' +
+                    Math.round(8 + t * 47) + '%)';
+    ctx.fillRect(i, 0, 1, 1);
   }
-  ctx.stroke();
   $('audio-status').textContent = 'Rate: ' + sample_rate + ' Hz, Bins: ' + bins;
 }
 </script>
