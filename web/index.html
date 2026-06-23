@@ -138,6 +138,24 @@ label { color: #080; }
 <div id="tab-spectrum-tab" class="tab-content">
   <div class="panel">
     <h2>RX Waterfall</h2>
+    <div class="row" style="margin-bottom:6px; font-size:12px">
+      <label>Floor: <span id="wf-min-v">-90</span> dB</label>
+      <input type="range" id="wf-min" min="-130" max="0" value="-90" oninput="wf_cal()">
+      <label>Ceiling: <span id="wf-max-v">-20</span> dB</label>
+      <input type="range" id="wf-max" min="-130" max="0" value="-20" oninput="wf_cal()">
+      <label>Palette:</label>
+      <select id="wf-palette" onchange="wf_cal()">
+        <option value="turbo">Turbo</option>
+        <option value="grey">Grey</option>
+        <option value="green">Green</option>
+      </select>
+      <label>Speed:</label>
+      <select id="wf-speed" onchange="wf_cal()">
+        <option value="1">1x</option>
+        <option value="2">2x</option>
+        <option value="3">3x</option>
+      </select>
+    </div>
     <div id="spectrum"><canvas id="spec-canvas"></canvas></div>
     <div id="audio-status">No audio data yet</div>
   </div>
@@ -295,8 +313,29 @@ function start_spectrum() {
   if (!audio_ctx) audio_ctx = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 8000});
 }
 
+// Waterfall calibration (live-tunable from the UI).
+var wf_min = -90, wf_max = -20, wf_palette = 'turbo', wf_speed = 1;
+function wf_cal() {
+  wf_min = parseInt($('wf-min').value);
+  wf_max = parseInt($('wf-max').value);
+  if (wf_max <= wf_min) wf_max = wf_min + 1;
+  wf_palette = $('wf-palette').value;
+  wf_speed = parseInt($('wf-speed').value);
+  $('wf-min-v').textContent = wf_min;
+  $('wf-max-v').textContent = wf_max;
+}
+
+// Map a normalised level t (0..1) to a colour for the chosen palette.
+function wf_color(t) {
+  if (t < 0) t = 0; if (t > 1) t = 1;
+  if (wf_palette === 'grey') { var v = Math.round(t * 255); return 'rgb(' + v + ',' + v + ',' + v + ')'; }
+  if (wf_palette === 'green') return 'hsl(120,100%,' + Math.round(t * 60) + '%)';
+  // turbo-ish: blue -> cyan -> green -> yellow -> red
+  return 'hsl(' + Math.round((1 - t) * 240) + ',100%,' + Math.round(8 + t * 47) + '%)';
+}
+
 // Scrolling waterfall: each frame becomes a new top row, older rows scroll
-// down. dB is mapped to colour (blue=weak -> red=strong).
+// down. dB -> colour via the Floor/Ceiling calibration above.
 function draw_spectrum(data) {
   var canvas = $('spec-canvas');
   if (!canvas) return;
@@ -317,17 +356,17 @@ function draw_spectrum(data) {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
 
-  // Scroll everything down one pixel, then paint the new row at the top.
-  ctx.drawImage(canvas, 0, 1);
+  var rows = wf_speed;                  // paint N identical rows = faster scroll
+  ctx.drawImage(canvas, 0, rows);
+  var span = wf_max - wf_min;
   for (var i = 0; i < n; i++) {
     var db = dv.getFloat32(6 + i * 4, true);
-    var t = (db + 100) / 70;            // ~-100 dB floor .. -30 dB peak -> 0..1
-    if (t < 0) t = 0; if (t > 1) t = 1;
-    ctx.fillStyle = 'hsl(' + Math.round((1 - t) * 240) + ',100%,' +
-                    Math.round(8 + t * 47) + '%)';
-    ctx.fillRect(i, 0, 1, 1);
+    ctx.fillStyle = wf_color((db - wf_min) / span);
+    ctx.fillRect(i, 0, 1, rows);
   }
-  $('audio-status').textContent = 'Rate: ' + sample_rate + ' Hz, Bins: ' + bins;
+  // ~3 kHz span (2048-pt FFT @ 48k, first 128 bins): label a rough freq axis.
+  $('audio-status').textContent = 'span ~0-3 kHz | ' + bins + ' bins | floor ' +
+                                  wf_min + ' / ceil ' + wf_max + ' dB';
 }
 </script>
 </body>
