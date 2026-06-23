@@ -73,42 +73,55 @@ static void hl_serial_lock_init(void)
 #define RIG_LOCK()   pthread_mutex_lock(&hl_serial_lock)
 #define RIG_UNLOCK() pthread_mutex_unlock(&hl_serial_lock)
 
-static void hamlib_copy_path(char *dst, size_t dst_len, const char *src)
+/* PTT type as the string token rig_set_conf("ptt_type", ...) expects
+ * (see src/conf.c TOK_PTT_TYPE). */
+static const char *hamlib_ptt_type_conf(uint8_t ptt_type)
 {
-    if (!dst || dst_len == 0)
-        return;
-
-    snprintf(dst, dst_len, "%s", src ? src : "");
-}
-
-static ptt_type_t hamlib_ptt_type_from_radio(const radio *radio_h)
-{
-    switch (radio_h->ptt_type)
+    switch (ptt_type)
     {
-    case PTT_RIG:          return RIG_PTT_RIG;
-    case PTT_SERIAL_RTS:   return RIG_PTT_SERIAL_RTS;
-    case PTT_SERIAL_DTR:   return RIG_PTT_SERIAL_DTR;
-    case PTT_PARALLEL:     return RIG_PTT_PARALLEL;
-    case PTT_CM108:        return RIG_PTT_CM108;
-    case PTT_GPIO:         return RIG_PTT_GPIO;
-    case PTT_RIG_MICDATA:  return RIG_PTT_RIG_MICDATA;
-    default:               return RIG_PTT_NONE;
+    case PTT_RIG:          return "RIG";
+    case PTT_RIG_MICDATA:  return "RIGMICDATA";
+    case PTT_SERIAL_DTR:   return "DTR";
+    case PTT_SERIAL_RTS:   return "RTS";
+    case PTT_PARALLEL:     return "Parallel";
+    case PTT_CM108:        return "CM108";
+    case PTT_GPIO:         return "GPIO";
+    default:               return "None";
     }
 }
 
+static void hamlib_set_conf(RIG *rig, const char *name, const char *val)
+{
+    int ret = rig_set_conf(rig, rig_token_lookup(rig, name), val);
+    if (ret != RIG_OK)
+        fprintf(stderr, "hamlib_configure_ports: set_conf %s=\"%s\" failed: %s\n",
+                name, val, rigerror(ret));
+}
+
+/* Configure the CAT/PTT ports through the public rig_set_conf() API rather
+ * than writing rig->state.rigport/pttport directly. Hamlib 4.7 removed the
+ * embedded `state` member from struct rig and the RIGPORT()/PTTPORT() macros
+ * are gated behind IN_HAMLIB (backend-only), so direct access no longer
+ * compiles for an application. rig_set_conf() with the "rig_pathname",
+ * "serial_speed", "ptt_type" and "ptt_pathname" tokens is the supported,
+ * version-stable path (present in 4.6.x and 4.7.x) and is exactly what
+ * rigctl's -r/-p/-P options use. Must be called after rig_init, before
+ * rig_open. */
 static void hamlib_configure_ports(RIG *rig, const radio *radio_h)
 {
     const char *ptt_path = radio_h->ptt_pathname;
 
     if (radio_h->rig_pathname[0])
-        hamlib_copy_path(rig->state.rigport.pathname,
-                         HAMLIB_FILPATHLEN,
-                         radio_h->rig_pathname);
+        hamlib_set_conf(rig, "rig_pathname", radio_h->rig_pathname);
 
     if (radio_h->serial_rate > 0)
-        rig->state.rigport.parm.serial.rate = radio_h->serial_rate;
+    {
+        char rate[16];
+        snprintf(rate, sizeof(rate), "%d", radio_h->serial_rate);
+        hamlib_set_conf(rig, "serial_speed", rate);
+    }
 
-    rig->state.pttport.type.ptt = hamlib_ptt_type_from_radio(radio_h);
+    hamlib_set_conf(rig, "ptt_type", hamlib_ptt_type_conf(radio_h->ptt_type));
 
     if ((radio_h->ptt_type == PTT_SERIAL_RTS || radio_h->ptt_type == PTT_SERIAL_DTR) &&
         !ptt_path[0])
@@ -116,11 +129,7 @@ static void hamlib_configure_ports(RIG *rig, const radio *radio_h)
 
     if (ptt_path[0] && radio_h->ptt_type != PTT_NONE &&
         radio_h->ptt_type != PTT_RIG && radio_h->ptt_type != PTT_RIG_MICDATA)
-    {
-        hamlib_copy_path(rig->state.pttport.pathname, HAMLIB_FILPATHLEN, ptt_path);
-        if (radio_h->serial_rate > 0)
-            rig->state.pttport.parm.serial.rate = radio_h->serial_rate;
-    }
+        hamlib_set_conf(rig, "ptt_pathname", ptt_path);
 }
 
 static bool hamlib_read_level_float(RIG *rig, setting_t level, float *out)
