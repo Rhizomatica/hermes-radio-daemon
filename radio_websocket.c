@@ -737,6 +737,7 @@ bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid)
 
     if (!radio_h->enable_websocket) return true;
 
+    mg_log_set(MG_LL_ERROR);   /* silence mongoose per-write DEBUG spam */
     mg_mgr_init(&ws_ctx.mgr);
     ws_ctx.mgr.userdata = &ws_ctx;
     ws_ctx.mgr_inited = true;
