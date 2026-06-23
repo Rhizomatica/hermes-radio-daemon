@@ -47,10 +47,10 @@ bool radio_cmd(controller_conn *connector, uint8_t *srv_cmd, uint8_t *response)
     if (srv_cmd[4] == CMD_RADIO_RESET)
         goto get_out;
 
-    // ~3 ms max wait
+    // ~1.5 s max wait for hamlib-backed commands (PTT, mode set)
     uint32_t tries = 0;
     uint32_t sleep_time = 100;
-    while (connector->response_available == false && tries < 30)
+    while (connector->response_available == false && tries < 150)
     {
         usleep(sleep_time); // 0.1 ms
         tries++;
