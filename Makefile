@@ -138,8 +138,6 @@ install: radio_daemon radio_client
 	  install -m 644 config/core.ini $(DESTDIR)$(sysconfdir)/hermes/core.ini
 	test -f $(DESTDIR)$(sysconfdir)/hermes/user.ini || \
 	  install -m 644 config/user.ini $(DESTDIR)$(sysconfdir)/hermes/user.ini
-	test -f $(DESTDIR)$(sysconfdir)/hermes/asound.conf || \
-	  install -m 644 config/asound.conf $(DESTDIR)$(sysconfdir)/hermes/asound.conf
 	install -d $(DESTDIR)$(sysconfdir)/hermes/web
 	install -m 644 web/index.html $(DESTDIR)$(sysconfdir)/hermes/web/index.html
 

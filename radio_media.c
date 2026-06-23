@@ -253,29 +253,25 @@ static snd_pcm_t *open_pcm_device(const char *device, snd_pcm_stream_t stream,
         return NULL;
     }
 
-    /* Negotiate hw params explicitly rather than via snd_pcm_set_params():
-     * the helper's latency argument let ALSA pick a buffer/period that some
-     * USB codecs (e.g. the C-Media dongle on the Yaesu) reject at I/O time
-     * with -EIO even though open succeeds. Setting a concrete period/buffer
-     * (matching what mercury and sbitx_alsa do) makes those codecs work.
-     * S16_LE / mono / RW_INTERLEAVED is the daemon's ring format; a real
-     * codec exposes it natively (capture) and plughw: converts where the
-     * device differs (e.g. stereo-only playback). */
+    /* Negotiate format/channels/rate explicitly but let ALSA choose the
+     * period/buffer. Forcing a concrete period/buffer here breaks shared
+     * devices: when this is the first client to open a dsnoop/dmix it pins the
+     * shared buffer to our size and later clients (e.g. mercury) fail to
+     * attach with -ENODEV. The field HERMES asound.conf likewise sets no
+     * period/buffer on its dsnoop/dmix slaves. (The old -EIO this code worked
+     * around came from snd_pcm_set_params' latency arg, not from leaving the
+     * period unset.) S16_LE / mono / RW_INTERLEAVED is the daemon ring format;
+     * plug/dsnoop convert where the codec differs. */
     snd_pcm_hw_params_t *hw;
     snd_pcm_hw_params_alloca(&hw);
 
-    unsigned int    rate    = sample_rate;
-    snd_pcm_uframes_t period = 480;           /* 10 ms @ 48k, USB-frame aligned;
-                                               * matches asound.conf + mercury */
-    unsigned int    periods = 8;              /* -> 3840-frame buffer, same as the slave */
+    unsigned int rate = sample_rate;
 
     if ((err = snd_pcm_hw_params_any(pcm, hw)) < 0 ||
         (err = snd_pcm_hw_params_set_access(pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0 ||
         (err = snd_pcm_hw_params_set_format(pcm, hw, SND_PCM_FORMAT_S16_LE)) < 0 ||
         (err = snd_pcm_hw_params_set_channels(pcm, hw, 1)) < 0 ||
         (err = snd_pcm_hw_params_set_rate_near(pcm, hw, &rate, 0)) < 0 ||
-        (err = snd_pcm_hw_params_set_period_size_near(pcm, hw, &period, 0)) < 0 ||
-        (err = snd_pcm_hw_params_set_periods_near(pcm, hw, &periods, 0)) < 0 ||
         (err = snd_pcm_hw_params(pcm, hw)) < 0)
     {
         fprintf(stderr, "radio_media: hw_params(%s) failed: %s\n",
