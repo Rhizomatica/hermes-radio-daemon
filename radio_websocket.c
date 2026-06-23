@@ -215,6 +215,7 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
          "\"system_is_connected\":%s,\"system_is_ok\":%s,"
          "\"bfo\":%u,\"serial\":%u,\"step_size\":%u,\"tone\":%s,"
          "\"reflected_threshold\":%u,\"timeout\":%d,"
+         "\"operating_mode\":%u,\"fwd\":%u,\"ref_power\":%u,\"swr\":%u,"
          "\"recording_rx\":%s,\"recording_tx\":%s,"
          "\"audio_sample_rate\":%u,\"message_available\":%s,"
          "\"backend\":\"%s\",\"digital_voice\":%s,\"protection\":%s,"
@@ -235,6 +236,8 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
          radio_h->bfo_frequency, radio_h->serial_number, radio_h->step_size,
          radio_h->tone_generation ? "true" : "false",
          radio_h->reflected_threshold, radio_h->profile_timeout,
+         radio_h->profiles[active].operating_mode,
+         radio_h->fwd_power, radio_h->ref_power, radio_backend_get_swr(radio_h),
          radio_h->rx_recording.active ? "true" : "false",
          radio_h->tx_recording.active ? "true" : "false",
          radio_h->audio_sample_rate,
