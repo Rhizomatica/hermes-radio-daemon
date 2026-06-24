@@ -409,6 +409,20 @@ static void compute_spectrum(radio *radio_h, bool tx, const int16_t *samples, si
 
     pthread_mutex_unlock(&g_spectrum_plan_mutex);
 
+    /* Lower-sideband modes (LSB, and DATA-L which is LSB-based) mirror the audio
+     * spectrum relative to RF: audio frequency f sits at carrier - f, so a raw
+     * audio FFT reads backwards on the waterfall. Flip the bins so the display
+     * is RF-correct (low frequency on the left). USB-family modes need no flip. */
+    if (radio_h->profiles[radio_h->profile_active_idx].mode == MODE_LSB)
+    {
+        for (size_t i = 0; i < WATERFALL_BINS / 2; i++)
+        {
+            float t = bins[i];
+            bins[i] = bins[WATERFALL_BINS - 1 - i];
+            bins[WATERFALL_BINS - 1 - i] = t;
+        }
+    }
+
     radio_h->spectrum_sample_rate = radio_h->audio_sample_rate;
     update_spectrum_locked(radio_h, tx, bins);
 }
@@ -978,4 +992,9 @@ bool radio_media_get_spectrum(radio *radio_h, bool tx, float *out_bins, size_t b
     pthread_mutex_unlock(&radio_h->spectrum_mutex);
 
     return valid;
+}
+
+uint32_t radio_media_spectrum_fft_size(void)
+{
+    return SPECTRUM_FFT_SIZE;
 }

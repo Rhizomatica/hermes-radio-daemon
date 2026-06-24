@@ -24,7 +24,9 @@ label { color: #080; }
 .connected { color: #0f0; }
 .disconnected { color: #f00; }
 #audio-status { font-size: 11px; }
-#spectrum canvas { width: 100%; height: 240px; background: #000; border: 1px solid #333; image-rendering: pixelated; }
+#spec-scope { width: 100%; height: 90px; background: #001016; display: block; border: 1px solid #333; border-bottom: none; image-rendering: pixelated; }
+    #spec-wf { width: 100%; height: 170px; background: #000; display: block; border: 1px solid #333; image-rendering: pixelated; }
+    #freq-axis { display: flex; justify-content: space-between; font: 11px monospace; color: #8cf; padding: 3px 2px 0; }
 .tab { display: inline-block; padding: 4px 12px; cursor: pointer; border: 1px solid #333; border-bottom: none; background: #1a1a1a; }
 .tab.active { background: #222; color: #0f0; }
 .tab-content { display: none; }
@@ -137,7 +139,7 @@ label { color: #080; }
 <!-- Spectrum tab -->
 <div id="tab-spectrum-tab" class="tab-content">
   <div class="panel">
-    <h2>RX Waterfall</h2>
+    <h2>RX Spectrum &amp; Waterfall</h2>
     <div class="row" style="margin-bottom:6px; font-size:12px">
       <label>Floor: <span id="wf-min-v">-90</span> dB</label>
       <input type="range" id="wf-min" min="-130" max="0" value="-90" oninput="wf_cal()">
@@ -156,7 +158,11 @@ label { color: #080; }
         <option value="3">3x</option>
       </select>
     </div>
-    <div id="spectrum"><canvas id="spec-canvas"></canvas></div>
+    <div id="spectrum">
+      <canvas id="spec-scope"></canvas>
+      <canvas id="spec-wf"></canvas>
+    </div>
+    <div id="freq-axis"><span id="axis-l">—</span><span id="axis-c">—</span><span id="axis-r">—</span></div>
     <div id="audio-status">No audio data yet</div>
   </div>
 </div>
@@ -168,6 +174,8 @@ var spec_canvas = null;
 var spec_ctx = null;
 var ptt_on = false;
 var ws_url = '';
+var g_freq = 0;       // last known dial frequency (Hz), for the spectrum axis
+var g_mode = '';      // last known mode string ("LSB"/"USB"/...), for sideband
 
 function $(id) { return document.getElementById(id); }
 
@@ -225,10 +233,12 @@ function handle_text(data) {
     // as periodic broadcasts; both are tagged "type":"state". The
     // server doesn't echo a "cmd" field on those, so key on type.
     if (j.type === 'state') {
-      if (j.frequency !== undefined || j.freq !== undefined)
-        $('freq').value = j.frequency !== undefined ? j.frequency : j.freq;
+      if (j.frequency !== undefined || j.freq !== undefined) {
+        g_freq = j.frequency !== undefined ? j.frequency : j.freq;
+        $('freq').value = g_freq;
+      }
       if (j.profile !== undefined) $('profile').value = j.profile;
-      if (j.mode) $('mode').value = j.mode;
+      if (j.mode) { g_mode = j.mode; $('mode').value = j.mode; }
       if (j.txrx_state !== undefined) {
         ptt_on = (j.txrx_state === 1);
         $('ptt-btn').textContent = ptt_on ? 'PTT OFF' : 'PTT ON';
@@ -334,39 +344,73 @@ function wf_color(t) {
   return 'hsl(' + Math.round((1 - t) * 240) + ',100%,' + Math.round(8 + t * 47) + '%)';
 }
 
-// Scrolling waterfall: each frame becomes a new top row, older rows scroll
-// down. dB -> colour via the Floor/Ceiling calibration above.
+// Radio-style panadapter: a spectrum scope (instantaneous amplitude vs
+// frequency) above a scrolling waterfall, plotted over a real RF axis — like
+// an FT-710 / IC-7300 screen. The daemon ships bins in RF-ascending order (it
+// flips LSB internally), plus Hz-per-bin in the frame and the dial freq/mode
+// in the state, so the X axis reads true frequency, not raw audio.
+// Frame after the 0x02 opcode: [sample_rate u32][nbins u16][bin_hz f32][bins f32...].
 function draw_spectrum(data) {
-  var canvas = $('spec-canvas');
-  if (!canvas) return;
   var dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  if (dv.byteLength < 6) return;
-  var sample_rate = dv.getUint32(0, true);
+  if (dv.byteLength < 10) return;
   var bins = dv.getUint16(4, true);
-  var n = (dv.byteLength - 6) / 4;
-  if (n !== bins) return;
+  var bin_hz = dv.getFloat32(6, true);
+  var n = (dv.byteLength - 10) / 4;
+  if (n !== bins || n < 1) return;
 
-  var ctx = canvas.getContext('2d');
-  // Size the drawing buffer once: width = bins (CSS stretches to 100%),
-  // height = time history. Re-init clears to black.
-  if (canvas.width !== bins) {
-    canvas.width = bins;
-    canvas.height = 240;
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  var db = new Float32Array(n);
+  for (var i = 0; i < n; i++) db[i] = dv.getFloat32(10 + i * 4, true);
+
+  var span = wf_max - wf_min; if (span < 1) span = 1;
+
+  // ---- spectrum scope (top): filled amplitude-vs-frequency trace ----
+  var sc = $('spec-scope');
+  if (sc) {
+    if (sc.width !== bins) { sc.width = bins; sc.height = 90; }
+    var s = sc.getContext('2d');
+    s.clearRect(0, 0, sc.width, sc.height);
+    s.strokeStyle = 'rgba(90,90,90,0.5)'; s.lineWidth = 1;          // freq grid (1/4 marks)
+    for (var g = 1; g < 4; g++) { var gx = (bins * g / 4) | 0; s.beginPath(); s.moveTo(gx, 0); s.lineTo(gx, sc.height); s.stroke(); }
+    s.beginPath(); s.moveTo(0, sc.height);
+    for (var i = 0; i < n; i++) {
+      var t = (db[i] - wf_min) / span; if (t < 0) t = 0; if (t > 1) t = 1;
+      s.lineTo(i, sc.height - t * sc.height);
+    }
+    s.lineTo(bins - 1, sc.height); s.closePath();
+    s.fillStyle = 'rgba(0,210,130,0.30)'; s.fill();
+    s.strokeStyle = '#2fe88a'; s.lineWidth = 1; s.stroke();
   }
 
-  var rows = wf_speed;                  // paint N identical rows = faster scroll
-  ctx.drawImage(canvas, 0, rows);
-  var span = wf_max - wf_min;
-  for (var i = 0; i < n; i++) {
-    var db = dv.getFloat32(6 + i * 4, true);
-    ctx.fillStyle = wf_color((db - wf_min) / span);
-    ctx.fillRect(i, 0, 1, rows);
+  // ---- waterfall (bottom): scroll down, paint the new frame as the top row ----
+  var wf = $('spec-wf');
+  if (wf) {
+    if (wf.width !== bins) { wf.width = bins; wf.height = 170; var ic = wf.getContext('2d'); ic.fillStyle = '#000'; ic.fillRect(0, 0, wf.width, wf.height); }
+    var w = wf.getContext('2d');
+    var rows = wf_speed;
+    w.drawImage(wf, 0, rows);
+    for (var i = 0; i < n; i++) {
+      w.fillStyle = wf_color((db[i] - wf_min) / span);
+      w.fillRect(i, 0, 1, rows);
+    }
   }
-  // ~3 kHz span (2048-pt FFT @ 48k, first 128 bins): label a rough freq axis.
-  $('audio-status').textContent = 'span ~0-3 kHz | ' + bins + ' bins | floor ' +
-                                  wf_min + ' / ceil ' + wf_max + ' dB';
+
+  // ---- RF frequency axis (sideband-aware) ----
+  // Bins are RF-ascending. USB: the dial (suppressed carrier) sits at the
+  // low-freq (left) edge; LSB: the daemon flipped the bins so the dial is at
+  // the high-freq (right) edge. Label left / centre / right in MHz.
+  var total = n * bin_hz;
+  var lsb = (g_mode === 'LSB');
+  var lo = lsb ? (g_freq - total) : g_freq;
+  var hi = lsb ? g_freq : (g_freq + total);
+  var mhz = function (f) { return (f / 1e6).toFixed(4); };
+  if (g_freq > 0) {
+    $('axis-l').textContent = mhz(lo);
+    $('axis-c').textContent = mhz((lo + hi) / 2);
+    $('axis-r').textContent = mhz(hi);
+  }
+  $('audio-status').textContent = 'dial ' + (g_freq / 1e6).toFixed(4) + ' MHz ' + (g_mode || '?') +
+    ' | span ' + Math.round(total) + ' Hz | ' + bins + ' bins @ ' + bin_hz.toFixed(1) + ' Hz/bin' +
+    ' | floor ' + wf_min + ' / ceil ' + wf_max + ' dB';
 }
 </script>
 </body>

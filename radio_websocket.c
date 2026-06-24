@@ -600,12 +600,18 @@ static void broadcast_spectrum(websocket_ctx *ctx, bool tx)
     if (!radio_media_get_spectrum(ctx->radio_h, tx, bins, WATERFALL_BINS, &seq, &sample_rate))
         return;
 
-    uint8_t frame[1 + sizeof(uint32_t) + sizeof(uint16_t) + sizeof(bins)];
+    /* Frame: [op u8][sample_rate u32][nbins u16][bin_hz f32][bins f32...].
+     * bin_hz = sample_rate / fft_size lets the UI label a real RF frequency
+     * axis (dial freq +/- bin*bin_hz, sideband-aware). */
+    float bin_hz = (float) sample_rate / (float) radio_media_spectrum_fft_size();
+    uint8_t frame[1 + sizeof(uint32_t) + sizeof(uint16_t) + sizeof(float) + sizeof(bins)];
     uint16_t nbins = WATERFALL_BINS;
-    frame[0] = tx ? WS_STREAM_TX_SPECTRUM : WS_STREAM_RX_SPECTRUM;
-    memcpy(frame + 1, &sample_rate, sizeof(sample_rate));
-    memcpy(frame + 1 + sizeof(sample_rate), &nbins, sizeof(nbins));
-    memcpy(frame + 1 + sizeof(sample_rate) + sizeof(nbins), bins, sizeof(bins));
+    size_t off = 0;
+    frame[off] = tx ? WS_STREAM_TX_SPECTRUM : WS_STREAM_RX_SPECTRUM; off += 1;
+    memcpy(frame + off, &sample_rate, sizeof(sample_rate)); off += sizeof(sample_rate);
+    memcpy(frame + off, &nbins, sizeof(nbins)); off += sizeof(nbins);
+    memcpy(frame + off, &bin_hz, sizeof(bin_hz)); off += sizeof(bin_hz);
+    memcpy(frame + off, bins, sizeof(bins)); off += sizeof(bins);
 
     for (struct mg_connection *c = ctx->mgr.conns; c != NULL; c = c->next)
     {
