@@ -304,11 +304,38 @@ typedef struct {
     bool rig_server_enable;
     int rig_server_port;
     _Atomic bool enable_audio_bridge;
+    _Atomic bool enable_shm_audio;   /* bridge codec audio to mercury via POSIX SHM */
+
+    /* Half-duplex codec arbitration. Some rigs (e.g. FT-710) expose their CAT
+     * serial and audio codec behind one shared full-speed USB hub; running
+     * capture + playback isoc streams at once there overloads the hub and the
+     * codec drops out (-ENODEV / USB reset). When set, only one direction holds
+     * the codec at a time, switched by txrx_state (HF is half-duplex anyway).
+     * The two _holds_codec atomics serialise the RX/TX handoff. */
+    _Atomic bool audio_half_duplex;
+    _Atomic bool media_capture_holds_codec;
+    _Atomic bool media_playback_holds_codec;
+
+    /* Pointer to the backend's CAT-serialisation mutex (the hamlib serial lock),
+     * or NULL. The media threads take it around codec open/close/recover so a USB
+     * altsetting reconfiguration never races a CAT transaction. On the FT-710 the
+     * C-Media codec and the CP2105 CAT serial sit behind ONE full-speed USB hub;
+     * a codec reconfig concurrent with serial I/O resets the device. Steady isoc
+     * streaming + CAT coexists fine (mercury proves it) — only reconfiguration
+     * must be serialised, so this lock is held only briefly, never while streaming. */
+    pthread_mutex_t *cat_bus_lock;
 
     char websocket_url[WEBSOCKET_URL_MAX];   /* full ws:// or wss:// URL */
 
     char capture_device[AUDIO_DEVICE_NAME_MAX];
     char playback_device[AUDIO_DEVICE_NAME_MAX];
+    /* snd-aloop modem bridge (loop_audio): the daemon mirrors codec audio to/from
+     * these loopback devices at native rate so mercury (-x alsa) reads/writes the
+     * other ends. loop_playback = RX to modem (e.g. hw:1,0); loop_capture = TX
+     * from modem (e.g. hw:2,1). Empty -> disabled. */
+    _Atomic bool enable_loop_audio;
+    char loop_capture_device[AUDIO_DEVICE_NAME_MAX];
+    char loop_playback_device[AUDIO_DEVICE_NAME_MAX];
     /* Optional operator-side headset (hardware) audio path. When both
      * device names are non-empty, the daemon spawns capture+playback threads
      * that mirror the websocket browser audio path onto a local ALSA device. */

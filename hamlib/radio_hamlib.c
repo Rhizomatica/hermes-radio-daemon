@@ -280,17 +280,20 @@ static void hamlib_apply_profile(radio *radio_h, uint32_t profile)
      * slip a meter read between the commands. */
     RIG_LOCK();
 
-    ret = rig_set_freq(rig, RIG_VFO_CURR, (freq_t) radio_h->profiles[profile].freq);
-    if (ret != RIG_OK)
-        fprintf(stderr, "hamlib_apply_profile: rig_set_freq failed: %s\n",
-                rigerror(ret));
-
+    /* Mode BEFORE frequency: on the FT-710 a mode change shifts the displayed
+     * carrier (~1.4 kHz offset), so the frequency must be asserted last or the
+     * dial lands off by that offset. */
     ret = rig_set_mode(rig, RIG_VFO_CURR,
                        mode_to_hamlib(radio_h->profiles[profile].mode,
                                       profile_data_path(&radio_h->profiles[profile])),
                        RIG_PASSBAND_NORMAL);
     if (ret != RIG_OK)
         fprintf(stderr, "hamlib_apply_profile: rig_set_mode failed: %s\n",
+                rigerror(ret));
+
+    ret = rig_set_freq(rig, RIG_VFO_CURR, (freq_t) radio_h->profiles[profile].freq);
+    if (ret != RIG_OK)
+        fprintf(stderr, "hamlib_apply_profile: rig_set_freq failed: %s\n",
                 rigerror(ret));
 
     hamlib_set_level_float(rig,
@@ -417,6 +420,10 @@ static bool radio_hamlib_init(radio *radio_h)
 
     hl_serial_lock_init();
 
+    /* Publish the CAT serial lock so the media threads can serialise codec
+     * open/close against CAT on a shared USB hub (see radio.h cat_bus_lock). */
+    radio_h->cat_bus_lock = &hl_serial_lock;
+
     int ret = rig_open(rig);
     if (ret != RIG_OK)
     {
@@ -533,10 +540,19 @@ static void set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
                                        profile_data_path(&radio_h->profiles[profile]));
         RIG_LOCK();
         int ret = rig_set_mode(rig, RIG_VFO_CURR, hmode, RIG_PASSBAND_NORMAL);
-        RIG_UNLOCK();
         if (ret != RIG_OK)
             fprintf(stderr, "set_mode: rig_set_mode failed: %s\n",
                     rigerror(ret));
+        /* The FT-710 shifts the displayed carrier (~1.4 kHz) on a mode change,
+         * so a bare USB<->LSB toggle moves the dial. Re-assert the profile's
+         * frequency right after the mode (same lock hold) so a mode change
+         * alone never changes the frequency. */
+        ret = rig_set_freq(rig, RIG_VFO_CURR,
+                           (freq_t) radio_h->profiles[profile].freq);
+        if (ret != RIG_OK)
+            fprintf(stderr, "set_mode: rig_set_freq failed: %s\n",
+                    rigerror(ret));
+        RIG_UNLOCK();
     }
 
     char key[64];

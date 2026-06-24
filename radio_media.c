@@ -33,14 +33,18 @@
 #include "radio_media.h"
 #include "radio_pipeline.h"
 #include "audio_bridge.h"
+#include "shm_audio.h"
+#include "loop_audio.h"
 
 extern _Atomic bool shutdown_;
 
 #define DEFAULT_PERIOD_FRAMES 160
 #define DEFAULT_QUEUE_SAMPLES 16000
-/* 2048-pt FFT at 48 kHz = 23.4 Hz/bin; the first WATERFALL_BINS (128) bins
- * then span 0..3 kHz — i.e. the SSB/data audio passband fills the whole
- * waterfall instead of being squeezed into the left 1/8 of a 0..24 kHz view. */
+/* FFT size: the first WATERFALL_BINS (128) bins should span the audio
+ * passband. The bin mapping below takes the first 128 FFT bins, so size it to
+ * the capture rate: at 48 kHz (the ALSA-loopback bridge rate) a 2048-pt FFT =
+ * 23.4 Hz/bin -> first 128 bins cover 0..3 kHz, the SSB/data passband at fine
+ * resolution. (At an 8 kHz dsp_rate, 256 = 31 Hz/bin -> 0..4 kHz.) */
 #define SPECTRUM_FFT_SIZE 2048
 
 typedef struct {
@@ -267,11 +271,22 @@ static snd_pcm_t *open_pcm_device(const char *device, snd_pcm_stream_t stream,
 
     unsigned int rate = sample_rate;
 
+    /* Cap the ALSA ring at ~40 ms (period ~10 ms), like mercury. Left to itself
+     * the codec negotiates ~2 s (96000 frames @ 48 kHz). With the full-duplex
+     * keep-open design the playback ring is kept full of silence during RX, so a
+     * large buffer means TX audio only reaches the air a whole buffer-depth AFTER
+     * PTT — seconds of dead air then a time-shifted frame the far end can't
+     * decode. A small bounded buffer keeps PTT->on-air latency low. */
+    unsigned int buffer_time = 40000;   /* us */
+    unsigned int period_time = 10000;   /* us */
+
     if ((err = snd_pcm_hw_params_any(pcm, hw)) < 0 ||
         (err = snd_pcm_hw_params_set_access(pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0 ||
         (err = snd_pcm_hw_params_set_format(pcm, hw, SND_PCM_FORMAT_S16_LE)) < 0 ||
         (err = snd_pcm_hw_params_set_channels(pcm, hw, 1)) < 0 ||
         (err = snd_pcm_hw_params_set_rate_near(pcm, hw, &rate, 0)) < 0 ||
+        (err = snd_pcm_hw_params_set_period_time_near(pcm, hw, &period_time, 0)) < 0 ||
+        (err = snd_pcm_hw_params_set_buffer_time_near(pcm, hw, &buffer_time, 0)) < 0 ||
         (err = snd_pcm_hw_params(pcm, hw)) < 0)
     {
         fprintf(stderr, "radio_media: hw_params(%s) failed: %s\n",
@@ -282,6 +297,61 @@ static snd_pcm_t *open_pcm_device(const char *device, snd_pcm_stream_t stream,
 
     snd_pcm_prepare(pcm);
     return pcm;
+}
+
+/* A tight close/reopen loop on a hard codec error is dangerous on the FT-710:
+ * its C-Media codec shares a full-speed USB hub TT with the CP2105 CAT serial,
+ * and repeated stream reconfiguration provokes back-to-back USB device resets
+ * ("reset full-speed USB device") that can cascade until the host loses the bus
+ * (it took estacao off the network once). So reopen at most a handful of times
+ * with capped exponential backoff, then GIVE UP — the audio bridge goes dead but
+ * the daemon and its networking stay alive, leaving the device quiescent so the
+ * problem can be diagnosed instead of crash-looping an unattended station. */
+#define MEDIA_REOPEN_MAX_ATTEMPTS 6
+static void media_backoff_sleep(int attempt)
+{
+    /* attempt 1..N -> 1,2,4,8,16,16 s */
+    int shift = attempt - 1;
+    if (shift > 4)
+        shift = 4;
+    usleep((useconds_t) 1000000u << shift);
+}
+
+/* Serialise codec reconfiguration (open/close) against CAT on a shared USB hub.
+ * Held only around the actual snd_pcm open/close (the USB control transfers that
+ * change the device altsetting) — never while streaming or sleeping. No-op when
+ * the backend exposes no CAT lock (radio_h->cat_bus_lock == NULL). */
+static void media_bus_lock(radio *radio_h)
+{
+    if (radio_h->cat_bus_lock)
+        pthread_mutex_lock(radio_h->cat_bus_lock);
+}
+
+static void media_bus_unlock(radio *radio_h)
+{
+    if (radio_h->cat_bus_lock)
+        pthread_mutex_unlock(radio_h->cat_bus_lock);
+}
+
+/* open_pcm_device serialised against CAT (see media_bus_lock). */
+static snd_pcm_t *open_pcm_bus(radio *radio_h, const char *device,
+                               snd_pcm_stream_t stream, uint32_t rate)
+{
+    snd_pcm_t *pcm;
+    media_bus_lock(radio_h);
+    pcm = open_pcm_device(device, stream, rate);
+    media_bus_unlock(radio_h);
+    return pcm;
+}
+
+/* snd_pcm_close serialised against CAT. */
+static void close_pcm_bus(radio *radio_h, snd_pcm_t *pcm)
+{
+    if (!pcm)
+        return;
+    media_bus_lock(radio_h);
+    snd_pcm_close(pcm);
+    media_bus_unlock(radio_h);
 }
 
 static void update_spectrum_locked(radio *radio_h, bool tx, const float *bins)
@@ -363,19 +433,61 @@ static void *capture_thread(void *ctx_v)
         return NULL;
     }
 
-    pcm = open_pcm_device(radio_h->capture_device, SND_PCM_STREAM_CAPTURE, native_rate);
-    if (!pcm)
-    {
-        audio_bridge_shutdown(&bridge);
-        free(buffer);
-        return NULL;
-    }
+    pcm = NULL;   /* opened lazily below: half-duplex owns the codec only in RX */
+    fprintf(stderr, "radio_media: capture %s @ %u Hz -> ring @ %u Hz (half-duplex=%d)\n",
+            radio_h->capture_device, native_rate, ring_rate,
+            (int) radio_h->audio_half_duplex);
 
-    fprintf(stderr, "radio_media: capture %s @ %u Hz -> ring @ %u Hz\n",
-            radio_h->capture_device, native_rate, ring_rate);
-
+    int hard_errors = 0;
     while (!shutdown_)
     {
+        /* In half-duplex the capture stream may only hold the codec during RX
+         * (the FT-710 shared-hub limitation). Full-duplex always wants it. */
+        bool want = !radio_h->audio_half_duplex || (radio_h->txrx_state == IN_RX);
+
+        if (!want)
+        {
+            if (pcm)
+            {
+                snd_pcm_drop(pcm);          /* release the codec for playback */
+                snd_pcm_close(pcm);
+                pcm = NULL;
+            }
+            radio_h->media_capture_holds_codec = false;
+            hard_errors = 0;
+            usleep(10000);
+            continue;
+        }
+
+        if (!pcm)
+        {
+            /* Wait for the playback side to release the codec before grabbing it
+             * — only one isoc stream at a time on the shared hub. */
+            if (radio_h->audio_half_duplex && radio_h->media_playback_holds_codec)
+            {
+                usleep(10000);
+                continue;
+            }
+            if (hard_errors)
+                media_backoff_sleep(hard_errors);   /* capped: never storm the bus */
+            if (shutdown_)
+                break;
+            pcm = open_pcm_bus(radio_h, radio_h->capture_device,
+                               SND_PCM_STREAM_CAPTURE, native_rate);
+            if (!pcm)
+            {
+                if (hard_errors < 1000)
+                    hard_errors++;
+                if (hard_errors <= MEDIA_REOPEN_MAX_ATTEMPTS)
+                    fprintf(stderr, "radio_media: capture open %s failed "
+                            "(attempt %d)\n", radio_h->capture_device, hard_errors);
+                continue;
+            }
+            radio_h->media_capture_holds_codec = true;
+            hard_errors = 0;
+            continue;
+        }
+
         snd_pcm_sframes_t got = snd_pcm_readi(pcm, buffer, frames);
         if (got == -EPIPE)
         {
@@ -392,37 +504,37 @@ static void *capture_thread(void *ctx_v)
         }
         if (got < 0)
         {
-            /* snd_pcm_recover handles xrun (-EPIPE) and suspend (-ESTRPIPE).
-             * For harder errors — e.g. -EIO from a USB codec that needs a
-             * fresh stream — it returns the error, so close and reopen rather
-             * than spin forever on a dead handle (the old code looped on EIO
-             * at 50 Hz, producing no audio and flooding the log). */
+            /* snd_pcm_recover handles xrun (-EPIPE) and suspend (-ESTRPIPE) in
+             * place. Harder errors (-EIO/-ENODEV) need a fresh stream: close,
+             * drop the codec claim, and let the top of the loop reopen with
+             * capped backoff (media_backoff_sleep) — self-healing, never storms. */
             if (snd_pcm_recover(pcm, (int) got, 1) == 0)
                 continue;
 
-            fprintf(stderr, "radio_media: capture read failed: %s — reopening %s\n",
-                    snd_strerror((int) got), radio_h->capture_device);
-            snd_pcm_close(pcm);
+            if (hard_errors < 1000)
+                hard_errors++;
+            if (hard_errors <= MEDIA_REOPEN_MAX_ATTEMPTS)
+                fprintf(stderr, "radio_media: capture read failed: %s — reopening %s "
+                        "(attempt %d)\n", snd_strerror((int) got),
+                        radio_h->capture_device, hard_errors);
+            close_pcm_bus(radio_h, pcm);
             pcm = NULL;
-            while (!shutdown_ && !pcm)
-            {
-                usleep(500000);
-                pcm = open_pcm_device(radio_h->capture_device,
-                                      SND_PCM_STREAM_CAPTURE, native_rate);
-            }
+            radio_h->media_capture_holds_codec = false;
             continue;
         }
 
-        /* Pushes to rx_audio_ring at ring_rate (after resample), taps recording
-         * and feeds the spectrum FFT. */
+        /* Success: clear the failure streak. Pushes to rx_audio_ring at ring_rate
+         * (after resample), taps recording and feeds the spectrum FFT. */
+        hard_errors = 0;
         audio_bridge_push_rx_native(&bridge, radio_h, buffer, (size_t) got);
     }
 
     if (pcm)
     {
-        snd_pcm_drain(pcm);
+        snd_pcm_drop(pcm);
         snd_pcm_close(pcm);
     }
+    radio_h->media_capture_holds_codec = false;
     audio_bridge_shutdown(&bridge);
     free(buffer);
     return NULL;
@@ -448,19 +560,63 @@ static void *playback_thread(void *ctx_v)
         return NULL;
     }
 
-    pcm = open_pcm_device(radio_h->playback_device, SND_PCM_STREAM_PLAYBACK, native_rate);
-    if (!pcm)
-    {
-        audio_bridge_shutdown(&bridge);
-        free(buffer);
-        return NULL;
-    }
+    pcm = NULL;   /* opened lazily below: half-duplex owns the codec only in TX */
+    fprintf(stderr, "radio_media: playback %s @ %u Hz <- ring @ %u Hz (half-duplex=%d)\n",
+            radio_h->playback_device, native_rate, ring_rate,
+            (int) radio_h->audio_half_duplex);
 
-    fprintf(stderr, "radio_media: playback %s @ %u Hz <- ring @ %u Hz\n",
-            radio_h->playback_device, native_rate, ring_rate);
-
+    int hard_errors = 0;
     while (!shutdown_)
     {
+        /* In half-duplex the playback stream may only hold the codec during TX
+         * (the FT-710 shared-hub limitation). Full-duplex always wants it. */
+        bool want = !radio_h->audio_half_duplex || (radio_h->txrx_state == IN_TX);
+
+        if (!want)
+        {
+            if (pcm)
+            {
+                /* Drain the tail of the transmission, then release the codec so
+                 * the capture side can reclaim it for RX. */
+                snd_pcm_drain(pcm);
+                snd_pcm_close(pcm);
+                pcm = NULL;
+            }
+            radio_h->media_playback_holds_codec = false;
+            hard_errors = 0;
+            usleep(10000);
+            continue;
+        }
+
+        if (!pcm)
+        {
+            /* Wait for the capture side to release the codec before grabbing it
+             * — only one isoc stream at a time on the shared hub. */
+            if (radio_h->audio_half_duplex && radio_h->media_capture_holds_codec)
+            {
+                usleep(10000);
+                continue;
+            }
+            if (hard_errors)
+                media_backoff_sleep(hard_errors);   /* capped: never storm the bus */
+            if (shutdown_)
+                break;
+            pcm = open_pcm_bus(radio_h, radio_h->playback_device,
+                               SND_PCM_STREAM_PLAYBACK, native_rate);
+            if (!pcm)
+            {
+                if (hard_errors < 1000)
+                    hard_errors++;
+                if (hard_errors <= MEDIA_REOPEN_MAX_ATTEMPTS)
+                    fprintf(stderr, "radio_media: playback open %s failed "
+                            "(attempt %d)\n", radio_h->playback_device, hard_errors);
+                continue;
+            }
+            radio_h->media_playback_holds_codec = true;
+            hard_errors = 0;
+            continue;
+        }
+
         /* When digital_voice is active on the hamlib backend, the
          * RADAE pump produces the rig-bound modulated audio into
          * tx_radae_ring; bypass tx_audio_ring (which carries raw
@@ -513,14 +669,32 @@ static void *playback_thread(void *ctx_v)
         }
         if (wrote < 0)
         {
-            fprintf(stderr, "radio_media: playback write failed: %s\n",
-                    snd_strerror((int) wrote));
-            usleep(20000);
+            /* Recover xrun/suspend in place; for hard errors (-EIO/-ENODEV from
+             * the USB codec) close, drop the codec claim, and let the top of the
+             * loop reopen with capped backoff — self-healing, never storms. */
+            if (snd_pcm_recover(pcm, (int) wrote, 1) == 0)
+                continue;
+
+            if (hard_errors < 1000)
+                hard_errors++;
+            if (hard_errors <= MEDIA_REOPEN_MAX_ATTEMPTS)
+                fprintf(stderr, "radio_media: playback write failed: %s — reopening %s "
+                        "(attempt %d)\n", snd_strerror((int) wrote),
+                        radio_h->playback_device, hard_errors);
+            close_pcm_bus(radio_h, pcm);
+            pcm = NULL;
+            radio_h->media_playback_holds_codec = false;
+            continue;
         }
+        hard_errors = 0;
     }
 
-    snd_pcm_drain(pcm);
-    snd_pcm_close(pcm);
+    if (pcm)
+    {
+        snd_pcm_drain(pcm);
+        snd_pcm_close(pcm);
+    }
+    radio_h->media_playback_holds_codec = false;
     audio_bridge_shutdown(&bridge);
     free(buffer);
     return NULL;
@@ -528,13 +702,17 @@ static void *playback_thread(void *ctx_v)
 
 static bool daemon_audio_bridge_enabled(radio *radio_h)
 {
-    if (!radio_h->enable_audio_bridge)
+    /* The daemon-owned codec capture/playback threads back both the websocket
+     * audio bridge (enable_audio_bridge) and the SHM bridge to mercury
+     * (enable_shm_audio). Either consumer is enough to bring the codec up. */
+    if (!radio_h->enable_audio_bridge && !radio_h->enable_shm_audio &&
+        !radio_h->enable_loop_audio)
         return false;
 
-    if (!radio_pipeline_uses_daemon_audio_bridge(radio_h))
+    if (!radio_pipeline_has_capability(radio_h, RADIO_PIPELINE_CAP_DAEMON_AUDIO_BRIDGE))
     {
         fprintf(stderr,
-                "radio_media: ignoring enable_audio_bridge for pipeline %s; "
+                "radio_media: ignoring audio bridge for pipeline %s; "
                 "media remains on the %s path.\n",
                 radio_pipeline_name(radio_h),
                 radio_pipeline_media_owner_name(radio_h));
@@ -706,6 +884,12 @@ void radio_media_tap_rx_audio(radio *radio_h, const int16_t *samples, size_t nsa
         recording_write(&radio_h->rx_recording, samples, nsamples);
     if (radio_pipeline_supports_spectrum(radio_h, false))
         spectrum_accumulate(radio_h, false, samples, nsamples);
+    /* Mirror captured RX to mercury over SHM (no-op until shm_audio_init).
+     * Non-blocking, so it never stalls the capture thread. */
+    if (radio_h->enable_shm_audio)
+        shm_audio_push_rx(samples, nsamples);
+    if (radio_h->enable_loop_audio)
+        loop_audio_push_rx(samples, nsamples);
 }
 
 void radio_media_tap_tx_audio(radio *radio_h, const int16_t *samples, size_t nsamples)

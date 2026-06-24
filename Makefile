@@ -6,11 +6,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 CC      = gcc
-CFLAGS  = -Ofast -Wall -std=gnu11 -fstack-protector \
+# -MMD -MP auto-generates per-object header dependencies (*.d), so editing a
+# shared header (e.g. radio.h) rebuilds every object that includes it. Without
+# this, changing a struct layout left stale objects with the old layout — fields
+# read at mismatched offsets, corrupting memory (a very painful class of bug).
+CFLAGS  = -Ofast -Wall -std=gnu11 -fstack-protector -MMD -MP \
           -I. -Ihamlib -I/usr/include/iniparser -I/usr/include/csdr -Iinclude \
           -Wno-deprecated-declarations
 LDFLAGS = -liniparser -lhamlib -lasound -lcrypto -lssl -lfftw3f -lfftw3 \
-          -lpthread -lm -li2c -lcsdr -lspecbleach -lcw
+          -lpthread -lm -li2c -lcsdr -lspecbleach -lcw -lrt
 
 # Mongoose now serves as the websocket transport in radio_websocket.c.
 CFLAGS += -DMG_ENABLE_OPENSSL=1 -DMG_TLS=MG_TLS_OPENSSL
@@ -55,6 +59,10 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   radio_websocket.o \
                   audio_bridge.o \
                   audio_headset.o \
+                  shm_audio.o \
+                  loop_audio.o \
+                  vendor/hermes_shm/ring_buffer_posix.o \
+                  vendor/hermes_shm/shm_posix.o \
                   cfg_utils.o \
                   shm_utils.o \
                   mongoose.o
@@ -130,6 +138,7 @@ sysconfdir ?= /etc
 install: radio_daemon radio_client
 	install -D -m 755 radio_daemon  $(DESTDIR)$(prefix)/bin/radio_daemon
 	install -D -m 755 radio_client  $(DESTDIR)$(prefix)/bin/radio_client
+	install -D -m 644 radiod.service $(DESTDIR)/etc/systemd/system/radiod.service
 	if [ ! -e $(DESTDIR)$(prefix)/bin/sbitx_client ]; then \
 	  ln -sf radio_client $(DESTDIR)$(prefix)/bin/sbitx_client; \
 	fi
@@ -144,4 +153,7 @@ install: radio_daemon radio_client
 # ── clean ───────────────────────────────────────────────────────
 clean:
 	rm -f radio_daemon radio_client \
-	      $(DAEMON_OBJS) $(TEST_BINS)
+	      $(DAEMON_OBJS) $(DAEMON_OBJS:.o=.d) $(TEST_BINS)
+
+# Auto-generated header dependencies (from -MMD). Hyphen: ignore on first build.
+-include $(DAEMON_OBJS:.o=.d)

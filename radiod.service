@@ -1,0 +1,23 @@
+[Unit]
+Description=HERMES radio controller daemon (hermes-radio-daemon)
+After=network.target
+
+[Service]
+Type=exec
+User=root
+Group=root
+SupplementaryGroups=ssl-cert
+ExecStart=/usr/bin/radio_daemon -c 3
+KillSignal=SIGTERM
+IgnoreSIGPIPE=no
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+# WSS certificate paths (hardcoded in binary):
+#   cert: /etc/ssl/certs/hermes.radio.crt   (644 root:ssl-cert)
+#   key:  /etc/ssl/private/hermes.radio.key  (640 root:ssl-cert)
+# Installed by hermes-installer certificate_setup.sh
+
+[Install]
+WantedBy=multi-user.target

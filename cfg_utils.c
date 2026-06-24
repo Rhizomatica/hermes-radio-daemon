@@ -268,11 +268,26 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     b = iniparser_getboolean(ini, "main:enable_audio_bridge", 0);
     radio_h->enable_audio_bridge = (bool) b;
 
+    b = iniparser_getboolean(ini, "main:enable_shm_audio", 0);
+    radio_h->enable_shm_audio = (bool) b;
+
+    b = iniparser_getboolean(ini, "main:audio_half_duplex", 0);
+    radio_h->audio_half_duplex = (bool) b;
+
+    b = iniparser_getboolean(ini, "main:enable_loop_audio", 0);
+    radio_h->enable_loop_audio = (bool) b;
+
     s = iniparser_getstring(ini, "main:capture_device", "default");
     snprintf(radio_h->capture_device, sizeof(radio_h->capture_device), "%s", s);
 
     s = iniparser_getstring(ini, "main:playback_device", "default");
     snprintf(radio_h->playback_device, sizeof(radio_h->playback_device), "%s", s);
+
+    /* snd-aloop modem bridge devices (loop_audio). Empty -> disabled. */
+    s = iniparser_getstring(ini, "main:loop_capture_device", "");
+    snprintf(radio_h->loop_capture_device, sizeof(radio_h->loop_capture_device), "%s", s);
+    s = iniparser_getstring(ini, "main:loop_playback_device", "");
+    snprintf(radio_h->loop_playback_device, sizeof(radio_h->loop_playback_device), "%s", s);
 
     /* Operator-side headset. Empty -> headset path disabled. */
     s = iniparser_getstring(ini, "main:headset_capture_device", "");

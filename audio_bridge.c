@@ -204,10 +204,17 @@ size_t audio_bridge_pop_tx_native(audio_bridge *b, radio *radio_h,
         return got;
     }
 
-    /* Pull ~ n_native * dsp/native samples from the ring, resample down. */
+    /* Pull exactly n_native * dsp/native samples from the ring so the resampler
+     * produces ~n_native output. The old "+16" margin over-pulled: it drained
+     * the 8 kHz ring faster than mercury fills it AND the surplus resampled
+     * output was capped+discarded below, chopping ~17% out of every period —
+     * which shredded the modem signal (TX finished early, far end couldn't
+     * decode). Exact ratio keeps drain == fill and plays the whole frame. */
     size_t n_in_want = (size_t)((double) n_native *
                                 (double) b->decim_down /
-                                (double) b->interp_down) + 16;
+                                (double) b->interp_down);
+    if (n_in_want == 0)
+        n_in_want = 1;
 
     /* Use a scratch from the bridge for the int16 ring pull. */
     if (!grow_scratch(b, n_in_want, n_native + 32))
