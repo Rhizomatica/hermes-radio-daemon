@@ -150,6 +150,24 @@ static bool hamlib_read_level_float(RIG *rig, setting_t level, float *out)
     return true;
 }
 
+static bool hamlib_read_level_int(RIG *rig, setting_t level, int *out)
+{
+    value_t val;
+
+    if (!rig || !out || !rig_has_get_level(rig, level))
+        return false;
+
+    memset(&val, 0, sizeof(val));
+    RIG_LOCK();
+    int ret = rig_get_level(rig, RIG_VFO_CURR, level, &val);
+    RIG_UNLOCK();
+    if (ret != RIG_OK)
+        return false;
+
+    *out = val.i;
+    return true;
+}
+
 static bool hamlib_set_level_float(RIG *rig,
                                    setting_t level,
                                    float value,
@@ -434,6 +452,7 @@ static bool radio_hamlib_init(radio *radio_h)
     }
 
     radio_h->rig = (void *) rig;
+    radio_h->s_meter_db = -200;   /* no S-meter reading until the first RX poll */
 
     /* Apply the selected profile to the rig, then mirror the resulting state. */
     freq_t hfreq = 0;
@@ -874,6 +893,21 @@ static void hamlib_poll_vfo_state(radio *radio_h)
         radio_h->profiles[profile].mode = hamlib_to_mode(hmode);
 }
 
+/* RX S-meter: hamlib RIG_LEVEL_STRENGTH is the calibrated signal strength in
+ * dB relative to S9 (S9 = 0), derived by the backend from the rig's raw meter.
+ * RX-only and serialized via the rig lock like every other CAT access. */
+static void hamlib_poll_s_meter(radio *radio_h)
+{
+    RIG *rig = (RIG *) radio_h->rig;
+    int strength = 0;
+
+    if (!rig)
+        return;
+
+    if (hamlib_read_level_int(rig, RIG_LEVEL_STRENGTH, &strength))
+        radio_h->s_meter_db = strength;
+}
+
 static void *radio_io_thread(void *radio_h_v)
 {
     radio *radio_h = (radio *) radio_h_v;
@@ -918,13 +952,23 @@ static void *radio_io_thread(void *radio_h_v)
                 radio_h->ref_power = 0;
             }
 
-            /* Sync freq/mode from the rig ~every 500 ms (every 5th 100 ms
-             * tick) so front-panel changes show up in the daemon state. */
+            /* Sync freq/mode from the rig ~every 200 ms (every 2nd 100 ms
+             * tick) so front-panel changes show up in the daemon state with
+             * little lag. CAT reads are serialised by the rig lock. */
             static int vfo_tick = 0;
-            if (++vfo_tick >= 5)
+            if (++vfo_tick >= 2)
             {
                 vfo_tick = 0;
                 hamlib_poll_vfo_state(radio_h);
+            }
+
+            /* Poll the RX S-meter ~every 300 ms (every 3rd tick) for a
+             * responsive signal readout without flooding the CAT bus. */
+            static int smeter_tick = 0;
+            if (++smeter_tick >= 3)
+            {
+                smeter_tick = 0;
+                hamlib_poll_s_meter(radio_h);
             }
         }
 

@@ -27,6 +27,11 @@ label { color: #080; }
 #spec-scope { width: 100%; height: 90px; background: #001016; display: block; border: 1px solid #333; border-bottom: none; image-rendering: pixelated; }
     #spec-wf { width: 100%; height: 170px; background: #000; display: block; border: 1px solid #333; image-rendering: pixelated; }
     #freq-axis { display: flex; justify-content: space-between; font: 11px monospace; color: #8cf; padding: 3px 2px 0; }
+    #smeter { margin-bottom: 8px; }
+    #smeter-scale { display: flex; justify-content: space-between; font: 10px monospace; color: #9cf; padding: 0 1px 1px; }
+    #smeter-bar { height: 16px; background: #111; border: 1px solid #333; overflow: hidden; }
+    #smeter-fill { height: 100%; width: 0%; background: linear-gradient(90deg,#1a7d3a,#3fd06a 45%,#e8d23a 62%,#e85a2a); transition: width 0.12s linear; }
+    #smeter-read { font: 12px monospace; color: #cfe; margin-top: 3px; }
 .tab { display: inline-block; padding: 4px 12px; cursor: pointer; border: 1px solid #333; border-bottom: none; background: #1a1a1a; }
 .tab.active { background: #222; color: #0f0; }
 .tab-content { display: none; }
@@ -158,6 +163,11 @@ label { color: #080; }
         <option value="3">3x</option>
       </select>
     </div>
+    <div id="smeter">
+      <div id="smeter-scale"><span>S1</span><span>3</span><span>5</span><span>7</span><span>9</span><span>+20</span><span>+40</span><span>+60</span></div>
+      <div id="smeter-bar"><div id="smeter-fill"></div></div>
+      <div id="smeter-read">S— · — dBm</div>
+    </div>
     <div id="spectrum">
       <canvas id="spec-scope"></canvas>
       <canvas id="spec-wf"></canvas>
@@ -239,6 +249,7 @@ function handle_text(data) {
       }
       if (j.profile !== undefined) $('profile').value = j.profile;
       if (j.mode) { g_mode = j.mode; $('mode').value = j.mode; }
+      if (j.s_meter !== undefined) update_smeter(j.s_meter);
       if (j.txrx_state !== undefined) {
         ptt_on = (j.txrx_state === 1);
         $('ptt-btn').textContent = ptt_on ? 'PTT OFF' : 'PTT ON';
@@ -342,6 +353,33 @@ function wf_color(t) {
   if (wf_palette === 'green') return 'hsl(120,100%,' + Math.round(t * 60) + '%)';
   // turbo-ish: blue -> cyan -> green -> yellow -> red
   return 'hsl(' + Math.round((1 - t) * 240) + ',100%,' + Math.round(8 + t * 47) + '%)';
+}
+
+// S-meter: the daemon reports signal strength in dB relative to S9 (S9 = 0,
+// each S-unit 6 dB, positive = over S9, -200 = no reading). The scale labels
+// S1..S9 then +20/+40/+60 are evenly spaced, so map dB piecewise to match.
+var SM_PTS = [-48, -36, -24, -12, 0, 20, 40, 60];   // label dB values
+function sm_pct(db) {
+  var last = SM_PTS.length - 1;
+  if (db <= SM_PTS[0]) return 0;
+  if (db >= SM_PTS[last]) return 100;
+  for (var i = 1; i <= last; i++) {
+    if (db <= SM_PTS[i]) {
+      var seg = (db - SM_PTS[i - 1]) / (SM_PTS[i] - SM_PTS[i - 1]);
+      return ((i - 1) + seg) / last * 100;
+    }
+  }
+  return 100;
+}
+function update_smeter(db) {
+  var fill = $('smeter-fill'), read = $('smeter-read');
+  if (!fill || !read) return;
+  if (db < -150) { fill.style.width = '0%'; read.textContent = 'S— · — dBm'; return; }
+  fill.style.width = sm_pct(db).toFixed(1) + '%';
+  var s;
+  if (db >= 0) s = 'S9+' + Math.round(db);
+  else { var u = Math.round(9 + db / 6); if (u < 0) u = 0; s = 'S' + u; }
+  read.textContent = s + ' · ' + (db - 73) + ' dBm';   // S9 = -73 dBm on HF
 }
 
 // Radio-style panadapter: a spectrum scope (instantaneous amplitude vs

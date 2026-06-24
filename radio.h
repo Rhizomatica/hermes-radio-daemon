@@ -280,6 +280,10 @@ typedef struct {
     _Atomic uint32_t fwd_power;
     _Atomic uint32_t ref_power;
 
+    /* RX signal strength (S-meter), dB relative to S9 (S9 = 0): S0 ~ -54,
+     * each S-unit 6 dB, positive = over S9. -200 = no reading yet. */
+    _Atomic int32_t  s_meter_db;
+
     /* Informational */
     _Atomic uint32_t serial_number;
     _Atomic bool     system_is_connected;     /* VARA / modem connection status */

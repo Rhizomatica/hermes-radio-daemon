@@ -53,7 +53,7 @@ typedef struct {
 } websocket_ctx;
 
 typedef struct {
-    time_t   last_status;
+    int64_t  last_status;     /* mg_millis() at last status send (ms) */
     uint32_t last_rx_spectrum_seq;
     uint32_t last_tx_spectrum_seq;
 } ws_conn_state;
@@ -216,6 +216,7 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
          "\"bfo\":%u,\"serial\":%u,\"step_size\":%u,\"tone\":%s,"
          "\"reflected_threshold\":%u,\"timeout\":%d,"
          "\"operating_mode\":%u,\"fwd\":%u,\"ref_power\":%u,\"swr\":%u,"
+         "\"s_meter\":%d,"
          "\"recording_rx\":%s,\"recording_tx\":%s,"
          "\"audio_sample_rate\":%u,\"message_available\":%s,"
          "\"backend\":\"%s\",\"digital_voice\":%s,\"protection\":%s,"
@@ -238,6 +239,7 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
          radio_h->reflected_threshold, radio_h->profile_timeout,
          radio_h->profiles[active].operating_mode,
          radio_h->fwd_power, radio_h->ref_power, radio_backend_get_swr(radio_h),
+         (int) radio_h->s_meter_db,
          radio_h->rx_recording.active ? "true" : "false",
          radio_h->tx_recording.active ? "true" : "false",
          radio_h->audio_sample_rate,
@@ -534,17 +536,22 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
 
 /* ─────────────────────── broadcasts ─────────────────────── */
 
+/* Status broadcast floor: at most one state frame per connection per this many
+ * ms. Was 1 Hz (second-resolution), which made front-panel/UI changes feel
+ * ~1 s laggy; 150 ms is responsive yet still light (~7 Hz, ~1 KB each). */
+#define STATUS_MIN_INTERVAL_MS 150
+
 static void broadcast_status(websocket_ctx *ctx)
 {
     char json[1024];
-    time_t now = time(NULL);
+    int64_t now = mg_millis();
     bool built = false;
 
     for (struct mg_connection *c = ctx->mgr.conns; c != NULL; c = c->next)
     {
         if (!c->is_websocket || !c->is_accepted || c->is_draining) continue;
         ws_conn_state *st = (ws_conn_state *) c->fn_data;
-        if (st && st->last_status == now) continue;
+        if (st && now - st->last_status < STATUS_MIN_INTERVAL_MS) continue;
 
         if (!built) { build_status_json(ctx->radio_h, json, sizeof(json)); built = true; }
         mg_ws_send(c, json, strlen(json), WEBSOCKET_OP_TEXT);
