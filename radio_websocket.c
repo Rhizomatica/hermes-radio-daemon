@@ -139,6 +139,7 @@ static bool extract_json_int(const char *json, const char *key, long *out)
     if (!start) return false;
     start++;
     while (*start == ' ' || *start == '\t') start++;
+    if (*start == '"') start++;   /* tolerate quoted numbers, e.g. UI "value":"3" */
     *out = strtol(start, NULL, 10);
     return true;
 }

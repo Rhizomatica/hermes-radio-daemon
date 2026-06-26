@@ -618,3 +618,11 @@ bool digi_tx_queue_pop(digi_tx_queue *q, char *out, size_t out_len)
     pthread_mutex_unlock(&q->mutex);
     return true;
 }
+
+bool digi_tx_queue_pending(digi_tx_queue *q)
+{
+    pthread_mutex_lock(&q->mutex);
+    bool has = q->count > 0;
+    pthread_mutex_unlock(&q->mutex);
+    return has;
+}

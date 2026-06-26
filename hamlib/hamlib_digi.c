@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #define USE_FFTW
@@ -32,6 +33,12 @@
 #include "../dsp/sbitx_ft8.h"
 #include "../dsp/sbitx_rtty.h"
 #include "../dsp/sbitx_radae.h"
+#include "../radio_backend.h"   /* radio_backend_set_txrx_state for auto-PTT */
+
+/* Hard cap on an auto-keyed digital transmission. PTT is dropped the instant
+ * the queue empties and the TX ring drains; this only fires if something stalls
+ * (e.g. the codec), guaranteeing we never hold the rig in TX indefinitely. */
+#define DIGI_TX_MAX_SECS 45
 
 extern _Atomic bool shutdown_;
 
@@ -211,6 +218,13 @@ typedef struct {
      * Carried across calls so consecutive blocks stay phase-continuous. */
     double radae_tx_phase;
     double radae_rx_phase;
+    /* Auto-PTT for typed digital TX (CW/RTTY/FT8): when text is queued we key
+     * PTT, transmit, then drop PTT once the queue empties and the TX ring has
+     * drained. digi_auto_tx distinguishes our keying from a manual operator PTT
+     * (which we never auto-unkey). */
+    bool   digi_auto_tx;
+    time_t digi_tx_start;
+    int    digi_drain_ticks;
 } hamlib_digi_state;
 
 static hamlib_digi_state g_state;
@@ -714,6 +728,13 @@ static void *hamlib_digi_thread(void *radio_h_v)
         }
 
         if (mode != MODE_FT8 && mode != MODE_CW && mode != MODE_RTTY) {
+            /* Left the digital modes while still auto-keyed (e.g. profile
+             * switched mid-TX): drop PTT so we never stick in transmit. */
+            if (s->digi_auto_tx) {
+                radio_backend_set_txrx_state(radio_h, IN_RX);
+                s->digi_auto_tx = false;
+                s->digi_drain_ticks = 0;
+            }
             usleep(50000);
             continue;
         }
@@ -733,6 +754,21 @@ static void *hamlib_digi_thread(void *radio_h_v)
             s->rtty_inited = true;
         }
 
+        /* Auto-PTT: text queued while receiving -> key PTT, then let the next
+         * iteration transmit (the brief sleep lets PTT engage before audio). A
+         * manual operator PTT also transmits the queue and is left alone
+         * (digi_auto_tx stays false, so it is never auto-unkeyed). */
+        if (!in_tx && !s->digi_auto_tx &&
+            digi_tx_queue_pending(&radio_h->digi_tx) &&
+            !radio_h->swr_protection_enabled) {
+            radio_backend_set_txrx_state(radio_h, IN_TX);
+            s->digi_auto_tx = true;
+            s->digi_tx_start = time(NULL);
+            s->digi_drain_ticks = 0;
+            usleep(30000);
+            continue;
+        }
+
         if (in_tx) {
             switch (mode) {
             case MODE_CW:
@@ -750,6 +786,31 @@ static void *hamlib_digi_thread(void *radio_h_v)
              * a beat so the playback thread can drain before we check the
              * queue again. */
             usleep(20000);
+
+            /* Auto-unkey our own PTT once the queue is empty and the TX ring
+             * has fully drained (held a few ticks so the codec's buffered tail
+             * flushes). DIGI_TX_MAX_SECS is a hard backstop against a stall. */
+            if (s->digi_auto_tx) {
+                pthread_mutex_lock(&radio_h->tx_audio_ring.mutex);
+                size_t txfill = radio_h->tx_audio_ring.count;
+                pthread_mutex_unlock(&radio_h->tx_audio_ring.mutex);
+
+                if (digi_tx_queue_pending(&radio_h->digi_tx) || txfill > 0)
+                    s->digi_drain_ticks = 0;
+                else
+                    s->digi_drain_ticks++;
+
+                bool timed_out = (time(NULL) - s->digi_tx_start) > DIGI_TX_MAX_SECS;
+                if (s->digi_drain_ticks >= 8 || timed_out) {
+                    radio_backend_set_txrx_state(radio_h, IN_RX);
+                    s->digi_auto_tx = false;
+                    s->digi_drain_ticks = 0;
+                    if (timed_out) {   /* flush a stuck queue so we don't re-key */
+                        char junk[DIGI_TX_MSG_MAX];
+                        while (digi_tx_queue_pop(&radio_h->digi_tx, junk, sizeof(junk))) {}
+                    }
+                }
+            }
         } else {
             switch (mode) {
             case MODE_CW:

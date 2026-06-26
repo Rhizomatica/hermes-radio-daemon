@@ -70,6 +70,12 @@ static void hl_serial_lock_init(void)
     pthread_mutexattr_destroy(&attr);
 }
 
+/* Set on a profile/mode change to pause hamlib_poll_vfo_state for a moment so
+ * its rig read-back can't write a stale/mid-transition mode into the profile
+ * being switched to (apply_profile would then re-apply that wrong mode — the
+ * mode used to lag one switch behind). The io thread ticks it back down. */
+static _Atomic int vfo_poll_suppress = 0;
+
 #define RIG_LOCK()   pthread_mutex_lock(&hl_serial_lock)
 #define RIG_UNLOCK() pthread_mutex_unlock(&hl_serial_lock)
 
@@ -300,14 +306,22 @@ static void hamlib_apply_profile(radio *radio_h, uint32_t profile)
 
     /* Mode BEFORE frequency: on the FT-710 a mode change shifts the displayed
      * carrier (~1.4 kHz offset), so the frequency must be asserted last or the
-     * dial lands off by that offset. */
-    ret = rig_set_mode(rig, RIG_VFO_CURR,
-                       mode_to_hamlib(radio_h->profiles[profile].mode,
-                                      profile_data_path(&radio_h->profiles[profile])),
-                       RIG_PASSBAND_NORMAL);
-    if (ret != RIG_OK)
-        fprintf(stderr, "hamlib_apply_profile: rig_set_mode failed: %s\n",
-                rigerror(ret));
+     * dial lands off by that offset.
+     * Digital-text modes (CW/RTTY/FT8) are keyed in software as audio tones
+     * into the data port; the operator keeps the rig in a DATA/SSB mode, so we
+     * must NOT drive the rig into CW/RTTY here (that suppresses the tone). Set
+     * frequency only and leave the rig's mode alone. */
+    uint16_t pm = radio_h->profiles[profile].mode;
+    if (pm != MODE_CW && pm != MODE_RTTY && pm != MODE_FT8)
+    {
+        ret = rig_set_mode(rig, RIG_VFO_CURR,
+                           mode_to_hamlib(pm,
+                                          profile_data_path(&radio_h->profiles[profile])),
+                           RIG_PASSBAND_NORMAL);
+        if (ret != RIG_OK)
+            fprintf(stderr, "hamlib_apply_profile: rig_set_mode failed: %s\n",
+                    rigerror(ret));
+    }
 
     ret = rig_set_freq(rig, RIG_VFO_CURR, (freq_t) radio_h->profiles[profile].freq);
     if (ret != RIG_OK)
@@ -371,7 +385,7 @@ static rmode_t mode_to_hamlib(uint16_t mode, bool data_path)
     case MODE_LSB:  return data_path ? RIG_MODE_PKTLSB : RIG_MODE_LSB;
     case MODE_FM:   return data_path ? RIG_MODE_PKTFM  : RIG_MODE_FM;
     case MODE_AM:   return data_path ? RIG_MODE_PKTAM  : RIG_MODE_AM;
-    case MODE_CW:   return data_path ? RIG_MODE_PKTUSB : RIG_MODE_CW;
+    case MODE_CW:   return data_path ? RIG_MODE_PKTLSB : RIG_MODE_CW;
     case MODE_RTTY: return data_path ? RIG_MODE_PKTLSB : RIG_MODE_RTTY;
     case MODE_DRM:  return RIG_MODE_PKTUSB;   /* digital only, no voice DRM   */
     case MODE_FT8:  return RIG_MODE_PKTUSB;   /* USB worldwide by convention  */
@@ -548,6 +562,9 @@ static void set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
 
     if (*radio_mode == mode)
         return;
+
+    if (profile == radio_h->profile_active_idx)
+        vfo_poll_suppress = 15;   /* same read-back race as set_profile */
 
     *radio_mode = mode;
 
@@ -777,6 +794,7 @@ static void set_profile(radio *radio_h, uint32_t profile)
     if (profile >= radio_h->profiles_count)
         return;
 
+    vfo_poll_suppress = 15;   /* freeze read-back ~1.5 s (100 ms io tick) */
     radio_h->profile_active_idx = profile;
     radio_pipeline_refresh(radio_h);
     hamlib_apply_profile(radio_h, profile);
@@ -889,7 +907,13 @@ static void hamlib_poll_vfo_state(radio *radio_h)
     if (fr == RIG_OK && hfreq > 0)
         radio_h->profiles[profile].freq = (uint32_t) hfreq;
 
-    if (mr == RIG_OK)
+    /* Preserve a digital-text profile's mode (CW/RTTY/FT8): the digi engine
+     * keys off it, while the rig sits in a PKT/SSB mode that reads back as
+     * USB/LSB and would silently disable digital TX (radio never keys). Sync
+     * frequency only for those; sync both for voice/SSB profiles. */
+    uint16_t pmode = radio_h->profiles[profile].mode;
+    if (mr == RIG_OK &&
+        pmode != MODE_CW && pmode != MODE_RTTY && pmode != MODE_FT8)
         radio_h->profiles[profile].mode = hamlib_to_mode(hmode);
 }
 
@@ -954,12 +978,21 @@ static void *radio_io_thread(void *radio_h_v)
 
             /* Sync freq/mode from the rig ~every 200 ms (every 2nd 100 ms
              * tick) so front-panel changes show up in the daemon state with
-             * little lag. CAT reads are serialised by the rig lock. */
-            static int vfo_tick = 0;
-            if (++vfo_tick >= 2)
+             * little lag. CAT reads are serialised by the rig lock. Skipped for
+             * ~1.5 s right after a profile/mode change so the read-back can't
+             * race the switch and write back a stale mode. */
+            if (vfo_poll_suppress > 0)
             {
-                vfo_tick = 0;
-                hamlib_poll_vfo_state(radio_h);
+                vfo_poll_suppress--;
+            }
+            else
+            {
+                static int vfo_tick = 0;
+                if (++vfo_tick >= 2)
+                {
+                    vfo_tick = 0;
+                    hamlib_poll_vfo_state(radio_h);
+                }
             }
 
             /* Poll the RX S-meter ~every 300 ms (every 3rd tick) for a

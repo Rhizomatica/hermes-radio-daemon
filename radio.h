@@ -420,5 +420,6 @@ void digi_tx_queue_init(digi_tx_queue *q);
 void digi_tx_queue_destroy(digi_tx_queue *q);
 bool digi_tx_queue_push(digi_tx_queue *q, const char *text);
 bool digi_tx_queue_pop(digi_tx_queue *q, char *out, size_t out_len);
+bool digi_tx_queue_pending(digi_tx_queue *q);   /* true if any text is queued */
 
 #endif /* RADIO_H_ */
