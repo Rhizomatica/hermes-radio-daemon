@@ -203,10 +203,36 @@ static void send_value_string(struct mg_connection *c, const char *cmd, const ch
 
 /* ─────────────────────── helpers: status JSON ─────────────────────── */
 
+/* Escape a station message for embedding in a JSON string. uucico writes
+ * file names into it, so quotes/backslashes/control chars must not be able
+ * to corrupt the whole state frame. */
+static void json_escape(const char *in, char *out, size_t out_len)
+{
+    size_t o = 0;
+    for (size_t i = 0; in[i] && o + 2 < out_len; i++)
+    {
+        unsigned char ch = (unsigned char) in[i];
+        if (ch == '"' || ch == '\\') { out[o++] = '\\'; out[o++] = (char) ch; }
+        else if (ch < 0x20)          { out[o++] = ' '; }
+        else                         { out[o++] = (char) ch; }
+    }
+    out[o] = '\0';
+}
+
 static void build_status_json(radio *radio_h, char *json, size_t json_len)
 {
     uint32_t active = radio_h->profile_active_idx;
     if (active >= radio_h->profiles_count) active = 0;
+
+    /* Latched station message (uucp transfer progress etc.), pumped from the
+     * SHM connector by radio_shm.c. Kept in every frame like the legacy
+     * sbitx_websocket "message" field. */
+    char message[RADIO_MESSAGE_MAX];
+    char message_esc[RADIO_MESSAGE_MAX * 2];
+    pthread_mutex_lock(&radio_h->message_mutex);
+    snprintf(message, sizeof(message), "%s", radio_h->message);
+    pthread_mutex_unlock(&radio_h->message_mutex);
+    json_escape(message, message_esc, sizeof(message_esc));
 
     snprintf(json, json_len,
         "{\"type\":\"state\",\"profile\":%u,\"frequency\":%u,\"freq\":%u,"
@@ -219,7 +245,8 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
          "\"operating_mode\":%u,\"fwd\":%u,\"ref_power\":%u,\"swr\":%u,"
          "\"s_meter\":%d,"
          "\"recording_rx\":%s,\"recording_tx\":%s,"
-         "\"audio_sample_rate\":%u,\"message_available\":%s,"
+         "\"audio_sample_rate\":%u,"
+         "\"message\":\"%s\",\"message_available\":%s,"
          "\"backend\":\"%s\",\"digital_voice\":%s,\"protection\":%s,"
          "\"pipeline\":\"%s\",\"pipeline_mode\":\"%s\","
          "\"pipeline_media\":\"%s\",\"pipeline_runtime\":\"%s\","
@@ -244,6 +271,7 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
          radio_h->rx_recording.active ? "true" : "false",
          radio_h->tx_recording.active ? "true" : "false",
          radio_h->audio_sample_rate,
+         message_esc,
          radio_h->message_available ? "true" : "false",
          backend_to_string(radio_h->backend_kind),
          radio_h->profiles[active].digital_voice ? "true" : "false",
@@ -288,7 +316,7 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
 
     if (!strcmp(cmd, "get_state"))
     {
-        char status[1024];
+        char status[2048];
         build_status_json(radio_h, status, sizeof(status));
         ws_send_text(c, status);
         return;
@@ -430,13 +458,15 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
     if (!strcmp(cmd, "get_message"))
     {
         char message[RADIO_MESSAGE_MAX];
-        char status[RADIO_MESSAGE_MAX + 128];
+        char message_esc[RADIO_MESSAGE_MAX * 2];
+        char status[sizeof(message_esc) + 128];
         pthread_mutex_lock(&radio_h->message_mutex);
         snprintf(message, sizeof(message), "%s", radio_h->message);
         pthread_mutex_unlock(&radio_h->message_mutex);
+        json_escape(message, message_esc, sizeof(message_esc));
         snprintf(status, sizeof(status),
                  "{\"ok\":true,\"cmd\":\"%s\",\"message\":\"%s\",\"message_available\":%s}",
-                 cmd, message, radio_h->message_available ? "true" : "false");
+                 cmd, message_esc, radio_h->message_available ? "true" : "false");
         ws_send_text(c, status); return;
     }
 
@@ -544,7 +574,7 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
 
 static void broadcast_status(websocket_ctx *ctx)
 {
-    char json[1024];
+    char json[2048];
     int64_t now = mg_millis();
     bool built = false;
 
@@ -690,7 +720,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data)
                  "\"tx_spectrum_binary_type\":3}");
         mg_ws_send(c, hello, strlen(hello), WEBSOCKET_OP_TEXT);
 
-        char status[1024];
+        char status[2048];
         build_status_json(ctx->radio_h, status, sizeof(status));
         mg_ws_send(c, status, strlen(status), WEBSOCKET_OP_TEXT);
     }

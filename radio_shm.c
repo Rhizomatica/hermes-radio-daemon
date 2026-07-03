@@ -422,6 +422,28 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
     }
 }
 
+/* Latch a client-written station message into the radio struct, where the
+ * websocket state frames pick it up. The writer is another process with no
+ * lock on message[] (patched uucico sprintfs transfer progress like
+ * "Sending: <file>." straight into the connector SHM and flips
+ * message_available) — same consumer contract as the legacy
+ * sbitx_websocket.c loop: copy, force termination, clear the flag. */
+static void pump_connector_message(controller_conn *conn, radio *radio_h)
+{
+    if (!conn->message_available)
+        return;
+
+    size_t n = MAX_MESSAGE_SIZE < RADIO_MESSAGE_MAX
+               ? MAX_MESSAGE_SIZE : RADIO_MESSAGE_MAX;
+    pthread_mutex_lock(&radio_h->message_mutex);
+    memcpy(radio_h->message, (const void *) conn->message, n);
+    radio_h->message[n - 1] = '\0';
+    pthread_mutex_unlock(&radio_h->message_mutex);
+
+    conn->message_available = false;
+    radio_h->message_available = true;
+}
+
 /* SHM command dispatcher thread.
  *
  * Uses pthread_cond_timedwait so the worker periodically observes shutdown_
@@ -429,9 +451,11 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
 static void *process_radio_command_thread(void *arg)
 {
     controller_conn *conn = arg;
-    bool got_signal;
 
-    pthread_mutex_lock(&conn->cmd_mutex);
+    /* cmd_mutex is robust; a previous daemon (or client) may have died while
+     * holding it. Recover instead of deadlocking forever. */
+    if (pthread_mutex_lock(&conn->cmd_mutex) == EOWNERDEAD)
+        pthread_mutex_consistent(&conn->cmd_mutex);
 
     while (!shutdown_)
     {
@@ -447,13 +471,24 @@ static void *process_radio_command_thread(void *arg)
         int rc = pthread_cond_timedwait(&conn->cmd_condition,
                                         &conn->cmd_mutex,
                                         &deadline);
+        if (rc == EOWNERDEAD)
+            pthread_mutex_consistent(&conn->cmd_mutex);
 
         if (shutdown_)
             break;
 
-        got_signal = (rc == 0);
-        if (!got_signal)
-            continue; /* timeout: just re-check shutdown_ and wait again */
+        /* Runs at least every 200 ms (each timedwait expiry). */
+        pump_connector_message(conn, radio_h_shm);
+
+        /* Don't key off rc alone: a client can slip its command in exactly at
+         * the timeout boundary (it grabs cmd_mutex the moment the expiring
+         * wait releases it, writes service_command, signals — no waiter, so
+         * the signal is lost — and unlocks; we then reacquire with
+         * rc==ETIMEDOUT). Commands are detected by a pending opcode instead:
+         * opcode 0x00 is unused by the protocol and cleared after each
+         * command below, so nonzero == work to do. */
+        if (conn->service_command[4] == 0)
+            continue;
 
         process_radio_command(conn->service_command, conn->response_service);
 
@@ -464,6 +499,7 @@ static void *process_radio_command_thread(void *arg)
             break;
         }
 
+        conn->service_command[4] = 0;   /* consumed */
         conn->response_available = true;
     }
 
@@ -508,19 +544,43 @@ void shm_controller_init(radio *radio_h, pthread_t *shm_tid)
 {
     radio_h_shm = radio_h;
 
+    controller_conn *connector = NULL;
+
+    /* Reuse an existing segment instead of destroy+recreate. Long-running
+     * clients (uucpd sets connected status / SNR / bitrate over this
+     * connector) attach once at startup; recreating the segment here would
+     * orphan their mapping, and every radio_cmd() they issue afterwards
+     * lands in the dead segment and is silently lost — the classic symptom
+     * is the UI never showing "connected" after a daemon restart. */
     if (shm_is_created(SYSV_SHM_CONTROLLER_KEY_STR, sizeof(controller_conn)))
     {
-        fprintf(stderr, "Connector SHM already exists – destroying and recreating.\n");
-        shm_destroy(SYSV_SHM_CONTROLLER_KEY_STR, sizeof(controller_conn));
+        connector = shm_attach(SYSV_SHM_CONTROLLER_KEY_STR, sizeof(controller_conn));
+        if (connector)
+        {
+            fprintf(stderr, "Connector SHM already exists – reusing "
+                            "(keeps attached clients alive).\n");
+            /* Drop any half-written stale command from a previous run; the
+             * worker treats a nonzero opcode as pending work. */
+            connector->service_command[4] = 0;
+            connector->response_available = false;
+        }
+        else
+        {
+            /* Attach failed: stale segment from an incompatible (smaller)
+             * layout. Size 0 matches whatever segment holds the key. */
+            fprintf(stderr, "Connector SHM exists but is unusable – recreating.\n");
+            shm_destroy(SYSV_SHM_CONTROLLER_KEY_STR, 0);
+        }
     }
 
-    shm_create(SYSV_SHM_CONTROLLER_KEY_STR, sizeof(controller_conn));
-
-    controller_conn *connector =
-        shm_attach(SYSV_SHM_CONTROLLER_KEY_STR, sizeof(controller_conn));
+    if (!connector)
+    {
+        shm_create(SYSV_SHM_CONTROLLER_KEY_STR, sizeof(controller_conn));
+        connector = shm_attach(SYSV_SHM_CONTROLLER_KEY_STR, sizeof(controller_conn));
+        initialize_connector(connector);
+    }
 
     connector_local = connector;
-    initialize_connector(connector);
 
     pthread_create(shm_tid, NULL, process_radio_command_thread, (void *) connector);
 }
