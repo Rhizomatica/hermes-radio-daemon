@@ -199,7 +199,6 @@ int radio_controls_values_json(radio *radio_h, const char *names,
 {
     radio_ctrl_info list[RADIO_CTRL_MAX];
     size_t off = 0;
-    bool first = true;
 
     if (!radio_h || !out || out_len == 0)
         return RADIO_CTRL_EINVAL;
@@ -207,49 +206,70 @@ int radio_controls_values_json(radio *radio_h, const char *names,
     size_t n = radio_controls_enumerate(radio_h, list, RADIO_CTRL_MAX);
 
     if (!json_append(out, out_len, &off,
-                     "{\"cmd\":\"get_control_values\",\"ok\":true,\"values\":{"))
+                     "{\"cmd\":\"get_control_values\",\"ok\":true"))
         return RADIO_CTRL_EINVAL;
 
-    for (size_t i = 0; i < n; i++)
+    /* Grouped by kind, not one flat map: Hamlib names a level and a func
+     * alike (NR is both a noise-reduction depth and a switch, RF is both a
+     * gain and the RTTY filter), so a flat map would silently lose one of
+     * each pair. */
+    static const struct {
+        radio_ctrl_kind kind;
+        const char     *key;
+    } groups[] = {
+        { RADIO_CTRL_LEVEL, "levels" },
+        { RADIO_CTRL_FUNC,  "funcs"  },
+        { RADIO_CTRL_PARM,  "parms"  },
+    };
+
+    for (size_t g = 0; g < sizeof(groups) / sizeof(groups[0]); g++)
     {
-        if (!list[i].can_get)
-            continue;
-        if (!name_selected(names, list[i].name))
-            continue;
+        bool first = true;
 
-        double value = 0.0;
-        int rc;
-
-        switch (list[i].kind)
-        {
-        case RADIO_CTRL_FUNC:
-        {
-            int on = 0;
-            rc = radio_backend_get_func(radio_h, list[i].name, &on);
-            value = on ? 1.0 : 0.0;
-            break;
-        }
-        case RADIO_CTRL_PARM:
-            rc = radio_backend_get_parm(radio_h, list[i].name, &value);
-            break;
-        case RADIO_CTRL_LEVEL:
-        default:
-            rc = radio_backend_get_level(radio_h, list[i].name, &value);
-            break;
-        }
-
-        /* A control the rig advertises but refuses to report right now is
-         * skipped rather than published as a zero. */
-        if (rc != RADIO_CTRL_OK)
-            continue;
-
-        if (!json_append(out, out_len, &off, "%s\"%s\":%g",
-                         first ? "" : ",", list[i].name, value))
+        if (!json_append(out, out_len, &off, ",\"%s\":{", groups[g].key))
             return RADIO_CTRL_EINVAL;
-        first = false;
+
+        for (size_t i = 0; i < n; i++)
+        {
+            if (list[i].kind != groups[g].kind || !list[i].can_get)
+                continue;
+            if (!name_selected(names, list[i].name))
+                continue;
+
+            double value = 0.0;
+            int rc;
+
+            if (groups[g].kind == RADIO_CTRL_FUNC)
+            {
+                int on = 0;
+                rc = radio_backend_get_func(radio_h, list[i].name, &on);
+                value = on ? 1.0 : 0.0;
+            }
+            else if (groups[g].kind == RADIO_CTRL_PARM)
+            {
+                rc = radio_backend_get_parm(radio_h, list[i].name, &value);
+            }
+            else
+            {
+                rc = radio_backend_get_level(radio_h, list[i].name, &value);
+            }
+
+            /* A control the rig advertises but refuses to report right now
+             * is skipped rather than published as a zero. */
+            if (rc != RADIO_CTRL_OK)
+                continue;
+
+            if (!json_append(out, out_len, &off, "%s\"%s\":%g",
+                             first ? "" : ",", list[i].name, value))
+                return RADIO_CTRL_EINVAL;
+            first = false;
+        }
+
+        if (!json_append(out, out_len, &off, "}"))
+            return RADIO_CTRL_EINVAL;
     }
 
-    if (!json_append(out, out_len, &off, "}}"))
+    if (!json_append(out, out_len, &off, "}"))
         return RADIO_CTRL_EINVAL;
 
     return RADIO_CTRL_OK;

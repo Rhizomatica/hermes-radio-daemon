@@ -545,6 +545,17 @@ A control that the rig does not have is not reported, and asking for it answers
 {"cmd":"get_control_values","names":"AF,RF,NB"}     // just these
 ```
 
+The values reply is grouped by kind:
+```json
+{"cmd":"get_control_values","ok":true,
+ "levels":{"AF":0.5,"RFPOWER":0.75,"NR":0.4},
+ "funcs":{"NB":1,"NR":0},
+ "parms":{"BACKLIGHT":0.8}}
+```
+Grouped rather than flat because Hamlib gives a level and a function the same
+name — `NR` is both a noise-reduction depth and a switch, `RF` both a gain and
+the RTTY filter — and a flat map would silently lose one of each pair.
+
 `get_control_values` costs one CAT transaction per control, so it is an
 on-demand snapshot — use the `names` filter when refreshing a few widgets, and
 never poll the unfiltered form. Values written are clamped to the range and
@@ -649,6 +660,15 @@ Run `sbitx_client -h` for the full command list.
 A self-contained websocket client is provided at `web/index.html`. Open it in any browser to connect to the daemon's websocket:
 
 - **Control tab**: set frequency, mode, profile (0–8), PTT on/off
+- **Rig Controls tab**: the connected rig's own controls — the panel builds
+  itself from `get_controls`, so it shows this radio's knobs and no others.
+  Float levels get a slider over the range the rig reported, integer levels a
+  number box, functions a checkbox, and meters a read-only readout. Above them
+  sit VFO, split, RIT/XIT, filter width, antenna, memory channel, the rig mode
+  by its own name (`PKTUSB`, …) and TUNE / band buttons. A filter box narrows a
+  large control set (an IC-7300 reports well over a hundred), and values are
+  read on demand — never in the status broadcast, since each one costs a CAT
+  transaction.
 - **Digital Modes tab**: send FT8/CW/RTTY text, view decoded messages, configure WPM/pitch/baud
 - **Spectrum tab**: real-time FFT waterfall from binary spectrum frames
 - RX audio playback via Web Audio API (8 kHz mono S16_LE)

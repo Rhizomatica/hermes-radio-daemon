@@ -184,6 +184,16 @@ static void test_json(radio *r)
     assert(strstr(buf, "\"AGC\":3"));
     assert(strstr(buf, "\"SWR\":1.5"));
 
+    /* Values are grouped by kind, because Hamlib gives a level and a func
+     * the same name (NR, RF): a flat map would drop one of each pair. */
+    const char *levels = strstr(buf, "\"levels\":{");
+    const char *funcs  = strstr(buf, "\"funcs\":{");
+    const char *parms  = strstr(buf, "\"parms\":{");
+    assert(levels && funcs && parms);
+    assert(levels < funcs && funcs < parms);
+    assert(strstr(levels, "\"AGC\":3") < funcs);   /* the level side */
+    assert(strstr(funcs, "\"NB\":1") < parms);     /* the func side  */
+
     /* The name filter answers only what was asked for, tolerating spaces. */
     assert(radio_controls_values_json(r, "AGC, NB", buf, sizeof(buf)) == RADIO_CTRL_OK);
     assert(strstr(buf, "\"AGC\":3"));
