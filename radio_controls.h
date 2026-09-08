@@ -88,6 +88,17 @@ bool radio_controls_kind_from_name(const char *name, radio_ctrl_kind *out);
  * it). Returns false when the active rig does not have it. */
 bool radio_controls_find(radio *radio_h, const char *name, radio_ctrl_info *out);
 
+/* True when a value read from a rig is a real number.
+ *
+ * isfinite() cannot be used for this in the daemon: the build runs -Ofast,
+ * which implies -ffinite-math-only, and GCC then folds isfinite() to a
+ * constant true — the check silently disappears. This inspects the bits
+ * instead, which no fast-math assumption can optimise away. A rig that
+ * answers a meter with nonsense (a garbled reply, an unset calibration)
+ * otherwise puts "-nan" on the rigctld wire and an unparseable NaN into the
+ * websocket JSON. */
+bool radio_controls_value_ok(double value);
+
 /* Clamp a value to a control's advertised range/step. */
 double radio_controls_clamp(const radio_ctrl_info *info, double value);
 

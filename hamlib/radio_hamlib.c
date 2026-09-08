@@ -1129,7 +1129,18 @@ static int hl_get_level(radio *radio_h, const char *name, double *out)
     if (ret != RIG_OK)
         return hl_rc(ret);
 
-    *out = RIG_LEVEL_IS_FLOAT(level) ? (double) val.f : (double) val.i;
+    double value = RIG_LEVEL_IS_FLOAT(level) ? (double) val.f : (double) val.i;
+
+    /* A backend can hand back NaN or an infinity when the rig answers a
+     * meter read with something it cannot make sense of (a garbled reply,
+     * an unset power calibration). Passing that on would print "-nan" to a
+     * rigctld client and emit invalid JSON to the websocket, so report it
+     * as the read failure it is. (Not isfinite(): this file is built -Ofast,
+     * where GCC folds that to true — see radio_controls_value_ok.) */
+    if (!radio_controls_value_ok(value))
+        return RADIO_CTRL_EIO;
+
+    *out = value;
     return RADIO_CTRL_OK;
 }
 
@@ -1248,7 +1259,11 @@ static int hl_get_parm(radio *radio_h, const char *name, double *out)
     if (ret != RIG_OK)
         return hl_rc(ret);
 
-    *out = RIG_PARM_IS_FLOAT(parm) ? (double) val.f : (double) val.i;
+    double value = RIG_PARM_IS_FLOAT(parm) ? (double) val.f : (double) val.i;
+    if (!radio_controls_value_ok(value))
+        return RADIO_CTRL_EIO;
+
+    *out = value;
     return RADIO_CTRL_OK;
 }
 

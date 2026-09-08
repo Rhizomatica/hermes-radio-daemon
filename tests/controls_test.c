@@ -47,12 +47,20 @@ static size_t fake_enumerate(radio *radio_h, radio_ctrl_info *out, size_t max)
     return n;
 }
 
+/* Set to make SWR answer NaN, standing in for a rig whose meter read comes
+ * back as nonsense (a garbled reply, an unset power calibration). */
+static bool fake_swr_nan = false;
+
 static int fake_get_level(radio *radio_h, const char *name, double *out)
 {
     (void) radio_h;
     if (!strcmp(name, "RFPOWER")) { *out = fake_rfpower; return RADIO_CTRL_OK; }
     if (!strcmp(name, "AGC"))     { *out = fake_agc;     return RADIO_CTRL_OK; }
-    if (!strcmp(name, "SWR"))     { *out = 1.5;          return RADIO_CTRL_OK; }
+    if (!strcmp(name, "SWR"))
+    {
+        *out = fake_swr_nan ? (0.0 / 0.0) : 1.5;
+        return RADIO_CTRL_OK;
+    }
     return RADIO_CTRL_ENOTSUP;
 }
 
@@ -200,9 +208,31 @@ static void test_json(radio *r)
     assert(strstr(buf, "\"NB\":1"));
     assert(!strstr(buf, "SWR"));
 
+    /* A non-finite value is left out entirely: NaN and Infinity are not JSON
+     * numbers, and one of them in the document would make the whole frame
+     * unparseable for the client. */
+    fake_swr_nan = true;
+    assert(radio_controls_values_json(r, NULL, buf, sizeof(buf)) == RADIO_CTRL_OK);
+    assert(!strstr(buf, "nan") && !strstr(buf, "NaN") && !strstr(buf, "inf"));
+    assert(!strstr(buf, "\"SWR\""));
+    assert(strstr(buf, "\"AGC\":3"));   /* the rest still reported */
+    fake_swr_nan = false;
+
     /* A buffer too small fails loudly instead of emitting truncated JSON. */
     char tiny[32];
     assert(radio_controls_caps_json(r, tiny, sizeof(tiny)) != RADIO_CTRL_OK);
+}
+
+/* The daemon builds with -Ofast (-ffinite-math-only), where isfinite() folds
+ * to a constant true. This is the check that has to keep working there. */
+static void test_value_ok(void)
+{
+    assert(radio_controls_value_ok(0.0));
+    assert(radio_controls_value_ok(-1.5));
+    assert(radio_controls_value_ok(1e300));
+    assert(!radio_controls_value_ok(0.0 / 0.0));    /* NaN  */
+    assert(!radio_controls_value_ok(1.0 / 0.0));    /* +Inf */
+    assert(!radio_controls_value_ok(-1.0 / 0.0));   /* -Inf */
 }
 
 static void test_rprt(void)
@@ -221,6 +251,7 @@ int main(void)
     test_clamp();
     test_dispatch(r);
     test_json(r);
+    test_value_ok();
     test_rprt();
 
     free(r);

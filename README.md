@@ -530,6 +530,9 @@ the rig reports:
 
 A control that the rig does not have is not reported, and asking for it answers
 `{"ok":false,"error":"not supported by this rig"}` — never a fabricated value.
+A control the rig answers with something unusable (a garbled meter read, an
+unset power calibration) is reported as a failed read and left out of the
+values document rather than published as a number.
 
 ### Reading and writing
 
@@ -825,6 +828,15 @@ poll, so a logger command can never interleave with a poll on the CAT wire.
 waits for the rig to begin answering. Commands that draw no reply — most
 "set" commands — cost exactly this, so lower it (80–150 ms) for a snappier
 logger and raise it for a rig that answers slowly.
+
+### Finding the station on the network
+
+`config/avahi/hermes-radio.service` advertises the rigctld port, the web panel
+and the CAT gateway over mDNS. `make install` puts it in
+`/etc/hermes/avahi/`; copy it to `/etc/avahi/services/` to switch it on (the
+ports in it must match `core.ini`). The Pi then answers as
+`<hostname>.local`, so the Windows side can be pointed at a name rather than
+an address that DHCP may change.
 
 ### Exposing it beyond the LAN
 

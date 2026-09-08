@@ -1,0 +1,36 @@
+<?xml version="1.0" standalone='no'?><!--*-nxml-*-->
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+
+<!-- Advertise the station on the local network, so an operator does not have
+     to hunt for the Pi's address. Install to /etc/avahi/services/ and the
+     ports here must match core.ini.
+
+     _rigctld._tcp  is what hamlib-aware software (WSJT-X, fldigi) looks for.
+     _http._tcp     is the web control panel.
+     The CAT gateway has no registered service type, so it is advertised
+     under a generic _tcp name with its purpose in a TXT record; a Windows
+     operator points hub4com or VSPE at the host and port shown here. -->
+
+<service-group>
+  <name replace-wildcards="yes">HERMES radio on %h</name>
+
+  <service>
+    <type>_rigctld._tcp</type>
+    <port>4532</port>
+    <txt-record>protocol=rigctld</txt-record>
+    <txt-record>model=2</txt-record>
+  </service>
+
+  <service>
+    <type>_http._tcp</type>
+    <port>8080</port>
+    <txt-record>path=/index.html</txt-record>
+  </service>
+
+  <service>
+    <type>_cat._tcp</type>
+    <port>4534</port>
+    <txt-record>protocol=native-cat</txt-record>
+    <txt-record>note=pair with com0com+hub4com or VSPE on Windows</txt-record>
+  </service>
+</service-group>

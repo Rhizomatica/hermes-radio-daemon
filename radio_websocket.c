@@ -22,6 +22,7 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -237,6 +238,19 @@ static void send_ctrl_value(struct mg_connection *c, const char *cmd,
                             const char *name, double value)
 {
     char json[192];
+
+    /* NaN and Infinity are not JSON numbers; a rig that answers a meter with
+     * nonsense must not be allowed to emit a frame the client cannot parse. */
+    if (!radio_controls_value_ok(value))
+    {
+        snprintf(json, sizeof(json),
+                 "{\"cmd\":\"%s\",\"ok\":false,\"name\":\"%s\","
+                 "\"error\":\"rig returned an unusable value\"}",
+                 cmd, name);
+        ws_send_text(c, json);
+        return;
+    }
+
     snprintf(json, sizeof(json),
              "{\"cmd\":\"%s\",\"ok\":true,\"name\":\"%s\",\"value\":%g}",
              cmd, name, value);

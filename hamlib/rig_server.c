@@ -170,9 +170,9 @@ static void handle_get_level(radio *radio_h, int fd, const char *arg)
     }
 
     int rc = radio_backend_get_level(radio_h, name, &value);
-    if (rc != RADIO_CTRL_OK)
+    if (rc != RADIO_CTRL_OK || !radio_controls_value_ok(value))
     {
-        rig_respond_rprt(fd, rc);
+        rig_respond_rprt(fd, rc != RADIO_CTRL_OK ? rc : RADIO_CTRL_EIO);
         return;
     }
 
@@ -259,9 +259,9 @@ static void handle_get_parm(radio *radio_h, int fd, const char *arg)
     }
 
     int rc = radio_backend_get_parm(radio_h, name, &value);
-    if (rc != RADIO_CTRL_OK)
+    if (rc != RADIO_CTRL_OK || !radio_controls_value_ok(value))
     {
-        rig_respond_rprt(fd, rc);
+        rig_respond_rprt(fd, rc != RADIO_CTRL_OK ? rc : RADIO_CTRL_EIO);
         return;
     }
 

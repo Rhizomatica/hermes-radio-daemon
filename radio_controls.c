@@ -69,6 +69,16 @@ bool radio_controls_find(radio *radio_h, const char *name, radio_ctrl_info *out)
     return false;
 }
 
+bool radio_controls_value_ok(double value)
+{
+    uint64_t bits;
+
+    memcpy(&bits, &value, sizeof(bits));
+
+    /* An all-ones exponent is NaN or an infinity. */
+    return ((bits >> 52) & 0x7FF) != 0x7FF;
+}
+
 double radio_controls_clamp(const radio_ctrl_info *info, double value)
 {
     if (!info)
@@ -255,8 +265,10 @@ int radio_controls_values_json(radio *radio_h, const char *names,
             }
 
             /* A control the rig advertises but refuses to report right now
-             * is skipped rather than published as a zero. */
-            if (rc != RADIO_CTRL_OK)
+             * is skipped rather than published as a zero — as is a value
+             * that came back non-finite, which would make this document
+             * invalid JSON (NaN and Infinity are not JSON numbers). */
+            if (rc != RADIO_CTRL_OK || !radio_controls_value_ok(value))
                 continue;
 
             if (!json_append(out, out_len, &off, "%s\"%s\":%g",
