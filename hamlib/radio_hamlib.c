@@ -31,6 +31,8 @@
 #include <errno.h>
 #include <pthread.h>
 #include <inttypes.h>
+#include <poll.h>
+#include <strings.h>
 
 #include <hamlib/rig.h>
 
@@ -1923,6 +1925,138 @@ static int hl_stop_morse(radio *radio_h)
  * Frequency ranges live per ITU region in caps (list1 = region 1,
  * list2 = region 2); most backends fill both, so we publish whichever
  * is populated and report the matching region number. */
+/* ── byte-transparent CAT passthrough ──────────────────────────────────
+ *
+ * This is what lets a Windows logger that only knows how to open a COM port
+ * (N1MM+ among them) drive the real radio across the network: cat_server.c
+ * hands us a frame exactly as the client wrote it, we put it on the rig's
+ * own serial port and hand back whatever the rig said, byte for byte. No
+ * interpretation, so rig-specific commands the daemon knows nothing about
+ * work as they do on a direct cable.
+ *
+ * The transaction runs under the same lock as every other CAT access here,
+ * so a passthrough frame can never interleave with the meter poll or a
+ * websocket command on the wire. We drive the port fd directly rather than
+ * through rig_send_raw() because a "set" command draws no reply at all, and
+ * rig_send_raw() would spend the rig's full timeout waiting for one on every
+ * such command — unusable for a logger polling several times a second.
+ * Reads therefore use a short first-byte wait and an even shorter idle gap.
+ */
+
+#define HL_CAT_FIRST_BYTE_MS 250   /* default; core.ini cat_reply_timeout_ms */
+#define HL_CAT_IDLE_MS        30   /* gap that ends a reply once it started */
+
+static uint8_t hl_cat_terminator(radio *radio_h)
+{
+    RIG *rig = hl_rig(radio_h);
+    hamlib_port_t *port;
+
+    if (!rig || !rig->caps)
+        return 0;
+
+    /* Answering with a terminator is what tells the gateway that raw CAT is
+     * available here, so it must be a real, open serial port. A network or
+     * "none" port (the dummy rig, an rpc backend) has no wire to pass bytes
+     * through, and the gateway must fall back to emulation instead. */
+    if (rig->caps->port_type != RIG_PORT_SERIAL)
+        return 0;
+
+    port = HAMLIB_RIGPORT(rig);
+    if (!port || port->fd < 0)
+        return 0;
+
+    /* Icom's CI-V frames end with 0xFD; the Yaesu/Kenwood/Elecraft family
+     * of ASCII dialects ends with ';'. */
+    if (rig->caps->mfg_name && !strcasecmp(rig->caps->mfg_name, "Icom"))
+        return 0xFD;
+
+    return ';';
+}
+
+static int hl_cat_raw(radio *radio_h, const uint8_t *req, size_t req_len,
+                      uint8_t *reply, size_t reply_max, size_t *reply_len)
+{
+    RIG *rig = hl_rig(radio_h);
+    hamlib_port_t *port;
+    uint8_t term;
+    size_t got = 0;
+    int fd;
+
+    if (!rig || !req || req_len == 0 || !reply || !reply_len)
+        return RADIO_CTRL_EINVAL;
+
+    port = HAMLIB_RIGPORT(rig);
+    if (!port || port->fd < 0)
+        return RADIO_CTRL_ENOTSUP;
+
+    fd = port->fd;
+    term = hl_cat_terminator(radio_h);
+    *reply_len = 0;
+
+    RIG_LOCK();
+
+    /* Drop anything left over from an earlier transaction so the client
+     * cannot be handed a stale rig answer. */
+    for (;;)
+    {
+        uint8_t drain[64];
+        struct pollfd pfd = { .fd = fd, .events = POLLIN };
+        if (poll(&pfd, 1, 0) <= 0)
+            break;
+        if (read(fd, drain, sizeof(drain)) <= 0)
+            break;
+    }
+
+    size_t sent = 0;
+    while (sent < req_len)
+    {
+        ssize_t w = write(fd, req + sent, req_len - sent);
+        if (w <= 0)
+        {
+            if (w < 0 && (errno == EINTR || errno == EAGAIN))
+                continue;
+            RIG_UNLOCK();
+            return RADIO_CTRL_EIO;
+        }
+        sent += (size_t) w;
+    }
+
+    while (got < reply_max)
+    {
+        struct pollfd pfd = { .fd = fd, .events = POLLIN };
+        int first_ms = radio_h->cat_reply_timeout_ms > 0
+                     ? radio_h->cat_reply_timeout_ms : HL_CAT_FIRST_BYTE_MS;
+        int timeout = (got == 0) ? first_ms : HL_CAT_IDLE_MS;
+        int pr = poll(&pfd, 1, timeout);
+
+        if (pr < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            break;
+        }
+        if (pr == 0)
+            break;   /* no reply (a set command) or the rig finished talking */
+
+        ssize_t r = read(fd, reply + got, reply_max - got);
+        if (r <= 0)
+        {
+            if (r < 0 && (errno == EINTR || errno == EAGAIN))
+                continue;
+            break;
+        }
+        got += (size_t) r;
+
+        if (term && reply[got - 1] == term)
+            break;
+    }
+
+    RIG_UNLOCK();
+
+    *reply_len = got;
+    return RADIO_CTRL_OK;
+}
+
 static int hl_dump_state(radio *radio_h, char *out, size_t out_len)
 {
     RIG *rig = hl_rig(radio_h);
@@ -2061,5 +2195,7 @@ const radio_backend_ops hamlib_backend_ops = {
     .vfo_op                  = hl_vfo_op,
     .send_morse              = hl_send_morse,
     .stop_morse              = hl_stop_morse,
+    .cat_raw                 = hl_cat_raw,
+    .cat_terminator          = hl_cat_terminator,
     .dump_state              = hl_dump_state,
 };

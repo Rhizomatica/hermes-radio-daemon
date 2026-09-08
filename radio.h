@@ -313,6 +313,17 @@ typedef struct {
     _Atomic bool enable_websocket;
     bool rig_server_enable;
     int rig_server_port;
+    /* Native-CAT gateway (cat_server.c): a TCP port speaking the radio's own
+     * CAT dialect, for Windows loggers that can only open a COM port. */
+    bool cat_server_enable;
+    int  cat_server_port;
+    int  cat_server_mode;                    /* cat_server_mode enum */
+    char cat_server_bind[64];
+    /* How long a passthrough transaction waits for the rig to start
+     * answering. A command that draws no reply (most "set" commands) costs
+     * exactly this much, so it trades logger responsiveness against the risk
+     * of missing a slow rig's answer. */
+    int  cat_reply_timeout_ms;
     _Atomic bool enable_audio_bridge;
     _Atomic bool enable_shm_audio;   /* bridge codec audio to mercury via POSIX SHM */
 

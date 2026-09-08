@@ -12,6 +12,7 @@ Radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-net)
 - **RX voice DSP chain**: DC block, adaptive noise reduction (libspecbleach), AGC (SLOW/MEDIUM/FAST), soft limiter
 - **Audio bridge** for websocket RX/TX streaming, RX/TX spectrum waterfall, and `.wav` recording — on both backends, sharing the same audio rings. csdr-based polyphase resampler (`audio_bridge.c`) decouples the rig USB codec rate from the daemon ring rate.
 - **Optional operator-side headset** (`audio_headset.c`) — second pair of ALSA devices for users running the daemon on a dedicated box with a wired headset instead of (or in addition to) the browser audio.
+- **Remote operation from Windows** — a native-CAT gateway (byte-transparent to the real rig, or a Kenwood TS-2000 emulation for radios without a CAT port) lets N1MM+ and other COM-port loggers drive the station over the network; see [Remote Operation from Windows](#remote-operation-from-windows)
 - **Complete rig control surface** — every level, function and parameter the connected rig exposes (RF/mic gain, squelch, NB/NR/notch, preamp/attenuator, VOX, break-in, monitor, keyer speed, …) plus split, RIT/XIT, filter width, antenna, memory channels and tuner control. Discovered from the rig's own Hamlib capabilities, not hardcoded per model, and served identically over the websocket API, the network `rigctld` server and the web panel. See [Radio Controls](#radio-controls).
 - **Up to 9 profiles** with frequency, mode, power, timeout, and digital-voice state
 - **Single mongoose-based websocket server** speaking one JSON dialect for both backends, with `ws://` and `wss://` (TLS) support out of the box
@@ -725,6 +726,92 @@ rigctl -m 2 -r localhost:4532 L RFPOWER 0.5
 rigctl -m 2 -r localhost:4532 U NB 1       # noise blanker on
 rigctl -m 2 -r localhost:4532 G TUNE       # start an antenna tuner cycle
 ```
+
+## Remote Operation from Windows
+
+The scenario this is built for: the radio and a Raspberry Pi live at the
+antenna (or at the club station, or at home while you are not), and the
+operator runs Windows software somewhere else on the network. Three doors onto
+the same daemon cover it, and all three work on both backends:
+
+| What you run on Windows | How it connects | Port |
+|--------------------------|-----------------|------|
+| N1MM+, Log4OM, DXLab, Win4Icom — anything that opens a COM port | Native CAT gateway + a virtual COM port | 4534 |
+| WSJT-X, JTDX, fldigi, QLog, Winlink Express, VARA | `rigctld` protocol, hamlib model 2 (NET rigctl) | 4532 |
+| A browser — the operator's own control panel with audio and waterfall | Websocket | 8080 |
+
+Only the browser carries audio today. Software that needs a *sound device*
+(WSJT-X, VARA) still needs its audio path arranged separately — an
+application-facing audio transport is not implemented yet.
+
+### Native CAT gateway
+
+N1MM+ has no Hamlib client: it opens a serial port and speaks the radio's own
+dialect. So the daemon offers a TCP port that carries exactly that.
+
+```ini
+cat_server_enable = 1
+cat_server_port  = 4534
+cat_server_mode  = auto        ; auto | passthrough | emulate
+```
+
+**passthrough** — the client's bytes go straight to the rig's CAT port and the
+rig's answer comes straight back, byte for byte. The logger is talking to a
+real IC-7300 or FT-710, including rig-specific commands this daemon knows
+nothing about. Requires the `hamlib` backend with a serial rig.
+
+**emulate** — the gateway answers a Kenwood **TS-2000** dialect built from the
+daemon's own control surface (`ID`, `IF`, `FA`/`FB`, `MD`, `TX`/`RX`, `SM`,
+`PC`, `AG`, `FR`/`FT`, `RT`/`XT`, `SH`/`SL`, `KS`, `PS`, `AI`). TS-2000 is
+chosen because every Windows logger ships a profile for it — this is what makes
+the sBitx/zBitx, which has no CAT port at all, reachable from the same software
+as a commercial rig.
+
+**auto** picks passthrough when the backend has a real CAT rig and emulate
+otherwise, so every backend is served. The mode actually chosen is logged at
+startup.
+
+On Windows, turn the TCP port into a COM port:
+
+1. Install [com0com](https://sourceforge.net/projects/com0com/) and create a
+   pair, e.g. `COM8` ↔ `COM9`.
+2. Run hub4com to join `COM9` to the Pi:
+   ```
+   hub4com --route=0:1 --route=1:0 --octs=off \
+           \\.\COM9 --use-driver=tcp 192.168.1.50:4534
+   ```
+   (VSPE's "TCP Client" serial device does the same job if you prefer a GUI.)
+3. Point N1MM+ at `COM8`, selecting your radio in passthrough mode, or
+   **Kenwood TS-2000** in emulate mode.
+
+To check it from Linux without any of that:
+
+```bash
+socat pty,link=/tmp/cat,raw tcp:pi.local:4534 &
+rigctl -m 2014 -r /tmp/cat f       # TS-2000 profile, emulate mode
+rigctl -m 1042 -r /tmp/cat f       # your own rig's model, passthrough mode
+printf 'FA;' | nc pi.local 4534    # raw dialect, straight at it
+```
+
+A client keying the rig through passthrough bypasses the daemon's own PTT
+call; the io thread's 100 ms PTT read-back picks it up within a tick, so SWR
+protection and audio routing still follow the rig. The same is true of
+frequency and mode — a change made by the logger shows up in the web panel.
+
+Every gateway transaction takes the same serial lock as the daemon's meter
+poll, so a logger command can never interleave with a poll on the CAT wire.
+
+`cat_reply_timeout_ms` (default 250) is how long a passthrough transaction
+waits for the rig to begin answering. Commands that draw no reply — most
+"set" commands — cost exactly this, so lower it (80–150 ms) for a snappier
+logger and raise it for a rig that answers slowly.
+
+### Exposing it beyond the LAN
+
+The gateway and the rigctld server have no authentication — they assume a
+trusted network. Reach them across the internet through a VPN (WireGuard) or
+an SSH tunnel, and use `cat_server_bind = 127.0.0.1` to make that the only
+route in. The websocket server terminates TLS on its own with `wss://`.
 
 ## License
 

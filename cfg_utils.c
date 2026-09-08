@@ -28,6 +28,7 @@
 #include <stdio.h>
 
 #include "cfg_utils.h"
+#include "cat_server.h"
 #include "radio.h"
 
 extern _Atomic bool shutdown_;
@@ -264,6 +265,25 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     radio_h->rig_server_enable = (bool) b;
     i = iniparser_getint(ini, "main:rig_server_port", 4532);
     radio_h->rig_server_port = i;
+
+    /* Native-CAT gateway: the port a Windows logger reaches through a virtual
+     * COM port. Mode: auto (passthrough when the backend has a CAT rig, else
+     * TS-2000 emulation), passthrough, or emulate. */
+    b = iniparser_getboolean(ini, "main:cat_server_enable", 0);
+    radio_h->cat_server_enable = (bool) b;
+    i = iniparser_getint(ini, "main:cat_server_port", 4534);
+    radio_h->cat_server_port = i;
+    s = iniparser_getstring(ini, "main:cat_server_bind", "");
+    cfg_copy_string(radio_h->cat_server_bind, sizeof(radio_h->cat_server_bind), s);
+    i = iniparser_getint(ini, "main:cat_reply_timeout_ms", 250);
+    radio_h->cat_reply_timeout_ms = i;
+    s = iniparser_getstring(ini, "main:cat_server_mode", "auto");
+    if (!strcasecmp(s, "passthrough"))
+        radio_h->cat_server_mode = CAT_SERVER_MODE_PASSTHROUGH;
+    else if (!strcasecmp(s, "emulate"))
+        radio_h->cat_server_mode = CAT_SERVER_MODE_EMULATE;
+    else
+        radio_h->cat_server_mode = CAT_SERVER_MODE_AUTO;
 
     b = iniparser_getboolean(ini, "main:enable_audio_bridge", 0);
     radio_h->enable_audio_bridge = (bool) b;

@@ -55,6 +55,7 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   hamlib/radio_hamlib.o \
                   hamlib/hamlib_digi.o \
                   hamlib/rig_server.o \
+                  cat_server.o \
                   radio_media.o \
                   radio_shm.o \
                   radio_websocket.o \
@@ -125,11 +126,12 @@ tests/backend_selection_test: tests/backend_selection_test.c cfg_utils.c cfg_uti
                               hamlib/radio_hamlib.h radio.h \
                               tests/fixtures/backend-default.ini \
                               tests/fixtures/backend-zbitx.ini
-	$(CC) $(TEST_CFLAGS) tests/backend_selection_test.c hamlib/rig_server.c radio_controls.c -o $@ -liniparser -lpthread -lm
+	$(CC) $(TEST_CFLAGS) tests/backend_selection_test.c hamlib/rig_server.c radio_controls.c cat_server.c -o $@ -liniparser -lpthread -lm
 
 tests/controls_test: tests/controls_test.c radio_controls.c radio_controls.h \
-                     radio_backend.c radio_backend.h cfg_utils.c cfg_utils.h radio.h
-	$(CC) $(TEST_CFLAGS) tests/controls_test.c hamlib/rig_server.c -o $@ -liniparser -lpthread -lm
+                     radio_backend.c radio_backend.h cat_server.c cat_server.h \
+                     cfg_utils.c cfg_utils.h radio.h
+	$(CC) $(TEST_CFLAGS) tests/controls_test.c hamlib/rig_server.c cat_server.c -o $@ -liniparser -lpthread -lm
 
 tests/compat_surface_test: tests/compat_surface_test.c radio_shm.c radio_shm.h \
                            radio_pipeline.c radio_pipeline.h \

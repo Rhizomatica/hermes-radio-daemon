@@ -14,6 +14,7 @@
 #include "radio_backend.h"
 #include "radio_daemon_core.h"
 #include "rig_server.h"
+#include "cat_server.h"
 
 /* Timer reset flag — defined by hamlib/radio_hamlib.c (used only by hamlib's
  * profile-timeout io thread; harmless when hfsignals backend is selected). */
@@ -81,12 +82,16 @@ bool radio_backend_init(radio *radio_h)
 {
     const radio_backend_ops *ops = radio_backend_ops_from_radio(radio_h);
     bool ok = ops && ops->init ? ops->init(radio_h) : false;
+    /* Both network servers come up after the backend, because each asks the
+     * open rig what it can do. */
     rig_server_start(radio_h);
+    cat_server_start(radio_h);
     return ok;
 }
 
 void radio_backend_shutdown(radio *radio_h)
 {
+    cat_server_stop();
     rig_server_stop();
     const radio_backend_ops *ops = radio_backend_ops_from_radio(radio_h);
     if (ops && ops->shutdown)
@@ -459,6 +464,21 @@ int radio_backend_dump_state(radio *radio_h, char *out, size_t out_len)
     BACKEND_OPS();
     if (!ops || !ops->dump_state) return RADIO_CTRL_ENOTSUP;
     return ops->dump_state(radio_h, out, out_len);
+}
+
+int radio_backend_cat_raw(radio *radio_h, const uint8_t *req, size_t req_len,
+                          uint8_t *reply, size_t reply_max, size_t *reply_len)
+{
+    BACKEND_OPS();
+    if (!ops || !ops->cat_raw) return RADIO_CTRL_ENOTSUP;
+    return ops->cat_raw(radio_h, req, req_len, reply, reply_max, reply_len);
+}
+
+uint8_t radio_backend_cat_terminator(radio *radio_h)
+{
+    BACKEND_OPS();
+    if (!ops || !ops->cat_terminator) return 0;
+    return ops->cat_terminator(radio_h);
 }
 
 void radio_backend_reset_timeout_timer(void)

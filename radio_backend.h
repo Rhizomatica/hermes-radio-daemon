@@ -91,6 +91,16 @@ typedef struct radio_backend_ops {
     /* Rig-side CW keyer (not the daemon's software CW). */
     int (*send_morse)(radio *radio_h, const char *text);
     int (*stop_morse)(radio *radio_h);
+    /* Byte-transparent CAT access to the rig behind this backend, for the
+     * native-CAT gateway (cat_server.c): the request frame goes out on the
+     * rig's own serial port and whatever the rig answers comes back
+     * verbatim. Only a backend with a real CAT rig implements this. */
+    int (*cat_raw)(radio *radio_h, const uint8_t *req, size_t req_len,
+                   uint8_t *reply, size_t reply_max, size_t *reply_len);
+    /* The byte that ends one CAT frame in this rig's dialect (';' for
+     * Yaesu/Kenwood/Elecraft, 0xFD for Icom CI-V), so the gateway knows
+     * where a client's frame ends. 0 when the backend has no CAT rig. */
+    uint8_t (*cat_terminator)(radio *radio_h);
     /* rigctld \dump_state payload describing the REAL rig, so remote
      * clients (WSJT-X, fldigi, VARA, Winlink) see true capabilities. */
     int (*dump_state)(radio *radio_h, char *out, size_t out_len);
@@ -162,6 +172,9 @@ int radio_backend_vfo_op(radio *radio_h, const char *op);
 int radio_backend_send_morse(radio *radio_h, const char *text);
 int radio_backend_stop_morse(radio *radio_h);
 int radio_backend_dump_state(radio *radio_h, char *out, size_t out_len);
+int radio_backend_cat_raw(radio *radio_h, const uint8_t *req, size_t req_len,
+                          uint8_t *reply, size_t reply_max, size_t *reply_len);
+uint8_t radio_backend_cat_terminator(radio *radio_h);
 void radio_backend_reset_timeout_timer(void);
 
 #endif /* RADIO_BACKEND_H_ */
