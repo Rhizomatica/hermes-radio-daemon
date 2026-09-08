@@ -30,6 +30,7 @@
 #include <math.h>
 #include <errno.h>
 #include <pthread.h>
+#include <inttypes.h>
 
 #include <hamlib/rig.h>
 
@@ -38,6 +39,7 @@
 #include "radio_pipeline.h"
 #include "cfg_utils.h"
 #include "radio_backend.h"
+#include "radio_controls.h"
 #include "hamlib_digi.h"
 
 _Atomic bool timer_reset = true;
@@ -1070,6 +1072,940 @@ static int start_periodic_timer(uint64_t offset_us)
     return 0;
 }
 
+
+/* ═══════════════════ generic control surface ═══════════════════════════
+ *
+ * Everything below forwards the daemon's backend-neutral control names
+ * (radio_controls.h — which are the Hamlib token names) straight to the
+ * open rig. Nothing here is rig-specific: the control set an IC-7300, an
+ * IC-7100 or an FT-710 exposes comes from that rig's own Hamlib capability
+ * masks, so adding a radio is a matter of Hamlib knowing it, not of code
+ * here. Every entry point takes RIG_LOCK so control traffic can never
+ * interleave with the meter poll on the CAT wire.
+ */
+
+static RIG *hl_rig(radio *radio_h)
+{
+    return (radio_h && radio_h->rig) ? (RIG *) radio_h->rig : NULL;
+}
+
+/* Map a Hamlib return code onto the daemon's backend-neutral codes. */
+static int hl_rc(int ret)
+{
+    switch (ret)
+    {
+    case RIG_OK:        return RADIO_CTRL_OK;
+    case -RIG_ENAVAIL:
+    case -RIG_ENIMPL:
+    case -RIG_ENTARGET:  return RADIO_CTRL_ENOTSUP;
+    case -RIG_EINVAL:
+    case -RIG_EDOM:      return RADIO_CTRL_EINVAL;
+    default:             return RADIO_CTRL_EIO;
+    }
+}
+
+static int hl_get_level(radio *radio_h, const char *name, double *out)
+{
+    RIG *rig = hl_rig(radio_h);
+    value_t val;
+    setting_t level;
+    int ret;
+
+    if (!rig || !name || !*name || !out)
+        return RADIO_CTRL_EINVAL;
+
+    level = rig_parse_level(name);
+    if (level == RIG_LEVEL_NONE)
+        return RADIO_CTRL_EINVAL;
+    if (!rig_has_get_level(rig, level))
+        return RADIO_CTRL_ENOTSUP;
+
+    memset(&val, 0, sizeof(val));
+    RIG_LOCK();
+    ret = rig_get_level(rig, RIG_VFO_CURR, level, &val);
+    RIG_UNLOCK();
+    if (ret != RIG_OK)
+        return hl_rc(ret);
+
+    *out = RIG_LEVEL_IS_FLOAT(level) ? (double) val.f : (double) val.i;
+    return RADIO_CTRL_OK;
+}
+
+static int hl_set_level(radio *radio_h, const char *name, double value)
+{
+    RIG *rig = hl_rig(radio_h);
+    value_t val;
+    setting_t level;
+    int ret;
+
+    if (!rig || !name || !*name)
+        return RADIO_CTRL_EINVAL;
+
+    level = rig_parse_level(name);
+    if (level == RIG_LEVEL_NONE)
+        return RADIO_CTRL_EINVAL;
+    if (!rig_has_set_level(rig, level))
+        return RADIO_CTRL_ENOTSUP;
+
+    memset(&val, 0, sizeof(val));
+    if (RIG_LEVEL_IS_FLOAT(level))
+        val.f = (float) value;
+    else
+        val.i = (int) lrint(value);
+
+    RIG_LOCK();
+    ret = rig_set_level(rig, RIG_VFO_CURR, level, val);
+    RIG_UNLOCK();
+
+    /* Keep the daemon's own view of the two levels it also tracks per
+     * profile in step, so the websocket status and the web UI don't drift
+     * away from a change made through rigctld or the rig's front panel. */
+    if (ret == RIG_OK)
+    {
+        uint32_t p = radio_h->profile_active_idx;
+        if (p < radio_h->profiles_count)
+        {
+            if (level == RIG_LEVEL_RFPOWER)
+                radio_h->profiles[p].power_level_percentage =
+                    (uint16_t) lrint(value * 100.0);
+            else if (level == RIG_LEVEL_AF)
+                radio_h->profiles[p].speaker_level = (uint32_t) lrint(value * 100.0);
+        }
+    }
+
+    return hl_rc(ret);
+}
+
+static int hl_get_func(radio *radio_h, const char *name, int *out)
+{
+    RIG *rig = hl_rig(radio_h);
+    setting_t func;
+    int status = 0, ret;
+
+    if (!rig || !name || !*name || !out)
+        return RADIO_CTRL_EINVAL;
+
+    func = rig_parse_func(name);
+    if (func == RIG_FUNC_NONE)
+        return RADIO_CTRL_EINVAL;
+    if (!rig_has_get_func(rig, func))
+        return RADIO_CTRL_ENOTSUP;
+
+    RIG_LOCK();
+    ret = rig_get_func(rig, RIG_VFO_CURR, func, &status);
+    RIG_UNLOCK();
+    if (ret != RIG_OK)
+        return hl_rc(ret);
+
+    *out = status ? 1 : 0;
+    return RADIO_CTRL_OK;
+}
+
+static int hl_set_func(radio *radio_h, const char *name, int on)
+{
+    RIG *rig = hl_rig(radio_h);
+    setting_t func;
+    int ret;
+
+    if (!rig || !name || !*name)
+        return RADIO_CTRL_EINVAL;
+
+    func = rig_parse_func(name);
+    if (func == RIG_FUNC_NONE)
+        return RADIO_CTRL_EINVAL;
+    if (!rig_has_set_func(rig, func))
+        return RADIO_CTRL_ENOTSUP;
+
+    RIG_LOCK();
+    ret = rig_set_func(rig, RIG_VFO_CURR, func, on ? 1 : 0);
+    RIG_UNLOCK();
+
+    return hl_rc(ret);
+}
+
+static int hl_get_parm(radio *radio_h, const char *name, double *out)
+{
+    RIG *rig = hl_rig(radio_h);
+    value_t val;
+    setting_t parm;
+    int ret;
+
+    if (!rig || !name || !*name || !out)
+        return RADIO_CTRL_EINVAL;
+
+    parm = rig_parse_parm(name);
+    if (parm == RIG_PARM_NONE)
+        return RADIO_CTRL_EINVAL;
+    if (!rig_has_get_parm(rig, parm))
+        return RADIO_CTRL_ENOTSUP;
+
+    memset(&val, 0, sizeof(val));
+    RIG_LOCK();
+    ret = rig_get_parm(rig, parm, &val);
+    RIG_UNLOCK();
+    if (ret != RIG_OK)
+        return hl_rc(ret);
+
+    *out = RIG_PARM_IS_FLOAT(parm) ? (double) val.f : (double) val.i;
+    return RADIO_CTRL_OK;
+}
+
+static int hl_set_parm(radio *radio_h, const char *name, double value)
+{
+    RIG *rig = hl_rig(radio_h);
+    value_t val;
+    setting_t parm;
+    int ret;
+
+    if (!rig || !name || !*name)
+        return RADIO_CTRL_EINVAL;
+
+    parm = rig_parse_parm(name);
+    if (parm == RIG_PARM_NONE)
+        return RADIO_CTRL_EINVAL;
+    if (!rig_has_set_parm(rig, parm))
+        return RADIO_CTRL_ENOTSUP;
+
+    memset(&val, 0, sizeof(val));
+    if (RIG_PARM_IS_FLOAT(parm))
+        val.f = (float) value;
+    else
+        val.i = (int) lrint(value);
+
+    RIG_LOCK();
+    ret = rig_set_parm(rig, parm, val);
+    RIG_UNLOCK();
+
+    return hl_rc(ret);
+}
+
+/* Walk the rig's capability masks and describe every control it has.
+ * Purely local (caps + granularity tables), so this costs no CAT traffic
+ * and can be answered on every websocket connect. */
+static size_t hl_enumerate_controls(radio *radio_h, radio_ctrl_info *out, size_t max)
+{
+    RIG *rig = hl_rig(radio_h);
+    size_t n = 0;
+
+    if (!rig || !rig->caps || !out || max == 0)
+        return 0;
+
+    for (int i = 0; i < RIG_SETTING_MAX && n < max; i++)
+    {
+        setting_t s = (setting_t) 1 << i;
+        const char *name = rig_strlevel(s);
+        if (!name || !*name)
+            continue;
+        bool can_get = rig_has_get_level(rig, s) != 0;
+        bool can_set = rig_has_set_level(rig, s) != 0;
+        if (!can_get && !can_set)
+            continue;
+
+        radio_ctrl_info *info = &out[n++];
+        memset(info, 0, sizeof(*info));
+        snprintf(info->name, sizeof(info->name), "%s", name);
+        info->kind = RADIO_CTRL_LEVEL;
+        info->is_float = RIG_LEVEL_IS_FLOAT(s) != 0;
+        info->can_get = can_get;
+        info->can_set = can_set;
+
+        const gran_t *g = &rig->caps->level_gran[i];
+        if (info->is_float)
+        {
+            info->min  = g->min.f;
+            info->max  = g->max.f;
+            info->step = g->step.f;
+            /* Hamlib leaves the gran zeroed for plain 0..1 float levels. */
+            if (info->min == 0.0 && info->max == 0.0)
+                info->max = 1.0;
+        }
+        else
+        {
+            info->min  = g->min.i;
+            info->max  = g->max.i;
+            info->step = g->step.i;
+        }
+    }
+
+    for (int i = 0; i < RIG_SETTING_MAX && n < max; i++)
+    {
+        setting_t s = (setting_t) 1 << i;
+        const char *name = rig_strfunc(s);
+        if (!name || !*name)
+            continue;
+        bool can_get = rig_has_get_func(rig, s) != 0;
+        bool can_set = rig_has_set_func(rig, s) != 0;
+        if (!can_get && !can_set)
+            continue;
+
+        radio_ctrl_info *info = &out[n++];
+        memset(info, 0, sizeof(*info));
+        snprintf(info->name, sizeof(info->name), "%s", name);
+        info->kind = RADIO_CTRL_FUNC;
+        info->is_float = false;
+        info->can_get = can_get;
+        info->can_set = can_set;
+        info->min = 0.0;
+        info->max = 1.0;
+        info->step = 1.0;
+    }
+
+    for (int i = 0; i < RIG_SETTING_MAX && n < max; i++)
+    {
+        setting_t s = (setting_t) 1 << i;
+        const char *name = rig_strparm(s);
+        if (!name || !*name)
+            continue;
+        bool can_get = rig_has_get_parm(rig, s) != 0;
+        bool can_set = rig_has_set_parm(rig, s) != 0;
+        if (!can_get && !can_set)
+            continue;
+
+        radio_ctrl_info *info = &out[n++];
+        memset(info, 0, sizeof(*info));
+        snprintf(info->name, sizeof(info->name), "%s", name);
+        info->kind = RADIO_CTRL_PARM;
+        info->is_float = RIG_PARM_IS_FLOAT(s) != 0;
+        info->can_get = can_get;
+        info->can_set = can_set;
+
+        const gran_t *g = &rig->caps->parm_gran[i];
+        if (info->is_float)
+        {
+            info->min  = g->min.f;
+            info->max  = g->max.f;
+            info->step = g->step.f;
+            if (info->min == 0.0 && info->max == 0.0)
+                info->max = 1.0;
+        }
+        else
+        {
+            info->min  = g->min.i;
+            info->max  = g->max.i;
+            info->step = g->step.i;
+        }
+    }
+
+    return n;
+}
+
+/* ── typed rig state ───────────────────────────────────────────────── */
+
+static int hl_get_vfo(radio *radio_h, char *out, size_t out_len)
+{
+    RIG *rig = hl_rig(radio_h);
+    vfo_t vfo = RIG_VFO_NONE;
+    int ret;
+
+    if (!rig || !out || out_len == 0)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_get_vfo(rig, &vfo);
+    RIG_UNLOCK();
+    if (ret != RIG_OK)
+        return hl_rc(ret);
+
+    snprintf(out, out_len, "%s", rig_strvfo(vfo));
+    return RADIO_CTRL_OK;
+}
+
+static int hl_set_vfo(radio *radio_h, const char *vfo_name)
+{
+    RIG *rig = hl_rig(radio_h);
+    vfo_t vfo;
+    int ret;
+
+    if (!rig || !vfo_name || !*vfo_name)
+        return RADIO_CTRL_EINVAL;
+
+    vfo = rig_parse_vfo(vfo_name);
+    if (vfo == RIG_VFO_NONE)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_set_vfo(rig, vfo);
+    RIG_UNLOCK();
+
+    return hl_rc(ret);
+}
+
+static int hl_get_split(radio *radio_h, int *on, char *tx_vfo, size_t tx_vfo_len)
+{
+    RIG *rig = hl_rig(radio_h);
+    split_t split = RIG_SPLIT_OFF;
+    vfo_t vfo = RIG_VFO_NONE;
+    int ret;
+
+    if (!rig || !on)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_get_split_vfo(rig, RIG_VFO_CURR, &split, &vfo);
+    RIG_UNLOCK();
+    if (ret != RIG_OK)
+        return hl_rc(ret);
+
+    *on = (split == RIG_SPLIT_ON) ? 1 : 0;
+    if (tx_vfo && tx_vfo_len)
+        snprintf(tx_vfo, tx_vfo_len, "%s", rig_strvfo(vfo));
+
+    return RADIO_CTRL_OK;
+}
+
+static int hl_set_split(radio *radio_h, int on, const char *tx_vfo)
+{
+    RIG *rig = hl_rig(radio_h);
+    vfo_t vfo = RIG_VFO_B;
+    int ret;
+
+    if (!rig)
+        return RADIO_CTRL_EINVAL;
+
+    if (tx_vfo && *tx_vfo)
+    {
+        vfo = rig_parse_vfo(tx_vfo);
+        if (vfo == RIG_VFO_NONE)
+            return RADIO_CTRL_EINVAL;
+    }
+
+    RIG_LOCK();
+    ret = rig_set_split_vfo(rig, RIG_VFO_CURR,
+                            on ? RIG_SPLIT_ON : RIG_SPLIT_OFF, vfo);
+    RIG_UNLOCK();
+
+    return hl_rc(ret);
+}
+
+static int hl_get_split_freq(radio *radio_h, uint32_t *hz)
+{
+    RIG *rig = hl_rig(radio_h);
+    freq_t freq = 0;
+    int ret;
+
+    if (!rig || !hz)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_get_split_freq(rig, RIG_VFO_CURR, &freq);
+    RIG_UNLOCK();
+    if (ret != RIG_OK)
+        return hl_rc(ret);
+
+    *hz = (uint32_t) freq;
+    return RADIO_CTRL_OK;
+}
+
+static int hl_set_split_freq(radio *radio_h, uint32_t hz)
+{
+    RIG *rig = hl_rig(radio_h);
+    int ret;
+
+    if (!rig)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_set_split_freq(rig, RIG_VFO_CURR, (freq_t) hz);
+    RIG_UNLOCK();
+
+    return hl_rc(ret);
+}
+
+static int hl_get_split_mode(radio *radio_h, char *mode, size_t mode_len, uint32_t *width)
+{
+    RIG *rig = hl_rig(radio_h);
+    rmode_t rmode = RIG_MODE_NONE;
+    pbwidth_t pb = 0;
+    int ret;
+
+    if (!rig || !mode || mode_len == 0)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_get_split_mode(rig, RIG_VFO_CURR, &rmode, &pb);
+    RIG_UNLOCK();
+    if (ret != RIG_OK)
+        return hl_rc(ret);
+
+    snprintf(mode, mode_len, "%s", rig_strrmode(rmode));
+    if (width)
+        *width = (uint32_t) (pb > 0 ? pb : 0);
+
+    return RADIO_CTRL_OK;
+}
+
+static int hl_set_split_mode(radio *radio_h, const char *mode, uint32_t width)
+{
+    RIG *rig = hl_rig(radio_h);
+    rmode_t rmode;
+    int ret;
+
+    if (!rig || !mode || !*mode)
+        return RADIO_CTRL_EINVAL;
+
+    rmode = rig_parse_mode(mode);
+    if (rmode == RIG_MODE_NONE)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_set_split_mode(rig, RIG_VFO_CURR, rmode,
+                             width ? (pbwidth_t) width : RIG_PASSBAND_NORMAL);
+    RIG_UNLOCK();
+
+    return hl_rc(ret);
+}
+
+static int hl_get_rit(radio *radio_h, int32_t *hz)
+{
+    RIG *rig = hl_rig(radio_h);
+    shortfreq_t rit = 0;
+    int ret;
+
+    if (!rig || !hz)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_get_rit(rig, RIG_VFO_CURR, &rit);
+    RIG_UNLOCK();
+    if (ret != RIG_OK)
+        return hl_rc(ret);
+
+    *hz = (int32_t) rit;
+    return RADIO_CTRL_OK;
+}
+
+static int hl_set_rit(radio *radio_h, int32_t hz)
+{
+    RIG *rig = hl_rig(radio_h);
+    int ret;
+
+    if (!rig)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_set_rit(rig, RIG_VFO_CURR, (shortfreq_t) hz);
+    RIG_UNLOCK();
+
+    return hl_rc(ret);
+}
+
+static int hl_get_xit(radio *radio_h, int32_t *hz)
+{
+    RIG *rig = hl_rig(radio_h);
+    shortfreq_t xit = 0;
+    int ret;
+
+    if (!rig || !hz)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_get_xit(rig, RIG_VFO_CURR, &xit);
+    RIG_UNLOCK();
+    if (ret != RIG_OK)
+        return hl_rc(ret);
+
+    *hz = (int32_t) xit;
+    return RADIO_CTRL_OK;
+}
+
+static int hl_set_xit(radio *radio_h, int32_t hz)
+{
+    RIG *rig = hl_rig(radio_h);
+    int ret;
+
+    if (!rig)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_set_xit(rig, RIG_VFO_CURR, (shortfreq_t) hz);
+    RIG_UNLOCK();
+
+    return hl_rc(ret);
+}
+
+static int hl_get_width(radio *radio_h, uint32_t *hz)
+{
+    RIG *rig = hl_rig(radio_h);
+    rmode_t rmode = RIG_MODE_NONE;
+    pbwidth_t pb = 0;
+    int ret;
+
+    if (!rig || !hz)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_get_mode(rig, RIG_VFO_CURR, &rmode, &pb);
+    RIG_UNLOCK();
+    if (ret != RIG_OK)
+        return hl_rc(ret);
+
+    *hz = (uint32_t) (pb > 0 ? pb : 0);
+
+    uint32_t p = radio_h->profile_active_idx;
+    if (p < radio_h->profiles_count)
+        radio_h->profiles[p].filter_width = *hz;
+
+    return RADIO_CTRL_OK;
+}
+
+/* Set the receiver filter passband. Hamlib carries width as the second
+ * argument of rig_set_mode, so the current mode is read back first and
+ * re-asserted with the new width. */
+static int hl_set_width(radio *radio_h, uint32_t hz)
+{
+    RIG *rig = hl_rig(radio_h);
+    rmode_t rmode = RIG_MODE_NONE;
+    pbwidth_t pb = 0;
+    int ret;
+
+    if (!rig)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_get_mode(rig, RIG_VFO_CURR, &rmode, &pb);
+    if (ret == RIG_OK)
+        ret = rig_set_mode(rig, RIG_VFO_CURR, rmode,
+                           hz ? (pbwidth_t) hz : RIG_PASSBAND_NORMAL);
+    RIG_UNLOCK();
+
+    if (ret == RIG_OK)
+    {
+        uint32_t p = radio_h->profile_active_idx;
+        if (p < radio_h->profiles_count)
+            radio_h->profiles[p].filter_width = hz;
+    }
+
+    return hl_rc(ret);
+}
+
+/* The rig's own mode name, so a client that asked for PKTUSB reads PKTUSB
+ * back rather than the daemon's internal MODE_USB flattened to "USB". */
+static int hl_get_mode_name(radio *radio_h, char *out, size_t out_len, uint32_t *width)
+{
+    RIG *rig = hl_rig(radio_h);
+    rmode_t rmode = RIG_MODE_NONE;
+    pbwidth_t pb = 0;
+    int ret;
+
+    if (!rig || !out || out_len == 0)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_get_mode(rig, RIG_VFO_CURR, &rmode, &pb);
+    RIG_UNLOCK();
+    if (ret != RIG_OK)
+        return hl_rc(ret);
+
+    snprintf(out, out_len, "%s", rig_strrmode(rmode));
+    if (width)
+        *width = (uint32_t) (pb > 0 ? pb : 0);
+
+    return RADIO_CTRL_OK;
+}
+
+/* Set exactly the mode the client named. The daemon's internal MODE_* is
+ * refreshed from it so the web UI and status frames follow, but the
+ * profile's operating_mode (which selects the daemon's own audio routing)
+ * is deliberately left alone — a logger changing the rig's submode must not
+ * silently re-route the station's audio. */
+static int hl_set_mode_name(radio *radio_h, const char *mode, uint32_t width)
+{
+    RIG *rig = hl_rig(radio_h);
+    rmode_t rmode;
+    int ret;
+
+    if (!rig || !mode || !*mode)
+        return RADIO_CTRL_EINVAL;
+
+    rmode = rig_parse_mode(mode);
+    if (rmode == RIG_MODE_NONE)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_set_mode(rig, RIG_VFO_CURR, rmode,
+                       width ? (pbwidth_t) width : RIG_PASSBAND_NORMAL);
+    RIG_UNLOCK();
+    if (ret != RIG_OK)
+        return hl_rc(ret);
+
+    uint32_t p = radio_h->profile_active_idx;
+    if (p < radio_h->profiles_count)
+    {
+        radio_h->profiles[p].mode = hamlib_to_mode(rmode);
+        if (width)
+            radio_h->profiles[p].filter_width = width;
+    }
+
+    /* The read-back poll must not overwrite this with a mid-transition
+     * mode, exactly as on a profile switch. */
+    vfo_poll_suppress = 5;
+
+    return RADIO_CTRL_OK;
+}
+
+static int hl_get_ant(radio *radio_h, int *ant)
+{
+    RIG *rig = hl_rig(radio_h);
+    ant_t ant_curr = RIG_ANT_NONE, ant_tx = RIG_ANT_NONE, ant_rx = RIG_ANT_NONE;
+    value_t option;
+    int ret;
+
+    if (!rig || !ant)
+        return RADIO_CTRL_EINVAL;
+
+    memset(&option, 0, sizeof(option));
+    RIG_LOCK();
+    ret = rig_get_ant(rig, RIG_VFO_CURR, RIG_ANT_CURR, &option,
+                      &ant_curr, &ant_tx, &ant_rx);
+    RIG_UNLOCK();
+    if (ret != RIG_OK)
+        return hl_rc(ret);
+
+    /* Hamlib reports the antenna as a bit in an ant_t mask; clients speak
+     * the 1-based antenna number, which is that bit's index + 1. */
+    *ant = 0;
+    for (int i = 0; i < 32; i++)
+    {
+        if (ant_curr & ((ant_t) 1 << i))
+        {
+            *ant = i + 1;
+            break;
+        }
+    }
+
+    return RADIO_CTRL_OK;
+}
+
+static int hl_set_ant(radio *radio_h, int ant)
+{
+    RIG *rig = hl_rig(radio_h);
+    value_t option;
+    int ret;
+
+    if (!rig || ant < 1 || ant > 32)
+        return RADIO_CTRL_EINVAL;
+
+    memset(&option, 0, sizeof(option));
+    RIG_LOCK();
+    ret = rig_set_ant(rig, RIG_VFO_CURR, (ant_t) 1 << (ant - 1), option);
+    RIG_UNLOCK();
+
+    return hl_rc(ret);
+}
+
+static int hl_get_mem(radio *radio_h, int *ch)
+{
+    RIG *rig = hl_rig(radio_h);
+    int ret;
+
+    if (!rig || !ch)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_get_mem(rig, RIG_VFO_CURR, ch);
+    RIG_UNLOCK();
+
+    return hl_rc(ret);
+}
+
+static int hl_set_mem(radio *radio_h, int ch)
+{
+    RIG *rig = hl_rig(radio_h);
+    int ret;
+
+    if (!rig)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_set_mem(rig, RIG_VFO_CURR, ch);
+    RIG_UNLOCK();
+
+    return hl_rc(ret);
+}
+
+static int hl_get_powerstat(radio *radio_h, int *on)
+{
+    RIG *rig = hl_rig(radio_h);
+    powerstat_t status = RIG_POWER_OFF;
+    int ret;
+
+    if (!rig || !on)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_get_powerstat(rig, &status);
+    RIG_UNLOCK();
+    if (ret != RIG_OK)
+        return hl_rc(ret);
+
+    *on = (int) status;
+    return RADIO_CTRL_OK;
+}
+
+static int hl_set_powerstat(radio *radio_h, int on)
+{
+    RIG *rig = hl_rig(radio_h);
+    int ret;
+
+    if (!rig)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_set_powerstat(rig, on ? RIG_POWER_ON : RIG_POWER_OFF);
+    RIG_UNLOCK();
+
+    return hl_rc(ret);
+}
+
+static int hl_vfo_op(radio *radio_h, const char *op_name)
+{
+    RIG *rig = hl_rig(radio_h);
+    vfo_op_t op;
+    int ret;
+
+    if (!rig || !op_name || !*op_name)
+        return RADIO_CTRL_EINVAL;
+
+    op = rig_parse_vfo_op(op_name);
+    if (op == RIG_OP_NONE)
+        return RADIO_CTRL_EINVAL;
+    if (!rig_has_vfo_op(rig, op))
+        return RADIO_CTRL_ENOTSUP;
+
+    RIG_LOCK();
+    ret = rig_vfo_op(rig, RIG_VFO_CURR, op);
+    RIG_UNLOCK();
+
+    /* An antenna tuner cycle (RIG_OP_TUNE) keys the rig for a few seconds;
+     * let the read-back poll settle rather than latch a mid-tune state. */
+    if (ret == RIG_OK && op == RIG_OP_TUNE)
+        vfo_poll_suppress = 50;
+
+    return hl_rc(ret);
+}
+
+static int hl_send_morse(radio *radio_h, const char *text)
+{
+    RIG *rig = hl_rig(radio_h);
+    int ret;
+
+    if (!rig || !text || !*text)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_send_morse(rig, RIG_VFO_CURR, text);
+    RIG_UNLOCK();
+
+    return hl_rc(ret);
+}
+
+static int hl_stop_morse(radio *radio_h)
+{
+    RIG *rig = hl_rig(radio_h);
+    int ret;
+
+    if (!rig)
+        return RADIO_CTRL_EINVAL;
+
+    RIG_LOCK();
+    ret = rig_stop_morse(rig, RIG_VFO_CURR);
+    RIG_UNLOCK();
+
+    return hl_rc(ret);
+}
+
+/* Build the rigctld \dump_state payload from the rig Hamlib actually
+ * opened, so a remote WSJT-X / fldigi / VARA sees this rig's real
+ * frequency ranges, modes, filters and level masks instead of a
+ * hardcoded guess. Protocol version 0 — the classic block every
+ * NET rigctl client understands.
+ *
+ * Frequency ranges live per ITU region in caps (list1 = region 1,
+ * list2 = region 2); most backends fill both, so we publish whichever
+ * is populated and report the matching region number. */
+static int hl_dump_state(radio *radio_h, char *out, size_t out_len)
+{
+    RIG *rig = hl_rig(radio_h);
+    size_t off = 0;
+    int region = 1;
+
+    if (!rig || !rig->caps || !out || out_len == 0)
+        return RADIO_CTRL_ENOTSUP;
+
+    const struct rig_caps *caps = rig->caps;
+    const freq_range_t *rx = caps->rx_range_list1;
+    const freq_range_t *tx = caps->tx_range_list1;
+
+    if (RIG_IS_FRNG_END(rx[0]))
+    {
+        rx = caps->rx_range_list2;
+        tx = caps->tx_range_list2;
+        region = 2;
+    }
+
+#define DS_APPEND(...)                                                        \
+    do {                                                                      \
+        int _n = snprintf(out + off, out_len - off, __VA_ARGS__);              \
+        if (_n < 0 || (size_t) _n >= out_len - off)                           \
+            return RADIO_CTRL_EIO;                                            \
+        off += (size_t) _n;                                                   \
+    } while (0)
+
+    DS_APPEND("0\n");                       /* protocol version */
+    DS_APPEND("%u\n", (unsigned) caps->rig_model);
+    DS_APPEND("%d\n", region);
+
+    for (int i = 0; i < HAMLIB_FRQRANGESIZ && !RIG_IS_FRNG_END(rx[i]); i++)
+        DS_APPEND("%.0f %.0f 0x%" PRIx64 " %d %d 0x%x 0x%x\n",
+                  rx[i].startf, rx[i].endf, (uint64_t) rx[i].modes,
+                  rx[i].low_power, rx[i].high_power,
+                  (unsigned) rx[i].vfo, (unsigned) rx[i].ant);
+    DS_APPEND("0 0 0 0 0 0 0\n");
+
+    for (int i = 0; i < HAMLIB_FRQRANGESIZ && !RIG_IS_FRNG_END(tx[i]); i++)
+        DS_APPEND("%.0f %.0f 0x%" PRIx64 " %d %d 0x%x 0x%x\n",
+                  tx[i].startf, tx[i].endf, (uint64_t) tx[i].modes,
+                  tx[i].low_power, tx[i].high_power,
+                  (unsigned) tx[i].vfo, (unsigned) tx[i].ant);
+    DS_APPEND("0 0 0 0 0 0 0\n");
+
+    for (int i = 0; i < HAMLIB_TSLSTSIZ && !RIG_IS_TS_END(caps->tuning_steps[i]); i++)
+        DS_APPEND("0x%" PRIx64 " %ld\n",
+                  (uint64_t) caps->tuning_steps[i].modes,
+                  (long) caps->tuning_steps[i].ts);
+    DS_APPEND("0 0\n");
+
+    for (int i = 0; i < HAMLIB_FLTLSTSIZ && !RIG_IS_FLT_END(caps->filters[i]); i++)
+        DS_APPEND("0x%" PRIx64 " %ld\n",
+                  (uint64_t) caps->filters[i].modes,
+                  (long) caps->filters[i].width);
+    DS_APPEND("0 0\n");
+
+    DS_APPEND("%ld\n", (long) caps->max_rit);
+    DS_APPEND("%ld\n", (long) caps->max_xit);
+    DS_APPEND("%ld\n", (long) caps->max_ifshift);
+    DS_APPEND("%d\n", (int) caps->announces);
+
+    for (int i = 0; i < HAMLIB_MAXDBLSTSIZ && caps->preamp[i] != 0; i++)
+        DS_APPEND("%d ", caps->preamp[i]);
+    DS_APPEND("0\n");
+
+    for (int i = 0; i < HAMLIB_MAXDBLSTSIZ && caps->attenuator[i] != 0; i++)
+        DS_APPEND("%d ", caps->attenuator[i]);
+    DS_APPEND("0\n");
+
+    DS_APPEND("0x%" PRIx64 "\n", (uint64_t) caps->has_get_func);
+    DS_APPEND("0x%" PRIx64 "\n", (uint64_t) caps->has_set_func);
+    DS_APPEND("0x%" PRIx64 "\n", (uint64_t) caps->has_get_level);
+    DS_APPEND("0x%" PRIx64 "\n", (uint64_t) caps->has_set_level);
+    DS_APPEND("0x%" PRIx64 "\n", (uint64_t) caps->has_get_parm);
+    DS_APPEND("0x%" PRIx64 "\n", (uint64_t) caps->has_set_parm);
+
+#undef DS_APPEND
+
+    return RADIO_CTRL_OK;
+}
+
 const radio_backend_ops hamlib_backend_ops = {
     .name                    = "hamlib",
     .init                    = radio_hamlib_init,
@@ -1091,4 +2027,39 @@ const radio_backend_ops hamlib_backend_ops = {
     .get_fwd_power           = get_fwd_power,
     .get_ref_power           = get_ref_power,
     .get_swr                 = get_swr,
+
+    .get_level               = hl_get_level,
+    .set_level               = hl_set_level,
+    .get_func                = hl_get_func,
+    .set_func                = hl_set_func,
+    .get_parm                = hl_get_parm,
+    .set_parm                = hl_set_parm,
+    .enumerate_controls      = hl_enumerate_controls,
+
+    .get_vfo                 = hl_get_vfo,
+    .set_vfo                 = hl_set_vfo,
+    .get_split               = hl_get_split,
+    .set_split               = hl_set_split,
+    .get_split_freq          = hl_get_split_freq,
+    .set_split_freq          = hl_set_split_freq,
+    .get_split_mode          = hl_get_split_mode,
+    .set_split_mode          = hl_set_split_mode,
+    .get_rit                 = hl_get_rit,
+    .set_rit                 = hl_set_rit,
+    .get_xit                 = hl_get_xit,
+    .set_xit                 = hl_set_xit,
+    .get_mode_name           = hl_get_mode_name,
+    .set_mode_name           = hl_set_mode_name,
+    .get_width               = hl_get_width,
+    .set_width               = hl_set_width,
+    .get_ant                 = hl_get_ant,
+    .set_ant                 = hl_set_ant,
+    .get_mem                 = hl_get_mem,
+    .set_mem                 = hl_set_mem,
+    .get_powerstat           = hl_get_powerstat,
+    .set_powerstat           = hl_set_powerstat,
+    .vfo_op                  = hl_vfo_op,
+    .send_morse              = hl_send_morse,
+    .stop_morse              = hl_stop_morse,
+    .dump_state              = hl_dump_state,
 };

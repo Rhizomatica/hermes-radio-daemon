@@ -216,6 +216,12 @@ typedef struct {
     uint32_t bpf_low;
     uint32_t bpf_high;
 
+    /* Receiver filter passband in Hz, 0 = rig default ("normal"). On the
+     * hamlib backend this is the width argument of rig_set_mode; on the
+     * hfsignals backend it is bpf_high - bpf_low. Kept per profile so a
+     * profile switch restores the operator's filter along with the mode. */
+    _Atomic uint32_t filter_width;
+
     _Atomic uint16_t power_level_percentage; /* 0..100 */
 
     /* Front-panel knob/PTT enables (sbitx hardware) */

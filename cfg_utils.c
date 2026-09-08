@@ -483,6 +483,11 @@ bool init_config_user(radio *radio_h, const char *ini_name)
         snprintf(key, sizeof(key), "profile%d:bpf_high", k);
         radio_h->profiles[k].bpf_high = (uint32_t) iniparser_getint(ini, key, 3000);
 
+        /* Rig filter passband. 0 = leave the rig at its default width for the
+         * mode; on hfsignals it is derived from the bpf pair above. */
+        snprintf(key, sizeof(key), "profile%d:filter_width", k);
+        radio_h->profiles[k].filter_width = (uint32_t) iniparser_getint(ini, key, 0);
+
         snprintf(key, sizeof(key), "profile%d:enable_knob_volume", k);
         radio_h->profiles[k].enable_knob_volume = iniparser_getboolean(ini, key, 1);
 

@@ -5,13 +5,14 @@ Radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-net)
 ## Features
 
 - **`hfsignals` backend** — embedded sBitx/zBitx DSP + ALSA path with all original hardware control (Si5351, GPIO, I2C, WM8731 codec)
-- **`hamlib` backend** — Hamlib CAT/PTT control for IC-7100, IC-7300, TS-480, etc.
+- **`hamlib` backend** — Hamlib CAT/PTT control for IC-7100, IC-7300, FT-710, TS-480 and every other rig Hamlib supports
 - **8 modulation modes**: LSB, USB, CW, **FM** (NBFM), **AM** (broadcast), **DRM** (Digital Radio Mondiale), **FT8**, **RTTY**, plus RADEv2 digital voice on top of USB
 - **Digital text modes**: FT8 (8-FSK), CW (Morse via unixcw), RTTY (Baudot FSK) with unified websocket API and a real outbound text queue (`digi_send`)
 - **SSB voice DSP chain**: 3-band pre-EQ, wideband compressor, pre-emphasis, DC block, limiter
 - **RX voice DSP chain**: DC block, adaptive noise reduction (libspecbleach), AGC (SLOW/MEDIUM/FAST), soft limiter
 - **Audio bridge** for websocket RX/TX streaming, RX/TX spectrum waterfall, and `.wav` recording — on both backends, sharing the same audio rings. csdr-based polyphase resampler (`audio_bridge.c`) decouples the rig USB codec rate from the daemon ring rate.
 - **Optional operator-side headset** (`audio_headset.c`) — second pair of ALSA devices for users running the daemon on a dedicated box with a wired headset instead of (or in addition to) the browser audio.
+- **Complete rig control surface** — every level, function and parameter the connected rig exposes (RF/mic gain, squelch, NB/NR/notch, preamp/attenuator, VOX, break-in, monitor, keyer speed, …) plus split, RIT/XIT, filter width, antenna, memory channels and tuner control. Discovered from the rig's own Hamlib capabilities, not hardcoded per model, and served identically over the websocket API, the network `rigctld` server and the web panel. See [Radio Controls](#radio-controls).
 - **Up to 9 profiles** with frequency, mode, power, timeout, and digital-voice state
 - **Single mongoose-based websocket server** speaking one JSON dialect for both backends, with `ws://` and `wss://` (TLS) support out of the box
 - WAV recording with remote start/stop on both backends
@@ -490,6 +491,99 @@ Audio paths use the same `audio_bridge` resampler. The browser and the local
 headset both consume from `rx_audio_ring`; pick one or the other for
 monitoring to avoid splitting samples between them.
 
+## Radio Controls
+
+Every control the connected rig exposes is reachable, named exactly as Hamlib
+names it (`RFPOWER`, `MICGAIN`, `NB`, `VOX`, `TUNER`, …). Nothing is hardcoded
+per rig: the daemon reads the control set from the rig's own Hamlib capability
+masks, so an IC-7300, an IC-7100 and an FT-710 each advertise their own knobs.
+The same names are used by the websocket API, the `rigctld`-compatible server
+and the web panel.
+
+Controls come in Hamlib's three kinds:
+
+| Kind | What it is | Examples |
+|------|------------|----------|
+| `level` | Continuous or stepped value | `RFPOWER`, `AF`, `RF`, `MICGAIN`, `SQL`, `NR`, `ATT`, `PREAMP`, `KEYSPD`, `CWPITCH`, `AGC` |
+| `func` | On/off switch | `NB`, `COMP`, `VOX`, `TUNER`, `ANF`, `RIT`, `XIT`, `FBKIN`, `LOCK` |
+| `parm` | Rig-global parameter | `ANN`, `BACKLIGHT`, `BEEP`, `TIME` |
+
+Beyond those, the typed rig state has its own commands: VFO selection, split
+(on/off, TX VFO, split frequency and mode), RIT/XIT offsets, filter width,
+antenna, memory channel, power state, VFO operations (`TUNE`, `XCHG`,
+`BAND_UP`, …) and the rig-side CW keyer.
+
+### Discovering what a rig has
+
+```json
+{"cmd":"get_controls"}
+```
+answers with every control this rig supports, each with its kind, whether it is
+float or integer, whether it can be read and/or written, and the range and step
+the rig reports:
+```json
+{"cmd":"get_controls","ok":true,"count":113,"controls":[
+  {"name":"RFPOWER","kind":"level","type":"float","get":true,"set":true,"min":0,"max":1,"step":0},
+  {"name":"NB","kind":"func","type":"int","get":true,"set":true,"min":0,"max":1,"step":1}]}
+```
+
+A control that the rig does not have is not reported, and asking for it answers
+`{"ok":false,"error":"not supported by this rig"}` — never a fabricated value.
+
+### Reading and writing
+
+```json
+{"cmd":"get_level","name":"RFPOWER"}
+{"cmd":"set_level","name":"RFPOWER","value":0.5}
+{"cmd":"get_func","name":"NB"}
+{"cmd":"set_func","name":"NB","value":1}
+{"cmd":"get_parm","name":"BACKLIGHT"}
+{"cmd":"set_parm","name":"BACKLIGHT","value":0.8}
+
+{"cmd":"get_control_values"}                        // every readable control
+{"cmd":"get_control_values","names":"AF,RF,NB"}     // just these
+```
+
+`get_control_values` costs one CAT transaction per control, so it is an
+on-demand snapshot — use the `names` filter when refreshing a few widgets, and
+never poll the unfiltered form. Values written are clamped to the range and
+step the rig advertised.
+
+### Typed rig state
+
+```json
+{"cmd":"get_vfo"}                 {"cmd":"set_vfo","vfo":"VFOB"}
+{"cmd":"get_split"}               {"cmd":"set_split","enabled":1,"tx_vfo":"VFOB"}
+{"cmd":"get_split_freq"}          {"cmd":"set_split_freq","frequency":14200000}
+{"cmd":"get_split_mode"}          {"cmd":"set_split_mode","mode":"USB","width":2400}
+{"cmd":"get_rit"}                 {"cmd":"set_rit","value":300}
+{"cmd":"get_xit"}                 {"cmd":"set_xit","value":-200}
+{"cmd":"get_width"}               {"cmd":"set_width","value":1800}
+{"cmd":"get_ant"}                 {"cmd":"set_ant","value":2}
+{"cmd":"get_mem"}                 {"cmd":"set_mem","value":12}
+{"cmd":"get_powerstat"}           {"cmd":"set_powerstat","value":1}
+{"cmd":"get_rig_mode"}            {"cmd":"set_rig_mode","mode":"PKTUSB","width":3000}
+{"cmd":"vfo_op","op":"TUNE"}      // antenna tuner cycle
+{"cmd":"send_morse","text":"CQ TEST"}   {"cmd":"stop_morse"}
+```
+
+`get_rig_mode` / `set_rig_mode` carry the rig's own mode name, so a data
+submode (`PKTUSB`, `PKTLSB`, `DIGU`) round-trips intact — `set_mode` uses the
+daemon's internal vocabulary (`USB`, `LSB`, `CW`, …) and cannot express it.
+Setting the rig mode by name deliberately leaves the profile's
+`operating_mode` alone: a logger changing the rig's submode must not silently
+re-route the station's audio.
+
+### Backend coverage
+
+Both backends answer the same API. On the `hamlib` backend the control set is
+whatever the rig reports. The `hfsignals` (sBitx/zBitx) backend exposes what
+that hardware really has — `AF`, `RF`, `MICGAIN`, `RFPOWER`, `AGC`, `STRENGTH`,
+`SWR`, `RFPOWER_METER_WATTS`, the `NR` and `COMP` switches and the DSP filter
+width — and reports the rest as unsupported rather than pretending. Rig
+features the sBitx has no hardware for (split, RIT/XIT, antenna relays, memory
+channels, a rig keyer) are absent from its enumeration.
+
 ## Websocket Control
 
 When `enable_websocket = 1` the daemon listens on the URL given by
@@ -513,6 +607,9 @@ Text frames use compact JSON commands:
 {"cmd":"digi_messages","count":10}
 {"cmd":"digi_config","key":"cw_wpm","value":25}
 ```
+
+Rig controls (levels, funcs, parms, split, RIT/XIT, filter width, antenna,
+tuner, …) have their own commands — see [Radio Controls](#radio-controls).
 
 Binary frames for audio and waterfall:
 | Type | Direction | Payload |
@@ -570,7 +667,14 @@ Set `hw_profile = zbitx` in `core.ini` to enable zBitx-specific GPIO handling:
 
 ## Rigctld-Compatible Server
 
-The daemon can emulate a hamlib rig on port 4532, allowing external applications (fldigi, WSJT-X, QLog, etc.) to control the sBitx/zBitx as if it were a hamlib-compatible radio. Enabled for the `hfsignals` backend only — hamlib radios already have native rigctld support.
+The daemon speaks the `rigctld` text protocol on port 4532, so hamlib-aware
+software — WSJT-X, fldigi, JTDX, QLog, Winlink, VARA — controls the station
+over the network as if it were talking to a local rig. It runs on **both**
+backends: with the `hfsignals` backend it presents the sBitx/zBitx as a rig,
+and with the `hamlib` backend it forwards to the real radio, which lets several
+programs share one CAT port that only one process can open at a time. Every
+command is arbitrated through the same serial lock as the daemon's own meter
+polling, so a client command can never interleave with a poll on the wire.
 
 Enable in `core.ini`:
 ```ini
@@ -578,25 +682,48 @@ rig_server_enable = 1
 rig_server_port  = 4532
 ```
 
-Clients connect to `localhost:4532` (or `<sbitx-ip>:4532`) and use standard hamlib model 2 (NET rigctl). Supported commands:
+Clients connect to `<host>:4532` with hamlib model 2 (NET rigctl).
 
 | Rigctl | Action |
 |--------|--------|
 | `f` / `F <Hz>` | Get/set frequency |
-| `m` / `M <mode>` | Get/set mode (LSB, USB, CW, FM, AM, RTTY) |
-| `t` / `T 0/1` | Get/set PTT state |
-| `v` / `V` | Get VFO |
+| `m` / `M <mode> [width]` | Get/set mode and passband, by the rig's own mode name (`USB`, `PKTUSB`, …) |
+| `t` / `T 0\|1` | Get/set PTT |
+| `v` / `V <VFO>` | Get/set VFO |
+| `l` / `L <NAME> <value>` | Get/set any level; `l ?` lists the levels this rig has |
+| `u` / `U <NAME> <0\|1>` | Get/set any function; `u ?` lists them |
+| `p` / `P <NAME> <value>` | Get/set any parameter; `p ?` lists them |
+| `s` / `S <0\|1> <VFO>` | Get/set split and TX VFO |
+| `i` / `I <Hz>` | Get/set split (TX) frequency |
+| `x` / `X <mode> [width]` | Get/set split (TX) mode |
+| `j` / `J <Hz>` | Get/set RIT offset |
+| `z` / `Z <Hz>` | Get/set XIT offset |
+| `y` / `Y <n>` | Get/set antenna |
+| `h` / `H <ch>` | Get/set memory channel |
+| `G <op>` | VFO operation: `TUNE`, `XCHG`, `CPY`, `BAND_UP`, `BAND_DOWN`, … |
+| `b <text>` / `\stop_morse` | Rig-side CW keyer |
+| `\get_powerstat` / `\set_powerstat <0\|1>` | Rig power state |
+| `\get_vfo_info` | Frequency, mode, width, split in one reply |
 | `\chk_vfo` | VFO capability check |
-| `\dump_state` | Full rig capabilities |
-| `l STRENGTH` | Signal strength (forward power) |
-| `l SQL` | Squelch level |
+| `\dump_state` | Rig capabilities |
 | `q` | Disconnect |
 
-Example using `rigctl`:
+`\dump_state` is built from the rig Hamlib actually opened — its real
+frequency ranges, mode mask, filters, RIT/XIT limits, preamp/attenuator lists
+and level masks — so a remote client sees the true radio rather than a generic
+profile. On the `hfsignals` backend it describes the sBitx's own coverage.
+
+A control the rig does not have answers `RPRT -11` (feature not available),
+which is what a hamlib client expects; a bad value answers `RPRT -1`.
+
+Examples:
 ```bash
-rigctl -m 2 -r localhost:4532 f    # get frequency
-rigctl -m 2 -r localhost:4532 F 7100000  # set to 7.1 MHz
-rigctl -m 2 -r localhost:4532 T 1  # PTT on
+rigctl -m 2 -r localhost:4532 f            # frequency
+rigctl -m 2 -r localhost:4532 F 7100000    # tune to 7.1 MHz
+rigctl -m 2 -r localhost:4532 l ?          # what levels does this rig have?
+rigctl -m 2 -r localhost:4532 L RFPOWER 0.5
+rigctl -m 2 -r localhost:4532 U NB 1       # noise blanker on
+rigctl -m 2 -r localhost:4532 G TUNE       # start an antenna tuner cycle
 ```
 
 ## License
