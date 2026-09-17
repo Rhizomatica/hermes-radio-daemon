@@ -472,7 +472,7 @@ static void dstar_rx_data_cb(void *user, const uint8_t *frame)
             pcmf[i] = 0.0f;
     } else {
         for (int i = 0; i < 160; i++)
-            pcmf[i] = ((float)pcm[i] / 32768.0f) * 20.0f;
+            pcmf[i] = ((float)pcm[i] / 32768.0f);
     }
 
     dstar_pcm_fifo_put(pcmf, 160);

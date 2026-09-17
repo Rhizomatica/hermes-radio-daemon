@@ -573,7 +573,7 @@ static void dstar_hamlib_data_cb(void *user, const uint8_t *frame)
             pcmf[i] = 0.0f;
     } else {
         for (int i = 0; i < 160; i++)
-            pcmf[i] = ((float)pcm[i] / 32768.0f) * 20.0f;
+            pcmf[i] = ((float)pcm[i] / 32768.0f);
     }
 
     /* Push the decoded 8 kHz PCM into rx_dstar_ring at the ring rate. */
