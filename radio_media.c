@@ -638,9 +638,24 @@ static void *playback_thread(void *ctx_v)
         uint32_t prof = radio_h->profile_active_idx;
         bool radae_active = (radio_h->backend_kind == RADIO_BACKEND_HAMLIB) &&
                             radio_h->profiles[prof].digital_voice;
+        bool dstar_active = (radio_h->backend_kind == RADIO_BACKEND_HAMLIB) &&
+                            radio_h->profiles[prof].mode == MODE_DSTAR;
         size_t got;
         if (radae_active) {
             audio_ring_buffer *r = &radio_h->tx_radae_ring;
+            pthread_mutex_lock(&r->mutex);
+            size_t take = 0;
+            while (take < frames && r->count > 0) {
+                buffer[take++] = r->samples[r->read_pos];
+                r->read_pos = (r->read_pos + 1) % r->capacity;
+                r->count--;
+            }
+            pthread_mutex_unlock(&r->mutex);
+            got = take;
+            if (got > 0)
+                radio_media_tap_tx_audio(radio_h, buffer, got);
+        } else if (dstar_active) {
+            audio_ring_buffer *r = &radio_h->tx_dstar_ring;
             pthread_mutex_lock(&r->mutex);
             size_t take = 0;
             while (take < frames && r->count > 0) {
@@ -786,7 +801,9 @@ bool radio_media_init(radio *radio_h, pthread_t *capture_tid, pthread_t *playbac
     if (!ring_init(&radio_h->rx_audio_ring, queue_samples) ||
         !ring_init(&radio_h->tx_audio_ring, queue_samples) ||
         !ring_init(&radio_h->rx_radae_ring, queue_samples) ||
-        !ring_init(&radio_h->tx_radae_ring, queue_samples))
+        !ring_init(&radio_h->tx_radae_ring, queue_samples) ||
+        !ring_init(&radio_h->rx_dstar_ring, queue_samples) ||
+        !ring_init(&radio_h->tx_dstar_ring, queue_samples))
     {
         fprintf(stderr, "radio_media: failed to allocate audio queues\n");
         return false;
@@ -831,6 +848,8 @@ void radio_media_shutdown(radio *radio_h, pthread_t *capture_tid, pthread_t *pla
     ring_destroy(&radio_h->tx_audio_ring);
     ring_destroy(&radio_h->rx_radae_ring);
     ring_destroy(&radio_h->tx_radae_ring);
+    ring_destroy(&radio_h->rx_dstar_ring);
+    ring_destroy(&radio_h->tx_dstar_ring);
     pthread_mutex_destroy(&radio_h->spectrum_mutex);
 
     pthread_mutex_lock(&g_spectrum_plan_mutex);

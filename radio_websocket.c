@@ -76,6 +76,7 @@ static const char *mode_to_string(uint16_t mode)
     case MODE_DRM:  return "DRM";
     case MODE_FT8:  return "FT8";
     case MODE_RTTY: return "RTTY";
+    case MODE_DSTAR: return "DSTAR";
     default:        return "USB";
     }
 }
@@ -90,6 +91,7 @@ static bool mode_from_string(const char *name, uint16_t *out)
     else if (!strcasecmp(name, "DRM"))  *out = MODE_DRM;
     else if (!strcasecmp(name, "FT8"))  *out = MODE_FT8;
     else if (!strcasecmp(name, "RTTY")) *out = MODE_RTTY;
+    else if (!strcasecmp(name, "DSTAR")) *out = MODE_DSTAR;
     else                                return false;
     return true;
 }
@@ -605,13 +607,15 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
 
     if (!strcmp(cmd, "digi_get_config"))
     {
-        char json[256];
+        char json[384];
         snprintf(json, sizeof(json),
             "{\"ok\":true,\"cmd\":\"digi_get_config\","
             "\"cw_wpm\":%d,\"cw_pitch\":%d,"
-            "\"rtty_baud\":%d,\"rtty_mark\":%d,\"rtty_shift\":%d}",
+            "\"rtty_baud\":%d,\"rtty_mark\":%d,\"rtty_shift\":%d,"
+            "\"dstar_verbose\":%d,\"dstar_denoise\":%d}",
             radio_h->cw_wpm, radio_h->cw_pitch,
-            radio_h->rtty_baud, radio_h->rtty_mark, radio_h->rtty_shift);
+            radio_h->rtty_baud, radio_h->rtty_mark, radio_h->rtty_shift,
+            radio_h->dstar_verbose, radio_h->dstar_denoise);
         ws_send_text(c, json); return;
     }
 
@@ -622,11 +626,13 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
         if (!extract_json_string(payload, "key", key, sizeof(key)) ||
             !extract_json_int(payload, "value", &v))
         { send_cmd_error(c, cmd, "missing key or value"); return; }
-        if      (!strcmp(key, "cw_wpm"))     radio_h->cw_wpm     = (uint16_t) v;
-        else if (!strcmp(key, "cw_pitch"))   radio_h->cw_pitch   = (uint16_t) v;
-        else if (!strcmp(key, "rtty_baud"))  radio_h->rtty_baud  = (uint16_t) v;
-        else if (!strcmp(key, "rtty_mark"))  radio_h->rtty_mark  = (uint16_t) v;
-        else if (!strcmp(key, "rtty_shift")) radio_h->rtty_shift = (uint16_t) v;
+        if      (!strcmp(key, "cw_wpm"))       radio_h->cw_wpm       = (uint16_t) v;
+        else if (!strcmp(key, "cw_pitch"))     radio_h->cw_pitch     = (uint16_t) v;
+        else if (!strcmp(key, "rtty_baud"))    radio_h->rtty_baud    = (uint16_t) v;
+        else if (!strcmp(key, "rtty_mark"))    radio_h->rtty_mark    = (uint16_t) v;
+        else if (!strcmp(key, "rtty_shift"))   radio_h->rtty_shift   = (uint16_t) v;
+        else if (!strcmp(key, "dstar_verbose")) radio_h->dstar_verbose = (uint16_t) v;
+        else if (!strcmp(key, "dstar_denoise")) radio_h->dstar_denoise = (uint16_t) v;
         else { send_cmd_error(c, cmd, "unknown key"); return; }
         send_cmd_result(c, cmd, true, "OK"); return;
     }
@@ -978,12 +984,26 @@ static void broadcast_rx_audio(websocket_ctx *ctx)
 
     /* When RADAE is active on hamlib, the hamlib_digi pump decodes the
      * rig audio into rx_radae_ring; broadcast from there instead of
-     * the raw rx_audio_ring (which carries pre-decode rig audio). */
+     * the raw rx_audio_ring (which carries pre-decode rig audio).
+     * D-STAR on hamlib works the same way through rx_dstar_ring. */
     uint32_t prof = ctx->radio_h->profile_active_idx;
     bool radae_active = (ctx->radio_h->backend_kind == RADIO_BACKEND_HAMLIB) &&
                         ctx->radio_h->profiles[prof].digital_voice;
+    bool dstar_active = (ctx->radio_h->backend_kind == RADIO_BACKEND_HAMLIB) &&
+                        ctx->radio_h->profiles[prof].mode == MODE_DSTAR;
     if (radae_active) {
         audio_ring_buffer *r = &ctx->radio_h->rx_radae_ring;
+        pthread_mutex_lock(&r->mutex);
+        size_t take = 0;
+        while (take < WS_RX_CHUNK_SAMPLES && r->count > 0) {
+            samples[take++] = r->samples[r->read_pos];
+            r->read_pos = (r->read_pos + 1) % r->capacity;
+            r->count--;
+        }
+        pthread_mutex_unlock(&r->mutex);
+        n = take;
+    } else if (dstar_active) {
+        audio_ring_buffer *r = &ctx->radio_h->rx_dstar_ring;
         pthread_mutex_lock(&r->mutex);
         size_t take = 0;
         while (take < WS_RX_CHUNK_SAMPLES && r->count > 0) {

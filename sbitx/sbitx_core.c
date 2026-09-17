@@ -535,6 +535,11 @@ static void tr_switch(radio *radio_h, bool txrx_state)
         if (dv_eoo_sent)
             usleep(150000);
 
+        /* D-STAR: queue the end-of-transmission pattern the same way. */
+        bool dstar_eot_sent = dsp_dstar_tx_emit_eot_if_active();
+        if (dstar_eot_sent)
+            usleep(150000);
+
         usleep(10000);
 
         set_speaker_level(radio_h->profiles[radio_h->profile_active_idx].speaker_level);
@@ -559,6 +564,8 @@ static void tr_switch(radio *radio_h, bool txrx_state)
         // dsp_prepare_digital_voice_tx.
         if (dv_eoo_sent)
             dsp_radae_tx_end_over();
+        if (dstar_eot_sent)
+            dsp_dstar_tx_end_over();
     }
 
     radio_h->send_ws_update = true;

@@ -46,6 +46,7 @@
 #define MODE_DRM  5
 #define MODE_FT8  6
 #define MODE_RTTY 7
+#define MODE_DSTAR 8
 
 /* Per-profile "operating mode". For the hfsignals backend it selects the
  * ALSA/DSP signal path. For the hamlib backend it picks voice vs data SSB on
@@ -380,6 +381,21 @@ typedef struct {
     _Atomic uint16_t rtty_mark;
     _Atomic uint16_t rtty_shift;
 
+    /* D-STAR DV: FM deviation of the GMSK modulator in Hz (default 1200,
+     * the MSK h=0.5 peak deviation for 4800 baud) and TX/RX drive gains.
+     * The TX gain maps the modem baseband (±0.0257) onto the FM
+     * modulator's deviation. */
+    _Atomic uint16_t dstar_deviation;
+    float dstar_tx_gain;
+    float dstar_rx_gain;
+    char  dstar_mycall[16];
+    char  dstar_urcall[16];
+    /* Log D-STAR RX frames/sync to stderr (0 off, 1 on) for bench debugging. */
+    _Atomic uint16_t dstar_verbose;
+    /* Run-time tunable: enable the specbleach denoise front-end on the
+     * D-STAR TX mic path (1 on, 0 off). */
+    _Atomic uint16_t dstar_denoise;
+
     /* Outbound text queue for FT8/CW/RTTY (filled by digi_send) */
     digi_tx_queue digi_tx;
 
@@ -419,6 +435,13 @@ typedef struct {
      * websocket to broadcast. */
     audio_ring_buffer rx_radae_ring;
     audio_ring_buffer tx_radae_ring;
+    /* D-STAR bypass rings (same pattern as RADAE): the hamlib D-STAR
+     * pump encodes tx_audio_ring speech into GMSK modem audio in
+     * tx_dstar_ring (drained by playback in place of tx_audio_ring),
+     * and decodes rig audio from rx_audio_ring into rx_dstar_ring for
+     * the websocket to broadcast. */
+    audio_ring_buffer rx_dstar_ring;
+    audio_ring_buffer tx_dstar_ring;
     wav_recording     rx_recording;
     wav_recording     tx_recording;
 

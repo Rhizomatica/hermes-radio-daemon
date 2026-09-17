@@ -87,6 +87,13 @@ bool dsp_radae_tx_emit_eoo_if_dv(void);
 // frame.  No-op if RADAE TX was never active.
 void dsp_radae_tx_end_over(void);
 
+// D-STAR counterparts: dsp_dstar_tx_emit_eot_if_active queues the
+// 18-byte end-of-transmission pattern on PTT-off so the remote decoder
+// sees a clean EOT (returns true iff D-STAR TX was active);
+// dsp_dstar_tx_end_over resets the D-STAR TX state afterwards.
+bool dsp_dstar_tx_emit_eot_if_active(void);
+void dsp_dstar_tx_end_over(void);
+
 // by Ashhar Farhan, from https://github.com/afarhan/sbitx/blob/main/fft_filter.c
 struct filter *filter_new(int input_length, int impulse_length);
 int filter_tune(struct filter *f, double const low, double const high, double const kaiser_beta);

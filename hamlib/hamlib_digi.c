@@ -33,6 +33,9 @@
 #include "../dsp/sbitx_ft8.h"
 #include "../dsp/sbitx_rtty.h"
 #include "../dsp/sbitx_radae.h"
+#include "../dsp/sbitx_dstar.h"
+#include <mbelib-neo/mbelib.h>
+#include <specbleach_denoiser.h>
 #include "../radio_backend.h"   /* radio_backend_set_txrx_state for auto-PTT */
 
 /* Hard cap on an auto-keyed digital transmission. PTT is dropped the instant
@@ -214,6 +217,23 @@ typedef struct {
     bool radae_inited;
     bool radae_tx_running;
     bool radae_rx_running;
+
+    /* D-STAR DV: resamplers + modem + AMBE state.
+     * TX: tx_audio_ring (mic) -> 8k -> AMBE -> GMSK 24k -> tx_dstar_ring.
+     * RX: rx_audio_ring -> 24k discriminator -> modem -> AMBE -> rx_dstar_ring. */
+    resamp_state ring_to_dstar_8k;    /* ring rate -> 8k (TX mic in) */
+    resamp_state dstar_24k_to_ring;   /* 24k GMSK -> ring rate (TX out) */
+    resamp_state ring_to_dstar_24k;   /* ring rate -> 24k (RX in) */
+    resamp_state dstar_8k_to_ring;    /* 8k PCM -> ring rate (RX out) */
+    sbitx_dstar_rx *dstar_rx;
+    sbitx_dstar_tx *dstar_tx;
+    mbe_parms dstar_rx_cur, dstar_rx_prev, dstar_rx_enh, dstar_rx_prevsyn;
+    mbe_parms dstar_tx_cur, dstar_tx_prev, dstar_tx_enh;
+    float dstar_mic8k[160];
+    int   dstar_mic8k_n;
+    bool  dstar_tx_keyed;
+    bool  dstar_inited;
+
     /* Phase accumulators for the freq-shift (mixer) at 1500 Hz, 8 kHz fs.
      * Carried across calls so consecutive blocks stay phase-continuous. */
     double radae_tx_phase;
@@ -502,6 +522,223 @@ static void do_rtty_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_h
     }
 }
 
+/* ─── D-STAR DV: GMSK modem + AMBE over the rig audio path ───────
+ *
+ * The rig (an FM/DV-capable radio with a data port, e.g. an IC-7100 in
+ * DV mode) carries the 4800 baud GMSK baseband on its audio interface.
+ * TX: browser/mic audio from tx_audio_ring -> 8 kHz -> AMBE frames ->
+ * GMSK at 24 kHz -> tx_dstar_ring (drained by playback in place of
+ * tx_audio_ring). RX: rx_audio_ring -> 24 kHz -> modem -> AMBE decode
+ * -> 8 kHz PCM -> rx_dstar_ring for the websocket broadcast.
+ */
+
+static void dstar_hamlib_data_cb(void *user, const uint8_t *frame);
+
+static void
+dstar_hamlib_init(hamlib_digi_state *s)
+{
+    if (s->dstar_inited)
+        return;
+    s->dstar_rx = sbitx_dstar_rx_new();
+    sbitx_dstar_rx_set_cbs(s->dstar_rx, NULL, dstar_hamlib_data_cb, NULL, NULL, s);
+    s->dstar_tx = sbitx_dstar_tx_new();
+    mbe_initMbeParms(&s->dstar_rx_cur, &s->dstar_rx_prev, &s->dstar_rx_enh);
+    memset(&s->dstar_rx_prevsyn, 0, sizeof(s->dstar_rx_prevsyn));
+    s->dstar_rx_prevsyn.L = 15;
+    s->dstar_rx_prevsyn.mutingThreshold = MBE_MUTING_THRESHOLD_AMBE;
+    mbe_initMbeParms(&s->dstar_tx_cur, &s->dstar_tx_prev, &s->dstar_tx_enh);
+    memset(&s->dstar_tx_prev, 0, sizeof(s->dstar_tx_prev));
+    s->dstar_tx_prev.mutingThreshold = MBE_MUTING_THRESHOLD_AMBE;
+    s->dstar_inited = true;
+}
+
+static uint32_t g_dstar_ring_rate = 48000;
+
+static void dstar_hamlib_data_cb(void *user, const uint8_t *frame)
+{
+    hamlib_digi_state *s = (hamlib_digi_state *) user;
+    char fr[4][24];
+    char ambe_d[49];
+    short pcm[160];
+    float pcmf[160];
+
+    mbe_decodeDStarDVData(frame + 3, (char(*)[24])fr);
+    mbe_processAmbe3600x2400Frame(pcm, NULL, (const char(*)[24])fr, ambe_d,
+                                  &s->dstar_rx_cur, &s->dstar_rx_prev, &s->dstar_rx_enh);
+
+    /* Silence frames (b0 == 127) would render as loud comfort noise; emit
+     * true silence instead. */
+    if (ambe_d[0] && ambe_d[1] && ambe_d[2] && ambe_d[3] && ambe_d[4] && ambe_d[5] && ambe_d[48]) {
+        for (int i = 0; i < 160; i++)
+            pcmf[i] = 0.0f;
+    } else {
+        for (int i = 0; i < 160; i++)
+            pcmf[i] = ((float)pcm[i] / 32768.0f) * 20.0f;
+    }
+
+    /* Push the decoded 8 kHz PCM into rx_dstar_ring at the ring rate. */
+    if (s->dstar_8k_to_ring.taps_len == 0 && 8000 != g_dstar_ring_rate)
+        resamp_init(&s->dstar_8k_to_ring, 8000, g_dstar_ring_rate);
+
+    const float *ring_audio;
+    size_t n_ring;
+    if (8000 == g_dstar_ring_rate) {
+        ring_audio = pcmf;
+        n_ring = 160;
+    } else if (s->dstar_8k_to_ring.taps_len == 0) {
+        return;
+    } else {
+        n_ring = resamp_apply(&s->dstar_8k_to_ring, pcmf, 160);
+        ring_audio = s->dstar_8k_to_ring.out;
+    }
+    ring_push_f(&s->radio_h->rx_dstar_ring, ring_audio, n_ring);
+}
+
+static void do_dstar_tx(hamlib_digi_state *s, uint32_t ring_rate)
+{
+    static int16_t mic_i16[4096];
+
+    /* Pull mic audio from tx_audio_ring and AMBE-encode it. */
+    size_t want = ring_rate / 50;   /* 20 ms */
+    if (want > sizeof(mic_i16)/sizeof(mic_i16[0])) want = sizeof(mic_i16)/sizeof(mic_i16[0]);
+    size_t got = ring_pop_i16(&s->radio_h->tx_audio_ring, mic_i16, want);
+    if (got) {
+        static float mic_f[4096];
+        for (size_t i = 0; i < got; i++)
+            mic_f[i] = (float) mic_i16[i] / 32768.0f;
+
+        const float *mic_8k;
+        size_t n_8k;
+        if (s->ring_to_dstar_8k.taps_len == 0 && ring_rate != 8000)
+            if (!resamp_init(&s->ring_to_dstar_8k, ring_rate, 8000))
+                return;
+        if (ring_rate == 8000) {
+            mic_8k = mic_f;
+            n_8k = got;
+        } else {
+            n_8k = resamp_apply(&s->ring_to_dstar_8k, mic_f, got);
+            mic_8k = s->ring_to_dstar_8k.out;
+        }
+
+        for (size_t i = 0; i < n_8k; i++) {
+            s->dstar_mic8k[s->dstar_mic8k_n++] = mic_8k[i];
+            if (s->dstar_mic8k_n == 160) {
+                char ambe_d[49];
+                char fr[4][24];
+                uint8_t frame[SBITX_DSTAR_FRAME_BYTES];
+                uint8_t sync[3] = {0x55U, 0x2DU, 0x16U};
+
+                if (!s->dstar_tx_keyed) {
+                    uint8_t header[SBITX_DSTAR_HEADER_BYTES];
+                    memset(header, 0, sizeof(header));
+                    header[0] = 0x10;
+                    memcpy(header + 3, s->radio_h->dstar_mycall, 8);
+                    memcpy(header + 11, s->radio_h->dstar_mycall, 8);
+                    memcpy(header + 19, s->radio_h->dstar_urcall, 8);
+                    memcpy(header + 27, s->radio_h->dstar_mycall, 8);
+                    header[35] = 'A';
+                    sbitx_dstar_header_finalize(header);
+                    sbitx_dstar_tx_header(s->dstar_tx, header);
+                    s->dstar_tx_keyed = true;
+                }
+
+                /* In-speech noise reduction front-end (libspecbleach, 8 kHz).
+                 * Runtime tunable via dstar_denoise. */
+                {
+                    static SpectralBleachHandle nr;
+                    static uint32_t nr_latency;
+                    static uint32_t nr_total;
+                    const float *src = s->dstar_mic8k;
+                    float denoised[160];
+                    if (s->radio_h->dstar_denoise && nr == NULL) {
+                        nr = specbleach_initialize(8000, 20.0f);
+                        if (nr != NULL) {
+                            SpectralBleachDenoiserParameters p;
+                            memset(&p, 0, sizeof(p));
+                            p.reduction_amount = 12.0f;
+                            p.smoothing_factor = 30.0f;
+                            p.whitening_factor = 15.0f;
+                            p.adaptive_noise = 1;
+                            p.noise_estimation_method = 2;   /* Martin Min Statistics */
+                            p.masking_depth = 0.5f;
+                            p.suppression_strength = 0.6f;
+                            specbleach_load_parameters(nr, p);
+                            nr_latency = specbleach_get_latency(nr);
+                        }
+                    }
+                    if (s->radio_h->dstar_denoise && nr != NULL) {
+                        specbleach_process(nr, 160, s->dstar_mic8k, denoised);
+                        nr_total += 160;
+                        if (nr_total > nr_latency)
+                            src = denoised;
+                    }
+                    mbe_encodeAmbe2400Parms(src, ambe_d, &s->dstar_tx_cur, &s->dstar_tx_prev);
+                }
+                mbe_encodeAmbe3600x2400Frame(ambe_d, (char(*)[24])fr);
+                memcpy(frame, sync, 3);
+                mbe_encodeDStarDVData((const char(*)[24])fr, frame + 3);
+                sbitx_dstar_tx_frame(s->dstar_tx, frame);
+                mbe_moveMbeParms(&s->dstar_tx_cur, &s->dstar_tx_prev);
+                s->dstar_mic8k_n = 0;
+            }
+        }
+    }
+
+    /* Generate GMSK at 24 kHz and push to tx_dstar_ring at ring_rate. */
+    static float gmsk24[2048];
+    int n24 = sbitx_dstar_tx_generate(s->dstar_tx, gmsk24, 24000 / 50);
+    if (n24 > 0) {
+        const float *ring_audio;
+        size_t n_ring;
+        if (s->dstar_24k_to_ring.taps_len == 0 && 24000 != ring_rate)
+            if (!resamp_init(&s->dstar_24k_to_ring, 24000, ring_rate))
+                return;
+        if (24000 == ring_rate) {
+            ring_audio = gmsk24;
+            n_ring = (size_t) n24;
+        } else {
+            n_ring = resamp_apply(&s->dstar_24k_to_ring, gmsk24, (size_t) n24);
+            ring_audio = s->dstar_24k_to_ring.out;
+        }
+        ring_push_f_gain(&s->radio_h->tx_dstar_ring, ring_audio, n_ring,
+                         s->radio_h->dstar_tx_gain);
+    }
+}
+
+static void do_dstar_rx(hamlib_digi_state *s, uint32_t ring_rate)
+{
+    g_dstar_ring_rate = ring_rate;
+
+    static int16_t pull_i16[4096];
+    size_t want = ring_rate / 50;   /* 20 ms */
+    if (want > sizeof(pull_i16)/sizeof(pull_i16[0])) want = sizeof(pull_i16)/sizeof(pull_i16[0]);
+    size_t got = ring_pop_i16(&s->radio_h->rx_audio_ring, pull_i16, want);
+    if (!got)
+        return;
+
+    static float real_f[4096];
+    for (size_t i = 0; i < got; i++)
+        real_f[i] = (float) pull_i16[i] / 32768.0f;
+
+    const float *audio_24k;
+    size_t n_24k;
+    if (s->ring_to_dstar_24k.taps_len == 0 && ring_rate != 24000)
+        if (!resamp_init(&s->ring_to_dstar_24k, ring_rate, 24000))
+            return;
+    if (ring_rate == 24000) {
+        audio_24k = real_f;
+        n_24k = got;
+    } else {
+        n_24k = resamp_apply(&s->ring_to_dstar_24k, real_f, got);
+        audio_24k = s->ring_to_dstar_24k.out;
+    }
+    if (!n_24k)
+        return;
+
+    sbitx_dstar_rx_process(s->dstar_rx, audio_24k, (int) n_24k);
+}
+
+
 /* ─── RADAE: complex IQ ↔ real audio at the SSB passband centre ──
  *
  * The rig itself does the SSB modulation/demodulation. All we need is to
@@ -727,7 +964,7 @@ static void *hamlib_digi_thread(void *radio_h_v)
             continue;
         }
 
-        if (mode != MODE_FT8 && mode != MODE_CW && mode != MODE_RTTY) {
+        if (mode != MODE_FT8 && mode != MODE_CW && mode != MODE_RTTY && mode != MODE_DSTAR) {
             /* Left the digital modes while still auto-keyed (e.g. profile
              * switched mid-TX): drop PTT so we never stick in transmit. */
             if (s->digi_auto_tx) {
@@ -753,6 +990,8 @@ static void *hamlib_digi_thread(void *radio_h_v)
             sbitx_rtty_init(radio_h->rtty_baud, radio_h->rtty_mark, radio_h->rtty_shift);
             s->rtty_inited = true;
         }
+        if (mode == MODE_DSTAR)
+            dstar_hamlib_init(s);
 
         /* Auto-PTT: text queued while receiving -> key PTT, then let the next
          * iteration transmit (the brief sleep lets PTT engage before audio). A
@@ -781,6 +1020,9 @@ static void *hamlib_digi_thread(void *radio_h_v)
                 do_rtty_tx(s, ring_rate, freq_hz,
                            radio_h->rtty_baud, radio_h->rtty_mark, radio_h->rtty_shift);
                 break;
+            case MODE_DSTAR:
+                do_dstar_tx(s, ring_rate);
+                break;
             }
             /* TX paths push a whole message worth of audio at once; idle
              * a beat so the playback thread can drain before we check the
@@ -802,6 +1044,11 @@ static void *hamlib_digi_thread(void *radio_h_v)
 
                 bool timed_out = (time(NULL) - s->digi_tx_start) > DIGI_TX_MAX_SECS;
                 if (s->digi_drain_ticks >= 8 || timed_out) {
+                    if (s->dstar_tx_keyed) {
+                        sbitx_dstar_tx_eot(s->dstar_tx);
+                        s->dstar_tx_keyed = false;
+                        usleep(50000);
+                    }
                     radio_backend_set_txrx_state(radio_h, IN_RX);
                     s->digi_auto_tx = false;
                     s->digi_drain_ticks = 0;
@@ -823,6 +1070,9 @@ static void *hamlib_digi_thread(void *radio_h_v)
                 do_rtty_rx(s, ring_rate, freq_hz,
                            radio_h->rtty_baud, radio_h->rtty_mark, radio_h->rtty_shift);
                 break;
+            case MODE_DSTAR:
+                do_dstar_rx(s, ring_rate);
+                break;
             }
             usleep(5000);
         }
@@ -837,12 +1087,20 @@ static void *hamlib_digi_thread(void *radio_h_v)
     resamp_free(&s->radae_modem_to_ring);
     resamp_free(&s->ring_to_radae_modem);
     resamp_free(&s->radae_speech_to_ring);
+    resamp_free(&s->ring_to_dstar_8k);
+    resamp_free(&s->dstar_24k_to_ring);
+    resamp_free(&s->ring_to_dstar_24k);
+    resamp_free(&s->dstar_8k_to_ring);
     free(s->cw_rx_buf);
     free(s->ft8_rx_buf);
     free(s->rtty_rx_buf);
     if (s->cw_inited) sbitx_cw_shutdown();
     if (s->ft8_inited) sbitx_ft8_shutdown();
     if (s->rtty_inited) sbitx_rtty_shutdown();
+    if (s->dstar_inited) {
+        if (s->dstar_rx) sbitx_dstar_rx_free(s->dstar_rx);
+        if (s->dstar_tx) sbitx_dstar_tx_free(s->dstar_tx);
+    }
     if (s->radae_inited) {
         if (s->radae_tx_running) radae_tx_stop(&s->radae_ctx);
         if (s->radae_rx_running) radae_rx_stop(&s->radae_ctx);

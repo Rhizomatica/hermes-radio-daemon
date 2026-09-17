@@ -352,6 +352,19 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     i = iniparser_getint(ini, "main:rtty_shift", 170);
     radio_h->rtty_shift = (uint16_t) i;
 
+    i = iniparser_getint(ini, "main:dstar_deviation", 1200);
+    radio_h->dstar_deviation = (uint16_t) i;
+    radio_h->dstar_tx_gain = (float) iniparser_getdouble(ini, "main:dstar_tx_gain", 1.0);
+    radio_h->dstar_rx_gain = (float) iniparser_getdouble(ini, "main:dstar_rx_gain", 1.0);
+    s = iniparser_getstring(ini, "main:dstar_mycall", "N0CALL  ");
+    snprintf(radio_h->dstar_mycall, sizeof(radio_h->dstar_mycall), "%-8s", s);
+    s = iniparser_getstring(ini, "main:dstar_urcall", "CQCQCQ  ");
+    snprintf(radio_h->dstar_urcall, sizeof(radio_h->dstar_urcall), "%-8s", s);
+    i = iniparser_getint(ini, "main:dstar_verbose", 0);
+    radio_h->dstar_verbose = (uint16_t) i;
+    i = iniparser_getint(ini, "main:dstar_denoise", 1);
+    radio_h->dstar_denoise = (uint16_t) i;
+
     s = iniparser_getstring(ini, "main:recording_dir", "/var/lib/hermes-radio-daemon");
     snprintf(radio_h->recording_dir, sizeof(radio_h->recording_dir), "%s", s);
 
@@ -457,6 +470,7 @@ bool init_config_user(radio *radio_h, const char *ini_name)
         else if (!strcasecmp(s, "DRM"))  radio_h->profiles[k].mode = MODE_DRM;
         else if (!strcasecmp(s, "FT8"))  radio_h->profiles[k].mode = MODE_FT8;
         else if (!strcasecmp(s, "RTTY")) radio_h->profiles[k].mode = MODE_RTTY;
+        else if (!strcasecmp(s, "DSTAR")) radio_h->profiles[k].mode = MODE_DSTAR;
         else                             radio_h->profiles[k].mode = MODE_USB;
 
         snprintf(key, sizeof(key), "profile%d:speaker_level", k);

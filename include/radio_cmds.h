@@ -166,6 +166,7 @@
 #define CMD_RESP_GET_MODE_DRM  0x2d
 #define CMD_RESP_GET_MODE_FT8  0x2e
 #define CMD_RESP_GET_MODE_RTTY 0x2f
+#define CMD_RESP_GET_MODE_DSTAR 0x30
 
 /* CMD_SET_MODE wire encoding: cmd[0] carries the mode index.
  * Legacy values 0x00 (LSB), 0x01 (USB) and 0x04 (CW) are preserved so older

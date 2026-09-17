@@ -53,6 +53,8 @@
 #include "sbitx_ft8.h"
 #include "sbitx_cw.h"
 #include "sbitx_rtty.h"
+#include "sbitx_dstar.h"
+#include <mbelib-neo/mbelib.h>
 
 // set 0 for production
 #ifndef DEBUG_DSP_
@@ -402,6 +404,234 @@ static void digi_cw_char_cb(char c)
 #define DIGI_RX_RATE    12000
 #define FT8_RX_SLOT_S   15
 
+/* ── D-STAR DV state ──────────────────────────────────────────────
+ * RX: FM discriminator at 96 kHz -> 24 kHz -> modem -> AMBE decode ->
+ * 8 kHz PCM FIFO -> 96 kHz speaker.
+ * TX: mic 96 kHz -> 8 kHz -> AMBE encode -> 12-byte DV frames -> GMSK
+ * at 24 kHz -> 96 kHz -> FM modulator. */
+#define DSTAR_RX_DECIM  4           /* 96 kHz -> 24 kHz */
+#define DSTAR_RX_RATE   24000
+#define DSTAR_PCM_FIFO  (DSTAR_RX_RATE * 4)   /* 4 s of 8 kHz PCM */
+
+static sbitx_dstar_rx *dstar_rx;
+static sbitx_dstar_tx *dstar_tx;
+
+static mbe_parms dstar_rx_cur, dstar_rx_prev, dstar_rx_enh, dstar_rx_prevsyn;
+static mbe_parms dstar_tx_cur, dstar_tx_prev, dstar_tx_enh;
+
+static float dstar_pcm_fifo[DSTAR_PCM_FIFO];
+static int   dstar_pcm_fifo_n;
+
+static float dstar_mic8k[160];
+static int   dstar_mic8k_n;
+static bool  dstar_tx_keyed;
+
+static void dstar_pcm_fifo_put(const float *pcm, int n)
+{
+    for (int i = 0; i < n; i++) {
+        if (dstar_pcm_fifo_n < DSTAR_PCM_FIFO) {
+            dstar_pcm_fifo[dstar_pcm_fifo_n++] = pcm[i];
+        } else {
+            /* full: drop the oldest quarter to keep the stream flowing */
+            memmove(dstar_pcm_fifo, dstar_pcm_fifo + DSTAR_PCM_FIFO / 4,
+                    (DSTAR_PCM_FIFO - DSTAR_PCM_FIFO / 4) * sizeof(float));
+            dstar_pcm_fifo_n -= DSTAR_PCM_FIFO / 4;
+            dstar_pcm_fifo[dstar_pcm_fifo_n++] = pcm[i];
+        }
+    }
+}
+
+static long dstar_rx_frame_count;
+
+static void dstar_rx_data_cb(void *user, const uint8_t *frame)
+{
+    (void)user;
+    char fr[4][24];
+    char ambe_d[49];
+    short pcm[160];
+    float pcmf[160];
+    mbe_process_result res;
+
+    mbe_decodeDStarDVData(frame + 3, (char(*)[24])fr);
+    mbe_processAmbe3600x2400Frame(pcm, &res, (const char(*)[24])fr, ambe_d,
+                                  &dstar_rx_cur, &dstar_rx_prev, &dstar_rx_enh);
+
+    if (radio_h_dsp->dstar_verbose) {
+        fprintf(stderr, "DSTAR data #%ld: %02x %02x %02x %02x %02x %02x %02x %02x %02x"
+                        " (sync=%02x%02x%02x) fec_errs=%d\n",
+                dstar_rx_frame_count, frame[3], frame[4], frame[5], frame[6], frame[7],
+                frame[8], frame[9], frame[10], frame[11], frame[0], frame[1], frame[2],
+                res.total_errors);
+    }
+    dstar_rx_frame_count++;
+
+    /* Silence frames (b0 == 127) would render as loud comfort noise; emit
+     * true silence instead. */
+    if (ambe_d[0] && ambe_d[1] && ambe_d[2] && ambe_d[3] && ambe_d[4] && ambe_d[5] && ambe_d[48]) {
+        for (int i = 0; i < 160; i++)
+            pcmf[i] = 0.0f;
+    } else {
+        for (int i = 0; i < 160; i++)
+            pcmf[i] = ((float)pcm[i] / 32768.0f) * 20.0f;
+    }
+
+    dstar_pcm_fifo_put(pcmf, 160);
+}
+
+static void dstar_rx_header_cb(void *user, const uint8_t *header)
+{
+    (void)user;
+    char rpt1[9], rpt2[9], urcall[9], mycall[9], suffix[5];
+
+    memcpy(rpt1, header + 3, 8);   rpt1[8] = '\0';
+    memcpy(rpt2, header + 11, 8);  rpt2[8] = '\0';
+    memcpy(urcall, header + 19, 8); urcall[8] = '\0';
+    memcpy(mycall, header + 27, 8); mycall[8] = '\0';
+    memcpy(suffix, header + 35, 4); suffix[4] = '\0';
+
+    if (radio_h_dsp->dstar_verbose) {
+        fprintf(stderr, "DSTAR header: flags=0x%02x%02x%02x rpt1=%s rpt2=%s ur=%s my=%s suf=%s\n",
+                header[0], header[1], header[2], rpt1, rpt2, urcall, mycall, suffix);
+    }
+    dstar_rx_frame_count = 0;
+
+    FILE *f = fopen("/var/spool/hermes-digi/spool.log", "a");
+    if (f) {
+        fprintf(f, "DSTAR rx header: ur=%s my=%s\n", urcall, mycall);
+        fclose(f);
+    }
+}
+
+static void dstar_rx_lost_cb(void *user)
+{
+    (void)user;
+    if (radio_h_dsp->dstar_verbose)
+        fprintf(stderr, "DSTAR: lost sync (got %ld frames)\n", dstar_rx_frame_count);
+    dstar_pcm_fifo_n = 0;   /* drop stale audio on loss of lock */
+}
+
+static void dstar_rx_eot_cb(void *user)
+{
+    (void)user;
+    if (radio_h_dsp->dstar_verbose)
+        fprintf(stderr, "DSTAR: end of transmission (rx'd %ld frames)\n", dstar_rx_frame_count);
+}
+
+static void dsp_dstar_init(void)
+{
+    if (dstar_rx == NULL) {
+        dstar_rx = sbitx_dstar_rx_new();
+        sbitx_dstar_rx_set_cbs(dstar_rx, dstar_rx_header_cb, dstar_rx_data_cb,
+                               dstar_rx_lost_cb, dstar_rx_eot_cb, NULL);
+        mbe_initMbeParms(&dstar_rx_cur, &dstar_rx_prev, &dstar_rx_enh);
+        memset(&dstar_rx_prevsyn, 0, sizeof(dstar_rx_prevsyn));
+        dstar_rx_prevsyn.L = 15;
+        dstar_rx_prevsyn.mutingThreshold = MBE_MUTING_THRESHOLD_AMBE;
+    }
+    if (dstar_tx == NULL) {
+        dstar_tx = sbitx_dstar_tx_new();
+        mbe_initMbeParms(&dstar_tx_cur, &dstar_tx_prev, &dstar_tx_enh);
+        memset(&dstar_tx_prev, 0, sizeof(dstar_tx_prev));
+        dstar_tx_prev.mutingThreshold = MBE_MUTING_THRESHOLD_AMBE;
+    }
+}
+
+/* Build and queue a DV header from the configured callsigns. */
+static long dstar_tx_frame_count;
+
+static void dsp_dstar_tx_send_header(void)
+{
+    uint8_t header[SBITX_DSTAR_HEADER_BYTES];
+    memset(header, 0, sizeof(header));
+    header[0] = 0x10;   /* DV voice, repeater off */
+    memcpy(header + 3, radio_h_dsp->dstar_mycall, 8);
+    memcpy(header + 11, radio_h_dsp->dstar_mycall, 8);
+    memcpy(header + 19, radio_h_dsp->dstar_urcall, 8);
+    memcpy(header + 27, radio_h_dsp->dstar_mycall, 8);
+    header[35] = 'A';
+    sbitx_dstar_header_finalize(header);
+    sbitx_dstar_tx_header(dstar_tx, header);
+    dstar_tx_frame_count = 0;
+    if (radio_h_dsp->dstar_verbose)
+        fprintf(stderr, "DSTAR tx: header queued (my=%.8s ur=%.8s)\n",
+                radio_h_dsp->dstar_mycall, radio_h_dsp->dstar_urcall);
+}
+
+/* Feed one 20 ms mic frame into the AMBE encoder and queue the DV frame. */
+static void dsp_dstar_tx_encode_frame(const float *mic8k)
+{
+    char ambe_d[49];
+    char fr[4][24];
+    uint8_t frame[SBITX_DSTAR_FRAME_BYTES];
+    uint8_t sync[3] = {0x55U, 0x2DU, 0x16U};
+    const float *src = mic8k;
+
+    /* In-speech noise reduction front-end (libspecbleach, 8 kHz). Runtime
+     * tunable via dstar_denoise (0 disables). */
+    static SpectralBleachHandle nr;
+    static uint32_t nr_latency;
+    static uint32_t nr_total;
+    float denoised[160];
+    if (radio_h_dsp->dstar_denoise && nr == NULL) {
+        nr = specbleach_initialize(8000, 20.0f);
+        if (nr != NULL) {
+            SpectralBleachDenoiserParameters p;
+            memset(&p, 0, sizeof(p));
+            p.reduction_amount = 12.0f;
+            p.smoothing_factor = 30.0f;
+            p.whitening_factor = 15.0f;
+            p.adaptive_noise = 1;
+            p.noise_estimation_method = 2;   /* Martin Minimum Statistics */
+            p.masking_depth = 0.5f;
+            p.suppression_strength = 0.6f;
+            specbleach_load_parameters(nr, p);
+            nr_latency = specbleach_get_latency(nr);
+        }
+    }
+    if (radio_h_dsp->dstar_denoise && nr != NULL) {
+        specbleach_process(nr, 160, mic8k, denoised);
+        nr_total += 160;
+        if (nr_total > nr_latency)
+            src = denoised;
+    }
+
+    mbe_encodeAmbe2400Parms(src, ambe_d, &dstar_tx_cur, &dstar_tx_prev);
+    mbe_encodeAmbe3600x2400Frame(ambe_d, (char(*)[24])fr);
+
+    memcpy(frame, sync, 3);
+    mbe_encodeDStarDVData((const char(*)[24])fr, frame + 3);
+
+    sbitx_dstar_tx_frame(dstar_tx, frame);
+    mbe_moveMbeParms(&dstar_tx_cur, &dstar_tx_prev);
+
+    if (radio_h_dsp->dstar_verbose && (dstar_tx_frame_count % 25) == 0)
+        fprintf(stderr, "DSTAR tx: frame #%ld (denoise=%d, gamma=%.2f)\n",
+                dstar_tx_frame_count, radio_h_dsp->dstar_denoise, dstar_tx_cur.gamma);
+    dstar_tx_frame_count++;
+}
+
+/* PTT-off hook (called from tr_switch before PA drive drops): queue the
+ * end-of-transmission pattern so the remote decoder sees a clean EOT.
+ * Returns true iff a D-STAR TX was in progress. */
+bool dsp_dstar_tx_emit_eot_if_active(void)
+{
+    if (!dstar_tx_keyed)
+        return false;
+
+    sbitx_dstar_tx_eot(dstar_tx);
+    dstar_tx_keyed = false;
+    if (radio_h_dsp->dstar_verbose)
+        fprintf(stderr, "DSTAR tx: EOT queued (%ld frames sent)\n", dstar_tx_frame_count);
+    return true;
+}
+
+void dsp_dstar_tx_end_over(void)
+{
+    if (dstar_tx != NULL)
+        sbitx_dstar_tx_reset(dstar_tx);
+    dstar_mic8k_n = 0;
+}
+
 static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, int freq_khz)
 {
     static float                   *rs_taps12 = NULL;
@@ -570,7 +800,9 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
 	uint16_t orig_rx_mode = rx_mode;   /* FT8/CW/RTTY get rewritten to USB below */
 	if (rx_mode == MODE_LSB)
         memset(fft_freq, 0, sizeof(fftw_complex) * (MAX_BINS/2));
-	else if (rx_mode != MODE_FM && rx_mode != MODE_AM && rx_mode != MODE_DRM)
+	/* D-STAR is FM-like GMSK: keep both sidebands of the IF (the signal
+	 * spans ~6.25 kHz around the carrier). */
+	else if (rx_mode != MODE_FM && rx_mode != MODE_AM && rx_mode != MODE_DRM && rx_mode != MODE_DSTAR)
         memset((void *) fft_freq + (MAX_BINS/2 * sizeof(fftw_complex)), 0, sizeof(fftw_complex) * (MAX_BINS/2));
 
 	// STEP 6: apply the filter to the signal,
@@ -663,6 +895,104 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             }
             output_speaker_int[k] <<= 8;
         }
+        memset(output_tx, 0, block_size * (snd_pcm_format_width(format) / 8));
+        return;
+    }
+
+    // STEP 7.65: D-STAR DV mode - FM discriminator -> 24 kHz -> modem ->
+    // AMBE decode -> 8 kHz PCM -> 96 kHz speaker
+    if (rx_mode == MODE_DSTAR)
+    {
+        dsp_dstar_init();
+
+        static complexf fm_iq_buf[1024];
+        for (int k = 0; k < MAX_BINS / 2; k++)
+        {
+            fm_iq_buf[k].i = (float) creal(fft_time[k + (MAX_BINS / 2)]);
+            fm_iq_buf[k].q = (float) cimag(fft_time[k + (MAX_BINS / 2)]);
+        }
+
+        fm_last_iq = fmdemod_quadri_cf(fm_iq_buf, fm_audio_buf,
+                                       MAX_BINS / 2, fm_demod_temp, fm_last_iq);
+
+        /* HF D-STAR: slow frequency drift between stations appears as a
+         * discriminator DC offset. Remove it before the modem (the GMSK
+         * data has no DC content itself). */
+        {
+            static float dstar_dc_state = 0.0f;
+            dstar_dc_state = fastdcblock_ff(fm_audio_buf, fm_audio_buf, MAX_BINS / 2, dstar_dc_state);
+        }
+
+        /* Decimate 96 kHz -> 24 kHz (4:1 polyphase) */
+        static float                   *rs_taps24 = NULL;
+        static int                      rs_taps24_len = 0;
+        static rational_resampler_ff_t  rs24 = {0, 0, 0};
+        static float                    out24[2048];
+
+        if (!rs_taps24) {
+            rs_taps24_len = firdes_filter_len(0.05f);
+            rs_taps24 = malloc(rs_taps24_len * sizeof(float));
+            if (rs_taps24)
+                rational_resampler_get_lowpass_f(rs_taps24, rs_taps24_len, 1, DSTAR_RX_DECIM,
+                                                 WINDOW_BLACKMAN);
+        }
+
+        int n24 = 0;
+        if (rs_taps24) {
+            rs24 = rational_resampler_ff(fm_audio_buf, out24, MAX_BINS / 2,
+                                         1, DSTAR_RX_DECIM, rs_taps24, rs_taps24_len,
+                                         rs24.last_taps_delay);
+            n24 = rs24.output_size;
+        }
+
+        if (n24 > 0) {
+            float *rx24 = out24;
+            float gain = radio_h_dsp->dstar_rx_gain;
+            if (gain != 1.0f) {
+                for (int k = 0; k < n24; k++)
+                    rx24[k] *= gain;
+            }
+            sbitx_dstar_rx_process(dstar_rx, rx24, n24);
+        }
+
+        /* Render the decoded PCM FIFO (8 kHz) to the 96 kHz speaker */
+        int32_t *output_speaker_int = (int32_t *)output_speaker;
+        int32_t *output_loopback_int = (int32_t *)output_loopback;
+        static float pcm_pos = 0.0f;  /* fractional 8 kHz read position */
+        const float step = 8000.0f / 96000.0f;
+
+        for (int k = 0; k < block_size; k++)
+        {
+            int idx = (int) pcm_pos;
+            float s = 0.0f;
+            if (idx < dstar_pcm_fifo_n)
+                s = dstar_pcm_fifo[idx] * radio_h_dsp->dstar_rx_gain;
+            if (s > 0.95f) s = 0.95f;
+            if (s < -0.95f) s = -0.95f;
+
+            output_speaker_int[k] = (int32_t) (s * MAX_SAMPLE_VALUE);
+            if ((k % 2) == 0)
+            {
+                output_loopback_int[k] = output_speaker_int[k] << 4;
+                output_loopback_int[k + 1] = output_loopback_int[k];
+            }
+            output_speaker_int[k] <<= 8;
+
+            pcm_pos += step;
+        }
+
+        if ((int) pcm_pos > 0 && dstar_pcm_fifo_n > 0) {
+            int consumed = (int) pcm_pos;
+            if (consumed >= dstar_pcm_fifo_n) {
+                dstar_pcm_fifo_n = 0;
+            } else {
+                memmove(dstar_pcm_fifo, dstar_pcm_fifo + consumed,
+                        (dstar_pcm_fifo_n - consumed) * sizeof(float));
+                dstar_pcm_fifo_n -= consumed;
+            }
+            pcm_pos -= (float) consumed;
+        }
+
         memset(output_tx, 0, block_size * (snd_pcm_format_width(format) / 8));
         return;
     }
@@ -1172,6 +1502,57 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             fft_m[k]  = fft_in[i];
         }
     }
+    // D-STAR TX: mic 96k -> 8k -> AMBE -> GMSK 24k -> 96k -> FM modulator
+    else if (tx_mode == MODE_DSTAR)
+    {
+        dsp_dstar_init();
+
+        /* 1. Decimate mic audio 96k -> 8k and encode 20 ms frames */
+        static float mic8k_buf[4096];
+        int n8 = 0;
+        resample_96k_to_8k(signal_input_f, block_size, mic8k_buf, &n8);
+        for (int k = 0; k < n8; k++)
+        {
+            dstar_mic8k[dstar_mic8k_n++] = mic8k_buf[k];
+            if (dstar_mic8k_n == 160)
+            {
+                if (!dstar_tx_keyed)
+                {
+                    dsp_dstar_tx_send_header();
+                    dstar_tx_keyed = true;
+                }
+                dsp_dstar_tx_encode_frame(dstar_mic8k);
+                dstar_mic8k_n = 0;
+            }
+        }
+
+        /* 2. Pull GMSK baseband at 24 kHz and upsample 4:1 to 96 kHz */
+        static float gmsk24[1024];
+        int n24 = sbitx_dstar_tx_generate(dstar_tx, gmsk24, block_size / 4);
+
+        /* Map the modem baseband (±0.0257) to the requested FM deviation.
+         * The FM voice path reaches ±5 kHz at full scale after its 0.104
+         * gain, so the D-STAR scale factor is deviation/5000 * 0.104 /
+         * 0.0257. */
+        float dev_gain = (float) radio_h_dsp->dstar_deviation / 5000.0f * 0.104f / 0.0257f;
+        dev_gain *= radio_h_dsp->dstar_tx_gain;
+
+        for (i = 0; i < block_size; i++)
+        {
+            float g = (i / 4 < n24) ? gmsk24[i / 4] : 0.0f;
+            tx_float_out[i] = g * dev_gain;
+        }
+
+        static complexf fm_tx_iq[1024];
+        fm_last_phase = fmmod_fc(tx_float_out, fm_tx_iq, block_size, fm_last_phase);
+
+        for (i = MAX_BINS/2; i < MAX_BINS; i++)
+        {
+            int k = i - MAX_BINS/2;
+            fft_in[i] = (double) fm_tx_iq[k].i + I * (double) fm_tx_iq[k].q;
+            fft_m[k] = fft_in[i];
+        }
+    }
     // FM TX: pre-emphasis + fmmod
     else if (tx_mode == MODE_FM)
     {
@@ -1479,6 +1860,13 @@ void dsp_set_filters()
         double hi = (1.0 * bpf_high) / 96000.0;
         filter_tune(rx_filter, lo, hi, 5);
         filter_tune(tx_filter, lo, hi, 5);
+    }
+    else if (mode == MODE_DSTAR)
+    {
+        /* D-STAR DV GMSK occupies ~6.25 kHz around the carrier; force a
+         * wide FM-like passband regardless of the voice BPF settings. */
+        filter_tune(rx_filter, 300.0 / 96000.0, 4200.0 / 96000.0, 5);
+        filter_tune(tx_filter, 300.0 / 96000.0, 4200.0 / 96000.0, 5);
     }
     else if (mode == MODE_LSB)
     {

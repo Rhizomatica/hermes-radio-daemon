@@ -14,7 +14,7 @@ CFLAGS  = -Ofast -Wall -std=gnu11 -fstack-protector -MMD -MP \
           -I. -Ihamlib -I/usr/include/iniparser -I/usr/include/csdr -Iinclude \
           -Wno-deprecated-declarations
 LDFLAGS = -liniparser -lhamlib -lasound -lcrypto -lssl -lfftw3f -lfftw3 \
-          -lpthread -lm -li2c -lcsdr -lspecbleach -lcw -lrt
+          -lpthread -lm -li2c -lcsdr -lspecbleach -lcw -lrt -lmbe-neo
 
 # Mongoose now serves as the websocket transport in radio_websocket.c.
 CFLAGS += -DMG_ENABLE_OPENSSL=1 -DMG_TLS=MG_TLS_OPENSSL
@@ -88,6 +88,7 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              dsp/sbitx_ft8.o \
              dsp/sbitx_cw.o \
              dsp/sbitx_rtty.o \
+             dsp/sbitx_dstar.o \
              sbitx/sbitx_si5351.o \
              sbitx/ring_buffer.o \
              $(SBITX_GPIOLIB_OBJS) \

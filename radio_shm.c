@@ -327,6 +327,7 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
         case MODE_DRM:  response[0] = CMD_RESP_GET_MODE_DRM;  break;
         case MODE_FT8:  response[0] = CMD_RESP_GET_MODE_FT8;  break;
         case MODE_RTTY: response[0] = CMD_RESP_GET_MODE_RTTY; break;
+        case MODE_DSTAR: response[0] = CMD_RESP_GET_MODE_DSTAR; break;
         default:        response[0] = CMD_RESP_GET_MODE_USB;  break;
         }
         break;

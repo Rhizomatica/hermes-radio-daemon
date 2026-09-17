@@ -510,6 +510,9 @@ int main(int argc, char *argv[])
         case CMD_RESP_GET_MODE_RTTY:
             printf("RTTY\n");
             break;
+        case CMD_RESP_GET_MODE_DSTAR:
+            printf("DSTAR\n");
+            break;
         case CMD_RESP_GET_TXRX_INTX:
             printf("INTX\n");
             break;
