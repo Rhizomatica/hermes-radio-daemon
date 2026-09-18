@@ -905,6 +905,14 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     {
         dsp_dstar_init();
 
+        /* FM discriminator scratch buffer, shared with the MODE_FM path
+         * (lazily allocated on whichever mode runs first). */
+        if (!fm_demod_ready)
+        {
+            fm_demod_temp = malloc(4 * MAX_BINS * sizeof(float));
+            fm_demod_ready = (fm_demod_temp != NULL);
+        }
+
         static complexf fm_iq_buf[1024];
         for (int k = 0; k < MAX_BINS / 2; k++)
         {
