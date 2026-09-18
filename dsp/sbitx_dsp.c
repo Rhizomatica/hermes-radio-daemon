@@ -452,7 +452,7 @@ static void dstar_rx_data_cb(void *user, const uint8_t *frame)
     float pcmf[160];
     mbe_process_result res;
 
-    mbe_decodeDStarDVData(frame + 3, (char(*)[24])fr);
+    mbe_decodeDStarDVData(frame, (char(*)[24])fr);
     mbe_processAmbe3600x2400Frame(pcm, &res, (const char(*)[24])fr, ambe_d,
                                   &dstar_rx_cur, &dstar_rx_prev, &dstar_rx_enh);
 
@@ -523,6 +523,7 @@ static void dsp_dstar_init(void)
         dstar_rx = sbitx_dstar_rx_new();
         sbitx_dstar_rx_set_cbs(dstar_rx, dstar_rx_header_cb, dstar_rx_data_cb,
                                dstar_rx_lost_cb, dstar_rx_eot_cb, NULL);
+        sbitx_dstar_rx_set_polarity(dstar_rx, radio_h_dsp->dstar_rx_polarity);
         mbe_initMbeParms(&dstar_rx_cur, &dstar_rx_prev, &dstar_rx_enh);
         memset(&dstar_rx_prevsyn, 0, sizeof(dstar_rx_prevsyn));
         dstar_rx_prevsyn.L = 15;

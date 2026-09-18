@@ -541,6 +541,7 @@ dstar_hamlib_init(hamlib_digi_state *s)
         return;
     s->dstar_rx = sbitx_dstar_rx_new();
     sbitx_dstar_rx_set_cbs(s->dstar_rx, NULL, dstar_hamlib_data_cb, NULL, NULL, s);
+    sbitx_dstar_rx_set_polarity(s->dstar_rx, s->radio_h->dstar_rx_polarity);
     s->dstar_tx = sbitx_dstar_tx_new();
     mbe_initMbeParms(&s->dstar_rx_cur, &s->dstar_rx_prev, &s->dstar_rx_enh);
     memset(&s->dstar_rx_prevsyn, 0, sizeof(s->dstar_rx_prevsyn));
@@ -562,7 +563,7 @@ static void dstar_hamlib_data_cb(void *user, const uint8_t *frame)
     short pcm[160];
     float pcmf[160];
 
-    mbe_decodeDStarDVData(frame + 3, (char(*)[24])fr);
+    mbe_decodeDStarDVData(frame, (char(*)[24])fr);
     mbe_processAmbe3600x2400Frame(pcm, NULL, (const char(*)[24])fr, ambe_d,
                                   &s->dstar_rx_cur, &s->dstar_rx_prev, &s->dstar_rx_enh);
 

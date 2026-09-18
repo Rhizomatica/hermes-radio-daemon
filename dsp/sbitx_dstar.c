@@ -361,6 +361,14 @@ static const float GAUSSIAN_0_35_FILTER[15] = {
 #define DSTAR_LEVEL0 (-841.0f / 32768.0f)
 #define DSTAR_LEVEL1 (841.0f / 32768.0f)
 
+/* Gaussian BT=0.5 matched filter (MMDVM's GAUSSIAN_0_5_FILTER), normalised
+ * to unit sum. Applied to the discriminator at 24 kHz before slicing. */
+static const float GAUSSIAN_0_5_FILTER[11] = {
+    8.0f / 39760.0f, 104.0f / 39760.0f, 760.0f / 39760.0f, 3158.0f / 39760.0f,
+    7421.0f / 39760.0f, 9866.0f / 39760.0f, 7421.0f / 39760.0f, 3158.0f / 39760.0f,
+    760.0f / 39760.0f, 104.0f / 39760.0f, 8.0f / 39760.0f
+};
+
 static const uint8_t DSTAR_DATA_SYNC_BYTES[] = {0x9E, 0x8D, 0x32, 0x88, 0x26, 0x1A, 0x3F, 0x61, 0xE8, 0x55, 0x2D, 0x16};
 static const uint8_t DSTAR_END_SYNC_BYTES[] = {0x55, 0x55, 0x55, 0x55, 0xC8, 0x7A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
@@ -405,6 +413,14 @@ struct sbitx_dstar_rx {
     uint32_t path_memory2[42];
     uint32_t path_memory3[42];
     uint8_t  fec_output[42];
+
+    /* Discriminator front-end (MMDVM-style): slow DC tracker, Gaussian
+     * BT=0.5 matched filter, and an optional polarity flip. Without the
+     * matched filter the zero-crossing slicer below is dominated by noise
+     * and real D-Star signals never sync. */
+    float    mf_state[11];
+    float    dc_est;
+    float    polarity;
 
     sbitx_dstar_header_cb header_cb;
     sbitx_dstar_data_cb   data_cb;
@@ -840,8 +856,17 @@ sbitx_dstar_rx_new(void)
         rx->sync_ptr = NOENDPTR;
         rx->min_sync_ptr = NOENDPTR;
         rx->max_sync_ptr = NOENDPTR;
+        rx->polarity = 1.0f;
     }
     return rx;
+}
+
+void
+sbitx_dstar_rx_set_polarity(sbitx_dstar_rx *rx, float polarity)
+{
+    if (rx == NULL)
+        return;
+    rx->polarity = (polarity < 0.0f) ? -1.0f : 1.0f;
 }
 
 void
@@ -893,7 +918,20 @@ sbitx_dstar_rx_process(sbitx_dstar_rx *rx, const float *audio, int n)
         return;
 
     for (int i = 0; i < n; i++) {
-        float sample = audio[i];
+        /* Slow DC tracker (carrier-offset drift), then the Gaussian BT=0.5
+         * matched filter, then the polarity flip. The slicer and the sync
+         * correlation operate on this matched-filtered signal. */
+        float raw = audio[i];
+        rx->dc_est += 0.001f * (raw - rx->dc_est);
+        float s = raw - rx->dc_est;
+
+        for (int k = 0; k < 10; k++)
+            rx->mf_state[k] = rx->mf_state[k + 1];
+        rx->mf_state[10] = s;
+        float mf = 0.0f;
+        for (int k = 0; k < 11; k++)
+            mf += rx->mf_state[k] * GAUSSIAN_0_5_FILTER[k];
+        float sample = mf * rx->polarity;
 
         rx->bit_buffer[rx->bit_ptr] <<= 1;
         if (sample < 0.0f)

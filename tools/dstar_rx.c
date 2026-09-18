@@ -34,12 +34,12 @@ static void data_cb(void *user, const uint8_t *f) {
     (void)user;
     char fr[4][24], ambe_d[49];
     short pcm[160];
-    mbe_decodeDStarDVData(f + 3, (char(*)[24])fr);
+    mbe_decodeDStarDVData(f, (char(*)[24])fr);
     mbe_processAmbe3600x2400Frame(pcm, NULL, (const char(*)[24])fr, ambe_d, &cur, &prev, &enh);
     if (ambe_d[0] && ambe_d[1] && ambe_d[2] && ambe_d[3] && ambe_d[4] && ambe_d[5] && ambe_d[48])
         memset(pcm, 0, sizeof(pcm));
     for (int i = 0; i < 160; i++) {
-        int v = (int)pcm[i] * 20;
+        int v = (int)pcm[i];
         if (v > 31128) v = 31128;
         if (v < -31128) v = -31128;
         pcm[i] = (short)v;

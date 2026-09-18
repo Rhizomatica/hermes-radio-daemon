@@ -384,10 +384,12 @@ typedef struct {
     /* D-STAR DV: FM deviation of the GMSK modulator in Hz (default 1200,
      * the MSK h=0.5 peak deviation for 4800 baud) and TX/RX drive gains.
      * The TX gain maps the modem baseband (±0.0257) onto the FM
-     * modulator's deviation. */
+     * modulator's deviation. dstar_rx_polarity flips the discriminator
+     * sign for rigs that present it inverted (1 normal, -1 inverted). */
     _Atomic uint16_t dstar_deviation;
     float dstar_tx_gain;
     float dstar_rx_gain;
+    float dstar_rx_polarity;
     char  dstar_mycall[16];
     char  dstar_urcall[16];
     /* Log D-STAR RX frames/sync to stderr (0 off, 1 on) for bench debugging. */

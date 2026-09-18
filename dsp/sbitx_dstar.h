@@ -59,6 +59,10 @@ void sbitx_dstar_rx_set_cbs(sbitx_dstar_rx *rx,
                             sbitx_dstar_eot_cb    eot_cb,
                             void *user);
 
+/* Set the discriminator polarity: +1 (default) or -1 (inverted). Some
+ * rigs/demodulators present the FM discriminator inverted. */
+void sbitx_dstar_rx_set_polarity(sbitx_dstar_rx *rx, float polarity);
+
 void sbitx_dstar_rx_reset(sbitx_dstar_rx *rx);
 
 /* Feed n samples of discriminator audio at 24 kHz. Callbacks may fire. */
