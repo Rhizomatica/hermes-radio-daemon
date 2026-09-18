@@ -393,7 +393,7 @@ static rmode_t mode_to_hamlib(uint16_t mode, bool data_path)
     case MODE_RTTY: return data_path ? RIG_MODE_PKTLSB : RIG_MODE_RTTY;
     case MODE_DRM:  return RIG_MODE_PKTUSB;   /* digital only, no voice DRM   */
     case MODE_FT8:  return RIG_MODE_PKTUSB;   /* USB worldwide by convention  */
-    case MODE_DSTAR: return data_path ? RIG_MODE_PKTFM : RIG_MODE_FM;
+    case MODE_DSTAR: return RIG_MODE_DSTAR; /* rig-native DV (IC-7100 etc.) */
     default:        return data_path ? RIG_MODE_PKTUSB : RIG_MODE_USB;
     }
 }
