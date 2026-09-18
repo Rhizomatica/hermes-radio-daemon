@@ -168,6 +168,7 @@ int main(int argc, char *argv[])
         else if (!strcasecmp(command_argument, "drm"))  srv_cmd[0] = 0x05;
         else if (!strcasecmp(command_argument, "ft8"))  srv_cmd[0] = 0x06;
         else if (!strcasecmp(command_argument, "rtty")) srv_cmd[0] = 0x07;
+        else if (!strcasecmp(command_argument, "dstar")) srv_cmd[0] = 0x08;
         else
         {
             fprintf(stderr, "Unknown mode '%s'.\n", command_argument);

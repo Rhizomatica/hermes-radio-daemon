@@ -301,6 +301,7 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
             case 0x05: mode_v = MODE_DRM;  break;
             case 0x06: mode_v = MODE_FT8;  break;
             case 0x07: mode_v = MODE_RTTY; break;
+            case 0x08: mode_v = MODE_DSTAR; break;
             default:
                 response[0] = CMD_RESP_WRONG_COMMAND;
                 break;
