@@ -48,6 +48,7 @@
 #include "sbitx_core.h"
 #include "sbitx_alsa.h"
 #include "sbitx_buffer.h"
+#include "ring_buffer.h"
 #include "sbitx_radae.h"
 #include "sbitx_drm.h"
 #include "sbitx_ft8.h"
@@ -411,35 +412,191 @@ static void digi_cw_char_cb(char c)
  * at 24 kHz -> 96 kHz -> FM modulator. */
 #define DSTAR_RX_DECIM  4           /* 96 kHz -> 24 kHz */
 #define DSTAR_RX_RATE   24000
-#define DSTAR_PCM_FIFO  (DSTAR_RX_RATE * 4)   /* 4 s of 8 kHz PCM */
 
 static sbitx_dstar_rx *dstar_rx;
 static sbitx_dstar_tx *dstar_tx;
 
+/* Running sampling-clock estimate in ppm, seeded from dstar_clock_ppm and
+ * then trimmed from the modem's own sync timing while a signal is present.
+ * The config value is only a starting point: it saves the loop from having
+ * to converge from zero at the start of every session, which would garble
+ * the first seconds of an over. */
+static double dstar_clock_track;
+static bool   dstar_clock_seeded;
+
+/* ── automatic clock tracking ──────────────────────────────────────────
+ *
+ * GMSK at 4800 baud puts a line at the symbol rate in the SQUARED
+ * discriminator signal. Measuring where that line actually sits tells us
+ * how far our sampling clock is from the transmitter's, with no dependence
+ * on the modem's internal state -- unlike the data-sync interval, which
+ * reads ~99 ppm low because the sync correlator accepts the earliest
+ * position in its +/-1 sample window.
+ *
+ * The line is only 5-12 dB above the noise floor, so it needs coherent
+ * integration: a bank of DFT bins around 4800 Hz accumulated over a 2 s
+ * window. Each bin is advanced by a recursive phasor rotation, which keeps
+ * the per-sample cost to a complex multiply-accumulate per bin and spreads
+ * the work evenly across DSP blocks instead of bursting once per window.
+ * Measured against the reference capture this reads +281..+313 ppm where
+ * the decode optimum is +301. */
+#define DSTAR_TRK_F0        4800.0     /* symbol rate, Hz */
+#define DSTAR_TRK_SPAN      3.0        /* +/- Hz scanned (~ +/-625 ppm) */
+#define DSTAR_TRK_BINS      25         /* 0.25 Hz spacing */
+#define DSTAR_TRK_WINDOW    48000      /* 2 s at 24 kHz */
+#define DSTAR_TRK_MIN_RATIO 3.0        /* peak/median needed to believe it */
+#define DSTAR_TRK_MAX_STEP  25.0       /* ppm of slew per window */
+
+static float  trk_acc_re[DSTAR_TRK_BINS], trk_acc_im[DSTAR_TRK_BINS];
+static float  trk_ph_re[DSTAR_TRK_BINS],  trk_ph_im[DSTAR_TRK_BINS];
+static float  trk_rot_re[DSTAR_TRK_BINS], trk_rot_im[DSTAR_TRK_BINS];
+static int    trk_n;
+static float  trk_dc;
+static bool   trk_ready;
+
+static void dstar_track_reset(void)
+{
+    for (int b = 0; b < DSTAR_TRK_BINS; b++) {
+        double f = DSTAR_TRK_F0 - DSTAR_TRK_SPAN
+                 + 2.0 * DSTAR_TRK_SPAN * b / (DSTAR_TRK_BINS - 1);
+        double w = -2.0 * M_PI * f / (double) DSTAR_RX_RATE;
+        trk_rot_re[b] = (float) cos(w);
+        trk_rot_im[b] = (float) sin(w);
+        trk_ph_re[b] = 1.0f;
+        trk_ph_im[b] = 0.0f;
+        trk_acc_re[b] = 0.0f;
+        trk_acc_im[b] = 0.0f;
+    }
+    trk_n = 0;
+    trk_ready = true;
+}
+
+/* Feed the corrected 24 kHz stream; returns true and sets *ppm when a
+ * window completed with a believable line. The value is the RESIDUAL error
+ * of the stream as currently corrected, so it is added to the estimate. */
+static bool dstar_track_feed(const float *x, int n, double *ppm)
+{
+    if (!trk_ready)
+        dstar_track_reset();
+
+    for (int i = 0; i < n; i++) {
+        float y = x[i] * x[i];
+        trk_dc += 0.0005f * (y - trk_dc);     /* the line rides on a DC pedestal */
+        y -= trk_dc;
+
+        for (int b = 0; b < DSTAR_TRK_BINS; b++) {
+            trk_acc_re[b] += y * trk_ph_re[b];
+            trk_acc_im[b] += y * trk_ph_im[b];
+            float pr = trk_ph_re[b] * trk_rot_re[b] - trk_ph_im[b] * trk_rot_im[b];
+            float pi = trk_ph_re[b] * trk_rot_im[b] + trk_ph_im[b] * trk_rot_re[b];
+            trk_ph_re[b] = pr;
+            trk_ph_im[b] = pi;
+        }
+        trk_n++;
+    }
+
+    if (trk_n < DSTAR_TRK_WINDOW)
+        return false;
+
+    float mag[DSTAR_TRK_BINS];
+    int peak = 0;
+    for (int b = 0; b < DSTAR_TRK_BINS; b++) {
+        mag[b] = sqrtf(trk_acc_re[b] * trk_acc_re[b] + trk_acc_im[b] * trk_acc_im[b]);
+        if (mag[b] > mag[peak])
+            peak = b;
+    }
+
+    float sorted[DSTAR_TRK_BINS];
+    memcpy(sorted, mag, sizeof(sorted));
+    for (int a = 0; a < DSTAR_TRK_BINS; a++)
+        for (int b = a + 1; b < DSTAR_TRK_BINS; b++)
+            if (sorted[b] < sorted[a]) { float t = sorted[a]; sorted[a] = sorted[b]; sorted[b] = t; }
+    float median = sorted[DSTAR_TRK_BINS / 2];
+
+    bool believable = (median > 0.0f) && (mag[peak] / median >= DSTAR_TRK_MIN_RATIO)
+                    && (peak > 0) && (peak < DSTAR_TRK_BINS - 1);
+
+    double result = 0.0;
+    if (believable) {
+        /* Parabolic interpolation for sub-bin resolution. */
+        float a = mag[peak - 1], b0 = mag[peak], c = mag[peak + 1];
+        double denom = (double) (a - 2.0f * b0 + c);
+        double delta = (denom != 0.0) ? 0.5 * (double) (a - c) / denom : 0.0;
+        if (delta < -1.0) delta = -1.0;
+        if (delta >  1.0) delta =  1.0;
+        double spacing = 2.0 * DSTAR_TRK_SPAN / (DSTAR_TRK_BINS - 1);
+        double f = DSTAR_TRK_F0 - DSTAR_TRK_SPAN + spacing * ((double) peak + delta);
+        /* A line below 4800 means our samples run long: correct upward. */
+        result = -(f - DSTAR_TRK_F0) / DSTAR_TRK_F0 * 1e6;
+    }
+
+    dstar_track_reset();
+
+    if (!believable)
+        return false;
+
+    *ppm = result;
+    return true;
+}
+
 static mbe_parms dstar_rx_cur, dstar_rx_prev, dstar_rx_enh, dstar_rx_prevsyn;
 static mbe_parms dstar_tx_cur, dstar_tx_prev, dstar_tx_enh;
 
-static float dstar_pcm_fifo[DSTAR_PCM_FIFO];
-static int   dstar_pcm_fifo_n;
+/* Decoded voice sits in the project's ring buffer (sbitx/ring_buffer.c), the
+ * same mmap'd double-mapped buffer the rest of the audio path uses. The
+ * double mapping matters here: the fractional read position needs samples
+ * [idx] and [idx+1] to be adjacent in memory, which a wrapping index buffer
+ * cannot promise. Order 17 = 131072 bytes = 32768 floats = 4.1 s at 8 kHz.
+ *
+ * Producer (the AMBE callback) and consumer (the render loop below) both run
+ * on the DSP thread inside dsp_process_rx, so no locking is needed. */
+#define DSTAR_PCM_RB_ORDER 17
+/* Prebuffer before playback starts: 4 AMBE frames = 80 ms at 8 kHz. Enough
+ * to absorb the 20 ms burst cadence and a late frame, small enough not to be
+ * noticed in conversation. */
+#define DSTAR_PCM_PREBUF 640
+static struct ring_buffer dstar_pcm_rb;
+static bool  dstar_pcm_rb_ready;
+static bool  dstar_playing;
+
+static inline int dstar_pcm_count(void)
+{
+    return dstar_pcm_rb_ready
+         ? (int) (ring_buffer_count_bytes(&dstar_pcm_rb) / sizeof(float))
+         : 0;
+}
 
 static float dstar_mic8k[160];
 static int   dstar_mic8k_n;
 static bool  dstar_tx_keyed;
+/* The header currently being transmitted, repeated in the slow-data field of
+ * every voice frame so the receiving rig can show callsigns without catching
+ * the one-shot header burst. */
+static uint8_t dstar_tx_header_bytes[SBITX_DSTAR_HEADER_BYTES];
+static int     dstar_tx_slot;   /* frame index within the superframe, 0..20 */
+
 
 static void dstar_pcm_fifo_put(const float *pcm, int n)
 {
-    for (int i = 0; i < n; i++) {
-        if (dstar_pcm_fifo_n < DSTAR_PCM_FIFO) {
-            dstar_pcm_fifo[dstar_pcm_fifo_n++] = pcm[i];
-        } else {
-            /* full: drop the oldest quarter to keep the stream flowing */
-            memmove(dstar_pcm_fifo, dstar_pcm_fifo + DSTAR_PCM_FIFO / 4,
-                    (DSTAR_PCM_FIFO - DSTAR_PCM_FIFO / 4) * sizeof(float));
-            dstar_pcm_fifo_n -= DSTAR_PCM_FIFO / 4;
-            dstar_pcm_fifo[dstar_pcm_fifo_n++] = pcm[i];
-        }
+    if (!dstar_pcm_rb_ready)
+        return;
+
+    size_t want = (size_t) n * sizeof(float);
+
+    /* Overrun means the consumer stalled; drop the oldest audio rather than
+     * the newest so the operator keeps hearing the live end of the over. */
+    while (ring_buffer_count_free_bytes(&dstar_pcm_rb) < want) {
+        size_t drop = want - ring_buffer_count_free_bytes(&dstar_pcm_rb);
+        size_t have = ring_buffer_count_bytes(&dstar_pcm_rb);
+        if (drop > have) drop = have;
+        if (drop == 0) return;
+        ring_buffer_read_advance(&dstar_pcm_rb, drop);
     }
+
+    memcpy(ring_buffer_write_address(&dstar_pcm_rb), pcm, want);
+    ring_buffer_write_advance(&dstar_pcm_rb, want);
 }
+
 
 static long dstar_rx_frame_count;
 
@@ -457,10 +614,10 @@ static void dstar_rx_data_cb(void *user, const uint8_t *frame)
                                   &dstar_rx_cur, &dstar_rx_prev, &dstar_rx_enh);
 
     if (radio_h_dsp->dstar_verbose) {
-        fprintf(stderr, "DSTAR data #%ld: %02x %02x %02x %02x %02x %02x %02x %02x %02x"
-                        " (sync=%02x%02x%02x) fec_errs=%d\n",
-                dstar_rx_frame_count, frame[3], frame[4], frame[5], frame[6], frame[7],
-                frame[8], frame[9], frame[10], frame[11], frame[0], frame[1], frame[2],
+        fprintf(stderr, "DSTAR data #%ld: ambe %02x %02x %02x %02x %02x %02x %02x %02x %02x"
+                        " slow %02x%02x%02x fec_errs=%d\n",
+                dstar_rx_frame_count, frame[0], frame[1], frame[2], frame[3], frame[4],
+                frame[5], frame[6], frame[7], frame[8], frame[9], frame[10], frame[11],
                 res.total_errors);
     }
     dstar_rx_frame_count++;
@@ -507,7 +664,9 @@ static void dstar_rx_lost_cb(void *user)
     (void)user;
     if (radio_h_dsp->dstar_verbose)
         fprintf(stderr, "DSTAR: lost sync (got %ld frames)\n", dstar_rx_frame_count);
-    dstar_pcm_fifo_n = 0;   /* drop stale audio on loss of lock */
+    if (dstar_pcm_rb_ready)
+        ring_buffer_clear(&dstar_pcm_rb);   /* drop stale audio on loss of lock */
+    dstar_playing = false;                  /* and re-prebuffer before speaking */
 }
 
 static void dstar_rx_eot_cb(void *user)
@@ -519,6 +678,39 @@ static void dstar_rx_eot_cb(void *user)
 
 static void dsp_dstar_init(void)
 {
+    if (!dstar_pcm_rb_ready) {
+        ring_buffer_create(&dstar_pcm_rb, DSTAR_PCM_RB_ORDER);
+        dstar_pcm_rb_ready = true;
+    }
+
+    if (!dstar_clock_seeded) {
+        dstar_clock_track = (double) radio_h_dsp->dstar_clock_ppm;
+        dstar_clock_seeded = true;
+    }
+
+    /* Report the settings actually in force, once. These come from
+     * main:dstar_* in core.ini, and a key placed after another section
+     * header (the installed file has [tx_band0..7] after [main]) is read
+     * as that section's key instead — the daemon then runs on defaults,
+     * with polarity +1 and verbose 0, which decodes nothing and says
+     * nothing about why. Printing them makes that visible immediately. */
+    static bool dstar_cfg_logged = false;
+    if (!dstar_cfg_logged) {
+        dstar_cfg_logged = true;
+        fprintf(stderr,
+                "DSTAR: polarity=%+.0f deviation=%u Hz clock_ppm=%+d rx_gain=%.2f "
+                "af_gain=%.2f tx_gain=%.2f verbose=%u denoise=%u mycall=%s urcall=%s\n",
+                radio_h_dsp->dstar_rx_polarity,
+                (unsigned) radio_h_dsp->dstar_deviation,
+                (int) radio_h_dsp->dstar_clock_ppm,
+                radio_h_dsp->dstar_rx_gain,
+                radio_h_dsp->dstar_af_gain,
+                radio_h_dsp->dstar_tx_gain,
+                (unsigned) radio_h_dsp->dstar_verbose,
+                (unsigned) radio_h_dsp->dstar_denoise,
+                radio_h_dsp->dstar_mycall, radio_h_dsp->dstar_urcall);
+    }
+
     if (dstar_rx == NULL) {
         dstar_rx = sbitx_dstar_rx_new();
         sbitx_dstar_rx_set_cbs(dstar_rx, dstar_rx_header_cb, dstar_rx_data_cb,
@@ -552,6 +744,8 @@ static void dsp_dstar_tx_send_header(void)
     header[35] = 'A';
     sbitx_dstar_header_finalize(header);
     sbitx_dstar_tx_header(dstar_tx, header);
+    memcpy(dstar_tx_header_bytes, header, sizeof(dstar_tx_header_bytes));
+    dstar_tx_slot = 0;          /* first voice frame carries the data sync */
     dstar_tx_frame_count = 0;
     if (radio_h_dsp->dstar_verbose)
         fprintf(stderr, "DSTAR tx: header queued (my=%.8s ur=%.8s)\n",
@@ -559,6 +753,38 @@ static void dsp_dstar_tx_send_header(void)
 }
 
 /* Feed one 20 ms mic frame into the AMBE encoder and queue the DV frame. */
+/* Fill a frame's 3 slow-data bytes.
+ *
+ * Frame 0 of each superframe carries the data sync, unscrambled, exactly as
+ * the receiver looks for it. The other 20 frames carry the header as 6-byte
+ * units spanning 2 frames each -- a type byte (0x55: header segment, five
+ * data bytes) followed by five header bytes -- scrambled with the fixed
+ * 0x70 0x4F 0x93 pattern. Nine units cover the 41-byte header; anything past
+ * it is 0x66 filler, which is what a real rig sends (verified against the
+ * IC-7100's own stream). */
+static void dsp_dstar_tx_slow_fill(uint8_t *out3, int slot)
+{
+    static const uint8_t SCRAMBLE[3] = {0x70U, 0x4FU, 0x93U};
+
+    if (slot == 0) {
+        out3[0] = 0x55U; out3[1] = 0x2DU; out3[2] = 0x16U;
+        return;
+    }
+
+    const int unit = (slot - 1) / 2;
+    const int half = (slot - 1) % 2;
+
+    uint8_t u[6];
+    u[0] = 0x55U;
+    for (int i = 0; i < 5; i++) {
+        int off = unit * 5 + i;
+        u[1 + i] = (off < SBITX_DSTAR_HEADER_BYTES) ? dstar_tx_header_bytes[off] : 0x66U;
+    }
+
+    for (int i = 0; i < 3; i++)
+        out3[i] = u[half * 3 + i] ^ SCRAMBLE[i];
+}
+
 static void dsp_dstar_tx_encode_frame(const float *mic8k)
 {
     char ambe_d[49];
@@ -599,8 +825,19 @@ static void dsp_dstar_tx_encode_frame(const float *mic8k)
     mbe_encodeAmbe2400Parms(src, ambe_d, &dstar_tx_cur, &dstar_tx_prev);
     mbe_encodeAmbe3600x2400Frame(ambe_d, (char(*)[24])fr);
 
-    memcpy(frame, sync, 3);
-    mbe_encodeDStarDVData((const char(*)[24])fr, frame + 3);
+    /* Wire layout is 9 bytes of AMBE followed by 3 bytes of sync-or-slow-data
+     * -- NOT sync first. The old order put the sync where the voice belongs
+     * and repeated it in every frame, so a receiving rig saw neither valid
+     * voice nor a superframe structure. Confirmed from the air: every frame
+     * the IC-7100 sends ends with 55 2D 16 only once per 21 frames, and
+     * DSTAR_DATA_SYNC_BYTES is {...9 AMBE..., 0x55, 0x2D, 0x16}. */
+    (void) sync;
+    mbe_encodeDStarDVData((const char(*)[24])fr, frame);
+    dsp_dstar_tx_slow_fill(frame + 9, dstar_tx_slot);
+
+    dstar_tx_slot++;
+    if (dstar_tx_slot >= 21)
+        dstar_tx_slot = 0;
 
     sbitx_dstar_tx_frame(dstar_tx, frame);
     mbe_moveMbeParms(&dstar_tx_cur, &dstar_tx_prev);
@@ -760,6 +997,16 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
         // 24 bit audio samples are packed in MSB in the 32 bit word
         i_sample = (1.0  * (input_rx[j] >> 8)) / MAX_SAMPLE_VALUE;
 
+        {
+            static FILE *rawdump = NULL;
+            if (rawdump == NULL && access("/tmp/dstar_raw_dump", F_OK) == 0) {
+                rawdump = fopen("/tmp/dstar_raw.s32", "wb");
+                fprintf(stderr, "DSTAR raw input dump active\n");
+            }
+            if (rawdump != NULL)
+                fwrite(&input_rx[j], 4, 1, rawdump);
+        }
+
 #if DEBUG_DSP_ == 1
         if (max_i_sample < i_sample)
         {
@@ -801,8 +1048,19 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
 	uint16_t orig_rx_mode = rx_mode;   /* FT8/CW/RTTY get rewritten to USB below */
 	if (rx_mode == MODE_LSB)
         memset(fft_freq, 0, sizeof(fftw_complex) * (MAX_BINS/2));
-	/* D-STAR is FM-like GMSK: keep both sidebands of the IF (the signal
-	 * spans ~6.25 kHz around the carrier). */
+	/* D-STAR joins FM/AM/DRM in keeping BOTH halves. Its GMSK carrier sits
+	 * on the dial and the signal spans ~±3 kHz around it, so zeroing the
+	 * negative half would throw away everything below the dial — half the
+	 * modulation — and the discriminator would see noise.
+	 *
+	 * Keeping both halves still yields a complex (I+jQ) baseband here: STEP 4
+	 * already rotated the spectrum down by TUNED_BINS (512 bins = 24 kHz, the
+	 * ADC frequency the dial lands on), and that rotation destroys the
+	 * Hermitian symmetry a real input had about its own DC. fft_freq[i] is
+	 * X[i+512], whose conjugate partner X[-(i+512)] now sits at bin -i-1024,
+	 * far outside the ±6 kHz the filter keeps — so the imaginary part after
+	 * the IFFT is genuinely non-zero. (A one-sideband cut is only needed for
+	 * SSB, where the wanted signal lies entirely on one side of the dial.) */
 	else if (rx_mode != MODE_FM && rx_mode != MODE_AM && rx_mode != MODE_DRM && rx_mode != MODE_DSTAR)
         memset((void *) fft_freq + (MAX_BINS/2 * sizeof(fftw_complex)), 0, sizeof(fftw_complex) * (MAX_BINS/2));
 
@@ -921,8 +1179,67 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             fm_iq_buf[k].q = (float) cimag(fft_time[k + (MAX_BINS / 2)]);
         }
 
-        fm_last_iq = fmdemod_quadri_cf(fm_iq_buf, fm_audio_buf,
-                                       MAX_BINS / 2, fm_demod_temp, fm_last_iq);
+
+        {
+            static FILE *iqdbgf = NULL;
+            if (iqdbgf == NULL && access("/tmp/dstar_iq_dump", F_OK) == 0) {
+                iqdbgf = fopen("/tmp/dstar_iq.s16", "wb");
+                fprintf(stderr, "DSTAR IQ dump active\n");
+            }
+            if (iqdbgf != NULL) {
+                for (int k = 0; k < MAX_BINS / 2; k++) {
+                    short sv;
+                    float v;
+                    v = (float)creal(fft_time[k + (MAX_BINS / 2)]) * 32767.0f;
+                    if (v > 32767.0f) v = 32767.0f;
+                    if (v < -32767.0f) v = -32767.0f;
+                    sv = (short)v; fwrite(&sv, 2, 1, iqdbgf);
+                    v = (float)cimag(fft_time[k + (MAX_BINS / 2)]) * 32767.0f;
+                    if (v > 32767.0f) v = 32767.0f;
+                    if (v < -32767.0f) v = -32767.0f;
+                    sv = (short)v; fwrite(&sv, 2, 1, iqdbgf);
+                }
+            }
+        }
+
+        /* Direct atan2 FM discriminator (phase difference per sample,
+         * output in Hz). This is the exact method verified offline against
+         * the IC-7100 capture; csdr's fmdemod_quadri_cf produced only noise
+         * in this DSP path. */
+        {
+            static float prev_phi = 0.0f;
+            static bool  prev_valid = false;
+            const float  fs = 96000.0f;
+            for (int k = 0; k < MAX_BINS / 2; k++) {
+                float phi = atan2f(fm_iq_buf[k].q, fm_iq_buf[k].i);
+                float dphi = phi - prev_phi;
+                prev_phi = phi;
+                if (!prev_valid) {
+                    dphi = 0.0f;
+                    prev_valid = true;
+                }
+                while (dphi > (float)M_PI)  dphi -= 2.0f * (float)M_PI;
+                while (dphi < -(float)M_PI) dphi += 2.0f * (float)M_PI;
+                fm_audio_buf[k] = dphi * fs / (2.0f * (float)M_PI);
+            }
+        }
+
+        {
+            static FILE *dbgf = NULL;
+            if (dbgf == NULL && access("/tmp/dstar_fm_dump", F_OK) == 0) {
+                dbgf = fopen("/tmp/dstar_fm.s16", "wb");
+                fprintf(stderr, "DSTAR fm demod dump active\n");
+            }
+            if (dbgf != NULL) {
+                for (int k = 0; k < MAX_BINS / 2; k++) {
+                    float v = fm_audio_buf[k] * 10.0f;
+                    if (v > 32767.0f) v = 32767.0f;
+                    if (v < -32767.0f) v = -32767.0f;
+                    short sv = (short)v;
+                    fwrite(&sv, 2, 1, dbgf);
+                }
+            }
+        }
 
         /* HF D-STAR: slow frequency drift between stations appears as a
          * discriminator DC offset. Remove it before the modem (the GMSK
@@ -932,36 +1249,168 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             dstar_dc_state = fastdcblock_ff(fm_audio_buf, fm_audio_buf, MAX_BINS / 2, dstar_dc_state);
         }
 
-        /* Decimate 96 kHz -> 24 kHz (4:1 polyphase) */
-        static float                   *rs_taps24 = NULL;
-        static int                      rs_taps24_len = 0;
-        static rational_resampler_ff_t  rs24 = {0, 0, 0};
-        static float                    out24[2048];
+        /* Decimate 96 kHz -> 24 kHz (4:1).
+         *
+         * This deliberately does NOT use csdr's rational_resampler_ff():
+         * that function returns input_processed alongside output_size and
+         * cannot consume the last taps_length samples of a block, so
+         * calling it per DSP block and ignoring input_processed silently
+         * drops ~taps_length input samples every block. For audio that is
+         * a small rate error; for a symbol-timed modem it is fatal — the
+         * stream jumped forward ~25 samples (5 symbols) ~94 times a
+         * second, which left every one of the 5 slicing phases equally
+         * bad and put the measured rate at 22.1 kHz instead of 24 kHz.
+         * D-STAR then never held bit timing: sync patterns matched only by
+         * luck and the AMBE payload was noise.
+         *
+         * Instead keep the filter history across blocks and run the FIR
+         * ourselves, which consumes every input sample and emits exactly
+         * MAX_BINS/2/4 outputs per block — a true, continuous 24.000 kHz. */
+        static float *rs_taps24 = NULL;
+        static int    rs_taps24_len = 0;
+        static float *rs_hist24 = NULL;          /* previous block's tail */
+        static float  out24[2048];
 
         if (!rs_taps24) {
             rs_taps24_len = firdes_filter_len(0.05f);
-            rs_taps24 = malloc(rs_taps24_len * sizeof(float));
+            rs_taps24 = malloc((size_t) rs_taps24_len * sizeof(float));
+            rs_hist24 = calloc((size_t) rs_taps24_len, sizeof(float));
             if (rs_taps24)
                 rational_resampler_get_lowpass_f(rs_taps24, rs_taps24_len, 1, DSTAR_RX_DECIM,
                                                  WINDOW_BLACKMAN);
         }
 
         int n24 = 0;
-        if (rs_taps24) {
-            rs24 = rational_resampler_ff(fm_audio_buf, out24, MAX_BINS / 2,
-                                         1, DSTAR_RX_DECIM, rs_taps24, rs_taps24_len,
-                                         rs24.last_taps_delay);
-            n24 = rs24.output_size;
+        if (rs_taps24 && rs_hist24) {
+            const int T = rs_taps24_len;
+            const int n_in = MAX_BINS / 2;
+            static float xext[2048 + 512];
+            static float filt[2048 + 8];
+            static float filt_prev = 0.0f;     /* last output of the previous block */
+            static double frac_pos = 0.0;      /* fractional read position */
+
+            /* history (T-1 samples) followed by this block */
+            memcpy(xext, rs_hist24, (size_t) (T - 1) * sizeof(float));
+            memcpy(xext + (T - 1), fm_audio_buf, (size_t) n_in * sizeof(float));
+
+            /* Anti-alias filter every input sample, so the decimation phase
+             * can be chosen freely below. */
+            for (int o = 0; o < n_in; o++) {
+                const float *w = xext + o;
+                float acc = 0.0f;
+                for (int k = 0; k < T; k++)
+                    acc += w[k] * rs_taps24[k];
+                filt[o] = acc * (float) DSTAR_RX_DECIM;
+            }
+
+            /* Resample at 4 input samples per output, corrected by
+             * dstar_clock_ppm so the rig's 4800 baud lands on exactly 5
+             * samples per symbol. Linear interpolation is ample here: the
+             * stream is already band-limited to +/-6 kHz at 96 kHz. */
+            /* A symbol lasts 20*(1+e) input samples when our sampling clock
+             * runs fast by e, so it takes step = 4*(1+e) input samples per
+             * output for the modem's fixed 5-samples-per-symbol to hold.
+             * (This is a multiply: dividing corrects the wrong way and
+             * doubles the error.) dstar_clock_track carries the running
+             * estimate, seeded from dstar_clock_ppm. */
+            const double step = (double) DSTAR_RX_DECIM *
+                                (1.0 + dstar_clock_track * 1e-6);
+            while (frac_pos < (double) n_in && n24 < (int) (sizeof(out24) / sizeof(out24[0]))) {
+                int    i = (int) frac_pos;              /* 0 == filt_prev */
+                double f = frac_pos - (double) i;
+                float  a = (i == 0) ? filt_prev : filt[i - 1];
+                float  b = filt[i];
+                out24[n24++] = (float) ((1.0 - f) * a + f * b);
+                frac_pos += step;
+            }
+            frac_pos -= (double) n_in;
+            filt_prev = filt[n_in - 1];
+
+            /* carry the tail so the next block continues the same stream */
+            memcpy(rs_hist24, xext + n_in, (size_t) (T - 1) * sizeof(float));
         }
 
         if (n24 > 0) {
             float *rx24 = out24;
-            float gain = radio_h_dsp->dstar_rx_gain;
-            if (gain != 1.0f) {
-                for (int k = 0; k < n24; k++)
-                    rx24[k] *= gain;
+            /* Discriminator in Hz -> ±1.0 per ±5 kHz (matches the offline
+             * verification), times the configured gain. */
+            float gain = radio_h_dsp->dstar_rx_gain / 20000.0f;
+            for (int k = 0; k < n24; k++)
+                rx24[k] *= gain;
+
+            /* Debug hook: if /tmp/dstar_rx24_dump exists, dump the 24 kHz
+             * discriminator stream for offline analysis. */
+            {
+                static FILE *dbgf = NULL;
+                if (dbgf == NULL && access("/tmp/dstar_rx24_dump", F_OK) == 0) {
+                    dbgf = fopen("/tmp/dstar_rx24.s16", "wb");
+                    fprintf(stderr, "DSTAR rx24 dump active\n");
+                }
+                if (dbgf != NULL) {
+                    for (int k = 0; k < n24; k++) {
+                        float v = rx24[k] * 32767.0f;
+                        if (v > 32767.0f) v = 32767.0f;
+                        if (v < -32767.0f) v = -32767.0f;
+                        short sv = (short)v;
+                        fwrite(&sv, 2, 1, dbgf);
+                    }
+                }
             }
+
             sbitx_dstar_rx_process(dstar_rx, rx24, n24);
+
+            /* Trim the clock estimate from the modem's sync timing. The
+             * modem can only absorb ~99 ppm itself, so a larger offset
+             * (this sbitx runs ~+300 ppm fast) has to be corrected here.
+             *
+             * The estimate is only REPORTED, never applied: it reads about
+             * 99 ppm low because dstar_correlate_data_sync accepts the
+             * earliest position in its +/-1 sample window that beats a
+             * zeroed correlation, i.e. one sample early every superframe.
+             * Live, that walked a good +301 ppm seed down to +1 and took
+             * the decode with it. Closing this loop needs an unbiased
+             * estimator -- the 4800 Hz line in the squared discriminator
+             * signal, which reads this receiver at +281..+313 ppm. */
+            /* Automatic clock correction from the 4800 Hz baud line. Gated
+             * on the modem actually delivering frames, so receiver noise
+             * between overs cannot move the estimate. */
+            static long trk_last_frames;
+            double trk_ppm;
+            if (dstar_track_feed(rx24, n24, &trk_ppm)) {
+                /* MEASURED ONLY -- deliberately not applied.
+                 *
+                 * Tried on the air: the per-window estimates swing +/-400 ppm
+                 * (a 2 s window on a line only 5-12 dB above the floor is not
+                 * enough integration), and applying them every 2 s yanked the
+                 * resampling rate, slipping symbols. Mean FEC errors went from
+                 * 1.5 to 2.6, zero-error frames from 270 to 50, headers to 0,
+                 * and the audio audibly cut. The static dstar_clock_ppm is
+                 * what works.
+                 *
+                 * To make this usable it needs far longer coherent
+                 * integration (8-10 s), a deadband so small residuals are
+                 * ignored, and a rate that is ramped rather than stepped --
+                 * a timing discontinuity costs more than the error it
+                 * corrects. */
+                if (radio_h_dsp->dstar_verbose && dstar_rx_frame_count != trk_last_frames)
+                    fprintf(stderr, "DSTAR: baud line reads %+.0f ppm (clock held at %+.0f)\n",
+                            trk_ppm, dstar_clock_track);
+                trk_last_frames = dstar_rx_frame_count;
+            }
+
+            double err_ppm;
+            if (sbitx_dstar_rx_take_clock_error(dstar_rx, &err_ppm)) {
+                /* Reported, but only APPLIED when explicitly enabled: this
+                 * estimator reads ~99 ppm low because the sync correlator
+                 * accepts the earliest position in its +/-1 sample window
+                 * that beats a zeroed correlation, one sample early every
+                 * superframe. Measured live it walked a good +301 ppm seed
+                 * down to +1 and took the decode with it. The unbiased
+                 * replacement is a baud-line measurement (the 4800 Hz line
+                 * in the squared discriminator signal), which reads this
+                 * receiver at +281..+313 ppm consistently. */
+                (void) err_ppm;   /* biased low; superseded by the baud-line tracker */
+            }
         }
 
         /* Render the decoded PCM FIFO (8 kHz) to the 96 kHz speaker */
@@ -970,12 +1419,63 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
         static float pcm_pos = 0.0f;  /* fractional 8 kHz read position */
         const float step = 8000.0f / 96000.0f;
 
+        /* Websocket mirror: 96 kHz -> audio_sample_rate (48 kHz by default). */
+        int16_t ws_pcm[2048];
+        int     ws_n = 0;
+        uint32_t ws_rate = radio_h_dsp->audio_sample_rate;
+        int      ws_decim = (ws_rate > 0) ? (int) (96000u / ws_rate) : 0;
+        if (ws_decim < 1)
+            ws_decim = 1;
+
+        /* Jitter buffer.
+         *
+         * The modem hands over 160 samples in one burst every 20 ms, while
+         * this loop drains 85.33 samples per 10.67 ms block. The average
+         * rates match exactly, but without a buffer the FIFO level swings
+         * 160 -> 75 -> underrun before the next frame lands, so a hole was
+         * punched in the audio roughly every second block (~50 Hz breakup)
+         * and the old accounting discarded real samples on the way. Hold a
+         * few frames before starting, and once dry, mute and re-fill rather
+         * than stuttering. */
+        int pcm_avail = dstar_pcm_count();
+        const float *pcm_rd = dstar_pcm_rb_ready
+                            ? (const float *) ring_buffer_read_address(&dstar_pcm_rb)
+                            : NULL;
+
+        if (!dstar_playing && pcm_avail >= DSTAR_PCM_PREBUF)
+            dstar_playing = true;
+
+        /* Long-term drift: the rig's codec clock and ours are independent, so
+         * the buffer slowly fills or empties. Nudge the read rate instead of
+         * waiting for a dropout or an overflow. */
+        float rate = step;
+        if (dstar_playing) {
+            if (pcm_avail > DSTAR_PCM_PREBUF * 3)
+                rate = step * 1.002f;          /* running long: catch up */
+            else if (pcm_avail < DSTAR_PCM_PREBUF / 2)
+                rate = step * 0.998f;          /* running short: ease off */
+        }
+
         for (int k = 0; k < block_size; k++)
         {
-            int idx = (int) pcm_pos;
             float s = 0.0f;
-            if (idx < dstar_pcm_fifo_n)
-                s = dstar_pcm_fifo[idx] * radio_h_dsp->dstar_rx_gain;
+            if (dstar_playing && pcm_rd != NULL)
+            {
+                int idx = (int) pcm_pos;
+                if (idx + 1 < pcm_avail)
+                {
+                    /* Linear interpolation for the 8 kHz -> 96 kHz step; the
+                     * old zero-order hold added needless harshness. */
+                    float f = pcm_pos - (float) idx;
+                    s = ((1.0f - f) * pcm_rd[idx] + f * pcm_rd[idx + 1])
+                        * radio_h_dsp->dstar_af_gain;
+                    pcm_pos += rate;
+                }
+                else
+                {
+                    dstar_playing = false;   /* ran dry: mute until refilled */
+                }
+            }
             if (s > 0.95f) s = 0.95f;
             if (s < -0.95f) s = -0.95f;
 
@@ -987,18 +1487,50 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             }
             output_speaker_int[k] <<= 8;
 
-            pcm_pos += step;
+            /* Mirror the decoded voice into the websocket RX ring so it can
+             * be heard over the network, not only on the rig's own speaker.
+             * The embedded DSP path never fed this ring (nothing calls
+             * sbitx_bridge_push_rx here), even though the hfsignals pipeline
+             * advertises RADIO_PIPELINE_CAP_WS_RX_AUDIO. The ring carries
+             * audio_sample_rate, so decimate the 96 kHz speaker stream to
+             * that rate. */
+            if (ws_decim > 0 && (k % ws_decim) == 0 && ws_n < (int) (sizeof(ws_pcm) / sizeof(ws_pcm[0])))
+                ws_pcm[ws_n++] = (int16_t) (s * 32767.0f);
+
         }
 
-        if ((int) pcm_pos > 0 && dstar_pcm_fifo_n > 0) {
-            int consumed = (int) pcm_pos;
-            if (consumed >= dstar_pcm_fifo_n) {
-                dstar_pcm_fifo_n = 0;
-            } else {
-                memmove(dstar_pcm_fifo, dstar_pcm_fifo + consumed,
-                        (dstar_pcm_fifo_n - consumed) * sizeof(float));
-                dstar_pcm_fifo_n -= consumed;
+        if (ws_n > 0)
+            sbitx_bridge_push_rx(radio_h_dsp, ws_pcm, (size_t) ws_n);
+
+        if (radio_h_dsp->dstar_verbose) {
+            static int dbg_blocks = 0;
+            static float dbg_peak = 0.0f;
+            for (int k = 0; k < (int) block_size; k++) {
+                float v = (float) output_speaker_int[k] / (float) (1 << 8) / (float) MAX_SAMPLE_VALUE;
+                if (v < 0) v = -v;
+                if (v > dbg_peak) dbg_peak = v;
             }
+            if (++dbg_blocks >= 94 && (pcm_avail > 0 || dstar_playing || dbg_peak > 0.0f)) {
+                fprintf(stderr, "DSTAR audio: ring=%d playing=%d pcm_pos=%.1f peak=%.4f af_gain=%.2f\n",
+                        pcm_avail, (int) dstar_playing, pcm_pos, dbg_peak,
+                        radio_h_dsp->dstar_af_gain);
+                dbg_blocks = 0;
+                dbg_peak = 0.0f;
+            }
+        }
+
+        /* Consume only what was actually rendered, never more than the FIFO
+         * holds — the previous version dropped the whole FIFO on underrun. */
+        /* Consume only what was actually rendered, never more than the ring
+         * holds -- an earlier version dropped the whole buffer on underrun. */
+        if (!dstar_playing && pcm_avail == 0)
+            pcm_pos = 0.0f;     /* idle: start the next over from the top */
+
+        if ((int) pcm_pos > 0 && pcm_avail > 0) {
+            int consumed = (int) pcm_pos;
+            if (consumed > pcm_avail)
+                consumed = pcm_avail;
+            ring_buffer_read_advance(&dstar_pcm_rb, (size_t) consumed * sizeof(float));
             pcm_pos -= (float) consumed;
         }
 
@@ -1520,6 +2052,20 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
         static float mic8k_buf[4096];
         int n8 = 0;
         resample_96k_to_8k(signal_input_f, block_size, mic8k_buf, &n8);
+
+        /* Debug hook: touch /tmp/dstar_tx8k_dump to capture exactly what the
+         * AMBE encoder is fed, 8 kHz float32 mono. Isolates the audio path
+         * (mic/inject -> resample) from the vocoder, which mangles tones and
+         * music badly enough to defeat timing measurements made after it. */
+        {
+            static FILE *tx8kf = NULL;
+            if (tx8kf == NULL && access("/tmp/dstar_tx8k_dump", F_OK) == 0) {
+                tx8kf = fopen("/tmp/dstar_tx8k.f32", "wb");
+                fprintf(stderr, "DSTAR tx8k dump active\n");
+            }
+            if (tx8kf != NULL && n8 > 0)
+                fwrite(mic8k_buf, sizeof(float), (size_t) n8, tx8kf);
+        }
         for (int k = 0; k < n8; k++)
         {
             dstar_mic8k[dstar_mic8k_n++] = mic8k_buf[k];
@@ -1535,9 +2081,44 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             }
         }
 
-        /* 2. Pull GMSK baseband at 24 kHz and upsample 4:1 to 96 kHz */
+        /* 2. Pull GMSK baseband at 24 kHz and upsample 4:1 to 96 kHz.
+         *
+         * The modulator emits whole bytes -- 40 samples each (8 symbols x 5)
+         * -- while a block needs block_size/4 = 256 samples, which is not a
+         * multiple of 40. Asking it for 256 directly yields 240 and leaves
+         * the tail to be zero-filled, and a zero in the FM modulating signal
+         * is bare carrier: 0.67 ms of unmodulated transmitter every 10.67 ms
+         * block, 6% of the time, forever. A receiver sees a carrier it can
+         * never sync to (the IC-7100 shows RX but flickers DV->FM).
+         *
+         * So generate into a FIFO in the modulator's own 40-sample units and
+         * drain exactly what the block needs. */
+        static float gmsk_fifo[4096];
+        static int   gmsk_fifo_n;
         static float gmsk24[1024];
-        int n24 = sbitx_dstar_tx_generate(dstar_tx, gmsk24, block_size / 4);
+        const int need24 = (int) block_size / 4;
+
+        while (gmsk_fifo_n + 64 <= (int) (sizeof(gmsk_fifo) / sizeof(gmsk_fifo[0]))) {
+            int got = sbitx_dstar_tx_generate(dstar_tx, gmsk_fifo + gmsk_fifo_n, 64);
+            if (got <= 0)
+                break;
+            gmsk_fifo_n += got;
+            if (gmsk_fifo_n >= need24 * 3)
+                break;          /* a few blocks of lead is plenty */
+        }
+
+        /* Copy a window WITHOUT consuming it: the fractional resampler below
+         * decides how much it actually used, and the leftover fraction has
+         * to survive to the next block or the clock correction is thrown
+         * away one block at a time. */
+        const int want24 = need24 + 2;
+        int n24 = (gmsk_fifo_n < want24) ? gmsk_fifo_n : want24;
+        if (n24 > 0)
+            memcpy(gmsk24, gmsk_fifo, (size_t) n24 * sizeof(float));
+        for (int k = n24; k < want24; k++)
+            gmsk24[k] = (n24 > 0) ? gmsk24[n24 - 1] : 0.0f;
+        if (n24 > 0)
+            n24 = want24;
 
         /* Map the modem baseband (±0.0257) to the requested FM deviation.
          * The FM voice path reaches ±5 kHz at full scale after its 0.104
@@ -1546,10 +2127,48 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
         float dev_gain = (float) radio_h_dsp->dstar_deviation / 5000.0f * 0.104f / 0.0257f;
         dev_gain *= radio_h_dsp->dstar_tx_gain;
 
+        /* Upsample 24 kHz -> 96 kHz with the transmit-side mirror of
+         * dstar_clock_ppm.
+         *
+         * The DAC clock is the same crystal the ADC runs on, ~+301 ppm fast
+         * here, so emitting exactly 4 DAC samples per modem sample puts the
+         * signal on the air at 4801.4 baud -- measured with an Airspy
+         * against the IC-7100's 4800.02. That offset drifts the receiver's
+         * sampling point across the 400 ms a slow-data header spans, so the
+         * bit errors land in the SAME places every superframe, which is
+         * precisely what majority voting cannot repair.
+         *
+         * Stretching the stream by (1 + ppm) makes a symbol occupy
+         * 20*(1+ppm) DAC samples, i.e. exactly 4800 baud once the fast clock
+         * has had its way. Linear interpolation also retires the old
+         * zero-order-hold staircase. */
+        static double tx_up_pos;
+        const double tx_up_step = 1.0 / (4.0 * (1.0 + dstar_clock_track * 1e-6));
+
         for (i = 0; i < block_size; i++)
         {
-            float g = (i / 4 < n24) ? gmsk24[i / 4] : 0.0f;
+            int   j = (int) tx_up_pos;
+            float g = 0.0f;
+            if (j + 1 < n24) {
+                float f = (float) (tx_up_pos - (double) j);
+                g = (1.0f - f) * gmsk24[j] + f * gmsk24[j + 1];
+                tx_up_pos += tx_up_step;
+            } else if (n24 > 0) {
+                g = gmsk24[n24 - 1];
+            }
             tx_float_out[i] = g * dev_gain;
+        }
+        /* Consume only the whole modem samples the resampler walked past and
+         * keep the fraction for next time -- that fraction IS the clock
+         * correction (about 0.08 samples per block at +301 ppm). */
+        int used = (int) tx_up_pos;
+        if (used > gmsk_fifo_n)
+            used = gmsk_fifo_n;
+        if (used > 0) {
+            memmove(gmsk_fifo, gmsk_fifo + used,
+                    (size_t) (gmsk_fifo_n - used) * sizeof(float));
+            gmsk_fifo_n -= used;
+            tx_up_pos -= (double) used;
         }
 
         static complexf fm_tx_iq[1024];
@@ -1697,7 +2316,15 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     uint16_t tx_mode_for_sb = radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].mode;
     if (tx_mode_for_sb == MODE_LSB)
         memset(fft_out, 0, sizeof(fftw_complex) * (MAX_BINS/2));
-    else if (tx_mode_for_sb != MODE_FM && tx_mode_for_sb != MODE_AM && tx_mode_for_sb != MODE_DRM)
+    /* D-STAR joins FM/AM/DRM in keeping BOTH halves — the exact mirror of
+     * the receive path. Its GMSK sits on the carrier and spans ~±3 kHz, so
+     * zeroing the negative half single-sideband's an FM signal: it destroys
+     * the symmetry the receiving rig's discriminator needs and throws away
+     * half the power. Measured on the air before this fix, our transmitted
+     * spectrum was lopsided (+25 dB at +0..1 kHz against +15 dB at -1..0)
+     * and the IC-7100 showed a carrier it could never decode. */
+    else if (tx_mode_for_sb != MODE_FM && tx_mode_for_sb != MODE_AM &&
+             tx_mode_for_sb != MODE_DRM && tx_mode_for_sb != MODE_DSTAR)
         memset((void *) fft_out + (MAX_BINS/2 * sizeof(fftw_complex)), 0, sizeof(fftw_complex) * (MAX_BINS/2));
 
     //now rotate to the tx_bin
@@ -1872,10 +2499,15 @@ void dsp_set_filters()
     }
     else if (mode == MODE_DSTAR)
     {
-        /* D-STAR DV GMSK occupies ~6.25 kHz around the carrier; force a
-         * wide FM-like passband regardless of the voice BPF settings. */
-        filter_tune(rx_filter, 300.0 / 96000.0, 4200.0 / 96000.0, 5);
-        filter_tune(tx_filter, 300.0 / 96000.0, 4200.0 / 96000.0, 5);
+        /* D-STAR DV is GMSK on FM (±1.2 kHz deviation): the passband must
+         * keep the carrier (the FM discriminator needs it - the D-STAR
+         * spectrum peaks at DC, verified against the Airspy capture) and
+         * cover the ±~3 kHz signal. filter_tune's transition band eats the
+         * band EDGES (the response is 0 at lo/hi), so the passband must
+         * straddle DC: -6..+6 kHz, then the sideband zeroing below keeps
+         * only the positive half and DC survives at full response. */
+        filter_tune(rx_filter, -6000.0 / 96000.0, 6000.0 / 96000.0, 5);
+        filter_tune(tx_filter, -6000.0 / 96000.0, 6000.0 / 96000.0, 5);
     }
     else if (mode == MODE_LSB)
     {
