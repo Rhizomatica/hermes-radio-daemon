@@ -38,6 +38,7 @@ void tuning_isr_b(void);
 void knob_a_pressed(void);
 void knob_b_pressed(void);
 void ptt_change(void);
+void ptt_poll_debounced(int level);
 void dash_change(void);
 
 // encoder-related functions

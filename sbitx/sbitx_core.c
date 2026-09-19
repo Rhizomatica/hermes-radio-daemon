@@ -490,7 +490,21 @@ void swr_protection_check(radio *radio_h)
 static void tr_switch(radio *radio_h, bool txrx_state)
 {
     if (txrx_state == radio_h->txrx_state)
+    {
+        /* Nothing to sequence, but for RX still drive the transmit line low
+         * rather than trusting the cached flag. If the two ever disagree --
+         * a process killed mid-transmission leaves TX_LINE high, and a fresh
+         * one starts with txrx_state == IN_RX -- the old unconditional return
+         * made RX impossible to command: ptt_off answered NOK because the
+         * flag already read IN_RX while the hardware stayed keyed. Asserting
+         * the safe direction is idempotent and costs one GPIO write.
+         *
+         * The TX direction is deliberately NOT asserted here: a redundant
+         * call must never be able to key the radio. */
+        if (txrx_state == IN_RX)
+            set_drive(TX_LINE, DRIVE_LOW);
         return;
+    }
 
     if (radio_h->swr_protection_enabled)
     {
