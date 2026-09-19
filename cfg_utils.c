@@ -361,6 +361,9 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     snprintf(radio_h->dstar_mycall, sizeof(radio_h->dstar_mycall), "%-8s", s);
     s = iniparser_getstring(ini, "main:dstar_urcall", "CQCQCQ  ");
     snprintf(radio_h->dstar_urcall, sizeof(radio_h->dstar_urcall), "%-8s", s);
+    radio_h->dstar_af_gain = (float) iniparser_getdouble(ini, "main:dstar_af_gain", 1.0);
+    i = iniparser_getint(ini, "main:dstar_clock_ppm", 0);
+    radio_h->dstar_clock_ppm = (int32_t) i;
     i = iniparser_getint(ini, "main:dstar_verbose", 0);
     radio_h->dstar_verbose = (uint16_t) i;
     i = iniparser_getint(ini, "main:dstar_denoise", 1);

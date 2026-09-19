@@ -394,6 +394,26 @@ typedef struct {
     char  dstar_urcall[16];
     /* Log D-STAR RX frames/sync to stderr (0 off, 1 on) for bench debugging. */
     _Atomic uint16_t dstar_verbose;
+    /* Sample-clock correction for the D-STAR RX chain, in ppm.
+     *
+     * The rig's 4800 baud symbol clock and the sbitx codec's sampling clock
+     * are independent crystals. On this hardware the codec runs ~+300 ppm
+     * fast, which walks the symbol phase ~3 samples per 420 ms superframe —
+     * and a symbol is only 5 samples at 24 kHz, so the sampling point drifts
+     * through the eye in about a second. The modem slices at a fixed phase,
+     * so that shows up as a few bit errors per frame: sync holds, the header
+     * FEC survives, and the AMBE payload comes out as garble.
+     *
+     * Positive values speed the decimated stream up. Measure it by finding
+     * the baud line in the discriminator stream (it should sit at exactly
+     * 4800 Hz) and negating the offset. */
+    _Atomic int32_t dstar_clock_ppm;
+    /* Audio gain applied to the DECODED D-STAR voice on its way to the
+     * speaker and the websocket. Kept separate from dstar_rx_gain, which
+     * scales the discriminator signal feeding the modem: one is a listening
+     * level, the other is a demodulator input level, and they had been
+     * sharing a single knob. */
+    float dstar_af_gain;
     /* Run-time tunable: enable the specbleach denoise front-end on the
      * D-STAR TX mic path (1 on, 0 off). */
     _Atomic uint16_t dstar_denoise;
