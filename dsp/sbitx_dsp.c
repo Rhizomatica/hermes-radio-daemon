@@ -999,9 +999,20 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
 
         {
             static FILE *rawdump = NULL;
-            if (rawdump == NULL && access("/tmp/dstar_raw_dump", F_OK) == 0) {
-                rawdump = fopen("/tmp/dstar_raw.s32", "wb");
-                fprintf(stderr, "DSTAR raw input dump active\n");
+            static int rawcheck = 0;
+            /* Re-check the trigger once per block rather than per sample:
+             * this runs at 96 kHz. Closing on removal keeps a forgotten
+             * dump from filling /tmp at 384 kB/s. */
+            if ((rawcheck++ & 1023) == 0) {
+                bool want = access("/tmp/dstar_raw_dump", F_OK) == 0;
+                if (rawdump == NULL && want) {
+                    rawdump = fopen("/tmp/dstar_raw.s32", "wb");
+                    fprintf(stderr, "DSTAR raw input dump active\n");
+                } else if (rawdump != NULL && !want) {
+                    fclose(rawdump);
+                    rawdump = NULL;
+                    fprintf(stderr, "DSTAR raw input dump closed\n");
+                }
             }
             if (rawdump != NULL)
                 fwrite(&input_rx[j], 4, 1, rawdump);
@@ -1338,23 +1349,25 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             for (int k = 0; k < n24; k++)
                 rx24[k] *= gain;
 
-            /* Debug hook: if /tmp/dstar_rx24_dump exists, dump the 24 kHz
-             * discriminator stream for offline analysis. */
+            /* Debug hook: while /tmp/dstar_rx24_dump exists, dump the 24 kHz
+             * discriminator stream for offline analysis. Written as raw
+             * float32 so the true excursion is visible -- an earlier s16
+             * version clamped to +-1.0 and hid 28% of the samples. The file
+             * is closed as soon as the trigger goes away, so a forgotten
+             * dump cannot fill /tmp. */
             {
                 static FILE *dbgf = NULL;
-                if (dbgf == NULL && access("/tmp/dstar_rx24_dump", F_OK) == 0) {
-                    dbgf = fopen("/tmp/dstar_rx24.s16", "wb");
+                bool want = access("/tmp/dstar_rx24_dump", F_OK) == 0;
+                if (dbgf == NULL && want) {
+                    dbgf = fopen("/tmp/dstar_rx24.f32", "wb");
                     fprintf(stderr, "DSTAR rx24 dump active\n");
+                } else if (dbgf != NULL && !want) {
+                    fclose(dbgf);
+                    dbgf = NULL;
+                    fprintf(stderr, "DSTAR rx24 dump closed\n");
                 }
-                if (dbgf != NULL) {
-                    for (int k = 0; k < n24; k++) {
-                        float v = rx24[k] * 32767.0f;
-                        if (v > 32767.0f) v = 32767.0f;
-                        if (v < -32767.0f) v = -32767.0f;
-                        short sv = (short)v;
-                        fwrite(&sv, 2, 1, dbgf);
-                    }
-                }
+                if (dbgf != NULL)
+                    fwrite(rx24, sizeof(float), (size_t) n24, dbgf);
             }
 
             sbitx_dstar_rx_process(dstar_rx, rx24, n24);
