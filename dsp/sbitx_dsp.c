@@ -2072,9 +2072,14 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
          * music badly enough to defeat timing measurements made after it. */
         {
             static FILE *tx8kf = NULL;
-            if (tx8kf == NULL && access("/tmp/dstar_tx8k_dump", F_OK) == 0) {
+            bool want8k = access("/tmp/dstar_tx8k_dump", F_OK) == 0;
+            if (tx8kf == NULL && want8k) {
                 tx8kf = fopen("/tmp/dstar_tx8k.f32", "wb");
                 fprintf(stderr, "DSTAR tx8k dump active\n");
+            } else if (tx8kf != NULL && !want8k) {
+                fclose(tx8kf);
+                tx8kf = NULL;
+                fprintf(stderr, "DSTAR tx8k dump closed\n");
             }
             if (tx8kf != NULL && n8 > 0)
                 fwrite(mic8k_buf, sizeof(float), (size_t) n8, tx8kf);
