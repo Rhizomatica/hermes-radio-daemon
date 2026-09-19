@@ -111,9 +111,21 @@ label { color: #080; }
         <option value="DRM">DRM</option>
         <option value="FT8">FT8</option>
         <option value="CW">CW</option><option value="RTTY">RTTY</option>
+        <option value="DSTAR">DSTAR</option>
       </select>
       <button id="ptt-btn" onclick="ptt_toggle()">PTT ON</button>
       <button onclick="send_cmd('get_state')">Refresh</button>
+    </div>
+    <!-- D-STAR: last header decoded on receive. Hidden unless the radio is in
+         DSTAR, since these fields mean nothing in any other mode. -->
+    <div id="dstar-panel" class="row" style="display:none; margin-top:6px; flex-wrap:wrap; gap:10px">
+      <strong style="color:#8cf">D-STAR RX</strong>
+      <span>MY: <code id="ds-my">--------</code></span>
+      <span>UR: <code id="ds-ur">--------</code></span>
+      <span>RPT1: <code id="ds-r1">--------</code></span>
+      <span>RPT2: <code id="ds-r2">--------</code></span>
+      <span>headers: <code id="ds-heard">0</code></span>
+      <span id="ds-age" style="color:#888"></span>
     </div>
     <div id="state" style="margin-top:6px; font-size:12px; color:#888;"></div>
   </div>
@@ -333,6 +345,7 @@ function handle_text(data) {
       }
       if (j.profile !== undefined) $('profile').value = j.profile;
       if (j.mode) { g_mode = j.mode; $('mode').value = j.mode; }
+      update_dstar(j);
       if (j.s_meter !== undefined) update_smeter(j.s_meter);
       if (j.txrx_state !== undefined) {
         ptt_on = (j.txrx_state === 1);
@@ -656,6 +669,39 @@ function sm_pct(db) {
   }
   return 100;
 }
+/* D-STAR header display. dstar_heard counts decoded headers, so a change in it
+ * means a genuinely new decode rather than the same values being repeated in
+ * every status frame -- that is what drives the age hint. */
+var g_ds_heard = -1, g_ds_when = 0;
+function update_dstar(j) {
+  var panel = $('dstar-panel');
+  if (!panel) return;
+  panel.style.display = (j.mode === 'DSTAR') ? 'flex' : 'none';
+  if (j.mode !== 'DSTAR') return;
+  /* D-STAR callsign fields are 8 characters space-padded on the wire, so trim
+   * them for display and show a placeholder when a field is empty or all
+   * spaces (which is what an un-recovered field looks like). */
+  var blank = function (v) {
+    var t = (v === undefined || v === null) ? '' : String(v).trim();
+    return t === '' ? '--------' : t;
+  };
+  $('ds-my').textContent = blank(j.dstar_mycall);
+  $('ds-ur').textContent = blank(j.dstar_urcall);
+  $('ds-r1').textContent = blank(j.dstar_rpt1);
+  $('ds-r2').textContent = blank(j.dstar_rpt2);
+  if (j.dstar_heard !== undefined) {
+    $('ds-heard').textContent = j.dstar_heard;
+    if (j.dstar_heard !== g_ds_heard) { g_ds_heard = j.dstar_heard; g_ds_when = Date.now(); }
+  }
+  var age = $('ds-age');
+  if (g_ds_when && g_ds_heard > 0) {
+    var secs = Math.round((Date.now() - g_ds_when) / 1000);
+    age.textContent = secs < 3 ? '(just now)' : '(' + secs + 's ago)';
+  } else {
+    age.textContent = '(nothing decoded yet)';
+  }
+}
+
 function update_smeter(db) {
   var fill = $('smeter-fill'), read = $('smeter-read');
   if (!fill || !read) return;

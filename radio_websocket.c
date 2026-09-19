@@ -303,6 +303,17 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
     pthread_mutex_unlock(&radio_h->message_mutex);
     json_escape(message, message_esc, sizeof(message_esc));
 
+    /* The D-STAR callsigns come straight from a decoder that does emit garbage
+     * on a bad header, so they can hold quotes, backslashes or control bytes.
+     * Unescaped, one of those would corrupt the whole status frame and break
+     * every client parsing it, not just the D-STAR display. */
+    char ds_my[32], ds_ur[32], ds_r1[32], ds_r2[32], ds_sfx[24];
+    json_escape(radio_h->dstar_rx_mycall, ds_my,  sizeof(ds_my));
+    json_escape(radio_h->dstar_rx_urcall, ds_ur,  sizeof(ds_ur));
+    json_escape(radio_h->dstar_rx_rpt1,   ds_r1,  sizeof(ds_r1));
+    json_escape(radio_h->dstar_rx_rpt2,   ds_r2,  sizeof(ds_r2));
+    json_escape(radio_h->dstar_rx_suffix, ds_sfx, sizeof(ds_sfx));
+
     snprintf(json, json_len,
         "{\"type\":\"state\",\"profile\":%u,\"frequency\":%u,\"freq\":%u,"
          "\"mode\":\"%s\",\"tx\":%s,\"txrx_state\":%d,"
@@ -322,7 +333,13 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
          "\"pipeline_media\":\"%s\",\"pipeline_runtime\":\"%s\","
          "\"stream_rx_audio\":%s,\"stream_tx_audio\":%s,"
          "\"stream_spectrum\":%s,\"stream_recording\":%s,"
-         "\"audio_bridge\":%s}",
+         "\"audio_bridge\":%s,"
+         /* Last D-STAR header decoded on receive. dstar_heard increments per
+          * header, so a client can distinguish a fresh decode from a stale
+          * one and clear its display when a new station takes over. */
+         "\"dstar_mycall\":\"%s\",\"dstar_urcall\":\"%s\","
+         "\"dstar_rpt1\":\"%s\",\"dstar_rpt2\":\"%s\","
+         "\"dstar_suffix\":\"%s\",\"dstar_heard\":%u}",
          active,
          radio_h->profiles[active].freq, radio_h->profiles[active].freq,
          mode_to_string(radio_h->profiles[active].mode),
@@ -358,7 +375,9 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
          (radio_pipeline_has_capability(radio_h, RADIO_PIPELINE_CAP_RX_RECORDING) ||
           radio_pipeline_has_capability(radio_h, RADIO_PIPELINE_CAP_TX_RECORDING))
             ? "true" : "false",
-         radio_pipeline_uses_daemon_audio_bridge(radio_h) ? "true" : "false");
+         radio_pipeline_uses_daemon_audio_bridge(radio_h) ? "true" : "false",
+         ds_my, ds_ur, ds_r1, ds_r2, ds_sfx,
+         (unsigned) radio_h->dstar_rx_heard);
 }
 
 /* ─────────────────────── command dispatcher ─────────────────────── */

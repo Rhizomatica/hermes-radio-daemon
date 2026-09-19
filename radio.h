@@ -475,6 +475,26 @@ typedef struct {
     _Atomic bool     rx_spectrum_valid;
     _Atomic bool     tx_spectrum_valid;
     _Atomic uint32_t spectrum_sample_rate;
+
+    /* Last D-STAR header decoded on receive, for display by the web panel and
+     * any other client. Written by the DSP's header callback (once per over,
+     * or once per superframe when it is reassembled from slow data), read by
+     * build_status_json().
+     *
+     * Deliberately appended at the END of this struct: it lives in shared
+     * memory, so a client built against an older layout keeps working as long
+     * as nothing before it moves.
+     *
+     * No lock. Each field is written as a whole fixed-size callsign and the
+     * reader only displays it, so the worst a concurrent read can show is one
+     * field from the previous over next to one from the current. dstar_rx_heard
+     * counts headers so a client can tell a fresh decode from a stale one. */
+    char             dstar_rx_mycall[9];
+    char             dstar_rx_urcall[9];
+    char             dstar_rx_rpt1[9];
+    char             dstar_rx_rpt2[9];
+    char             dstar_rx_suffix[5];
+    _Atomic uint32_t dstar_rx_heard;
 } radio;
 
 /* digi_tx_queue helpers (defined in cfg_utils.c or radio_websocket.c). */

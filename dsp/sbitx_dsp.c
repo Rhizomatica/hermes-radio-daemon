@@ -652,6 +652,14 @@ static void dstar_rx_header_cb(void *user, const uint8_t *header)
     }
     dstar_rx_frame_count = 0;
 
+    /* Publish it for the web panel and any other client. */
+    snprintf(radio_h_dsp->dstar_rx_rpt1,   sizeof(radio_h_dsp->dstar_rx_rpt1),   "%s", rpt1);
+    snprintf(radio_h_dsp->dstar_rx_rpt2,   sizeof(radio_h_dsp->dstar_rx_rpt2),   "%s", rpt2);
+    snprintf(radio_h_dsp->dstar_rx_urcall, sizeof(radio_h_dsp->dstar_rx_urcall), "%s", urcall);
+    snprintf(radio_h_dsp->dstar_rx_mycall, sizeof(radio_h_dsp->dstar_rx_mycall), "%s", mycall);
+    snprintf(radio_h_dsp->dstar_rx_suffix, sizeof(radio_h_dsp->dstar_rx_suffix), "%s", suffix);
+    radio_h_dsp->dstar_rx_heard++;
+
     FILE *f = fopen("/var/spool/hermes-digi/spool.log", "a");
     if (f) {
         fprintf(f, "DSTAR rx header: ur=%s my=%s\n", urcall, mycall);
