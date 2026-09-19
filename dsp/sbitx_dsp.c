@@ -2514,12 +2514,46 @@ void dsp_set_filters()
     {
         /* D-STAR DV is GMSK on FM (±1.2 kHz deviation): the passband must
          * keep the carrier (the FM discriminator needs it - the D-STAR
-         * spectrum peaks at DC, verified against the Airspy capture) and
-         * cover the ±~3 kHz signal. filter_tune's transition band eats the
-         * band EDGES (the response is 0 at lo/hi), so the passband must
-         * straddle DC: -6..+6 kHz, then the sideband zeroing below keeps
-         * only the positive half and DC survives at full response. */
-        filter_tune(rx_filter, -6000.0 / 96000.0, 6000.0 / 96000.0, 5);
+         * spectrum peaks at DC, verified against the Airspy capture) and it
+         * must straddle DC, because STEP 5 keeps BOTH spectral halves for
+         * DSTAR and the modulation lies on both sides of the dial.
+         *
+         * RX is deliberately NARROWER than TX. At 4800 baud with ±1.2 kHz
+         * deviation, 99% of the GMSK power falls inside ~±2.9 kHz, so a wider
+         * passband only adds noise - and an FM discriminator degrades sharply
+         * once it nears threshold, so the cost is not gradual. This used to be
+         * ±6 kHz, which cost nearly everything: on a preserved IC-7100 capture
+         * the live daemon managed 276 frames and never recovered one header,
+         * while the same samples through a ±3 kHz front end decoded cleanly.
+         *
+         * Measured by replaying dstar-captures/sbitx_adc_96k_icom_20260919.s32
+         * through an offline replica of this exact chain (see the README and
+         * replica.py beside it), as slow-data headers / data-sync locks:
+         *
+         *     ±6000 Hz    0 hdr,  0 locks,   0 frames
+         *     ±4000 Hz    2 hdr, 44 locks, 780 frames
+         *     ±3200 Hz    5 hdr, 47 locks, 780 frames
+         *     ±2800 Hz    7 hdr, 53 locks, 637 frames
+         *
+         * ±2800 looks best there, but that capture has the two rigs tuned
+         * exactly together. Repeating the sweep against a synthetic carrier
+         * offset shows ±2800 has no margin at all, and picks ±3200:
+         *
+         *     offset    ±2800      ±3000      ±3200      ±3400
+         *       ±100    (dead)   591 fr     780 fr     759 fr
+         *       ±200    (dead)   427 fr     616 fr     507 fr
+         *       ±300    (dead)   360 fr     633 fr     738 fr
+         *
+         * 200 Hz at 7.1 MHz is only 28 ppm between two rigs - ordinary - so the
+         * offset margin is worth more than the last two slow-data headers.
+         * Note that NOTHING here survives 400 Hz: the chain has no carrier
+         * recovery. The discriminator DC removed just below is a direct
+         * measurement of that offset, so re-centring on it is the obvious way
+         * to widen this limit without widening the filter.
+         *
+         * TX stays wide: there the filter shapes our own outgoing GMSK, so
+         * passing it undistorted matters more than rejecting noise. */
+        filter_tune(rx_filter, -3200.0 / 96000.0, 3200.0 / 96000.0, 5);
         filter_tune(tx_filter, -6000.0 / 96000.0, 6000.0 / 96000.0, 5);
     }
     else if (mode == MODE_LSB)
