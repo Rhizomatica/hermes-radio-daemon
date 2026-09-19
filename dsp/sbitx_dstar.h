@@ -8,9 +8,13 @@
  * runs the full frame state machine: frame-sync search, header decode
  * (descramble, deinterleave, Viterbi, CRC16), data-frame collection with
  * data-sync correlation, and end-of-transmission detection. Decoded
- * header/data frames and loss of lock are delivered via callbacks.
+ * header/data frames and loss of lock are delivered via callbacks. The
+ * header callback fires both for the burst at the start of an over and for
+ * headers reassembled from the slow-data stream that repeats it every
+ * superframe, so tuning in mid-over still yields the callsigns.
  *
- * TX: accepts 12-byte DV frames (24-bit sync word + 72-bit AMBE+FEC data)
+ * TX: accepts 12-byte DV frames (72-bit AMBE voice first, then the 24-bit
+ * sync or slow-data field -- see DSTAR_DATA_SYNC_BYTES)
  * and GMSK-modulates them (BT=0.35, 3-symbol Gaussian filter, identical to
  * MMDVM's arm_fir_interpolate_q15 polyphase structure) into 24 kHz baseband
  * samples.
@@ -31,7 +35,7 @@
 #define SBITX_DSTAR_TX_RATE   24000
 
 #define SBITX_DSTAR_HEADER_BYTES 41
-#define SBITX_DSTAR_FRAME_BYTES  12   /* 24-bit sync + 72-bit data */
+#define SBITX_DSTAR_FRAME_BYTES  12   /* 9 bytes AMBE + 3 bytes sync/slow data */
 #define SBITX_DSTAR_DATA_BYTES   9
 
 /* TX queue depth: enough for a header + preamble + ~4 s of voice. */
@@ -64,6 +68,34 @@ void sbitx_dstar_rx_set_cbs(sbitx_dstar_rx *rx,
 void sbitx_dstar_rx_set_polarity(sbitx_dstar_rx *rx, float polarity);
 
 void sbitx_dstar_rx_reset(sbitx_dstar_rx *rx);
+
+/* Where header recovery stands: how often the header preamble was found, how
+ * often the collected header passed CRC, and how often the modem locked via a
+ * data sync instead (which yields no header at all). */
+typedef struct {
+    uint32_t frame_sync;
+    uint32_t header_ok;
+    uint32_t header_bad;
+    uint32_t header_soft_ok;
+    uint32_t data_sync;
+    uint32_t header_slow;   /* headers recovered from the slow-data stream */
+} sbitx_dstar_rx_stats;
+
+/* Diagnostic hook: every 41-byte header assembled from slow data, with its
+ * CRC verdict. For debugging the slow-data layout against a known header. */
+void sbitx_dstar_rx_set_slow_debug(sbitx_dstar_rx *rx,
+                                   void (*cb)(void *user, const uint8_t *hdr41, bool crc_ok));
+
+void sbitx_dstar_rx_get_stats(const sbitx_dstar_rx *rx, sbitx_dstar_rx_stats *out);
+
+/* Sampling-clock error against the transmitter, in ppm, measured from the
+ * interval between data syncs. Returns false until enough sync history has
+ * accumulated (a few superframes); consumes the accumulator when it returns
+ * true. Positive means our samples run fast and the decimation step needs to
+ * grow by that fraction. The modem itself can only absorb about 99 ppm by
+ * nudging its own sampling pointer, so larger errors must be corrected in
+ * the resampler feeding it. */
+bool sbitx_dstar_rx_take_clock_error(sbitx_dstar_rx *rx, double *ppm);
 
 /* Feed n samples of discriminator audio at 24 kHz. Callbacks may fire. */
 void sbitx_dstar_rx_process(sbitx_dstar_rx *rx, const float *audio, int n);

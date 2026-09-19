@@ -28,6 +28,8 @@
 #define DSTAR_FRAME_SYNC_LENGTH_SYMBOLS  24U
 #define DSTAR_FRAME_SYNC_LENGTH_SAMPLES  120U
 #define DSTAR_DATA_SYNC_LENGTH_SYMBOLS   24U
+/* One superframe: the data sync recurs every 21 frames. */
+#define DSTAR_SUPERFRAME_SAMPLES         (21U * DSTAR_DATA_LENGTH_SAMPLES)
 #define DSTAR_DATA_SYNC_LENGTH_SAMPLES   120U
 #define DSTAR_END_SYNC_LENGTH_BYTES      6U
 
@@ -396,6 +398,54 @@ struct sbitx_dstar_rx {
     float    header_buffer[DSTAR_FEC_SECTION_LENGTH_SAMPLES + 2U * DSTAR_RADIO_SYMBOL_LENGTH];
     float    data_buffer[DSTAR_DATA_LENGTH_SAMPLES];
     uint16_t bit_ptr;
+
+    /* Sampling-clock observation.
+     *
+     * At lock, consecutive data syncs are exactly one superframe apart --
+     * 21 frames of 480 samples. Any surplus or shortfall in OUR samples is
+     * the difference between the transmitter's symbol clock and our sampling
+     * clock, which is what dstar_clock_ppm corrects. The modem can only
+     * re-align its own sampling pointer by +/-1 sample per superframe
+     * (max_sync_ptr = sync_ptr + 1), i.e. about 99 ppm of tracking range, so
+     * anything larger has to be fixed upstream in the resampler. */
+    /* Diagnostics: where header recovery succeeds or fails. */
+    uint32_t stat_frame_sync;    /* header preamble correlations accepted */
+    uint32_t stat_header_ok;     /* header decoded and CRC verified */
+    uint32_t stat_header_bad;    /* header collected but CRC rejected */
+    uint32_t stat_header_soft_ok;/* of the good ones, how many the soft path got */
+    uint32_t stat_data_sync;     /* data syncs accepted (lock without a header) */
+    uint32_t stat_header_slow;   /* headers recovered from the slow-data stream */
+
+    /* Slow-data header assembly.
+     *
+     * Besides the header burst at the start of an over, D-STAR repeats the
+     * whole 41-byte header in the 3 slow-data bytes of every voice frame:
+     * 6-byte units spanning 2 frames, each starting with a type byte (0x5n
+     * = header, n data bytes), restarting at every data sync. That gives a
+     * fresh header roughly every 420 ms, so a receiver tuning in mid-over --
+     * or one that simply missed the single header burst, which is most of
+     * them -- still gets the callsigns. The stream carries no FEC, so the
+     * assembled header is only trusted once its CRC16 verifies. */
+    void (*slow_debug_cb)(void *user, const uint8_t *hdr41, bool crc_ok);
+    uint8_t  slow_unit[6];
+    uint8_t  slow_unit_n;
+    uint8_t  slow_header[SBITX_DSTAR_HEADER_BYTES];
+    uint8_t  slow_header_n;
+    /* Per-bit vote counters across superframes. The header repeats
+     * identically about 2.4 times a second and the slow-data stream has no
+     * FEC, so a single stray bit fails the CRC for that superframe -- but
+     * the errors land in different places each time, and voting bit by bit
+     * across a few repeats recovers a clean header in ~2 s. */
+    uint8_t  slow_vote[SBITX_DSTAR_HEADER_BYTES][8];
+    uint8_t  slow_vote_n;
+    uint8_t  last_header[SBITX_DSTAR_HEADER_BYTES];
+    bool     last_header_valid;
+
+    uint64_t sample_count;
+    uint64_t last_sync_sample;
+    bool     last_sync_valid;
+    int64_t  drift_samples;   /* accumulated surplus samples */
+    uint64_t drift_span;      /* samples the accumulation covers */
     uint16_t header_ptr;
     uint16_t data_ptr;
     uint16_t start_ptr;
@@ -465,6 +515,7 @@ dstar_correlate_frame_sync(sbitx_dstar_rx *rx)
         if (corr > rx->max_frame_corr) {
             rx->max_frame_corr = corr;
             rx->header_ptr = 0U;
+            rx->stat_frame_sync++;
             return true;
         }
     }
@@ -499,6 +550,27 @@ dstar_correlate_data_sync(sbitx_dstar_rx *rx)
 
         if (corr > rx->max_data_corr) {
             rx->max_data_corr = corr;
+
+            /* Time this sync against the last one. round() absorbs a missed
+             * superframe; anything further out is a false correlation and is
+             * dropped rather than poisoning the estimate. */
+            if (rx->last_sync_valid) {
+                int64_t elapsed = (int64_t) (rx->sample_count - rx->last_sync_sample);
+                int64_t frames  = (elapsed + DSTAR_SUPERFRAME_SAMPLES / 2) / DSTAR_SUPERFRAME_SAMPLES;
+                if (frames >= 1 && frames <= 4) {
+                    int64_t expected = frames * DSTAR_SUPERFRAME_SAMPLES;
+                    int64_t err = elapsed - expected;
+                    if (err > -(int64_t) DSTAR_DATA_LENGTH_SAMPLES &&
+                        err <  (int64_t) DSTAR_DATA_LENGTH_SAMPLES) {
+                        rx->drift_samples += err;
+                        rx->drift_span    += (uint64_t) expected;
+                    }
+                }
+            }
+            rx->last_sync_sample = rx->sample_count;
+            rx->last_sync_valid  = true;
+            rx->stat_data_sync++;
+
             rx->frame_count = 0U;
             rx->sync_ptr = rx->data_ptr;
 
@@ -584,6 +656,45 @@ dstar_viterbi_decode(sbitx_dstar_rx *rx, int *data)
     dstar_acs(rx, metric);
 }
 
+/* Soft-decision variant of the Viterbi: the data are the matched-filtered
+ * samples (positive = bit 0, negative = bit 1). The branch metric is the
+ * correlation cost (the MIN still wins), matching the hard metric
+ * (data[1]^b1) + (data[0]^b0): a mismatching 1-bit costs +data, a
+ * mismatching 0-bit costs -data.
+ *
+ * The samples arrive normalised to about +/-1 by dstar_rx_header_soft, and
+ * DSTAR_SOFT_SCALE then sets how much of that confidence survives into the
+ * integer metric the ACS accumulates. That scaling is the whole point: an
+ * earlier version fed raw samples (~0.06 amplitude on this receiver) through
+ * (int)(... + 2.0f), where every branch truncated to the same integer, so the
+ * soft information was thrown away and it behaved as a coarse hard decision.
+ *
+ * Worst-case path metric is DSTAR_FEC_SECTION_LENGTH_SYMBOLS/2 steps times
+ * 2*DSTAR_SOFT_SCALE, i.e. ~21k with scale 64 -- comfortably inside int, and
+ * dstar_acs needs no non-negative metrics (a per-step constant cannot change
+ * which path wins). */
+#define DSTAR_SOFT_SCALE 64.0f
+
+static void
+dstar_viterbi_decode_soft(sbitx_dstar_rx *rx, const float *data)
+{
+    int metric[8];
+
+    const float s1 = data[1] * DSTAR_SOFT_SCALE;
+    const float s0 = data[0] * DSTAR_SOFT_SCALE;
+
+    metric[0] = (int) lrintf(-s1 - s0);   /* b1=0 b0=0 */
+    metric[1] = (int) lrintf( s1 + s0);   /* b1=1 b0=1 */
+    metric[2] = (int) lrintf( s1 - s0);   /* b1=1 b0=0 */
+    metric[3] = (int) lrintf(-s1 + s0);   /* b1=0 b0=1 */
+    metric[4] = metric[1];
+    metric[5] = metric[0];
+    metric[6] = metric[3];
+    metric[7] = metric[2];
+
+    dstar_acs(rx, metric);
+}
+
 static void
 dstar_trace_back(sbitx_dstar_rx *rx)
 {
@@ -646,6 +757,63 @@ dstar_checksum(const uint8_t *header)
 
     return crc.crc8[0] == header[SBITX_DSTAR_HEADER_BYTES - 2U]
            && crc.crc8[1] == header[SBITX_DSTAR_HEADER_BYTES - 1U];
+}
+
+/* Soft-decision header decode: the matched-filtered samples flow through the
+ * descramble (sign flip) and deinterleave (reorder) into the soft Viterbi,
+ * keeping the amplitude as the bit confidence. */
+static bool
+dstar_rx_header_soft(sbitx_dstar_rx *rx, const float *samples, uint16_t start, uint8_t *out)
+{
+    float soft[DSTAR_FEC_SECTION_LENGTH_SYMBOLS];
+    uint16_t p = start;
+    for (int i = 0; i < DSTAR_FEC_SECTION_LENGTH_SYMBOLS; i++) {
+        float v = samples[p];
+        soft[i] = (SCRAMBLE_TABLE_RX[i >> 3] & (0x01U << (i & 7))) ? -v : v;
+        p += DSTAR_RADIO_SYMBOL_LENGTH;
+        if (p >= DSTAR_FEC_SECTION_LENGTH_SAMPLES + 2U * DSTAR_RADIO_SYMBOL_LENGTH)
+            p -= DSTAR_FEC_SECTION_LENGTH_SAMPLES + 2U * DSTAR_RADIO_SYMBOL_LENGTH;
+    }
+
+    float inter[DSTAR_FEC_SECTION_LENGTH_SYMBOLS];
+    memset(inter, 0, sizeof(inter));
+    for (int i = 0; i < DSTAR_FEC_SECTION_LENGTH_SYMBOLS; i++)
+        inter[INTERLEAVE_TABLE_RX[i * 2U] * 8U + INTERLEAVE_TABLE_RX[i * 2U + 1U]] = soft[i];
+
+    for (int i = 0; i < 4; i++)
+        rx->path_metric[i] = 0;
+
+    /* Normalise by the mean symbol magnitude so the metric scale does not
+     * depend on the receiver's gain chain -- only relative confidence
+     * matters to the Viterbi. */
+    float mag = 0.0f;
+    for (int i = 0; i < DSTAR_FEC_SECTION_LENGTH_SYMBOLS; i++)
+        mag += fabsf(inter[i]);
+    mag /= (float) DSTAR_FEC_SECTION_LENGTH_SYMBOLS;
+    const float norm = (mag > 1e-9f) ? (1.0f / mag) : 0.0f;
+
+    float decode_data[2];
+
+    rx->mar = 0U;
+    for (int i = 0; i < DSTAR_FEC_SECTION_LENGTH_SYMBOLS; i += 2) {
+        decode_data[1] = inter[i] * norm;
+        decode_data[0] = inter[i + 1] * norm;
+        dstar_viterbi_decode_soft(rx, decode_data);
+    }
+
+    dstar_trace_back(rx);
+
+    for (int i = 0; i < SBITX_DSTAR_HEADER_BYTES; i++)
+        out[i] = 0x00U;
+
+    unsigned int j = 0;
+    for (int i = 329; i >= 0; i--) {
+        if (READ_BIT1(rx->fec_output, i))
+            out[j >> 3] |= (0x01U << (j & 7));
+        j++;
+    }
+
+    return dstar_checksum(out);
 }
 
 static bool
@@ -770,7 +938,18 @@ dstar_process_header(sbitx_dstar_rx *rx, float sample)
                               buffer, DSTAR_FEC_SECTION_LENGTH_SAMPLES);
 
         uint8_t header[41];
-        bool ok = dstar_rx_header(rx, buffer, header);
+        bool ok = dstar_rx_header_soft(rx, rx->header_buffer, DSTAR_RADIO_SYMBOL_LENGTH, header);
+        if (ok)
+            rx->stat_header_soft_ok++;
+        else
+            ok = dstar_rx_header(rx, buffer, header);
+        if (ok) {
+            rx->stat_header_ok++;
+            memcpy(rx->last_header, header, SBITX_DSTAR_HEADER_BYTES);
+            rx->last_header_valid = true;
+        } else {
+            rx->stat_header_bad++;
+        }
         if (!ok) {
             rx->state = 0;
             rx->max_frame_corr = 0;
@@ -790,6 +969,118 @@ dstar_process_header(sbitx_dstar_rx *rx, float sample)
         rx->min_sync_ptr = 470U;
 
         rx->state = 2;
+    }
+}
+
+/* The fixed pattern D-STAR scrambles every frame's slow-data bytes with. */
+static const uint8_t DSTAR_SLOW_SCRAMBLE[3] = {0x70U, 0x4FU, 0x93U};
+
+static void
+dstar_slow_reset(sbitx_dstar_rx *rx)
+{
+    rx->slow_unit_n = 0U;
+    rx->slow_header_n = 0U;
+}
+
+/* One completed 6-byte slow-data unit. */
+static void
+dstar_slow_unit(sbitx_dstar_rx *rx)
+{
+    /* The type byte is NOT trusted to gate assembly. It is unprotected --
+     * a single bit error turns 0x55 into 0x15, which happens in practice
+     * (slot 3 of the very first superframe in the reference capture) -- and
+     * the byte's position in the superframe already tells us where its data
+     * belongs. So take the five data bytes positionally and let the header
+     * CRC16 be the judge: filler units (0x66) simply produce a header that
+     * fails the check and is discarded. */
+    for (uint8_t i = 0U; i < 5U; i++) {
+        if (rx->slow_header_n < SBITX_DSTAR_HEADER_BYTES)
+            rx->slow_header[rx->slow_header_n++] = rx->slow_unit[1U + i];
+    }
+
+    if (rx->slow_header_n < SBITX_DSTAR_HEADER_BYTES)
+        return;
+
+    rx->slow_header_n = 0U;
+
+    if (rx->slow_debug_cb != NULL)
+        rx->slow_debug_cb(rx->user, rx->slow_header, dstar_checksum(rx->slow_header));
+
+    uint8_t candidate[SBITX_DSTAR_HEADER_BYTES];
+    bool ok = dstar_checksum(rx->slow_header);
+
+    if (ok) {
+        memcpy(candidate, rx->slow_header, sizeof(candidate));
+    } else {
+        /* Fold this repeat into the running vote and test the majority. */
+        if (rx->slow_vote_n >= 32U) {
+            /* Age the counts so a new station's header can take over. */
+            for (int b = 0; b < SBITX_DSTAR_HEADER_BYTES; b++)
+                for (int k = 0; k < 8; k++)
+                    rx->slow_vote[b][k] = (uint8_t) (rx->slow_vote[b][k] / 2U);
+            rx->slow_vote_n /= 2U;
+        }
+
+        for (int b = 0; b < SBITX_DSTAR_HEADER_BYTES; b++)
+            for (int k = 0; k < 8; k++)
+                if (rx->slow_header[b] & (1U << k))
+                    rx->slow_vote[b][k]++;
+        rx->slow_vote_n++;
+
+        if (rx->slow_vote_n < 3U)
+            return;   /* need a few repeats before a vote means anything */
+
+        for (int b = 0; b < SBITX_DSTAR_HEADER_BYTES; b++) {
+            uint8_t v = 0U;
+            for (int k = 0; k < 8; k++)
+                if (rx->slow_vote[b][k] * 2U > rx->slow_vote_n)
+                    v |= (uint8_t) (1U << k);
+            candidate[b] = v;
+        }
+
+        if (!dstar_checksum(candidate))
+            return;
+    }
+
+    /* A header that verified: start the next vote from scratch. */
+    memset(rx->slow_vote, 0, sizeof(rx->slow_vote));
+    rx->slow_vote_n = 0U;
+    memcpy(rx->slow_header, candidate, sizeof(candidate));
+
+    rx->stat_header_slow++;
+
+    /* Only announce a header the caller has not already been given, so a
+     * steady over does not repeat it 2.4 times a second. */
+    if (rx->last_header_valid &&
+        memcmp(rx->last_header, rx->slow_header, SBITX_DSTAR_HEADER_BYTES) == 0)
+        return;
+
+    memcpy(rx->last_header, rx->slow_header, SBITX_DSTAR_HEADER_BYTES);
+    rx->last_header_valid = true;
+    rx->stat_header_ok++;
+
+    if (rx->header_cb != NULL)
+        rx->header_cb(rx->user, rx->slow_header);
+}
+
+/* Feed one delivered frame's slow-data field. slot is the frame's index
+ * within the superframe; slot 0 carries the sync, not slow data. */
+static void
+dstar_slow_feed(sbitx_dstar_rx *rx, const uint8_t *frame, uint8_t slot)
+{
+    if (slot == 0U) {
+        dstar_slow_reset(rx);
+        return;
+    }
+
+    for (uint8_t i = 0U; i < 3U; i++) {
+        if (rx->slow_unit_n < sizeof(rx->slow_unit))
+            rx->slow_unit[rx->slow_unit_n++] = frame[9U + i] ^ DSTAR_SLOW_SCRAMBLE[i];
+    }
+
+    if (rx->slow_unit_n >= sizeof(rx->slow_unit)) {
+        dstar_slow_unit(rx);
+        rx->slow_unit_n = 0U;
     }
 }
 
@@ -839,6 +1130,8 @@ dstar_process_data(sbitx_dstar_rx *rx)
 
         if (rx->data_cb != NULL)
             rx->data_cb(rx->user, buffer);
+
+        dstar_slow_feed(rx, buffer, (uint8_t) (rx->frame_count & 0xFFU));
 
         rx->frame_count++;
 
@@ -909,6 +1202,53 @@ sbitx_dstar_rx_reset(sbitx_dstar_rx *rx)
     rx->max_sync_ptr = NOENDPTR;
     rx->frame_count = 0U;
     rx->countdown = 0U;
+    rx->last_sync_valid = false;
+    rx->drift_samples = 0;
+    rx->drift_span = 0;
+    rx->slow_unit_n = 0U;
+    rx->slow_header_n = 0U;
+    rx->slow_vote_n = 0U;
+    memset(rx->slow_vote, 0, sizeof(rx->slow_vote));
+    rx->last_header_valid = false;
+}
+
+void
+sbitx_dstar_rx_set_slow_debug(sbitx_dstar_rx *rx,
+                              void (*cb)(void *user, const uint8_t *hdr41, bool crc_ok))
+{
+    if (rx != NULL)
+        rx->slow_debug_cb = cb;
+}
+
+void
+sbitx_dstar_rx_get_stats(const sbitx_dstar_rx *rx, sbitx_dstar_rx_stats *out)
+{
+    if (rx == NULL || out == NULL)
+        return;
+
+    out->frame_sync     = rx->stat_frame_sync;
+    out->header_ok      = rx->stat_header_ok;
+    out->header_bad     = rx->stat_header_bad;
+    out->header_soft_ok = rx->stat_header_soft_ok;
+    out->data_sync      = rx->stat_data_sync;
+    out->header_slow    = rx->stat_header_slow;
+}
+
+bool
+sbitx_dstar_rx_take_clock_error(sbitx_dstar_rx *rx, double *ppm)
+{
+    if (rx == NULL || ppm == NULL)
+        return false;
+
+    /* Need a few superframes before the estimate means anything: one
+     * superframe is 420 ms and a single +/-1 sample slip is ~99 ppm. */
+    if (rx->drift_span < 3U * DSTAR_SUPERFRAME_SAMPLES)
+        return false;
+
+    *ppm = (double) rx->drift_samples / (double) rx->drift_span * 1e6;
+    rx->drift_samples = 0;
+    rx->drift_span = 0;
+    return true;
 }
 
 void
@@ -916,6 +1256,8 @@ sbitx_dstar_rx_process(sbitx_dstar_rx *rx, const float *audio, int n)
 {
     if (rx == NULL || audio == NULL)
         return;
+
+    rx->sample_count += (uint64_t) n;
 
     for (int i = 0; i < n; i++) {
         /* Slow DC tracker (carrier-offset drift), then the Gaussian BT=0.5
@@ -1093,7 +1435,15 @@ dstar_tx_modulate_byte(sbitx_dstar_tx *tx, uint8_t c, float *out)
 
     uint8_t mask = 0x01U;
     for (uint8_t i = 0U; i < 8U; i++) {
-        symbols[i] = (c & mask) ? DSTAR_LEVEL0 : DSTAR_LEVEL1;
+        /* Bit 1 modulates POSITIVE. Measured against the IC-7100 over the
+         * air through an independent receiver: with the mapping the other
+         * way round our signal decoded only with the polarity inverted,
+         * i.e. every bit was flipped relative to a real D-STAR rig, so no
+         * standard receiver could ever decode it. The receive slicer's
+         * "sample < 0 means bit 1" is the matching convention once the
+         * discriminator inversion of the rig's audio path is accounted for
+         * by dstar_polarity. */
+        symbols[i] = (c & mask) ? DSTAR_LEVEL1 : DSTAR_LEVEL0;
         mask <<= 1;
     }
 
