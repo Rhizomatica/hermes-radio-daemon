@@ -37,6 +37,11 @@ int main(int argc, char **argv)
 
         mbe_encodeAmbe2400Parms(f_in, ambe_d, &ecur, &eprev);
         mbe_encodeAmbe3600x2400Frame(ambe_d, (char(*)[24])fr);
+        /* The encoder does not advance its own predictor state; the caller
+         * must, as the daemon does in dsp/sbitx_dsp.c. Omitting this pins
+         * prev_mp->gamma at 0 and rail-limits the differential gain on most
+         * frames, which made this harness report the wrong level twice. */
+        mbe_moveMbeParms(&ecur, &eprev);
         mbe_encodeDStarDVData((const char(*)[24])fr, frame9);
 
         /* ...and straight back, exactly as the receiver does */

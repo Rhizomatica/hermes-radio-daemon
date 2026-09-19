@@ -19,6 +19,7 @@
 #include "dsp/sbitx_dstar.h"
 #include <mbelib-neo/mbelib.h>
 
+static long n_silence, n_frames_enc, n_sil_runs;
 static long n_frames;
 static double sum_w0, sum_L, sum_voiced, sum_tilt, sum_gamma, sum_gamma2;
 static long n_tilt;
@@ -99,13 +100,27 @@ int main(int argc, char **argv)
         if (fread(hdr, 1, 44, f) != 44) return 1;
         mbe_parms ecur, eprev, edummy;
         mbe_initMbeParms(&ecur, &eprev, &edummy);
-        short pcm[160]; float fin[160]; char ambe_d[49];
+        short pcm[160]; float fin[160]; char ambe_d[49]; int prev_sil = 0;
         while (fread(pcm, 2, 160, f) == 160) {
             for (int i = 0; i < 160; i++) fin[i] = pcm[i] / 32768.0f;
-            mbe_encodeAmbe2400Parms(fin, ambe_d, &ecur, &eprev);
+            int rc_enc = mbe_encodeAmbe2400Parms(fin, ambe_d, &ecur, &eprev);
+            n_frames_enc++;
+            if (rc_enc == 1) { if (!prev_sil) n_sil_runs++; n_silence++; prev_sil = 1; }
+            else prev_sil = 0;
             account(&ecur);     /* cur_mp holds the quantised parameters */
+            /* The encoder does NOT advance its own predictor state -- the
+             * caller must, exactly as the daemon does in dsp/sbitx_dsp.c.
+             * Without this, prev_mp->gamma stays 0 forever, the differential
+             * gain target never gets its 0.5*prev term, and 92% of frames
+             * clamp at the AmbePlusDg ceiling. That made the encoder look
+             * like it compressed all speech dynamics when it does not. */
+            mbe_moveMbeParms(&ecur, &eprev);
         }
         fclose(f);
+        if (n_frames_enc)
+            fprintf(stderr, "silence frames %ld/%ld (%.1f%%) in %ld runs, mean run %.0f ms\n",
+                    n_silence, n_frames_enc, 100.0*(double)n_silence/(double)n_frames_enc,
+                    n_sil_runs, n_sil_runs ? 20.0*(double)n_silence/(double)n_sil_runs : 0.0);
     } else {
         FILE *f = fopen(argv[2], "rb");
         if (!f) { perror("in"); return 1; }
