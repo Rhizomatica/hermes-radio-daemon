@@ -635,6 +635,20 @@ static void dstar_rx_data_cb(void *user, const uint8_t *frame)
     dstar_pcm_fifo_put(pcmf, 160);
 }
 
+/* Copy a D-STAR callsign field, replacing every byte outside printable ASCII
+ * with '?'. D-STAR callsigns are A-Z, 0-9, '/' and space; anything else means
+ * the header did not decode cleanly, and must not reach a consumer that
+ * assumes valid UTF-8. */
+static void dstar_publish_callsign(char *dst, size_t dst_len, const char *src)
+{
+    size_t i = 0;
+    for (; src[i] != '\0' && i + 1 < dst_len; i++) {
+        unsigned char ch = (unsigned char) src[i];
+        dst[i] = (ch >= 0x20 && ch < 0x7f) ? (char) ch : '?';
+    }
+    dst[i] = '\0';
+}
+
 static void dstar_rx_header_cb(void *user, const uint8_t *header)
 {
     (void)user;
@@ -646,23 +660,37 @@ static void dstar_rx_header_cb(void *user, const uint8_t *header)
     memcpy(mycall, header + 27, 8); mycall[8] = '\0';
     memcpy(suffix, header + 35, 4); suffix[4] = '\0';
 
+    /* Publish it for the web panel and any other client, keeping only
+     * printable ASCII. A header that fails its CRC still reaches this
+     * callback, and the callsign bytes are then arbitrary. Anything >= 0x80 is
+     * invalid UTF-8 on its own, so letting it through produced an invalid
+     * WebSocket TEXT frame and every strict client dropped the connection with
+     * status 1007 -- one garbled header broke the whole status stream, not just
+     * the D-STAR display. Sanitising here rather than in the JSON builder also
+     * protects the SHM readers and the log line below. */
+    dstar_publish_callsign(radio_h_dsp->dstar_rx_rpt1,   sizeof(radio_h_dsp->dstar_rx_rpt1),   rpt1);
+    dstar_publish_callsign(radio_h_dsp->dstar_rx_rpt2,   sizeof(radio_h_dsp->dstar_rx_rpt2),   rpt2);
+    dstar_publish_callsign(radio_h_dsp->dstar_rx_urcall, sizeof(radio_h_dsp->dstar_rx_urcall), urcall);
+    dstar_publish_callsign(radio_h_dsp->dstar_rx_mycall, sizeof(radio_h_dsp->dstar_rx_mycall), mycall);
+    dstar_publish_callsign(radio_h_dsp->dstar_rx_suffix, sizeof(radio_h_dsp->dstar_rx_suffix), suffix);
+    radio_h_dsp->dstar_rx_heard++;
+
     if (radio_h_dsp->dstar_verbose) {
         fprintf(stderr, "DSTAR header: flags=0x%02x%02x%02x rpt1=%s rpt2=%s ur=%s my=%s suf=%s\n",
-                header[0], header[1], header[2], rpt1, rpt2, urcall, mycall, suffix);
+                header[0], header[1], header[2],
+                radio_h_dsp->dstar_rx_rpt1, radio_h_dsp->dstar_rx_rpt2,
+                radio_h_dsp->dstar_rx_urcall, radio_h_dsp->dstar_rx_mycall,
+                radio_h_dsp->dstar_rx_suffix);
     }
     dstar_rx_frame_count = 0;
 
-    /* Publish it for the web panel and any other client. */
-    snprintf(radio_h_dsp->dstar_rx_rpt1,   sizeof(radio_h_dsp->dstar_rx_rpt1),   "%s", rpt1);
-    snprintf(radio_h_dsp->dstar_rx_rpt2,   sizeof(radio_h_dsp->dstar_rx_rpt2),   "%s", rpt2);
-    snprintf(radio_h_dsp->dstar_rx_urcall, sizeof(radio_h_dsp->dstar_rx_urcall), "%s", urcall);
-    snprintf(radio_h_dsp->dstar_rx_mycall, sizeof(radio_h_dsp->dstar_rx_mycall), "%s", mycall);
-    snprintf(radio_h_dsp->dstar_rx_suffix, sizeof(radio_h_dsp->dstar_rx_suffix), "%s", suffix);
-    radio_h_dsp->dstar_rx_heard++;
 
     FILE *f = fopen("/var/spool/hermes-digi/spool.log", "a");
     if (f) {
-        fprintf(f, "DSTAR rx header: ur=%s my=%s\n", urcall, mycall);
+        /* Sanitised copies: a failed-CRC header carries arbitrary bytes, and
+         * writing them raw turned this log into a binary file. */
+        fprintf(f, "DSTAR rx header: ur=%s my=%s\n",
+                radio_h_dsp->dstar_rx_urcall, radio_h_dsp->dstar_rx_mycall);
         fclose(f);
     }
 }
