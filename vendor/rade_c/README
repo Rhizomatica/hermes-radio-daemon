@@ -1,0 +1,26 @@
+# Vendored rade_c (RADE V1 + V2 pure-C)
+
+Source: https://github.com/freedv/rade_c @ 262a980842e1bc8008249d53421aca0c03bf276f
+(merge of PR #20, dr-tx-bpf).
+
+Copied verbatim from rade_c/src: the library sources listed in sources.mk
+(everything the upstream `rade` library target builds) plus their headers.
+CLI tools, tests and CMake are not vendored.
+
+Daemon-local additions (not from rade_c):
+- support/  minimal stand-ins for the Opus headers (config.h-free nnet.h,
+            os_support.h, opus_types.h, opus_defines.h) so the sources build
+            without an Opus source tree
+- src/rade_nnet.c  float-weight implementation of the Opus DNN helpers
+            (compute_generic_*, linear_init, ...) replacing the patched
+            opus dnn/nnet.c that rade_c builds against; conv buffer is 2048
+            inputs, matching upstream's opus-nnet.c.diff for the V2 decoder
+
+API: single unified `rade_api.h`; select V2 with rade_open(model, RADE_MODE_V2 | flags).
+
+To update: re-copy the same files from a newer rade_c checkout, update the
+commit above, and run `make -C vendor/rade_c` plus the daemon build.
+
+Standalone sanity build:
+
+    make -C vendor/rade_c

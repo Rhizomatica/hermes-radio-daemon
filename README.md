@@ -48,8 +48,7 @@ hermes-radio-daemon/
 ├── hamlib/                  Hamlib backend (radio_hamlib.{c,h}) — only this is hamlib-specific
 ├── sbitx/                   HF Signals hardware backend (GPIO, I2C, Si5351, ALSA, encoders)
 ├── dsp/                     SSB DSP + FM/AM demodulators + DRM (Dream subprocess) + digi encoders
-├── vendor/radev2/           RADEv2 pure-C encoder/decoder (digital voice)
-├── vendor/radev1/           RADAE v1 pure-C library (available for future use)
+├── vendor/rade_c/           rade_c pure-C RADE V1+V2 library (freedv/rade_c)
 ├── vendor/ft8_lib/          Vendored ft8_lib (MIT)
 ├── vendor/minimodem/        Vendored minimodem FSK core (GPLv3)
 ├── config/                  Sample core.ini and user.ini
@@ -410,7 +409,7 @@ Uses vendored `minimodem` FSK core (FFT-based FSK detector + Baudot codec):
 
 ### Digital Voice (RADEv2)
 
-Neural-network-based digital voice codec. Activated per-profile with `digital_voice = 1`. Uses the vendored RADEv2 pure-C encoder/decoder at `vendor/radev2/`. The full voice DSP chain (compressor, pre-emphasis, noise reduction) is automatically bypassed when `digital_voice = 1`.
+Neural-network-based digital voice codec. Activated per-profile with `digital_voice = 1`. Uses the vendored rade_c pure-C RADE V2 encoder/decoder at `vendor/rade_c/` (from https://github.com/freedv/rade_c). The full voice DSP chain (compressor, pre-emphasis, noise reduction) is automatically bypassed when `digital_voice = 1`.
 
 ### Unified Digital Mode WebSocket API
 

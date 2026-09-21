@@ -44,9 +44,12 @@
 // Feature extraction frame size (10ms @ 16kHz = 160 samples)
 #define RADAE_FRAME_SIZE     160
 
-// Paths to RADAE resources (relative to radae directory)
-#define RADAE_MODEL_PATH         "250725/checkpoints/checkpoint_epoch_200.pth"
-#define RADAE_SYNC_MODEL_PATH    "250725a_ml_sync"
+// The RADE model weights are compiled into vendor/rade_c; this is only the
+// (ignored, log-only) model name handed to rade_open().
+#define RADAE_MODEL_NAME         "builtin"
+
+// lpcnet_demo (speech <-> features) is still an external C binary, run from
+// RADAE_DIR (relative path below).
 #define RADAE_LPCNET_BINARY_PATH "build/src/lpcnet_demo"
 #define RADAE_DIR                "/opt/radae"
 

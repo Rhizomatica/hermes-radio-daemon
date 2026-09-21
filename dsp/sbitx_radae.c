@@ -267,7 +267,7 @@ static void rx_store_speech_pcm(radae_context *ctx, const int16_t *pcm_samples, 
 static struct rade *radae_open_tx_session(void)
 {
     int flags = radae_debug ? 0 : RADE_VERBOSE_0;
-    struct rade *tx_rade = rade_tx_v2_pure_c_open(RADAE_MODEL_PATH, flags);
+    struct rade *tx_rade = rade_open(RADAE_MODEL_NAME, RADE_MODE_V2 | flags);
 
     if (!tx_rade)
         fprintf(stderr, "RADAE TX: failed to open vendored C encoder\n");
@@ -277,7 +277,7 @@ static struct rade *radae_open_tx_session(void)
 static struct rade *radae_open_rx_session(void)
 {
     int flags = radae_debug ? 0 : RADE_VERBOSE_0;
-    struct rade *rx_rade = rade_rx_v2_pure_c_open(RADAE_MODEL_PATH, RADAE_SYNC_MODEL_PATH, flags);
+    struct rade *rx_rade = rade_open(RADAE_MODEL_NAME, RADE_MODE_V2 | flags);
 
     if (!rx_rade)
         fprintf(stderr, "RADAE RX: failed to open vendored C decoder\n");
@@ -906,7 +906,7 @@ static void *radae_rx_thread(void *arg)
 
         if (have_frame) {
             int has_eoo_out = 0;
-            int n_features = rade_rx_v2_pure_c(rx_rade, features_out, &has_eoo_out, NULL, rx_in);
+            int n_features = rade_rx(rx_rade, features_out, &has_eoo_out, NULL, rx_in);
             (void)has_eoo_out;
             if (n_features > 0) {
                 if (!write_all(lpcnet_write_fd, features_out, (size_t)n_features * sizeof(float))) {

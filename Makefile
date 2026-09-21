@@ -19,8 +19,7 @@ LDFLAGS = -liniparser -lhamlib -lasound -lcrypto -lssl -lfftw3f -lfftw3 \
 # Mongoose now serves as the websocket transport in radio_websocket.c.
 CFLAGS += -DMG_ENABLE_OPENSSL=1 -DMG_TLS=MG_TLS_OPENSSL
 
-include vendor/radev2/sources.mk
-include vendor/radev1/sources.mk
+include vendor/rade_c/sources.mk
 include vendor/ft8_lib/sources.mk
 include vendor/minimodem/sources.mk
 
@@ -31,10 +30,10 @@ else
 	CFLAGS += -march=x86-64-v2
 endif
 
-EXTRA_CPPFLAGS = $(RADEV2_EMBED_CPPFLAGS) $(FT8_LIB_CPPFLAGS) $(MM_FSK_CPPFLAGS)
-EXTRA_CFLAGS   = $(RADEV2_EMBED_CFLAGS)   $(FT8_LIB_CFLAGS)   $(MM_FSK_CFLAGS)
+EXTRA_CPPFLAGS = $(RADE_C_EMBED_CPPFLAGS) $(FT8_LIB_CPPFLAGS) $(MM_FSK_CPPFLAGS)
+EXTRA_CFLAGS   = $(RADE_C_EMBED_CFLAGS)   $(FT8_LIB_CFLAGS)   $(MM_FSK_CFLAGS)
 
-RADEV2_EMBED_OBJS = $(RADEV2_EMBED_SRCS:.c=.o)
+RADE_C_EMBED_OBJS = $(RADE_C_EMBED_SRCS:.c=.o)
 FT8_LIB_OBJS      = $(FT8_LIB_SRCS:.c=.o)
 MM_FSK_OBJS       = $(MM_FSK_SRCS:.c=.o)
 
@@ -92,7 +91,7 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              sbitx/sbitx_si5351.o \
              sbitx/ring_buffer.o \
              $(SBITX_GPIOLIB_OBJS) \
-             $(RADEV2_EMBED_OBJS) \
+             $(RADE_C_EMBED_OBJS) \
              $(FT8_LIB_OBJS) \
              $(MM_FSK_OBJS)
 
@@ -102,7 +101,7 @@ radio_daemon: $(DAEMON_OBJS)
 	$(CC) -o radio_daemon $(DAEMON_OBJS) $(LDFLAGS)
 
 # Generic compile rule. Sbitx hw/dsp need extra include paths for csdr,
-# vendored radev2/ft8_lib/minimodem.
+# vendored rade_c/ft8_lib/minimodem.
 %.o: %.c
 	$(CC) -c $(CFLAGS) $(EXTRA_CPPFLAGS) $(EXTRA_CFLAGS) \
 	      -Isbitx -Idsp -Isbitx/gpiolib \
