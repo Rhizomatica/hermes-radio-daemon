@@ -116,6 +116,10 @@ radio_client: sbitx_client.c sbitx_io.c shm_utils.c help.h \
 	$(CC) $(CFLAGS) sbitx_client.c sbitx_io.c shm_utils.c \
 	      -o radio_client -lpthread
 
+# ── websocket control CLI, a testing aid (not built by "all") ──
+ws_client: ws_client.c mongoose.c mongoose.h
+	$(CC) $(CFLAGS) ws_client.c mongoose.c -o ws_client -lssl -lcrypto
+
 # ── regression tests ───────────────────────────────────────────────
 test: compat-tests
 
@@ -171,7 +175,7 @@ install: radio_daemon radio_client
 
 # ── clean ───────────────────────────────────────────────────────
 clean:
-	rm -f radio_daemon radio_client \
+	rm -f radio_daemon radio_client ws_client \
 	      $(DAEMON_OBJS) $(DAEMON_OBJS:.o=.d) $(TEST_BINS)
 
 # Auto-generated header dependencies (from -MMD). Hyphen: ignore on first build.

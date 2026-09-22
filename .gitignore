@@ -60,3 +60,10 @@ tests/*_test
 # Build outputs
 /radio_daemon
 /radio_client
+/ws_client
+/tools/ambe_params
+/tools/ambe_roundtrip
+/tools/dstar_ambe_test
+/tools/dstar_probe
+/tools/dstar_rx
+/tools/dstar_tx_gen
