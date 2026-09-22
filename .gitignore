@@ -56,3 +56,7 @@ dkms.conf
 
 # Generated test binaries
 tests/*_test
+
+# Build outputs
+/radio_daemon
+/radio_client

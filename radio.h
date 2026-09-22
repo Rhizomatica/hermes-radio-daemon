@@ -46,8 +46,11 @@
 #define MODE_DRM  5
 #define MODE_FT8  6
 #define MODE_RTTY 7
+#define MODE_DSTAR 8
 
-/* Internal "operating mode" — applies only to hfsignals embedded ALSA path. */
+/* Per-profile "operating mode". For the hfsignals backend it selects the
+ * ALSA/DSP signal path. For the hamlib backend it picks voice vs data SSB on
+ * the rig: FULL_VOICE → USB/LSB; anything else → PKTUSB/PKTLSB (DATA-U/L). */
 #define OPERATING_MODE_FULL_VOICE     0 /* IO+ALSA+DSP, TX from MIC */
 #define OPERATING_MODE_FULL_LOOPBACK  1 /* IO+ALSA+DSP, TX from ALSA loopback */
 #define OPERATING_MODE_CONTROLS_ONLY  2 /* just IO, no ALSA */
@@ -196,8 +199,8 @@ typedef struct {
 typedef struct {
     _Atomic uint32_t freq;
 
-    /* sbitx ALSA path: full / loopback / controls-only / external. Hamlib
-     * backend ignores. */
+    /* sbitx ALSA path: full / loopback / controls-only / external. On the
+     * hamlib backend it picks voice vs data SSB (USB↔PKTUSB, LSB↔PKTLSB). */
     uint16_t operating_mode;
 
     _Atomic uint16_t mode;                   /* MODE_* */
@@ -213,6 +216,12 @@ typedef struct {
     /* DSP band-pass filter (Hz). Read once at profile load by sbitx DSP. */
     uint32_t bpf_low;
     uint32_t bpf_high;
+
+    /* Receiver filter passband in Hz, 0 = rig default ("normal"). On the
+     * hamlib backend this is the width argument of rig_set_mode; on the
+     * hfsignals backend it is bpf_high - bpf_low. Kept per profile so a
+     * profile switch restores the operator's filter along with the mode. */
+    _Atomic uint32_t filter_width;
 
     _Atomic uint16_t power_level_percentage; /* 0..100 */
 
@@ -278,6 +287,10 @@ typedef struct {
     _Atomic uint32_t fwd_power;
     _Atomic uint32_t ref_power;
 
+    /* RX signal strength (S-meter), dB relative to S9 (S9 = 0): S0 ~ -54,
+     * each S-unit 6 dB, positive = over S9. -200 = no reading yet. */
+    _Atomic int32_t  s_meter_db;
+
     /* Informational */
     _Atomic uint32_t serial_number;
     _Atomic bool     system_is_connected;     /* VARA / modem connection status */
@@ -301,13 +314,63 @@ typedef struct {
     _Atomic bool enable_websocket;
     bool rig_server_enable;
     int rig_server_port;
+    /* Native-CAT gateway (cat_server.c): a TCP port speaking the radio's own
+     * CAT dialect, for Windows loggers that can only open a COM port. */
+    bool cat_server_enable;
+    int  cat_server_port;
+    int  cat_server_mode;                    /* cat_server_mode enum */
+    char cat_server_bind[64];
+    /* How long a passthrough transaction waits for the rig to start
+     * answering. A command that draws no reply (most "set" commands) costs
+     * exactly this much, so it trades logger responsiveness against the risk
+     * of missing a slow rig's answer. */
+    int  cat_reply_timeout_ms;
     _Atomic bool enable_audio_bridge;
+    _Atomic bool enable_shm_audio;   /* bridge codec audio to mercury via POSIX SHM */
+
+    /* Half-duplex codec arbitration. Some rigs (e.g. FT-710) expose their CAT
+     * serial and audio codec behind one shared full-speed USB hub; running
+     * capture + playback isoc streams at once there overloads the hub and the
+     * codec drops out (-ENODEV / USB reset). When set, only one direction holds
+     * the codec at a time, switched by txrx_state (HF is half-duplex anyway).
+     * The two _holds_codec atomics serialise the RX/TX handoff. */
+    _Atomic bool audio_half_duplex;
+    _Atomic bool media_capture_holds_codec;
+    _Atomic bool media_playback_holds_codec;
+
+    /* Pointer to the backend's CAT-serialisation mutex (the hamlib serial lock),
+     * or NULL. The media threads take it around codec open/close/recover so a USB
+     * altsetting reconfiguration never races a CAT transaction. On the FT-710 the
+     * C-Media codec and the CP2105 CAT serial sit behind ONE full-speed USB hub;
+     * a codec reconfig concurrent with serial I/O resets the device. Steady isoc
+     * streaming + CAT coexists fine (mercury proves it) — only reconfiguration
+     * must be serialised, so this lock is held only briefly, never while streaming. */
+    pthread_mutex_t *cat_bus_lock;
 
     char websocket_url[WEBSOCKET_URL_MAX];   /* full ws:// or wss:// URL */
 
     char capture_device[AUDIO_DEVICE_NAME_MAX];
     char playback_device[AUDIO_DEVICE_NAME_MAX];
+    /* snd-aloop modem bridge (loop_audio): the daemon mirrors codec audio to/from
+     * these loopback devices at native rate so mercury (-x alsa) reads/writes the
+     * other ends. loop_playback = RX to modem (e.g. hw:1,0); loop_capture = TX
+     * from modem (e.g. hw:2,1). Empty -> disabled. */
+    _Atomic bool enable_loop_audio;
+    char loop_capture_device[AUDIO_DEVICE_NAME_MAX];
+    char loop_playback_device[AUDIO_DEVICE_NAME_MAX];
+    /* Optional operator-side headset (hardware) audio path. When both
+     * device names are non-empty, the daemon spawns capture+playback threads
+     * that mirror the websocket browser audio path onto a local ALSA device. */
+    char headset_capture_device[AUDIO_DEVICE_NAME_MAX];
+    char headset_playback_device[AUDIO_DEVICE_NAME_MAX];
+    _Atomic uint32_t headset_sample_rate;
+    /* audio_sample_rate: rate the daemon audio rings carry (consumed by
+     * recording, spectrum FFT and the websocket binary frames). */
     _Atomic uint32_t audio_sample_rate;
+    /* rig_audio_rate: native rate of the rig-facing ALSA device. Set to 0
+     * to mean "same as audio_sample_rate" (back-compat). When different, the
+     * audio_bridge resamples between rig native and ring rate. */
+    _Atomic uint32_t rig_audio_rate;
     _Atomic uint32_t audio_period_size;
     _Atomic uint32_t audio_queue_samples;
 
@@ -318,8 +381,50 @@ typedef struct {
     _Atomic uint16_t rtty_mark;
     _Atomic uint16_t rtty_shift;
 
+    /* D-STAR DV: FM deviation of the GMSK modulator in Hz (default 1200,
+     * the MSK h=0.5 peak deviation for 4800 baud) and TX/RX drive gains.
+     * The TX gain maps the modem baseband (±0.0257) onto the FM
+     * modulator's deviation. dstar_rx_polarity flips the discriminator
+     * sign for rigs that present it inverted (1 normal, -1 inverted). */
+    _Atomic uint16_t dstar_deviation;
+    float dstar_tx_gain;
+    float dstar_rx_gain;
+    float dstar_rx_polarity;
+    char  dstar_mycall[16];
+    char  dstar_urcall[16];
+    /* Log D-STAR RX frames/sync to stderr (0 off, 1 on) for bench debugging. */
+    _Atomic uint16_t dstar_verbose;
+    /* Sample-clock correction for the D-STAR RX chain, in ppm.
+     *
+     * The rig's 4800 baud symbol clock and the sbitx codec's sampling clock
+     * are independent crystals. On this hardware the codec runs ~+300 ppm
+     * fast, which walks the symbol phase ~3 samples per 420 ms superframe —
+     * and a symbol is only 5 samples at 24 kHz, so the sampling point drifts
+     * through the eye in about a second. The modem slices at a fixed phase,
+     * so that shows up as a few bit errors per frame: sync holds, the header
+     * FEC survives, and the AMBE payload comes out as garble.
+     *
+     * Positive values speed the decimated stream up. Measure it by finding
+     * the baud line in the discriminator stream (it should sit at exactly
+     * 4800 Hz) and negating the offset. */
+    _Atomic int32_t dstar_clock_ppm;
+    /* Audio gain applied to the DECODED D-STAR voice on its way to the
+     * speaker and the websocket. Kept separate from dstar_rx_gain, which
+     * scales the discriminator signal feeding the modem: one is a listening
+     * level, the other is a demodulator input level, and they had been
+     * sharing a single knob. */
+    float dstar_af_gain;
+    /* Run-time tunable: enable the specbleach denoise front-end on the
+     * D-STAR TX mic path (1 on, 0 off). */
+    _Atomic uint16_t dstar_denoise;
+
     /* Outbound text queue for FT8/CW/RTTY (filled by digi_send) */
     digi_tx_queue digi_tx;
+
+    /* TX drive gain applied to the digi-mode audio (CW/FT8/RTTY/RADAE)
+     * before it reaches the rig. 1.0 = encoder native level; raise to push
+     * more audio into the rig USB codec. Clipped at full scale on push. */
+    float digi_tx_gain;
 
     char recording_dir[RECORDING_PATH_MAX];
 
@@ -342,6 +447,23 @@ typedef struct {
     /* ── media: rings, recording, spectrum ───────────────────────── */
     audio_ring_buffer rx_audio_ring;
     audio_ring_buffer tx_audio_ring;
+    /* RADAE bypass rings (digital voice). When `digital_voice` is active
+     * on a backend that doesn't do its own SDR IF processing (hamlib),
+     * the RADAE pump consumes tx_audio_ring (browser speech) and produces
+     * the modem-real audio into tx_radae_ring, which the rig playback
+     * pump then drains in place of tx_audio_ring. RX side is symmetric:
+     * capture writes raw rig audio to rx_audio_ring; the RADAE pump
+     * consumes that, decodes speech, and writes to rx_radae_ring for the
+     * websocket to broadcast. */
+    audio_ring_buffer rx_radae_ring;
+    audio_ring_buffer tx_radae_ring;
+    /* D-STAR bypass rings (same pattern as RADAE): the hamlib D-STAR
+     * pump encodes tx_audio_ring speech into GMSK modem audio in
+     * tx_dstar_ring (drained by playback in place of tx_audio_ring),
+     * and decodes rig audio from rx_audio_ring into rx_dstar_ring for
+     * the websocket to broadcast. */
+    audio_ring_buffer rx_dstar_ring;
+    audio_ring_buffer tx_dstar_ring;
     wav_recording     rx_recording;
     wav_recording     tx_recording;
 
@@ -353,6 +475,26 @@ typedef struct {
     _Atomic bool     rx_spectrum_valid;
     _Atomic bool     tx_spectrum_valid;
     _Atomic uint32_t spectrum_sample_rate;
+
+    /* Last D-STAR header decoded on receive, for display by the web panel and
+     * any other client. Written by the DSP's header callback (once per over,
+     * or once per superframe when it is reassembled from slow data), read by
+     * build_status_json().
+     *
+     * Deliberately appended at the END of this struct: it lives in shared
+     * memory, so a client built against an older layout keeps working as long
+     * as nothing before it moves.
+     *
+     * No lock. Each field is written as a whole fixed-size callsign and the
+     * reader only displays it, so the worst a concurrent read can show is one
+     * field from the previous over next to one from the current. dstar_rx_heard
+     * counts headers so a client can tell a fresh decode from a stale one. */
+    char             dstar_rx_mycall[9];
+    char             dstar_rx_urcall[9];
+    char             dstar_rx_rpt1[9];
+    char             dstar_rx_rpt2[9];
+    char             dstar_rx_suffix[5];
+    _Atomic uint32_t dstar_rx_heard;
 } radio;
 
 /* digi_tx_queue helpers (defined in cfg_utils.c or radio_websocket.c). */
@@ -360,5 +502,6 @@ void digi_tx_queue_init(digi_tx_queue *q);
 void digi_tx_queue_destroy(digi_tx_queue *q);
 bool digi_tx_queue_push(digi_tx_queue *q, const char *text);
 bool digi_tx_queue_pop(digi_tx_queue *q, char *out, size_t out_len);
+bool digi_tx_queue_pending(digi_tx_queue *q);   /* true if any text is queued */
 
 #endif /* RADIO_H_ */

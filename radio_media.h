@@ -43,4 +43,8 @@ bool radio_media_stop_recording(radio *radio_h, const char *stream_name);
 bool radio_media_get_spectrum(radio *radio_h, bool tx, float *out_bins, size_t bins,
                               uint32_t *seq, uint32_t *sample_rate);
 
+/* FFT length behind the spectrum bins; the UI uses it to map bins to Hz
+ * (bin width = sample_rate / fft_size) and label a real frequency axis. */
+uint32_t radio_media_spectrum_fft_size(void);
+
 #endif /* RADIO_MEDIA_H_ */

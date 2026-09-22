@@ -22,6 +22,9 @@
 #include "radio_pipeline.h"
 #include "radio_shm.h"
 #include "radio_websocket.h"
+#include "audio_headset.h"
+#include "shm_audio.h"
+#include "loop_audio.h"
 
 extern _Atomic bool shutdown_;
 
@@ -89,8 +92,11 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     bool backend_started = false;
     bool io_started = false;
     bool media_started = false;
+    bool shm_audio_started = false;
+    bool loop_audio_started = false;
     bool websocket_started = false;
     bool shm_started = false;
+    bool headset_started = false;
 
     shutdown_ = false;
     install_signal_handlers();
@@ -134,6 +140,12 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     }
     media_started = true;
 
+    if (radio_h.enable_shm_audio)
+        shm_audio_started = shm_audio_init(&radio_h);
+
+    if (radio_h.enable_loop_audio)
+        loop_audio_started = loop_audio_init(&radio_h);
+
     if (!radio_websocket_init(&radio_h, &websocket_tid))
     {
         fprintf(stderr, "Failed to initialize websocket service. Exiting.\n");
@@ -148,13 +160,23 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
         shm_started = true;
     }
 
+    /* Optional local-headset path. No-op when devices aren't configured. */
+    if (audio_headset_init(&radio_h))
+        headset_started = true;
+
     pthread_join(io_tid, NULL);
     io_started = false;
 
+    if (headset_started)
+        audio_headset_shutdown(&radio_h);
     if (shm_started)
         shm_controller_shutdown(&shm_tid);
     if (websocket_started)
         radio_websocket_shutdown(&websocket_tid);
+    if (shm_audio_started)
+        shm_audio_shutdown();
+    if (loop_audio_started)
+        loop_audio_shutdown();
     if (media_started)
         radio_media_shutdown(&radio_h, &capture_tid, &playback_tid);
     if (backend_started)
@@ -169,10 +191,16 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
 fail:
     if (io_started)
         pthread_join(io_tid, NULL);
+    if (headset_started)
+        audio_headset_shutdown(&radio_h);
     if (shm_started)
         shm_controller_shutdown(&shm_tid);
     if (websocket_started)
         radio_websocket_shutdown(&websocket_tid);
+    if (shm_audio_started)
+        shm_audio_shutdown();
+    if (loop_audio_started)
+        loop_audio_shutdown();
     if (media_started)
         radio_media_shutdown(&radio_h, &capture_tid, &playback_tid);
     if (backend_started)

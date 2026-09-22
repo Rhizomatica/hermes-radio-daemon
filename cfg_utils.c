@@ -28,6 +28,7 @@
 #include <stdio.h>
 
 #include "cfg_utils.h"
+#include "cat_server.h"
 #include "radio.h"
 
 extern _Atomic bool shutdown_;
@@ -265,8 +266,36 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     i = iniparser_getint(ini, "main:rig_server_port", 4532);
     radio_h->rig_server_port = i;
 
+    /* Native-CAT gateway: the port a Windows logger reaches through a virtual
+     * COM port. Mode: auto (passthrough when the backend has a CAT rig, else
+     * TS-2000 emulation), passthrough, or emulate. */
+    b = iniparser_getboolean(ini, "main:cat_server_enable", 0);
+    radio_h->cat_server_enable = (bool) b;
+    i = iniparser_getint(ini, "main:cat_server_port", 4534);
+    radio_h->cat_server_port = i;
+    s = iniparser_getstring(ini, "main:cat_server_bind", "");
+    cfg_copy_string(radio_h->cat_server_bind, sizeof(radio_h->cat_server_bind), s);
+    i = iniparser_getint(ini, "main:cat_reply_timeout_ms", 250);
+    radio_h->cat_reply_timeout_ms = i;
+    s = iniparser_getstring(ini, "main:cat_server_mode", "auto");
+    if (!strcasecmp(s, "passthrough"))
+        radio_h->cat_server_mode = CAT_SERVER_MODE_PASSTHROUGH;
+    else if (!strcasecmp(s, "emulate"))
+        radio_h->cat_server_mode = CAT_SERVER_MODE_EMULATE;
+    else
+        radio_h->cat_server_mode = CAT_SERVER_MODE_AUTO;
+
     b = iniparser_getboolean(ini, "main:enable_audio_bridge", 0);
     radio_h->enable_audio_bridge = (bool) b;
+
+    b = iniparser_getboolean(ini, "main:enable_shm_audio", 0);
+    radio_h->enable_shm_audio = (bool) b;
+
+    b = iniparser_getboolean(ini, "main:audio_half_duplex", 0);
+    radio_h->audio_half_duplex = (bool) b;
+
+    b = iniparser_getboolean(ini, "main:enable_loop_audio", 0);
+    radio_h->enable_loop_audio = (bool) b;
 
     s = iniparser_getstring(ini, "main:capture_device", "default");
     snprintf(radio_h->capture_device, sizeof(radio_h->capture_device), "%s", s);
@@ -274,14 +303,43 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     s = iniparser_getstring(ini, "main:playback_device", "default");
     snprintf(radio_h->playback_device, sizeof(radio_h->playback_device), "%s", s);
 
-    i = iniparser_getint(ini, "main:audio_sample_rate", 8000);
+    /* snd-aloop modem bridge devices (loop_audio). Empty -> disabled. */
+    s = iniparser_getstring(ini, "main:loop_capture_device", "");
+    snprintf(radio_h->loop_capture_device, sizeof(radio_h->loop_capture_device), "%s", s);
+    s = iniparser_getstring(ini, "main:loop_playback_device", "");
+    snprintf(radio_h->loop_playback_device, sizeof(radio_h->loop_playback_device), "%s", s);
+
+    /* Operator-side headset. Empty -> headset path disabled. */
+    s = iniparser_getstring(ini, "main:headset_capture_device", "");
+    snprintf(radio_h->headset_capture_device,
+             sizeof(radio_h->headset_capture_device), "%s", s);
+    s = iniparser_getstring(ini, "main:headset_playback_device", "");
+    snprintf(radio_h->headset_playback_device,
+             sizeof(radio_h->headset_playback_device), "%s", s);
+    i = iniparser_getint(ini, "main:headset_sample_rate", 48000);
+    radio_h->headset_sample_rate = (uint32_t) i;
+
+    i = iniparser_getint(ini, "main:audio_sample_rate", 48000);
     radio_h->audio_sample_rate = (uint32_t) i;
 
-    i = iniparser_getint(ini, "main:audio_period_size", 160);
+    /* Rate at which the rig-facing ALSA device is opened. 0 means "same as
+     * audio_sample_rate" (legacy behaviour). Set this when the rig USB codec
+     * forces a specific rate (e.g. 48000) that differs from the daemon ring
+     * rate; the audio_bridge resamples between them. */
+    i = iniparser_getint(ini, "main:rig_audio_rate", 0);
+    radio_h->rig_audio_rate = (uint32_t) i;
+
+    /* 480 samples = 10 ms at 48 kHz; also ≥ SPECTRUM_FFT_SIZE so the spectrum
+     * waterfall stays alive on the daemon audio bridge. */
+    i = iniparser_getint(ini, "main:audio_period_size", 480);
     radio_h->audio_period_size = (uint32_t) i;
 
     i = iniparser_getint(ini, "main:audio_queue_samples", 16000);
     radio_h->audio_queue_samples = (uint32_t) i;
+
+    radio_h->digi_tx_gain = (float) iniparser_getdouble(ini, "main:digi_tx_gain", 1.0);
+    if (radio_h->digi_tx_gain <= 0.0f)
+        radio_h->digi_tx_gain = 1.0f;
 
     i = iniparser_getint(ini, "main:cw_wpm", 20);
     radio_h->cw_wpm = (uint16_t) i;
@@ -293,6 +351,23 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     radio_h->rtty_mark = (uint16_t) i;
     i = iniparser_getint(ini, "main:rtty_shift", 170);
     radio_h->rtty_shift = (uint16_t) i;
+
+    i = iniparser_getint(ini, "main:dstar_deviation", 1200);
+    radio_h->dstar_deviation = (uint16_t) i;
+    radio_h->dstar_tx_gain = (float) iniparser_getdouble(ini, "main:dstar_tx_gain", 1.0);
+    radio_h->dstar_rx_gain = (float) iniparser_getdouble(ini, "main:dstar_rx_gain", 1.0);
+    radio_h->dstar_rx_polarity = (float) iniparser_getdouble(ini, "main:dstar_polarity", 1.0);
+    s = iniparser_getstring(ini, "main:dstar_mycall", "N0CALL  ");
+    snprintf(radio_h->dstar_mycall, sizeof(radio_h->dstar_mycall), "%-8s", s);
+    s = iniparser_getstring(ini, "main:dstar_urcall", "CQCQCQ  ");
+    snprintf(radio_h->dstar_urcall, sizeof(radio_h->dstar_urcall), "%-8s", s);
+    radio_h->dstar_af_gain = (float) iniparser_getdouble(ini, "main:dstar_af_gain", 1.0);
+    i = iniparser_getint(ini, "main:dstar_clock_ppm", 0);
+    radio_h->dstar_clock_ppm = (int32_t) i;
+    i = iniparser_getint(ini, "main:dstar_verbose", 0);
+    radio_h->dstar_verbose = (uint16_t) i;
+    i = iniparser_getint(ini, "main:dstar_denoise", 1);
+    radio_h->dstar_denoise = (uint16_t) i;
 
     s = iniparser_getstring(ini, "main:recording_dir", "/var/lib/hermes-radio-daemon");
     snprintf(radio_h->recording_dir, sizeof(radio_h->recording_dir), "%s", s);
@@ -399,6 +474,7 @@ bool init_config_user(radio *radio_h, const char *ini_name)
         else if (!strcasecmp(s, "DRM"))  radio_h->profiles[k].mode = MODE_DRM;
         else if (!strcasecmp(s, "FT8"))  radio_h->profiles[k].mode = MODE_FT8;
         else if (!strcasecmp(s, "RTTY")) radio_h->profiles[k].mode = MODE_RTTY;
+        else if (!strcasecmp(s, "DSTAR")) radio_h->profiles[k].mode = MODE_DSTAR;
         else                             radio_h->profiles[k].mode = MODE_USB;
 
         snprintf(key, sizeof(key), "profile%d:speaker_level", k);
@@ -444,6 +520,11 @@ bool init_config_user(radio *radio_h, const char *ini_name)
 
         snprintf(key, sizeof(key), "profile%d:bpf_high", k);
         radio_h->profiles[k].bpf_high = (uint32_t) iniparser_getint(ini, key, 3000);
+
+        /* Rig filter passband. 0 = leave the rig at its default width for the
+         * mode; on hfsignals it is derived from the bpf pair above. */
+        snprintf(key, sizeof(key), "profile%d:filter_width", k);
+        radio_h->profiles[k].filter_width = (uint32_t) iniparser_getint(ini, key, 0);
 
         snprintf(key, sizeof(key), "profile%d:enable_knob_volume", k);
         radio_h->profiles[k].enable_knob_volume = iniparser_getboolean(ini, key, 1);
@@ -579,4 +660,12 @@ bool digi_tx_queue_pop(digi_tx_queue *q, char *out, size_t out_len)
     q->count--;
     pthread_mutex_unlock(&q->mutex);
     return true;
+}
+
+bool digi_tx_queue_pending(digi_tx_queue *q)
+{
+    pthread_mutex_lock(&q->mutex);
+    bool has = q->count > 0;
+    pthread_mutex_unlock(&q->mutex);
+    return has;
 }

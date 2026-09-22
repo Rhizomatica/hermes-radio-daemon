@@ -34,6 +34,7 @@
 #include "sbitx_dsp.h"
 #include "sbitx_buffer.h"
 #include "../radio_media.h"
+#include "../audio_bridge.h"
 
 char *radio_capture_dev = "hw:0,0";
 char *radio_playback_dev = "hw:0,0";
@@ -997,6 +998,13 @@ void *control_thread(void *device_ptr)
 {
     int sample_size = snd_pcm_format_width(format) / 8;
 
+    /* hfsignals: native ALSA capture is 96 kHz mono int16, daemon DSP rings
+     * are 96 kHz → the bridge is a pass-through (no resampler). It only adds
+     * the rx/tx tap (recording + spectrum) and the ring push/pop. */
+    audio_bridge bridge;
+    if (!audio_bridge_init(&bridge, hw_rate, hw_rate))
+        fprintf(stderr, "sbitx_alsa: audio_bridge_init failed; bridge disabled\n");
+
     // TODO: DSP with 512 sample window?
     // we have 96 kHz in the radio soundcard, and 48 kHz in the loopback soundcard
     // we define our block transfer size as the minimum of both, in order to try to reduce latency a bit
@@ -1075,11 +1083,9 @@ void *control_thread(void *device_ptr)
                 int32_t *spk = (int32_t *) output_speaker;
                 for (uint32_t k = 0; k < block_size; k++)
                     bridge_rx_buf[k] = (int16_t) (spk[k] >> 16);
-                sbitx_bridge_push_rx(radio_h_snd, bridge_rx_buf, block_size);
-                /* Recording + spectrum tap. radio_media_tap_rx_audio is a
-                 * no-op when nothing is being recorded and the spectrum
-                 * compute is gated by pipeline caps. */
-                radio_media_tap_rx_audio(radio_h_snd, bridge_rx_buf, block_size);
+                /* Pushes to rx_audio_ring + taps recording/spectrum. */
+                audio_bridge_push_rx_native(&bridge, radio_h_snd,
+                                            bridge_rx_buf, block_size);
             }
         }
         else
@@ -1087,9 +1093,9 @@ void *control_thread(void *device_ptr)
             if (radio_h_snd->enable_audio_bridge)
             {
                 static int16_t bridge_tx_buf[1024];
-                size_t got = sbitx_bridge_pop_tx(radio_h_snd, bridge_tx_buf, block_size);
-                if (got > 0)
-                    radio_media_tap_tx_audio(radio_h_snd, bridge_tx_buf, got);
+                /* Pulls from tx_audio_ring + taps TX recording. */
+                size_t got = audio_bridge_pop_tx_native(&bridge, radio_h_snd,
+                                                       bridge_tx_buf, block_size);
                 if (got > 0)
                 {
                     static uint8_t tx_bridge_buf_raw[4096];
@@ -1131,6 +1137,7 @@ void *control_thread(void *device_ptr)
     free(buffer_mic_inject);
     close_mic_inject();
     close_rx_speaker_dump();
+    audio_bridge_shutdown(&bridge);
 
     return NULL;
 }

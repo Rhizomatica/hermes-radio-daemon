@@ -6,11 +6,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 CC      = gcc
-CFLAGS  = -Ofast -Wall -std=gnu11 -fstack-protector \
+# -MMD -MP auto-generates per-object header dependencies (*.d), so editing a
+# shared header (e.g. radio.h) rebuilds every object that includes it. Without
+# this, changing a struct layout left stale objects with the old layout — fields
+# read at mismatched offsets, corrupting memory (a very painful class of bug).
+CFLAGS  = -Ofast -Wall -std=gnu11 -fstack-protector -MMD -MP \
           -I. -Ihamlib -I/usr/include/iniparser -I/usr/include/csdr -Iinclude \
           -Wno-deprecated-declarations
 LDFLAGS = -liniparser -lhamlib -lasound -lcrypto -lssl -lfftw3f -lfftw3 \
-          -lpthread -lm -li2c -lcsdr -lspecbleach -lcw
+          -lpthread -lm -li2c -lcsdr -lspecbleach -lcw -lrt -lmbe-neo
 
 # Mongoose now serves as the websocket transport in radio_websocket.c.
 CFLAGS += -DMG_ENABLE_OPENSSL=1 -DMG_TLS=MG_TLS_OPENSSL
@@ -40,18 +44,27 @@ all: radio_daemon radio_client
 
 TEST_CFLAGS = -O0 -Wall -Wextra -std=gnu11 -fstack-protector \
               -I. -Ihamlib -I/usr/include/iniparser -Iinclude
-TEST_BINS = tests/backend_selection_test tests/compat_surface_test
+TEST_BINS = tests/backend_selection_test tests/compat_surface_test tests/controls_test
 
 # ── daemon-level objects ────────────────────────────────────────
 DAEMON_TOP_OBJS = radio_daemon.o \
                   radio_backend.o \
+                  radio_controls.o \
                   radio_daemon_core.o \
                   radio_pipeline.o \
                   hamlib/radio_hamlib.o \
+                  hamlib/hamlib_digi.o \
                   hamlib/rig_server.o \
+                  cat_server.o \
                   radio_media.o \
                   radio_shm.o \
                   radio_websocket.o \
+                  audio_bridge.o \
+                  audio_headset.o \
+                  shm_audio.o \
+                  loop_audio.o \
+                  vendor/hermes_shm/ring_buffer_posix.o \
+                  vendor/hermes_shm/shm_posix.o \
                   cfg_utils.o \
                   shm_utils.o \
                   mongoose.o
@@ -75,6 +88,7 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              dsp/sbitx_ft8.o \
              dsp/sbitx_cw.o \
              dsp/sbitx_rtty.o \
+             dsp/sbitx_dstar.o \
              sbitx/sbitx_si5351.o \
              sbitx/ring_buffer.o \
              $(SBITX_GPIOLIB_OBJS) \
@@ -106,13 +120,19 @@ test: compat-tests
 compat-tests: $(TEST_BINS)
 	./tests/backend_selection_test
 	./tests/compat_surface_test
+	./tests/controls_test
 
 tests/backend_selection_test: tests/backend_selection_test.c cfg_utils.c cfg_utils.h \
                               radio_backend.c radio_backend.h radio_daemon_core.h \
                               hamlib/radio_hamlib.h radio.h \
                               tests/fixtures/backend-default.ini \
                               tests/fixtures/backend-zbitx.ini
-	$(CC) $(TEST_CFLAGS) tests/backend_selection_test.c hamlib/rig_server.c -o $@ -liniparser -lpthread
+	$(CC) $(TEST_CFLAGS) tests/backend_selection_test.c hamlib/rig_server.c radio_controls.c cat_server.c -o $@ -liniparser -lpthread -lm
+
+tests/controls_test: tests/controls_test.c radio_controls.c radio_controls.h \
+                     radio_backend.c radio_backend.h cat_server.c cat_server.h \
+                     cfg_utils.c cfg_utils.h radio.h
+	$(CC) $(TEST_CFLAGS) tests/controls_test.c hamlib/rig_server.c cat_server.c -o $@ -liniparser -lpthread -lm
 
 tests/compat_surface_test: tests/compat_surface_test.c radio_shm.c radio_shm.h \
                            radio_pipeline.c radio_pipeline.h \
@@ -127,6 +147,7 @@ sysconfdir ?= /etc
 install: radio_daemon radio_client
 	install -D -m 755 radio_daemon  $(DESTDIR)$(prefix)/bin/radio_daemon
 	install -D -m 755 radio_client  $(DESTDIR)$(prefix)/bin/radio_client
+	install -D -m 644 radiod.service $(DESTDIR)/etc/systemd/system/radiod.service
 	if [ ! -e $(DESTDIR)$(prefix)/bin/sbitx_client ]; then \
 	  ln -sf radio_client $(DESTDIR)$(prefix)/bin/sbitx_client; \
 	fi
@@ -137,8 +158,13 @@ install: radio_daemon radio_client
 	  install -m 644 config/user.ini $(DESTDIR)$(sysconfdir)/hermes/user.ini
 	install -d $(DESTDIR)$(sysconfdir)/hermes/web
 	install -m 644 web/index.html $(DESTDIR)$(sysconfdir)/hermes/web/index.html
+	install -D -m 644 config/avahi/hermes-radio.service \
+	  $(DESTDIR)$(sysconfdir)/hermes/avahi/hermes-radio.service
 
 # ── clean ───────────────────────────────────────────────────────
 clean:
 	rm -f radio_daemon radio_client \
-	      $(DAEMON_OBJS) $(TEST_BINS)
+	      $(DAEMON_OBJS) $(DAEMON_OBJS:.o=.d) $(TEST_BINS)
+
+# Auto-generated header dependencies (from -MMD). Hyphen: ignore on first build.
+-include $(DAEMON_OBJS:.o=.d)

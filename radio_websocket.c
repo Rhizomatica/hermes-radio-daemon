@@ -22,6 +22,7 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +32,7 @@
 #include "mongoose.h"
 #include "radio.h"
 #include "radio_backend.h"
+#include "radio_controls.h"
 #include "radio_websocket.h"
 #include "radio_media.h"
 #include "radio_pipeline.h"
@@ -53,7 +55,7 @@ typedef struct {
 } websocket_ctx;
 
 typedef struct {
-    time_t   last_status;
+    int64_t  last_status;     /* mg_millis() at last status send (ms) */
     uint32_t last_rx_spectrum_seq;
     uint32_t last_tx_spectrum_seq;
 } ws_conn_state;
@@ -74,6 +76,7 @@ static const char *mode_to_string(uint16_t mode)
     case MODE_DRM:  return "DRM";
     case MODE_FT8:  return "FT8";
     case MODE_RTTY: return "RTTY";
+    case MODE_DSTAR: return "DSTAR";
     default:        return "USB";
     }
 }
@@ -88,6 +91,7 @@ static bool mode_from_string(const char *name, uint16_t *out)
     else if (!strcasecmp(name, "DRM"))  *out = MODE_DRM;
     else if (!strcasecmp(name, "FT8"))  *out = MODE_FT8;
     else if (!strcasecmp(name, "RTTY")) *out = MODE_RTTY;
+    else if (!strcasecmp(name, "DSTAR")) *out = MODE_DSTAR;
     else                                return false;
     return true;
 }
@@ -139,6 +143,7 @@ static bool extract_json_int(const char *json, const char *key, long *out)
     if (!start) return false;
     start++;
     while (*start == ' ' || *start == '\t') start++;
+    if (*start == '"') start++;   /* tolerate quoted numbers, e.g. UI "value":"3" */
     *out = strtol(start, NULL, 10);
     return true;
 }
@@ -155,6 +160,30 @@ static bool extract_json_string_any(const char *json, const char *key,
 {
     return extract_json_string(json, key, out, out_len) ||
            extract_json_string(json, fallback, out, out_len);
+}
+
+static bool extract_json_double(const char *json, const char *key, double *out)
+{
+    char pattern[64];
+    char *start;
+
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    start = strstr((char *) json, pattern);
+    if (!start) return false;
+    start = strchr(start + strlen(pattern), ':');
+    if (!start) return false;
+    start++;
+    while (*start == ' ' || *start == '\t') start++;
+    if (*start == '"') start++;   /* tolerate quoted numbers from the UI */
+    *out = strtod(start, NULL);
+    return true;
+}
+
+static bool extract_json_double_any(const char *json, const char *key,
+                                    const char *fallback, double *out)
+{
+    return extract_json_double(json, key, out) ||
+           extract_json_double(json, fallback, out);
 }
 
 /* ───────────────────────── helpers: WS sending ───────────────────────── */
@@ -202,10 +231,88 @@ static void send_value_string(struct mg_connection *c, const char *cmd, const ch
 
 /* ─────────────────────── helpers: status JSON ─────────────────────── */
 
+/* Escape a station message for embedding in a JSON string. uucico writes
+ * file names into it, so quotes/backslashes/control chars must not be able
+ * to corrupt the whole state frame. */
+/* Control replies carry the control's name alongside the value so a UI
+ * updating many widgets can route the answer without tracking requests. */
+static void send_ctrl_value(struct mg_connection *c, const char *cmd,
+                            const char *name, double value)
+{
+    char json[192];
+
+    /* NaN and Infinity are not JSON numbers; a rig that answers a meter with
+     * nonsense must not be allowed to emit a frame the client cannot parse. */
+    if (!radio_controls_value_ok(value))
+    {
+        snprintf(json, sizeof(json),
+                 "{\"cmd\":\"%s\",\"ok\":false,\"name\":\"%s\","
+                 "\"error\":\"rig returned an unusable value\"}",
+                 cmd, name);
+        ws_send_text(c, json);
+        return;
+    }
+
+    snprintf(json, sizeof(json),
+             "{\"cmd\":\"%s\",\"ok\":true,\"name\":\"%s\",\"value\":%g}",
+             cmd, name, value);
+    ws_send_text(c, json);
+}
+
+/* "not supported" is a normal answer here — it is how a client learns that
+ * this rig has no such control — so it is reported distinctly from a rig
+ * that failed to answer. */
+static void send_ctrl_error(struct mg_connection *c, const char *cmd,
+                            const char *name, int rc)
+{
+    const char *detail = rc == RADIO_CTRL_ENOTSUP ? "not supported by this rig"
+                       : rc == RADIO_CTRL_EINVAL  ? "invalid control or value"
+                                                  : "rig did not answer";
+    char json[224];
+    snprintf(json, sizeof(json),
+             "{\"cmd\":\"%s\",\"ok\":false,\"name\":\"%s\",\"error\":\"%s\"}",
+             cmd, name, detail);
+    ws_send_text(c, json);
+}
+
+static void json_escape(const char *in, char *out, size_t out_len)
+{
+    size_t o = 0;
+    for (size_t i = 0; in[i] && o + 2 < out_len; i++)
+    {
+        unsigned char ch = (unsigned char) in[i];
+        if (ch == '"' || ch == '\\') { out[o++] = '\\'; out[o++] = (char) ch; }
+        else if (ch < 0x20)          { out[o++] = ' '; }
+        else                         { out[o++] = (char) ch; }
+    }
+    out[o] = '\0';
+}
+
 static void build_status_json(radio *radio_h, char *json, size_t json_len)
 {
     uint32_t active = radio_h->profile_active_idx;
     if (active >= radio_h->profiles_count) active = 0;
+
+    /* Latched station message (uucp transfer progress etc.), pumped from the
+     * SHM connector by radio_shm.c. Kept in every frame like the legacy
+     * sbitx_websocket "message" field. */
+    char message[RADIO_MESSAGE_MAX];
+    char message_esc[RADIO_MESSAGE_MAX * 2];
+    pthread_mutex_lock(&radio_h->message_mutex);
+    snprintf(message, sizeof(message), "%s", radio_h->message);
+    pthread_mutex_unlock(&radio_h->message_mutex);
+    json_escape(message, message_esc, sizeof(message_esc));
+
+    /* The D-STAR callsigns come straight from a decoder that does emit garbage
+     * on a bad header, so they can hold quotes, backslashes or control bytes.
+     * Unescaped, one of those would corrupt the whole status frame and break
+     * every client parsing it, not just the D-STAR display. */
+    char ds_my[32], ds_ur[32], ds_r1[32], ds_r2[32], ds_sfx[24];
+    json_escape(radio_h->dstar_rx_mycall, ds_my,  sizeof(ds_my));
+    json_escape(radio_h->dstar_rx_urcall, ds_ur,  sizeof(ds_ur));
+    json_escape(radio_h->dstar_rx_rpt1,   ds_r1,  sizeof(ds_r1));
+    json_escape(radio_h->dstar_rx_rpt2,   ds_r2,  sizeof(ds_r2));
+    json_escape(radio_h->dstar_rx_suffix, ds_sfx, sizeof(ds_sfx));
 
     snprintf(json, json_len,
         "{\"type\":\"state\",\"profile\":%u,\"frequency\":%u,\"freq\":%u,"
@@ -215,14 +322,24 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
          "\"system_is_connected\":%s,\"system_is_ok\":%s,"
          "\"bfo\":%u,\"serial\":%u,\"step_size\":%u,\"tone\":%s,"
          "\"reflected_threshold\":%u,\"timeout\":%d,"
+         "\"operating_mode\":%u,\"filter_width\":%u,"
+         "\"fwd\":%u,\"ref_power\":%u,\"swr\":%u,"
+         "\"s_meter\":%d,"
          "\"recording_rx\":%s,\"recording_tx\":%s,"
-         "\"audio_sample_rate\":%u,\"message_available\":%s,"
+         "\"audio_sample_rate\":%u,"
+         "\"message\":\"%s\",\"message_available\":%s,"
          "\"backend\":\"%s\",\"digital_voice\":%s,\"protection\":%s,"
          "\"pipeline\":\"%s\",\"pipeline_mode\":\"%s\","
          "\"pipeline_media\":\"%s\",\"pipeline_runtime\":\"%s\","
          "\"stream_rx_audio\":%s,\"stream_tx_audio\":%s,"
          "\"stream_spectrum\":%s,\"stream_recording\":%s,"
-         "\"audio_bridge\":%s}",
+         "\"audio_bridge\":%s,"
+         /* Last D-STAR header decoded on receive. dstar_heard increments per
+          * header, so a client can distinguish a fresh decode from a stale
+          * one and clear its display when a new station takes over. */
+         "\"dstar_mycall\":\"%s\",\"dstar_urcall\":\"%s\","
+         "\"dstar_rpt1\":\"%s\",\"dstar_rpt2\":\"%s\","
+         "\"dstar_suffix\":\"%s\",\"dstar_heard\":%u}",
          active,
          radio_h->profiles[active].freq, radio_h->profiles[active].freq,
          mode_to_string(radio_h->profiles[active].mode),
@@ -235,9 +352,14 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
          radio_h->bfo_frequency, radio_h->serial_number, radio_h->step_size,
          radio_h->tone_generation ? "true" : "false",
          radio_h->reflected_threshold, radio_h->profile_timeout,
+         radio_h->profiles[active].operating_mode,
+         radio_h->profiles[active].filter_width,
+         radio_h->fwd_power, radio_h->ref_power, radio_backend_get_swr(radio_h),
+         (int) radio_h->s_meter_db,
          radio_h->rx_recording.active ? "true" : "false",
          radio_h->tx_recording.active ? "true" : "false",
          radio_h->audio_sample_rate,
+         message_esc,
          radio_h->message_available ? "true" : "false",
          backend_to_string(radio_h->backend_kind),
          radio_h->profiles[active].digital_voice ? "true" : "false",
@@ -253,7 +375,9 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
          (radio_pipeline_has_capability(radio_h, RADIO_PIPELINE_CAP_RX_RECORDING) ||
           radio_pipeline_has_capability(radio_h, RADIO_PIPELINE_CAP_TX_RECORDING))
             ? "true" : "false",
-         radio_pipeline_uses_daemon_audio_bridge(radio_h) ? "true" : "false");
+         radio_pipeline_uses_daemon_audio_bridge(radio_h) ? "true" : "false",
+         ds_my, ds_ur, ds_r1, ds_r2, ds_sfx,
+         (unsigned) radio_h->dstar_rx_heard);
 }
 
 /* ─────────────────────── command dispatcher ─────────────────────── */
@@ -282,7 +406,7 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
 
     if (!strcmp(cmd, "get_state"))
     {
-        char status[1024];
+        char status[2048];
         build_status_json(radio_h, status, sizeof(status));
         ws_send_text(c, status);
         return;
@@ -424,13 +548,15 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
     if (!strcmp(cmd, "get_message"))
     {
         char message[RADIO_MESSAGE_MAX];
-        char status[RADIO_MESSAGE_MAX + 128];
+        char message_esc[RADIO_MESSAGE_MAX * 2];
+        char status[sizeof(message_esc) + 128];
         pthread_mutex_lock(&radio_h->message_mutex);
         snprintf(message, sizeof(message), "%s", radio_h->message);
         pthread_mutex_unlock(&radio_h->message_mutex);
+        json_escape(message, message_esc, sizeof(message_esc));
         snprintf(status, sizeof(status),
                  "{\"ok\":true,\"cmd\":\"%s\",\"message\":\"%s\",\"message_available\":%s}",
-                 cmd, message, radio_h->message_available ? "true" : "false");
+                 cmd, message_esc, radio_h->message_available ? "true" : "false");
         ws_send_text(c, status); return;
     }
 
@@ -500,13 +626,15 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
 
     if (!strcmp(cmd, "digi_get_config"))
     {
-        char json[256];
+        char json[384];
         snprintf(json, sizeof(json),
             "{\"ok\":true,\"cmd\":\"digi_get_config\","
             "\"cw_wpm\":%d,\"cw_pitch\":%d,"
-            "\"rtty_baud\":%d,\"rtty_mark\":%d,\"rtty_shift\":%d}",
+            "\"rtty_baud\":%d,\"rtty_mark\":%d,\"rtty_shift\":%d,"
+            "\"dstar_verbose\":%d,\"dstar_denoise\":%d}",
             radio_h->cw_wpm, radio_h->cw_pitch,
-            radio_h->rtty_baud, radio_h->rtty_mark, radio_h->rtty_shift);
+            radio_h->rtty_baud, radio_h->rtty_mark, radio_h->rtty_shift,
+            radio_h->dstar_verbose, radio_h->dstar_denoise);
         ws_send_text(c, json); return;
     }
 
@@ -517,13 +645,325 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
         if (!extract_json_string(payload, "key", key, sizeof(key)) ||
             !extract_json_int(payload, "value", &v))
         { send_cmd_error(c, cmd, "missing key or value"); return; }
-        if      (!strcmp(key, "cw_wpm"))     radio_h->cw_wpm     = (uint16_t) v;
-        else if (!strcmp(key, "cw_pitch"))   radio_h->cw_pitch   = (uint16_t) v;
-        else if (!strcmp(key, "rtty_baud"))  radio_h->rtty_baud  = (uint16_t) v;
-        else if (!strcmp(key, "rtty_mark"))  radio_h->rtty_mark  = (uint16_t) v;
-        else if (!strcmp(key, "rtty_shift")) radio_h->rtty_shift = (uint16_t) v;
+        if      (!strcmp(key, "cw_wpm"))       radio_h->cw_wpm       = (uint16_t) v;
+        else if (!strcmp(key, "cw_pitch"))     radio_h->cw_pitch     = (uint16_t) v;
+        else if (!strcmp(key, "rtty_baud"))    radio_h->rtty_baud    = (uint16_t) v;
+        else if (!strcmp(key, "rtty_mark"))    radio_h->rtty_mark    = (uint16_t) v;
+        else if (!strcmp(key, "rtty_shift"))   radio_h->rtty_shift   = (uint16_t) v;
+        else if (!strcmp(key, "dstar_verbose")) radio_h->dstar_verbose = (uint16_t) v;
+        else if (!strcmp(key, "dstar_denoise")) radio_h->dstar_denoise = (uint16_t) v;
         else { send_cmd_error(c, cmd, "unknown key"); return; }
         send_cmd_result(c, cmd, true, "OK"); return;
+    }
+
+    /* ── generic rig controls ────────────────────────────────────────
+     * The same control vocabulary the rigctld server speaks: whatever
+     * the connected rig exposes, named as Hamlib names it. get_controls
+     * is the capability report the web panel builds itself from. */
+
+    /* The rig's own mode name (PKTUSB, DIGL, ...), which the internal
+     * MODE_* vocabulary cannot express. */
+    if (!strcmp(cmd, "get_rig_mode"))
+    {
+        char mode[16] = {0};
+        uint32_t width = 0;
+        int rc = radio_backend_get_mode_name(radio_h, mode, sizeof(mode), &width);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, "MODE", rc); return; }
+        char json[160];
+        snprintf(json, sizeof(json),
+                 "{\"cmd\":\"get_rig_mode\",\"ok\":true,\"value\":\"%s\",\"width\":%u}",
+                 mode, width);
+        ws_send_text(c, json);
+        return;
+    }
+
+    if (!strcmp(cmd, "set_rig_mode"))
+    {
+        char mode[16];
+        long width = 0;
+        if (!extract_json_string_any(payload, "mode", "value", mode, sizeof(mode)))
+        { send_cmd_error(c, cmd, "missing mode"); return; }
+        extract_json_int(payload, "width", &width);
+        int rc = radio_backend_set_mode_name(radio_h, mode,
+                                             width > 0 ? (uint32_t) width : 0);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, mode, rc); return; }
+        send_cmd_result(c, cmd, true, "OK");
+        return;
+    }
+
+    if (!strcmp(cmd, "get_controls"))
+    {
+        char caps[16384];
+        if (radio_controls_caps_json(radio_h, caps, sizeof(caps)) == RADIO_CTRL_OK)
+            ws_send_text(c, caps);
+        else
+            send_cmd_error(c, cmd, "control enumeration failed");
+        return;
+    }
+
+    /* One CAT read per gettable control — on demand only, never in the
+     * status broadcast. Pass "names":"AF,RF,NB" to refresh just a few. */
+    if (!strcmp(cmd, "get_control_values"))
+    {
+        char values[16384];
+        char names[512] = {0};
+        extract_json_string(payload, "names", names, sizeof(names));
+        if (radio_controls_values_json(radio_h, names[0] ? names : NULL,
+                                       values, sizeof(values)) == RADIO_CTRL_OK)
+            ws_send_text(c, values);
+        else
+            send_cmd_error(c, cmd, "control read failed");
+        return;
+    }
+
+    if (!strcmp(cmd, "get_level") || !strcmp(cmd, "get_parm"))
+    {
+        char name[RADIO_CTRL_NAME_MAX];
+        double v = 0.0;
+        if (!extract_json_string_any(payload, "name", "key", name, sizeof(name)))
+        { send_cmd_error(c, cmd, "missing name"); return; }
+
+        int rc = !strcmp(cmd, "get_level") ? radio_backend_get_level(radio_h, name, &v)
+                                           : radio_backend_get_parm(radio_h, name, &v);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, name, rc); return; }
+        send_ctrl_value(c, cmd, name, v);
+        return;
+    }
+
+    if (!strcmp(cmd, "set_level") || !strcmp(cmd, "set_parm"))
+    {
+        char name[RADIO_CTRL_NAME_MAX];
+        double v = 0.0;
+        radio_ctrl_info info;
+        if (!extract_json_string_any(payload, "name", "key", name, sizeof(name)) ||
+            !extract_json_double_any(payload, "value", "level", &v))
+        { send_cmd_error(c, cmd, "missing name or value"); return; }
+
+        if (radio_controls_find(radio_h, name, &info))
+            v = radio_controls_clamp(&info, v);
+
+        int rc = !strcmp(cmd, "set_level") ? radio_backend_set_level(radio_h, name, v)
+                                           : radio_backend_set_parm(radio_h, name, v);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, name, rc); return; }
+        send_ctrl_value(c, cmd, name, v);
+        return;
+    }
+
+    if (!strcmp(cmd, "get_func"))
+    {
+        char name[RADIO_CTRL_NAME_MAX];
+        int on = 0;
+        if (!extract_json_string_any(payload, "name", "key", name, sizeof(name)))
+        { send_cmd_error(c, cmd, "missing name"); return; }
+
+        int rc = radio_backend_get_func(radio_h, name, &on);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, name, rc); return; }
+        send_ctrl_value(c, cmd, name, on);
+        return;
+    }
+
+    if (!strcmp(cmd, "set_func"))
+    {
+        char name[RADIO_CTRL_NAME_MAX];
+        if (!extract_json_string_any(payload, "name", "key", name, sizeof(name)) ||
+            !extract_json_int_any(payload, "value", "enabled", &value))
+        { send_cmd_error(c, cmd, "missing name or value"); return; }
+
+        int rc = radio_backend_set_func(radio_h, name, value != 0);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, name, rc); return; }
+        send_ctrl_value(c, cmd, name, value != 0 ? 1 : 0);
+        return;
+    }
+
+    /* ── VFO, split, RIT/XIT, width, antenna, memory, tuner ───────── */
+
+    if (!strcmp(cmd, "get_vfo"))
+    {
+        char vfo[16] = {0};
+        int rc = radio_backend_get_vfo(radio_h, vfo, sizeof(vfo));
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, "VFO", rc); return; }
+        send_value_string(c, cmd, vfo);
+        return;
+    }
+
+    if (!strcmp(cmd, "set_vfo"))
+    {
+        char vfo[16];
+        if (!extract_json_string_any(payload, "vfo", "value", vfo, sizeof(vfo)))
+        { send_cmd_error(c, cmd, "missing vfo"); return; }
+        int rc = radio_backend_set_vfo(radio_h, vfo);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, vfo, rc); return; }
+        send_cmd_result(c, cmd, true, "OK");
+        return;
+    }
+
+    if (!strcmp(cmd, "get_split"))
+    {
+        int on = 0;
+        char tx_vfo[16] = {0};
+        int rc = radio_backend_get_split(radio_h, &on, tx_vfo, sizeof(tx_vfo));
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, "SPLIT", rc); return; }
+        char json[160];
+        snprintf(json, sizeof(json),
+                 "{\"cmd\":\"get_split\",\"ok\":true,\"value\":%d,\"tx_vfo\":\"%s\"}",
+                 on, tx_vfo[0] ? tx_vfo : "VFOB");
+        ws_send_text(c, json);
+        return;
+    }
+
+    if (!strcmp(cmd, "set_split"))
+    {
+        char tx_vfo[16] = {0};
+        if (!extract_json_int_any(payload, "enabled", "value", &value))
+        { send_cmd_error(c, cmd, "missing value"); return; }
+        extract_json_string(payload, "tx_vfo", tx_vfo, sizeof(tx_vfo));
+        int rc = radio_backend_set_split(radio_h, value != 0, tx_vfo[0] ? tx_vfo : NULL);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, "SPLIT", rc); return; }
+        send_cmd_result(c, cmd, true, "OK");
+        return;
+    }
+
+    if (!strcmp(cmd, "get_split_freq"))
+    {
+        uint32_t hz = 0;
+        int rc = radio_backend_get_split_freq(radio_h, &hz);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, "SPLIT_FREQ", rc); return; }
+        send_value_number(c, cmd, hz);
+        return;
+    }
+
+    if (!strcmp(cmd, "set_split_freq"))
+    {
+        if (!extract_json_int_any(payload, "frequency", "value", &value) || value < 0)
+        { send_cmd_error(c, cmd, "missing frequency"); return; }
+        int rc = radio_backend_set_split_freq(radio_h, (uint32_t) value);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, "SPLIT_FREQ", rc); return; }
+        send_value_number(c, cmd, value);
+        return;
+    }
+
+    if (!strcmp(cmd, "get_split_mode"))
+    {
+        char mode[16] = {0};
+        uint32_t width = 0;
+        int rc = radio_backend_get_split_mode(radio_h, mode, sizeof(mode), &width);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, "SPLIT_MODE", rc); return; }
+        char json[160];
+        snprintf(json, sizeof(json),
+                 "{\"cmd\":\"get_split_mode\",\"ok\":true,\"value\":\"%s\",\"width\":%u}",
+                 mode, width);
+        ws_send_text(c, json);
+        return;
+    }
+
+    if (!strcmp(cmd, "set_split_mode"))
+    {
+        char mode[16];
+        long width = 0;
+        if (!extract_json_string_any(payload, "mode", "value", mode, sizeof(mode)))
+        { send_cmd_error(c, cmd, "missing mode"); return; }
+        extract_json_int(payload, "width", &width);
+        int rc = radio_backend_set_split_mode(radio_h, mode,
+                                              width > 0 ? (uint32_t) width : 0);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, "SPLIT_MODE", rc); return; }
+        send_cmd_result(c, cmd, true, "OK");
+        return;
+    }
+
+    if (!strcmp(cmd, "get_rit") || !strcmp(cmd, "get_xit"))
+    {
+        int32_t hz = 0;
+        int rc = !strcmp(cmd, "get_rit") ? radio_backend_get_rit(radio_h, &hz)
+                                         : radio_backend_get_xit(radio_h, &hz);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, cmd + 4, rc); return; }
+        send_value_number(c, cmd, hz);
+        return;
+    }
+
+    if (!strcmp(cmd, "set_rit") || !strcmp(cmd, "set_xit"))
+    {
+        if (!extract_json_int_any(payload, "offset", "value", &value))
+        { send_cmd_error(c, cmd, "missing value"); return; }
+        int rc = !strcmp(cmd, "set_rit") ? radio_backend_set_rit(radio_h, (int32_t) value)
+                                         : radio_backend_set_xit(radio_h, (int32_t) value);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, cmd + 4, rc); return; }
+        send_value_number(c, cmd, value);
+        return;
+    }
+
+    if (!strcmp(cmd, "get_width"))
+    {
+        uint32_t hz = 0;
+        int rc = radio_backend_get_width(radio_h, &hz);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, "WIDTH", rc); return; }
+        send_value_number(c, cmd, hz);
+        return;
+    }
+
+    if (!strcmp(cmd, "set_width"))
+    {
+        if (!extract_json_int_any(payload, "width", "value", &value) || value < 0)
+        { send_cmd_error(c, cmd, "missing width"); return; }
+        int rc = radio_backend_set_width(radio_h, (uint32_t) value);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, "WIDTH", rc); return; }
+        send_value_number(c, cmd, value);
+        return;
+    }
+
+    if (!strcmp(cmd, "get_ant") || !strcmp(cmd, "get_mem") || !strcmp(cmd, "get_powerstat"))
+    {
+        int v = 0;
+        int rc = !strcmp(cmd, "get_ant")  ? radio_backend_get_ant(radio_h, &v)
+               : !strcmp(cmd, "get_mem")  ? radio_backend_get_mem(radio_h, &v)
+                                          : radio_backend_get_powerstat(radio_h, &v);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, cmd + 4, rc); return; }
+        send_value_number(c, cmd, v);
+        return;
+    }
+
+    if (!strcmp(cmd, "set_ant") || !strcmp(cmd, "set_mem") || !strcmp(cmd, "set_powerstat"))
+    {
+        if (!extract_json_int_any(payload, "value", "channel", &value))
+        { send_cmd_error(c, cmd, "missing value"); return; }
+        int rc = !strcmp(cmd, "set_ant")  ? radio_backend_set_ant(radio_h, (int) value)
+               : !strcmp(cmd, "set_mem")  ? radio_backend_set_mem(radio_h, (int) value)
+                                          : radio_backend_set_powerstat(radio_h, (int) value);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, cmd + 4, rc); return; }
+        send_value_number(c, cmd, value);
+        return;
+    }
+
+    /* Antenna tuner cycle, band up/down, VFO copy/exchange, ... */
+    if (!strcmp(cmd, "vfo_op"))
+    {
+        char op[24];
+        if (!extract_json_string_any(payload, "op", "value", op, sizeof(op)))
+        { send_cmd_error(c, cmd, "missing op"); return; }
+        int rc = radio_backend_vfo_op(radio_h, op);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, op, rc); return; }
+        send_cmd_result(c, cmd, true, "OK");
+        return;
+    }
+
+    /* Rig-side keyer. Distinct from digi_send, which keys CW in software
+     * through the audio path. */
+    if (!strcmp(cmd, "send_morse"))
+    {
+        char text[DIGI_TX_MSG_MAX];
+        if (!extract_json_string_any(payload, "text", "value", text, sizeof(text)))
+        { send_cmd_error(c, cmd, "missing text"); return; }
+        int rc = radio_backend_send_morse(radio_h, text);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, "MORSE", rc); return; }
+        send_cmd_result(c, cmd, true, "OK");
+        return;
+    }
+
+    if (!strcmp(cmd, "stop_morse"))
+    {
+        int rc = radio_backend_stop_morse(radio_h);
+        if (rc != RADIO_CTRL_OK) { send_ctrl_error(c, cmd, "MORSE", rc); return; }
+        send_cmd_result(c, cmd, true, "OK");
+        return;
     }
 
     send_cmd_error(c, cmd, "unsupported cmd");
@@ -531,17 +971,22 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
 
 /* ─────────────────────── broadcasts ─────────────────────── */
 
+/* Status broadcast floor: at most one state frame per connection per this many
+ * ms. Was 1 Hz (second-resolution), which made front-panel/UI changes feel
+ * ~1 s laggy; 150 ms is responsive yet still light (~7 Hz, ~1 KB each). */
+#define STATUS_MIN_INTERVAL_MS 150
+
 static void broadcast_status(websocket_ctx *ctx)
 {
-    char json[1024];
-    time_t now = time(NULL);
+    char json[2048];
+    int64_t now = mg_millis();
     bool built = false;
 
     for (struct mg_connection *c = ctx->mgr.conns; c != NULL; c = c->next)
     {
         if (!c->is_websocket || !c->is_accepted || c->is_draining) continue;
         ws_conn_state *st = (ws_conn_state *) c->fn_data;
-        if (st && st->last_status == now) continue;
+        if (st && now - st->last_status < STATUS_MIN_INTERVAL_MS) continue;
 
         if (!built) { build_status_json(ctx->radio_h, json, sizeof(json)); built = true; }
         mg_ws_send(c, json, strlen(json), WEBSOCKET_OP_TEXT);
@@ -554,7 +999,42 @@ static void broadcast_rx_audio(websocket_ctx *ctx)
     if (!radio_pipeline_supports_websocket_rx_audio(ctx->radio_h)) return;
 
     int16_t samples[WS_RX_CHUNK_SAMPLES];
-    size_t  n = radio_media_pop_rx_audio(ctx->radio_h, samples, WS_RX_CHUNK_SAMPLES);
+    size_t  n;
+
+    /* When RADAE is active on hamlib, the hamlib_digi pump decodes the
+     * rig audio into rx_radae_ring; broadcast from there instead of
+     * the raw rx_audio_ring (which carries pre-decode rig audio).
+     * D-STAR on hamlib works the same way through rx_dstar_ring. */
+    uint32_t prof = ctx->radio_h->profile_active_idx;
+    bool radae_active = (ctx->radio_h->backend_kind == RADIO_BACKEND_HAMLIB) &&
+                        ctx->radio_h->profiles[prof].digital_voice;
+    bool dstar_active = (ctx->radio_h->backend_kind == RADIO_BACKEND_HAMLIB) &&
+                        ctx->radio_h->profiles[prof].mode == MODE_DSTAR;
+    if (radae_active) {
+        audio_ring_buffer *r = &ctx->radio_h->rx_radae_ring;
+        pthread_mutex_lock(&r->mutex);
+        size_t take = 0;
+        while (take < WS_RX_CHUNK_SAMPLES && r->count > 0) {
+            samples[take++] = r->samples[r->read_pos];
+            r->read_pos = (r->read_pos + 1) % r->capacity;
+            r->count--;
+        }
+        pthread_mutex_unlock(&r->mutex);
+        n = take;
+    } else if (dstar_active) {
+        audio_ring_buffer *r = &ctx->radio_h->rx_dstar_ring;
+        pthread_mutex_lock(&r->mutex);
+        size_t take = 0;
+        while (take < WS_RX_CHUNK_SAMPLES && r->count > 0) {
+            samples[take++] = r->samples[r->read_pos];
+            r->read_pos = (r->read_pos + 1) % r->capacity;
+            r->count--;
+        }
+        pthread_mutex_unlock(&r->mutex);
+        n = take;
+    } else {
+        n = radio_media_pop_rx_audio(ctx->radio_h, samples, WS_RX_CHUNK_SAMPLES);
+    }
     if (n == 0) return;
 
     uint8_t frame[1 + sizeof(samples)];
@@ -576,12 +1056,18 @@ static void broadcast_spectrum(websocket_ctx *ctx, bool tx)
     if (!radio_media_get_spectrum(ctx->radio_h, tx, bins, WATERFALL_BINS, &seq, &sample_rate))
         return;
 
-    uint8_t frame[1 + sizeof(uint32_t) + sizeof(uint16_t) + sizeof(bins)];
+    /* Frame: [op u8][sample_rate u32][nbins u16][bin_hz f32][bins f32...].
+     * bin_hz = sample_rate / fft_size lets the UI label a real RF frequency
+     * axis (dial freq +/- bin*bin_hz, sideband-aware). */
+    float bin_hz = (float) sample_rate / (float) radio_media_spectrum_fft_size();
+    uint8_t frame[1 + sizeof(uint32_t) + sizeof(uint16_t) + sizeof(float) + sizeof(bins)];
     uint16_t nbins = WATERFALL_BINS;
-    frame[0] = tx ? WS_STREAM_TX_SPECTRUM : WS_STREAM_RX_SPECTRUM;
-    memcpy(frame + 1, &sample_rate, sizeof(sample_rate));
-    memcpy(frame + 1 + sizeof(sample_rate), &nbins, sizeof(nbins));
-    memcpy(frame + 1 + sizeof(sample_rate) + sizeof(nbins), bins, sizeof(bins));
+    size_t off = 0;
+    frame[off] = tx ? WS_STREAM_TX_SPECTRUM : WS_STREAM_RX_SPECTRUM; off += 1;
+    memcpy(frame + off, &sample_rate, sizeof(sample_rate)); off += sizeof(sample_rate);
+    memcpy(frame + off, &nbins, sizeof(nbins)); off += sizeof(nbins);
+    memcpy(frame + off, &bin_hz, sizeof(bin_hz)); off += sizeof(bin_hz);
+    memcpy(frame + off, bins, sizeof(bins)); off += sizeof(bins);
 
     for (struct mg_connection *c = ctx->mgr.conns; c != NULL; c = c->next)
     {
@@ -626,10 +1112,10 @@ static void fn(struct mg_connection *c, int ev, void *ev_data)
     else if (ev == MG_EV_HTTP_MSG)
     {
         struct mg_http_message *hm = (struct mg_http_message *) ev_data;
-        if (mg_match(hm->uri, mg_str("/websocket"), NULL))
-        {
+        /* Upgrade to WebSocket if the client sent a WS handshake.
+         * Otherwise serve static files from the web root. */
+        if (mg_http_get_header(hm, "Sec-WebSocket-Key") != NULL)
             mg_ws_upgrade(c, hm, NULL);
-        }
         else
         {
             struct mg_http_serve_opts opts = { .root_dir = ctx->web_root };
@@ -652,7 +1138,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data)
                  "\"tx_spectrum_binary_type\":3}");
         mg_ws_send(c, hello, strlen(hello), WEBSOCKET_OP_TEXT);
 
-        char status[1024];
+        char status[2048];
         build_status_json(ctx->radio_h, status, sizeof(status));
         mg_ws_send(c, status, strlen(status), WEBSOCKET_OP_TEXT);
     }
@@ -713,6 +1199,7 @@ bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid)
 
     if (!radio_h->enable_websocket) return true;
 
+    mg_log_set(MG_LL_ERROR);   /* silence mongoose per-write DEBUG spam */
     mg_mgr_init(&ws_ctx.mgr);
     ws_ctx.mgr.userdata = &ws_ctx;
     ws_ctx.mgr_inited = true;

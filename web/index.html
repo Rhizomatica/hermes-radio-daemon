@@ -24,7 +24,27 @@ label { color: #080; }
 .connected { color: #0f0; }
 .disconnected { color: #f00; }
 #audio-status { font-size: 11px; }
-#spectrum canvas { width: 100%; height: 120px; background: #000; border: 1px solid #333; }
+#spec-scope { width: 100%; height: 90px; background: #001016; display: block; border: 1px solid #333; border-bottom: none; image-rendering: pixelated; }
+    #spec-wf { width: 100%; height: 170px; background: #000; display: block; border: 1px solid #333; image-rendering: pixelated; }
+    #freq-axis { display: flex; justify-content: space-between; font: 11px monospace; color: #8cf; padding: 3px 2px 0; }
+    #smeter { margin-bottom: 8px; }
+    #smeter-scale { display: flex; justify-content: space-between; font: 10px monospace; color: #9cf; padding: 0 1px 1px; }
+    #smeter-bar { height: 16px; background: #111; border: 1px solid #333; overflow: hidden; }
+    #smeter-fill { height: 100%; width: 0%; background: linear-gradient(90deg,#1a7d3a,#3fd06a 45%,#e8d23a 62%,#e85a2a); transition: width 0.12s linear; }
+    #smeter-read { font: 12px monospace; color: #cfe; margin-top: 3px; }
+#ctrl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px; }
+.ctrl { border: 1px solid #262; padding: 5px 6px; border-radius: 3px; background: #0d140d; }
+.ctrl .name { font-size: 11px; color: #8c8; display: flex; justify-content: space-between; }
+.ctrl .name b { color: #0f0; font-weight: normal; }
+.ctrl input[type=range] { width: 100%; margin: 3px 0 0; }
+.ctrl input[type=number] { width: 90px; }
+.ctrl.readonly { border-color: #244; background: #0b1113; }
+.ctrl.readonly .name b { color: #8cf; }
+.ctrl.unsupported { opacity: 0.35; }
+.ctrl-group { margin: 8px 0 4px; color: #6a6; font-size: 12px; border-bottom: 1px solid #242; }
+#ctrl-filter { width: 160px; }
+#rig-state .row { margin-bottom: 4px; }
+#ctrl-status { font-size: 11px; color: #888; margin-top: 6px; }
 .tab { display: inline-block; padding: 4px 12px; cursor: pointer; border: 1px solid #333; border-bottom: none; background: #1a1a1a; }
 .tab.active { background: #222; color: #0f0; }
 .tab-content { display: none; }
@@ -56,9 +76,10 @@ label { color: #080; }
 
 <!-- Tabs -->
 <div style="margin-top: 10px;">
-  <span class="tab active" onclick="show_tab('ctrl')">Control</span>
-  <span class="tab" onclick="show_tab('digi')">Digital Modes</span>
-  <span class="tab" onclick="show_tab('spectrum-tab')">Spectrum</span>
+  <span class="tab active" onclick="show_tab('ctrl', this)">Control</span>
+  <span class="tab" onclick="show_tab('digi', this)">Digital Modes</span>
+  <span class="tab" onclick="show_tab('rig', this)">Rig Controls</span>
+  <span class="tab" onclick="show_tab('spectrum-tab', this)">Spectrum</span>
 </div>
 
 <!-- Control tab -->
@@ -90,9 +111,21 @@ label { color: #080; }
         <option value="DRM">DRM</option>
         <option value="FT8">FT8</option>
         <option value="CW">CW</option><option value="RTTY">RTTY</option>
+        <option value="DSTAR">DSTAR</option>
       </select>
       <button id="ptt-btn" onclick="ptt_toggle()">PTT ON</button>
       <button onclick="send_cmd('get_state')">Refresh</button>
+    </div>
+    <!-- D-STAR: last header decoded on receive. Hidden unless the radio is in
+         DSTAR, since these fields mean nothing in any other mode. -->
+    <div id="dstar-panel" class="row" style="display:none; margin-top:6px; flex-wrap:wrap; gap:10px">
+      <strong style="color:#8cf">D-STAR RX</strong>
+      <span>MY: <code id="ds-my">--------</code></span>
+      <span>UR: <code id="ds-ur">--------</code></span>
+      <span>RPT1: <code id="ds-r1">--------</code></span>
+      <span>RPT2: <code id="ds-r2">--------</code></span>
+      <span>headers: <code id="ds-heard">0</code></span>
+      <span id="ds-age" style="color:#888"></span>
     </div>
     <div id="state" style="margin-top:6px; font-size:12px; color:#888;"></div>
   </div>
@@ -134,11 +167,91 @@ label { color: #080; }
   </div>
 </div>
 
+<!-- Rig controls tab: everything on it is built from what the rig reports
+     through get_controls, so it shows this radio's knobs and no others. -->
+<div id="tab-rig" class="tab-content">
+  <div class="panel" id="rig-state">
+    <h2>Rig State</h2>
+    <div class="row">
+      <label>VFO</label>
+      <select id="rig-vfo" onchange="send_obj({cmd:'set_vfo', vfo:this.value})">
+        <option>VFOA</option><option>VFOB</option>
+      </select>
+      <label><input type="checkbox" id="rig-split" onchange="send_obj({cmd:'set_split', enabled:this.checked?1:0, tx_vfo:'VFOB'})"> Split</label>
+      <label>TX freq</label>
+      <input type="number" id="rig-split-freq" size="9" onchange="send_obj({cmd:'set_split_freq', frequency:parseInt(this.value)||0})">
+    </div>
+    <div class="row">
+      <label>RIT</label>
+      <input type="number" id="rig-rit" value="0" step="10" onchange="send_obj({cmd:'set_rit', value:parseInt(this.value)||0})">
+      <label>XIT</label>
+      <input type="number" id="rig-xit" value="0" step="10" onchange="send_obj({cmd:'set_xit', value:parseInt(this.value)||0})">
+      <button onclick="send_obj({cmd:'set_rit',value:0}); send_obj({cmd:'set_xit',value:0}); $('rig-rit').value=0; $('rig-xit').value=0;">Clear</button>
+    </div>
+    <div class="row">
+      <label>Filter width (Hz)</label>
+      <input type="number" id="rig-width" step="50" onchange="send_obj({cmd:'set_width', value:parseInt(this.value)||0})">
+      <label>Antenna</label>
+      <input type="number" id="rig-ant" min="1" max="8" onchange="send_obj({cmd:'set_ant', value:parseInt(this.value)||1})">
+      <label>Memory</label>
+      <input type="number" id="rig-mem" min="0" onchange="send_obj({cmd:'set_mem', value:parseInt(this.value)||0})">
+    </div>
+    <div class="row">
+      <label>Rig mode</label>
+      <input type="text" id="rig-mode" size="8" placeholder="PKTUSB"
+             onchange="send_obj({cmd:'set_rig_mode', mode:this.value, width:parseInt($('rig-width').value)||0})">
+      <button onclick="send_obj({cmd:'vfo_op', op:'TUNE'})">TUNE</button>
+      <button onclick="send_obj({cmd:'vfo_op', op:'BAND_UP'})">Band +</button>
+      <button onclick="send_obj({cmd:'vfo_op', op:'BAND_DOWN'})">Band -</button>
+      <button onclick="refresh_rig_state()">Read rig</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Controls</h2>
+    <div class="row">
+      <input type="text" id="ctrl-filter" placeholder="filter, e.g. NR" oninput="render_controls()">
+      <button onclick="send_obj({cmd:'get_controls'})">Reload capabilities</button>
+      <button onclick="refresh_control_values()">Refresh values</button>
+      <label><input type="checkbox" id="ctrl-show-ro" checked onchange="render_controls()"> show meters</label>
+    </div>
+    <div id="ctrl-status">Connect to load this rig's controls.</div>
+    <div id="ctrl-grid"></div>
+  </div>
+</div>
+
 <!-- Spectrum tab -->
 <div id="tab-spectrum-tab" class="tab-content">
   <div class="panel">
-    <h2>RX Spectrum</h2>
-    <div id="spectrum"><canvas id="spec-canvas"></canvas></div>
+    <h2>RX Spectrum &amp; Waterfall</h2>
+    <div class="row" style="margin-bottom:6px; font-size:12px">
+      <label>Floor: <span id="wf-min-v">-90</span> dB</label>
+      <input type="range" id="wf-min" min="-130" max="0" value="-90" oninput="wf_cal()">
+      <label>Ceiling: <span id="wf-max-v">-20</span> dB</label>
+      <input type="range" id="wf-max" min="-130" max="0" value="-20" oninput="wf_cal()">
+      <label>Palette:</label>
+      <select id="wf-palette" onchange="wf_cal()">
+        <option value="turbo">Turbo</option>
+        <option value="grey">Grey</option>
+        <option value="green">Green</option>
+      </select>
+      <label>Speed:</label>
+      <select id="wf-speed" onchange="wf_cal()">
+        <option value="1">1x</option>
+        <option value="2">2x</option>
+        <option value="3">3x</option>
+      </select>
+    </div>
+    <div id="smeter">
+      <div id="smeter-scale"><span>S1</span><span>3</span><span>5</span><span>7</span><span>9</span><span>+20</span><span>+40</span><span>+60</span></div>
+      <div id="smeter-bar"><div id="smeter-fill"></div></div>
+      <div id="smeter-read">S— · — dBm</div>
+    </div>
+    <div id="spectrum">
+      <canvas id="spec-scope"></canvas>
+      <canvas id="spec-wf"></canvas>
+    </div>
+    <div id="freq-axis"><span id="axis-l">—</span><span id="axis-c">—</span><span id="axis-r">—</span></div>
     <div id="audio-status">No audio data yet</div>
   </div>
 </div>
@@ -150,6 +263,8 @@ var spec_canvas = null;
 var spec_ctx = null;
 var ptt_on = false;
 var ws_url = '';
+var g_freq = 0;       // last known dial frequency (Hz), for the spectrum axis
+var g_mode = '';      // last known mode string ("LSB"/"USB"/...), for sideband
 
 function $(id) { return document.getElementById(id); }
 
@@ -161,11 +276,24 @@ function log(msg, cls) {
   m.prepend(d);
 }
 
-function show_tab(name) {
+/* `tab` is the clicked element, passed by the onclick handlers. It used to
+ * be taken from the global `event`, which left every tab hidden when the
+ * function was called from anywhere but a click; the tab is now found by
+ * name when no element is given. */
+function show_tab(name, tab) {
   document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
   document.querySelectorAll('.tab-content').forEach(function(t) { t.classList.remove('active'); });
-  event.target.classList.add('active');
-  $('tab-' + name).classList.add('active');
+
+  if (!tab) {
+    document.querySelectorAll('.tab').forEach(function(t) {
+      if (t.getAttribute('onclick') && t.getAttribute('onclick').indexOf("'" + name + "'") >= 0)
+        tab = t;
+    });
+  }
+  if (tab) tab.classList.add('active');
+
+  var content = $('tab-' + name);
+  if (content) content.classList.add('active');
   if (name === 'spectrum-tab') start_spectrum();
 }
 
@@ -182,6 +310,10 @@ function ws_connect() {
     $('connect').textContent = 'Disconnect';
     send_cmd('get_state');
     send_cmd('digi_get_config');
+    /* Ask the rig what it can do, then read the state that costs CAT
+     * transactions once, rather than in the status broadcast. */
+    send_obj({ cmd: 'get_controls' });
+    refresh_rig_state();
   };
 
   ws.onclose = function() {
@@ -207,15 +339,37 @@ function handle_text(data) {
     // as periodic broadcasts; both are tagged "type":"state". The
     // server doesn't echo a "cmd" field on those, so key on type.
     if (j.type === 'state') {
-      if (j.frequency !== undefined || j.freq !== undefined)
-        $('freq').value = j.frequency !== undefined ? j.frequency : j.freq;
+      if (j.frequency !== undefined || j.freq !== undefined) {
+        g_freq = j.frequency !== undefined ? j.frequency : j.freq;
+        $('freq').value = g_freq;
+      }
       if (j.profile !== undefined) $('profile').value = j.profile;
-      if (j.mode) $('mode').value = j.mode;
+      if (j.mode) { g_mode = j.mode; $('mode').value = j.mode; }
+      update_dstar(j);
+      if (j.s_meter !== undefined) update_smeter(j.s_meter);
       if (j.txrx_state !== undefined) {
         ptt_on = (j.txrx_state === 1);
         $('ptt-btn').textContent = ptt_on ? 'PTT OFF' : 'PTT ON';
       }
       $('state').textContent = JSON.stringify(j, null, 1);
+    }
+    if (j.cmd === 'get_controls' && j.ok) { on_controls(j); }
+    if (j.cmd === 'get_control_values' && j.ok) { on_control_values(j); }
+    if (j.cmd === 'get_vfo' || j.cmd === 'get_split' || j.cmd === 'get_split_freq' ||
+        j.cmd === 'get_rit' || j.cmd === 'get_xit' || j.cmd === 'get_width' ||
+        j.cmd === 'get_ant' || j.cmd === 'get_mem' || j.cmd === 'get_rig_mode') {
+      on_rig_state(j);
+    }
+    /* Control replies carry the control's name, so a set is confirmed with
+     * the value the rig actually took (after clamping to its own step). */
+    if ((j.cmd === 'set_level' || j.cmd === 'set_func' || j.cmd === 'set_parm' ||
+         j.cmd === 'get_level' || j.cmd === 'get_func' || j.cmd === 'get_parm') && j.name) {
+      var kind = j.cmd.slice(4);   /* the reply's own command says which kind */
+      if (j.ok) show_control_value(kind, j.name, j.value);
+      else on_control_error(j, kind);
+    }
+    if (j.ok === false && j.name && j.cmd && j.cmd.indexOf('_') > 0 && !g_ctrl_by_name[j.name]) {
+      $('ctrl-status').textContent = j.cmd + ': ' + (j.error || 'failed');
     }
     if (j.cmd === 'digi_messages') {
       $('messages').innerHTML = '';
@@ -237,6 +391,189 @@ function handle_text(data) {
       $('digi-config-status').textContent = j.cmd + ': ' + msg;
     }
   } catch(e) {}
+}
+
+
+/* ── rig controls ────────────────────────────────────────────────────────
+ * The panel is built from the rig's own capability report, so it shows
+ * exactly the controls this radio has: an IC-7300 and an FT-710 produce
+ * different panels, and the sBitx produces a short one. Nothing here is
+ * hardcoded per rig.
+ */
+
+var g_controls = [];      /* capability list, as reported */
+var g_ctrl_by_name = {};
+
+function send_obj(obj) {
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify(obj));
+}
+
+/* Keyed by kind AND name: Hamlib gives a level and a func the same name
+ * (NR is both a noise-reduction depth and a switch, RF both a gain and the
+ * RTTY filter), so name alone would collide in the DOM and in the value map. */
+function ctrl_key(kind, name) { return kind + ':' + name; }
+function ctrl_id(kind, name) {
+  return 'ctrl-' + kind + '-' + name.replace(/[^A-Za-z0-9_]/g, '_');
+}
+
+function set_control(kind, name, raw) {
+  var info = g_ctrl_by_name[ctrl_key(kind, name)];
+  if (!info) return;
+  var value = kind === 'func' ? (raw ? 1 : 0) : parseFloat(raw);
+  if (isNaN(value)) return;
+  var cmd = kind === 'func' ? 'set_func' : (kind === 'parm' ? 'set_parm' : 'set_level');
+  send_obj({ cmd: cmd, name: name, value: value });
+}
+
+/* One widget per control. Floats get a slider over the range the rig
+ * reported, integers a number box, functions a checkbox, and read-only
+ * controls (meters) a plain readout. */
+function control_widget(info) {
+  var id = ctrl_id(info.kind, info.name);
+  var readonly = !info.set;
+  var div = document.createElement('div');
+  div.className = 'ctrl' + (readonly ? ' readonly' : '');
+  div.id = id + '-box';
+
+  var head = document.createElement('div');
+  head.className = 'name';
+  head.innerHTML = '<span>' + info.name + '</span><b id="' + id + '-v">—</b>';
+  div.appendChild(head);
+
+  if (readonly) return div;
+
+  var el;
+  if (info.kind === 'func') {
+    el = document.createElement('input');
+    el.type = 'checkbox';
+    el.onchange = function () { set_control(info.kind, info.name, el.checked ? 1 : 0); };
+  } else if (info.type === 'float') {
+    el = document.createElement('input');
+    el.type = 'range';
+    el.min = info.min;
+    el.max = info.max > info.min ? info.max : 1;
+    el.step = info.step > 0 ? info.step : 0.01;
+    el.oninput = function () { $(id + '-v').textContent = el.value; };
+    el.onchange = function () { set_control(info.kind, info.name, el.value); };
+  } else {
+    el = document.createElement('input');
+    el.type = 'number';
+    if (info.max > info.min) { el.min = info.min; el.max = info.max; }
+    if (info.step > 0) el.step = info.step;
+    el.onchange = function () { set_control(info.kind, info.name, el.value); };
+  }
+  el.id = id;
+  div.appendChild(el);
+  return div;
+}
+
+function render_controls() {
+  var grid = $('ctrl-grid');
+  if (!grid) return;
+  var filter = ($('ctrl-filter').value || '').toUpperCase();
+  var show_ro = $('ctrl-show-ro').checked;
+  grid.innerHTML = '';
+
+  var kinds = [['level', 'Levels'], ['func', 'Functions'], ['parm', 'Parameters']];
+  for (var k = 0; k < kinds.length; k++) {
+    var list = g_controls.filter(function (c) {
+      if (c.kind !== kinds[k][0]) return false;
+      if (!show_ro && !c.set) return false;
+      return !filter || c.name.indexOf(filter) >= 0;
+    });
+    if (!list.length) continue;
+
+    var head = document.createElement('div');
+    head.className = 'ctrl-group';
+    head.textContent = kinds[k][1] + ' (' + list.length + ')';
+    head.style.gridColumn = '1 / -1';
+    grid.appendChild(head);
+
+    for (var i = 0; i < list.length; i++)
+      grid.appendChild(control_widget(list[i]));
+  }
+}
+
+function on_controls(j) {
+  g_controls = j.controls || [];
+  g_ctrl_by_name = {};
+  for (var i = 0; i < g_controls.length; i++)
+    g_ctrl_by_name[ctrl_key(g_controls[i].kind, g_controls[i].name)] = g_controls[i];
+
+  $('ctrl-status').textContent = g_controls.length +
+    ' controls reported by this rig. Values are read on demand — each one costs a CAT transaction.';
+  render_controls();
+  refresh_control_values();
+}
+
+/* Read back only what is on screen: the unfiltered read walks every
+ * gettable control and takes seconds on a slow CAT link. */
+function refresh_control_values() {
+  if (!g_controls.length) return;
+  var names = [];
+  for (var i = 0; i < g_controls.length; i++) {
+    var c = g_controls[i];
+    if (!c.get) continue;
+    if (!$(ctrl_id(c.kind, c.name) + '-box')) continue;
+    names.push(c.name);
+  }
+  if (names.length) send_obj({ cmd: 'get_control_values', names: names.join(',') });
+}
+
+function show_control_value(kind, name, value) {
+  var info = g_ctrl_by_name[ctrl_key(kind, name)];
+  if (!info) return;
+  var id = ctrl_id(kind, name);
+  var label = $(id + '-v');
+  if (label) label.textContent = (info.type === 'float') ? (+value).toFixed(2) : value;
+  var el = $(id);
+  if (!el) return;
+  if (kind === 'func') el.checked = !!(+value);
+  else el.value = value;
+}
+
+/* The server groups values by kind for the same reason the widgets are. */
+function on_control_values(j) {
+  var groups = { level: j.levels, func: j.funcs, parm: j.parms };
+  for (var kind in groups) {
+    var v = groups[kind];
+    if (!v) continue;
+    for (var name in v)
+      if (v.hasOwnProperty(name)) show_control_value(kind, name, v[name]);
+  }
+}
+
+/* A control the rig refused (or does not have) is dimmed rather than left
+ * showing a stale number. */
+function on_control_error(j, kind) {
+  var box = $(ctrl_id(kind, j.name || '') + '-box');
+  if (box) box.className = box.className.replace(' unsupported', '') + ' unsupported';
+  $('ctrl-status').textContent = j.cmd + ' ' + (j.name || '') + ': ' + (j.error || 'failed');
+}
+
+function refresh_rig_state() {
+  var q = ['get_vfo', 'get_split', 'get_split_freq', 'get_rit', 'get_xit',
+           'get_width', 'get_ant', 'get_mem', 'get_rig_mode'];
+  for (var i = 0; i < q.length; i++) send_obj({ cmd: q[i] });
+}
+
+function on_rig_state(j) {
+  if (!j.ok) return;
+  switch (j.cmd) {
+    case 'get_vfo':        $('rig-vfo').value = j.value; break;
+    case 'get_split':      $('rig-split').checked = !!j.value; break;
+    case 'get_split_freq': $('rig-split-freq').value = j.value; break;
+    case 'get_rit':        $('rig-rit').value = j.value; break;
+    case 'get_xit':        $('rig-xit').value = j.value; break;
+    case 'get_width':      $('rig-width').value = j.value; break;
+    case 'get_ant':        $('rig-ant').value = j.value; break;
+    case 'get_mem':        $('rig-mem').value = j.value; break;
+    case 'get_rig_mode':
+      $('rig-mode').value = j.value;
+      if (j.width) $('rig-width').value = j.width;
+      break;
+  }
 }
 
 function handle_binary(data) {
@@ -295,37 +632,154 @@ function start_spectrum() {
   if (!audio_ctx) audio_ctx = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 8000});
 }
 
-function draw_spectrum(data) {
-  var canvas = $('spec-canvas');
-  if (!canvas) return;
-  var dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  if (dv.byteLength < 6) return;
-  var sample_rate = dv.getUint32(0, true);
-  var bins = dv.getUint16(4, true);
-  var n = (dv.byteLength - 6) / 4;
-  if (n !== bins) return;
+// Waterfall calibration (live-tunable from the UI).
+var wf_min = -90, wf_max = -20, wf_palette = 'turbo', wf_speed = 1;
+function wf_cal() {
+  wf_min = parseInt($('wf-min').value);
+  wf_max = parseInt($('wf-max').value);
+  if (wf_max <= wf_min) wf_max = wf_min + 1;
+  wf_palette = $('wf-palette').value;
+  wf_speed = parseInt($('wf-speed').value);
+  $('wf-min-v').textContent = wf_min;
+  $('wf-max-v').textContent = wf_max;
+}
 
-  canvas.width = canvas.offsetWidth || 600;
-  canvas.height = canvas.offsetHeight || 120;
-  var ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.strokeStyle = '#0f0';
-  ctx.beginPath();
+// Map a normalised level t (0..1) to a colour for the chosen palette.
+function wf_color(t) {
+  if (t < 0) t = 0; if (t > 1) t = 1;
+  if (wf_palette === 'grey') { var v = Math.round(t * 255); return 'rgb(' + v + ',' + v + ',' + v + ')'; }
+  if (wf_palette === 'green') return 'hsl(120,100%,' + Math.round(t * 60) + '%)';
+  // turbo-ish: blue -> cyan -> green -> yellow -> red
+  return 'hsl(' + Math.round((1 - t) * 240) + ',100%,' + Math.round(8 + t * 47) + '%)';
+}
 
-  var h = canvas.height;
-  var w = canvas.width;
-  for (var i = 0; i < n; i++) {
-    var db = dv.getFloat32(6 + i * 4, true);
-    var x = (i / n) * w;
-    var y = h - ((db + 120) / 120) * h;
-    if (y < 0) y = 0;
-    if (y > h) y = h;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+// S-meter: the daemon reports signal strength in dB relative to S9 (S9 = 0,
+// each S-unit 6 dB, positive = over S9, -200 = no reading). The scale labels
+// S1..S9 then +20/+40/+60 are evenly spaced, so map dB piecewise to match.
+var SM_PTS = [-48, -36, -24, -12, 0, 20, 40, 60];   // label dB values
+function sm_pct(db) {
+  var last = SM_PTS.length - 1;
+  if (db <= SM_PTS[0]) return 0;
+  if (db >= SM_PTS[last]) return 100;
+  for (var i = 1; i <= last; i++) {
+    if (db <= SM_PTS[i]) {
+      var seg = (db - SM_PTS[i - 1]) / (SM_PTS[i] - SM_PTS[i - 1]);
+      return ((i - 1) + seg) / last * 100;
+    }
   }
-  ctx.stroke();
-  $('audio-status').textContent = 'Rate: ' + sample_rate + ' Hz, Bins: ' + bins;
+  return 100;
+}
+/* D-STAR header display. dstar_heard counts decoded headers, so a change in it
+ * means a genuinely new decode rather than the same values being repeated in
+ * every status frame -- that is what drives the age hint. */
+var g_ds_heard = -1, g_ds_when = 0;
+function update_dstar(j) {
+  var panel = $('dstar-panel');
+  if (!panel) return;
+  panel.style.display = (j.mode === 'DSTAR') ? 'flex' : 'none';
+  if (j.mode !== 'DSTAR') return;
+  /* D-STAR callsign fields are 8 characters space-padded on the wire, so trim
+   * them for display and show a placeholder when a field is empty or all
+   * spaces (which is what an un-recovered field looks like). */
+  var blank = function (v) {
+    var t = (v === undefined || v === null) ? '' : String(v).trim();
+    return t === '' ? '--------' : t;
+  };
+  $('ds-my').textContent = blank(j.dstar_mycall);
+  $('ds-ur').textContent = blank(j.dstar_urcall);
+  $('ds-r1').textContent = blank(j.dstar_rpt1);
+  $('ds-r2').textContent = blank(j.dstar_rpt2);
+  if (j.dstar_heard !== undefined) {
+    $('ds-heard').textContent = j.dstar_heard;
+    if (j.dstar_heard !== g_ds_heard) { g_ds_heard = j.dstar_heard; g_ds_when = Date.now(); }
+  }
+  var age = $('ds-age');
+  if (g_ds_when && g_ds_heard > 0) {
+    var secs = Math.round((Date.now() - g_ds_when) / 1000);
+    age.textContent = secs < 3 ? '(just now)' : '(' + secs + 's ago)';
+  } else {
+    age.textContent = '(nothing decoded yet)';
+  }
+}
+
+function update_smeter(db) {
+  var fill = $('smeter-fill'), read = $('smeter-read');
+  if (!fill || !read) return;
+  if (db < -150) { fill.style.width = '0%'; read.textContent = 'S— · — dBm'; return; }
+  fill.style.width = sm_pct(db).toFixed(1) + '%';
+  var s;
+  if (db >= 0) s = 'S9+' + Math.round(db);
+  else { var u = Math.round(9 + db / 6); if (u < 0) u = 0; s = 'S' + u; }
+  read.textContent = s + ' · ' + (db - 73) + ' dBm';   // S9 = -73 dBm on HF
+}
+
+// Radio-style panadapter: a spectrum scope (instantaneous amplitude vs
+// frequency) above a scrolling waterfall, plotted over a real RF axis — like
+// an FT-710 / IC-7300 screen. The daemon ships bins in RF-ascending order (it
+// flips LSB internally), plus Hz-per-bin in the frame and the dial freq/mode
+// in the state, so the X axis reads true frequency, not raw audio.
+// Frame after the 0x02 opcode: [sample_rate u32][nbins u16][bin_hz f32][bins f32...].
+function draw_spectrum(data) {
+  var dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  if (dv.byteLength < 10) return;
+  var bins = dv.getUint16(4, true);
+  var bin_hz = dv.getFloat32(6, true);
+  var n = (dv.byteLength - 10) / 4;
+  if (n !== bins || n < 1) return;
+
+  var db = new Float32Array(n);
+  for (var i = 0; i < n; i++) db[i] = dv.getFloat32(10 + i * 4, true);
+
+  var span = wf_max - wf_min; if (span < 1) span = 1;
+
+  // ---- spectrum scope (top): filled amplitude-vs-frequency trace ----
+  var sc = $('spec-scope');
+  if (sc) {
+    if (sc.width !== bins) { sc.width = bins; sc.height = 90; }
+    var s = sc.getContext('2d');
+    s.clearRect(0, 0, sc.width, sc.height);
+    s.strokeStyle = 'rgba(90,90,90,0.5)'; s.lineWidth = 1;          // freq grid (1/4 marks)
+    for (var g = 1; g < 4; g++) { var gx = (bins * g / 4) | 0; s.beginPath(); s.moveTo(gx, 0); s.lineTo(gx, sc.height); s.stroke(); }
+    s.beginPath(); s.moveTo(0, sc.height);
+    for (var i = 0; i < n; i++) {
+      var t = (db[i] - wf_min) / span; if (t < 0) t = 0; if (t > 1) t = 1;
+      s.lineTo(i, sc.height - t * sc.height);
+    }
+    s.lineTo(bins - 1, sc.height); s.closePath();
+    s.fillStyle = 'rgba(0,210,130,0.30)'; s.fill();
+    s.strokeStyle = '#2fe88a'; s.lineWidth = 1; s.stroke();
+  }
+
+  // ---- waterfall (bottom): scroll down, paint the new frame as the top row ----
+  var wf = $('spec-wf');
+  if (wf) {
+    if (wf.width !== bins) { wf.width = bins; wf.height = 170; var ic = wf.getContext('2d'); ic.fillStyle = '#000'; ic.fillRect(0, 0, wf.width, wf.height); }
+    var w = wf.getContext('2d');
+    var rows = wf_speed;
+    w.drawImage(wf, 0, rows);
+    for (var i = 0; i < n; i++) {
+      w.fillStyle = wf_color((db[i] - wf_min) / span);
+      w.fillRect(i, 0, 1, rows);
+    }
+  }
+
+  // ---- RF frequency axis (sideband-aware) ----
+  // Bins are RF-ascending. USB: the dial (suppressed carrier) sits at the
+  // low-freq (left) edge; LSB: the daemon flipped the bins so the dial is at
+  // the high-freq (right) edge. Label left / centre / right in MHz.
+  var total = n * bin_hz;
+  var lsb = (g_mode === 'LSB');
+  var lo = lsb ? (g_freq - total) : g_freq;
+  var hi = lsb ? g_freq : (g_freq + total);
+  var mhz = function (f) { return (f / 1e6).toFixed(4); };
+  if (g_freq > 0) {
+    $('axis-l').textContent = mhz(lo);
+    $('axis-c').textContent = mhz((lo + hi) / 2);
+    $('axis-r').textContent = mhz(hi);
+  }
+  $('audio-status').textContent = 'dial ' + (g_freq / 1e6).toFixed(4) + ' MHz ' + (g_mode || '?') +
+    ' | span ' + Math.round(total) + ' Hz | ' + bins + ' bins @ ' + bin_hz.toFixed(1) + ' Hz/bin' +
+    ' | floor ' + wf_min + ' / ceil ' + wf_max + ' dB';
 }
 </script>
 </body>

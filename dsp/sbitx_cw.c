@@ -158,8 +158,12 @@ int sbitx_cw_encode(const char *message, float *signal, int max_n,
         case '/':  duration_us = word_space_us; key_on = 0; break;
         }
 
-        int n_samples = (int)(duration_us * 96.0f / 1000000.0f);
-        int slope_n = (int)(slope_us * 96.0f / 1000000.0f);
+        /* Sample count at the 96 kHz TX rate (the DDS below steps at
+         * 2π·pitch/96000). 96000 samples/s = 0.096 samples/µs; the old
+         * factor 96/1e6 was 1000× too small (~5 samples per dot), so the
+         * keyer emitted only a few ms of tone then silence. */
+        int n_samples = (int)(duration_us * 96000.0f / 1000000.0f);
+        int slope_n = (int)(slope_us * 96000.0f / 1000000.0f);
 
         for (int i = 0; i < n_samples && idx < max_n; i++, idx++)
         {

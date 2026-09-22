@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <inttypes.h>
 #include <sys/time.h>
+#include <time.h>
 
 #include "gpiolib/gpiolib.h"
 
@@ -146,6 +147,50 @@ void ptt_change()
         radio_gpio_h->key_down = true;
     else
         radio_gpio_h->key_down = false;
+}
+
+/*
+ * Debounced PTT sampling.
+ *
+ * do_gpio_poll() below samples every ~1 ms -- and skips its sleep entirely
+ * while any pin is changing, so it spins far faster than that during a
+ * transition. A mechanical PTT bounces for tens of milliseconds, and acting on
+ * every raw edge is destructive rather than merely wasteful: each edge reaches
+ * tr_switch() via io_tick(), which on D-STAR queues an end-of-transmission and
+ * then sleeps 150 ms. One press produced a string of ~0.3 s transmissions that
+ * each ended the over, and the far end heard the audio break up.
+ *
+ * So commit a new key state only after the line has held it for
+ * PTT_DEBOUNCE_US. Timed from the monotonic clock rather than counted in poll
+ * iterations, because the poll rate is not constant.
+ */
+#define PTT_DEBOUNCE_US 25000
+
+void ptt_poll_debounced(int level)
+{
+    static int last_raw = -1;
+    static int committed = -1;
+    static struct timespec since;
+    struct timespec now;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+
+    if (level != last_raw)
+    {
+        last_raw = level;
+        since = now;
+        return;
+    }
+    if (level == committed)
+        return;
+
+    int64_t held_us = ((int64_t) (now.tv_sec - since.tv_sec) * 1000000LL)
+                    + ((now.tv_nsec - since.tv_nsec) / 1000);
+    if (held_us < PTT_DEBOUNCE_US)
+        return;
+
+    committed = level;
+    radio_gpio_h->key_down = (level == 0);   /* PTT is active-low */
 }
 
 void dash_change()
@@ -301,13 +346,22 @@ void *do_gpio_poll(void *radio_h_v)
         {
             struct poll_gpio_state *state = &poll_gpios[i];
             int level = get_level(state->gpio);
+
+            /* PTT is evaluated on EVERY poll, not only on an edge, because the
+             * debouncer needs to see the line hold a level. Deliberately does
+             * not set "changed", so a bouncing PTT no longer makes this loop
+             * spin without its sleep. */
+            if (state->gpio == PTT)
+            {
+                ptt_poll_debounced(level);
+                state->level = level;
+                continue;
+            }
+
             if (level != state->level)
             {
                 switch (state->gpio)
                 {
-                case PTT:
-                    ptt_change();
-                    break;
                 case DASH:
                     dash_change();
                     break;
