@@ -40,7 +40,8 @@ static bool keystream_xor(const uint8_t r[VOICE_NONCE_RAND_BYTES], uint32_t fram
     if (!voice_crypto_block(VOICE_DOMAIN_VOICE, r, frame_idx, ks))
         return false;
     for (int i = 0; i < DSTAR_VOICE_AMBE_BITS; i++)
-        ambe_d[i] ^= (char) ((ks[i >> 3] >> (7 - (i & 7))) & 1);
+        if (i != DSTAR_VOICE_SPARE_BIT)
+            ambe_d[i] ^= (char) ((ks[i >> 3] >> (7 - (i & 7))) & 1);
     return true;
 }
 

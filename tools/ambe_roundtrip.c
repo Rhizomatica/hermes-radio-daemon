@@ -23,6 +23,7 @@ int main(int argc, char **argv)
 
     mbe_parms ecur, eprev, edummy, dcur, dprev, denh;
     mbe_initMbeParms(&ecur, &eprev, &edummy);
+    mbe_ambe2400_encoder *enc = mbe_ambe2400EncoderAlloc();
     mbe_initMbeParms(&dcur, &dprev, &denh);
 
     short pcm_in[160], pcm_out[160];
@@ -35,7 +36,7 @@ int main(int argc, char **argv)
     while (fread(pcm_in, 2, 160, fi) == 160) {
         for (int i = 0; i < 160; i++) f_in[i] = pcm_in[i] / 32768.0f;
 
-        mbe_encodeAmbe2400Parms(f_in, ambe_d, &ecur, &eprev);
+        mbe_encodeAmbe2400Parms(enc, f_in, ambe_d, &ecur, &eprev);
         mbe_encodeAmbe3600x2400Frame(ambe_d, (char(*)[24])fr);
         /* The encoder does not advance its own predictor state; the caller
          * must, as the daemon does in dsp/sbitx_dsp.c. Omitting this pins
@@ -71,5 +72,6 @@ int main(int argc, char **argv)
     printf("round trip: %ld frames (%.1f s), mean FEC errors %.2f\n",
            frames, frames*0.02, frames ? err_sum/frames : 0.0);
     fclose(fi); fclose(fo);
+    mbe_ambe2400EncoderFree(enc);
     return 0;
 }

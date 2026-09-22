@@ -5,7 +5,7 @@
  * Encryption (HERMES extension, not part of the D-STAR standard, which
  * defines none):
  *
- * - Only the 49 AMBE voice-parameter bits of each 20 ms frame are
+ * - Only the 48 AMBE voice-parameter bits of each 20 ms frame are
  *   encrypted, before the AMBE FEC is applied, by XOR with ChaCha20
  *   keystream (voice_crypto.c). Nothing is added to the frame, the FEC
  *   protects the ciphertext exactly as it would protect plaintext, and a
@@ -42,6 +42,10 @@
 #include "voice_crypto.h"
 
 #define DSTAR_VOICE_AMBE_BITS     49
+/* ambe_d[24] is the AMBE 2400 spare bit: the FEC layer overwrites it on air
+ * with Golay parity and the decoder never reads it. Not encrypted, and not
+ * part of the voice for comparison purposes. */
+#define DSTAR_VOICE_SPARE_BIT     24
 #define DSTAR_VOICE_SF_FRAMES     21   /* frames per superframe */
 #define DSTAR_VC_SYNC_BYTES       9
 #define DSTAR_VC_SLOW_TYPE        0xE5U

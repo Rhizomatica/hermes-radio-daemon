@@ -235,6 +235,7 @@ typedef struct {
     bool  dstar_tx_keyed;
     bool  dstar_inited;
     dstar_voice_tx dstar_vtx;   /* over being sent: header, slot, encryption */
+    mbe_ambe2400_encoder *dstar_tx_enc;   /* AMBE analysis state, reset per over */
     dstar_voice_rx dstar_vrx;   /* over being received */
 
     /* Phase accumulators for the freq-shift (mixer) at 1500 Hz, 8 kHz fs.
@@ -551,6 +552,17 @@ static void dstar_hamlib_end_cb(void *user)
     s->radio_h->dstar_rx_crypto = DSTAR_VC_CLEAR;
 }
 
+/* Start the AMBE encoder afresh, as mbelib-neo prescribes for restarting a
+ * stream: reset the analysis context and the parameter prediction state. */
+static void
+dstar_hamlib_reset_encoder(hamlib_digi_state *s)
+{
+    mbe_ambe2400EncoderReset(s->dstar_tx_enc);
+    mbe_initMbeParms(&s->dstar_tx_cur, &s->dstar_tx_prev, &s->dstar_tx_enh);
+    memset(&s->dstar_tx_prev, 0, sizeof(s->dstar_tx_prev));
+    s->dstar_tx_prev.mutingThreshold = MBE_MUTING_THRESHOLD_AMBE;
+}
+
 static void
 dstar_hamlib_init(hamlib_digi_state *s)
 {
@@ -566,9 +578,10 @@ dstar_hamlib_init(hamlib_digi_state *s)
     memset(&s->dstar_rx_prevsyn, 0, sizeof(s->dstar_rx_prevsyn));
     s->dstar_rx_prevsyn.L = 15;
     s->dstar_rx_prevsyn.mutingThreshold = MBE_MUTING_THRESHOLD_AMBE;
-    mbe_initMbeParms(&s->dstar_tx_cur, &s->dstar_tx_prev, &s->dstar_tx_enh);
-    memset(&s->dstar_tx_prev, 0, sizeof(s->dstar_tx_prev));
-    s->dstar_tx_prev.mutingThreshold = MBE_MUTING_THRESHOLD_AMBE;
+    s->dstar_tx_enc = mbe_ambe2400EncoderAlloc();
+    if (s->dstar_tx_enc == NULL)
+        fprintf(stderr, "DSTAR: cannot allocate the AMBE encoder; TX will be silent\n");
+    dstar_hamlib_reset_encoder(s);
     s->dstar_inited = true;
 }
 
@@ -653,6 +666,8 @@ static void do_dstar_tx(hamlib_digi_state *s, uint32_t ring_rate)
                 uint8_t frame[SBITX_DSTAR_FRAME_BYTES];
 
                 if (!s->dstar_tx_keyed) {
+                    /* A new over is a new stream. */
+                    dstar_hamlib_reset_encoder(s);
                     dstar_voice_tx_begin(&s->dstar_vtx, s->radio_h->dstar_mycall,
                                          s->radio_h->dstar_urcall,
                                          s->radio_h->dstar_encrypt != 0);
@@ -690,7 +705,11 @@ static void do_dstar_tx(hamlib_digi_state *s, uint32_t ring_rate)
                         if (nr_total > nr_latency)
                             src = denoised;
                     }
-                    mbe_encodeAmbe2400Parms(src, ambe_d, &s->dstar_tx_cur, &s->dstar_tx_prev);
+                    if (mbe_encodeAmbe2400Parms(s->dstar_tx_enc, src, ambe_d,
+                                                &s->dstar_tx_cur, &s->dstar_tx_prev) < 0) {
+                        s->dstar_mic8k_n = 0;   /* no encoder: send nothing */
+                        continue;
+                    }
                 }
                 /* Shared framing: 9 AMBE bytes then sync/slow data, with
                  * the header repeated in slow data and, when enabled, the
@@ -1119,6 +1138,7 @@ static void *hamlib_digi_thread(void *radio_h_v)
     if (s->dstar_inited) {
         if (s->dstar_rx) sbitx_dstar_rx_free(s->dstar_rx);
         if (s->dstar_tx) sbitx_dstar_tx_free(s->dstar_tx);
+        mbe_ambe2400EncoderFree(s->dstar_tx_enc);
     }
     if (s->radae_inited) {
         if (s->radae_tx_running) radae_tx_stop(&s->radae_ctx);

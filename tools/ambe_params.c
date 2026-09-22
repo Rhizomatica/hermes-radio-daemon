@@ -100,10 +100,11 @@ int main(int argc, char **argv)
         if (fread(hdr, 1, 44, f) != 44) return 1;
         mbe_parms ecur, eprev, edummy;
         mbe_initMbeParms(&ecur, &eprev, &edummy);
+        mbe_ambe2400_encoder *enc = mbe_ambe2400EncoderAlloc();
         short pcm[160]; float fin[160]; char ambe_d[49]; int prev_sil = 0;
         while (fread(pcm, 2, 160, f) == 160) {
             for (int i = 0; i < 160; i++) fin[i] = pcm[i] / 32768.0f;
-            int rc_enc = mbe_encodeAmbe2400Parms(fin, ambe_d, &ecur, &eprev);
+            int rc_enc = mbe_encodeAmbe2400Parms(enc, fin, ambe_d, &ecur, &eprev);
             n_frames_enc++;
             if (rc_enc == 1) { if (!prev_sil) n_sil_runs++; n_silence++; prev_sil = 1; }
             else prev_sil = 0;
@@ -116,6 +117,7 @@ int main(int argc, char **argv)
              * like it compressed all speech dynamics when it does not. */
             mbe_moveMbeParms(&ecur, &eprev);
         }
+        mbe_ambe2400EncoderFree(enc);
         fclose(f);
         if (n_frames_enc)
             fprintf(stderr, "silence frames %ld/%ld (%.1f%%) in %ld runs, mean run %.0f ms\n",

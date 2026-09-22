@@ -38,6 +38,7 @@ static uint8_t wire_hdr[SBITX_DSTAR_HEADER_BYTES];
 static void make_plain(void)
 {
     mbe_parms cur, prev, enh;
+    mbe_ambe2400_encoder *enc = mbe_ambe2400EncoderAlloc();
     mbe_initMbeParms(&cur, &prev, &enh);
     for (int f = 0; f < NFRAMES; f++) {
         float pcm[160];
@@ -49,9 +50,19 @@ static void make_plain(void)
                 s += sin(2 * M_PI * 120.0 * h * t) / h;
             pcm[i] = (float) (0.2 * env * s);
         }
-        mbe_encodeAmbe2400Parms(pcm, plain[f], &cur, &prev);
+        mbe_encodeAmbe2400Parms(enc, pcm, plain[f], &cur, &prev);
         mbe_moveMbeParms(&cur, &prev);
     }
+    mbe_ambe2400EncoderFree(enc);
+}
+
+/* The 48 voice bits match; the spare bit is FEC parity on air. */
+static bool same_voice(const char *a, const char *b)
+{
+    for (int i = 0; i < DSTAR_VOICE_AMBE_BITS; i++)
+        if (i != DSTAR_VOICE_SPARE_BIT && a[i] != b[i])
+            return false;
+    return true;
 }
 
 static void transmit(bool encrypt)
@@ -88,7 +99,7 @@ static rx_result receive(int join, bool with_header, int skip_sync_sf)
         mbe_process_result r;
         if (dstar_voice_rx_frame(&rx, wire[f], fc, ambe_d, &r)) {
             res.played++;
-            if (memcmp(ambe_d, plain[f], sizeof(ambe_d)) == 0) {
+            if (same_voice(ambe_d, plain[f])) {
                 res.match++;
                 if (res.first_match < 0)
                     res.first_match = f;
@@ -129,9 +140,10 @@ static void test_encrypted(void)
         mbe_decodeDStarDVData(wire[f], fr);
         mbe_decodeAmbe3600x2400Frame((const char(*)[24])fr, d, NULL);
         for (int i = 0; i < DSTAR_VOICE_AMBE_BITS; i++)
-            diff += d[i] != plain[f][i];
+            if (i != DSTAR_VOICE_SPARE_BIT)
+                diff += d[i] != plain[f][i];
     }
-    double frac = (double) diff / (NFRAMES * DSTAR_VOICE_AMBE_BITS);
+    double frac = (double) diff / (NFRAMES * (DSTAR_VOICE_AMBE_BITS - 1));
     CHECK(frac > 0.45 && frac < 0.55, "ciphertext differs in %.1f%% of bits, want ~50%%", 100 * frac);
 
     /* From the start of the over: the header mutes superframe 0 until its
@@ -245,7 +257,7 @@ static void e2e_data(void *u, const uint8_t *frame)
     int f = e2e_frames++;
     if (dstar_voice_rx_frame(&e2e_rx, frame, fc, ambe_d, NULL)) {
         e2e_played++;
-        if (f < NFRAMES && memcmp(ambe_d, plain[f], sizeof(ambe_d)) == 0)
+        if (f < NFRAMES && same_voice(ambe_d, plain[f]))
             e2e_match++;
     }
 }

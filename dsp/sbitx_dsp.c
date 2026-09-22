@@ -542,6 +542,10 @@ static bool dstar_track_feed(const float *x, int n, double *ppm)
 
 static mbe_parms dstar_rx_cur, dstar_rx_prev, dstar_rx_enh, dstar_rx_prevsyn;
 static mbe_parms dstar_tx_cur, dstar_tx_prev, dstar_tx_enh;
+/* The AMBE encoder's analysis state (mbelib-neo keeps it in a caller-owned
+ * context). Allocated once, reset at the start of every over. */
+static mbe_ambe2400_encoder *dstar_tx_enc;
+static void dsp_dstar_tx_reset_encoder(void);
 
 /* Decoded voice sits in the project's ring buffer (sbitx/ring_buffer.c), the
  * same mmap'd double-mapped buffer the rest of the audio path uses. The
@@ -768,10 +772,21 @@ static void dsp_dstar_init(void)
     }
     if (dstar_tx == NULL) {
         dstar_tx = sbitx_dstar_tx_new();
-        mbe_initMbeParms(&dstar_tx_cur, &dstar_tx_prev, &dstar_tx_enh);
-        memset(&dstar_tx_prev, 0, sizeof(dstar_tx_prev));
-        dstar_tx_prev.mutingThreshold = MBE_MUTING_THRESHOLD_AMBE;
+        dstar_tx_enc = mbe_ambe2400EncoderAlloc();
+        if (dstar_tx_enc == NULL)
+            fprintf(stderr, "DSTAR: cannot allocate the AMBE encoder; TX will be silent\n");
+        dsp_dstar_tx_reset_encoder();
     }
+}
+
+/* Start the AMBE encoder afresh, as mbelib-neo prescribes for restarting a
+ * stream: reset the analysis context and the parameter prediction state. */
+static void dsp_dstar_tx_reset_encoder(void)
+{
+    mbe_ambe2400EncoderReset(dstar_tx_enc);
+    mbe_initMbeParms(&dstar_tx_cur, &dstar_tx_prev, &dstar_tx_enh);
+    memset(&dstar_tx_prev, 0, sizeof(dstar_tx_prev));
+    dstar_tx_prev.mutingThreshold = MBE_MUTING_THRESHOLD_AMBE;
 }
 
 /* Build and queue a DV header from the configured callsigns. */
@@ -779,6 +794,9 @@ static long dstar_tx_frame_count;
 
 static void dsp_dstar_tx_send_header(void)
 {
+    /* A new over is a new stream: don't let it start from the tail of the
+     * previous one's analysis and prediction state. */
+    dsp_dstar_tx_reset_encoder();
     dstar_voice_tx_begin(&dstar_vtx, radio_h_dsp->dstar_mycall, radio_h_dsp->dstar_urcall,
                          radio_h_dsp->dstar_encrypt != 0);
     sbitx_dstar_tx_header(dstar_tx, dstar_vtx.header);
@@ -824,7 +842,8 @@ static void dsp_dstar_tx_encode_frame(const float *mic8k)
             src = denoised;
     }
 
-    mbe_encodeAmbe2400Parms(src, ambe_d, &dstar_tx_cur, &dstar_tx_prev);
+    if (mbe_encodeAmbe2400Parms(dstar_tx_enc, src, ambe_d, &dstar_tx_cur, &dstar_tx_prev) < 0)
+        return;   /* no encoder context: send nothing rather than garbage */
     dstar_voice_tx_frame(&dstar_vtx, ambe_d, frame);
     sbitx_dstar_tx_frame(dstar_tx, frame);
     mbe_moveMbeParms(&dstar_tx_cur, &dstar_tx_prev);

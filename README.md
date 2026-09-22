@@ -76,6 +76,17 @@ apt-get install libhamlib-dev libiniparser-dev libasound2-dev libfftw3-dev \
 
 **libunixcw** (`-lcw`) provides the CW receiver state machine (mark/space → characters).
 
+**mbelib-neo** (`-lmbe-neo`) provides the D-STAR AMBE 3600x2400 codec, encoder included. Build it
+from upstream [arancormonk/mbelib-neo](https://github.com/arancormonk/mbelib-neo) `main` (the
+encoder, with its caller-owned `mbe_ambe2400_encoder` context, landed in PR #85), not from a
+Debian package or an older fork, and install it with CMake:
+
+```bash
+git clone https://github.com/arancormonk/mbelib-neo && cd mbelib-neo
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
+sudo cmake --install build && sudo ldconfig
+```
+
 **Dream** (optional, for DRM mode): build in console mode:
 ```bash
 cd /home/rafael2k/files/rhizomatica/hermes/dream
