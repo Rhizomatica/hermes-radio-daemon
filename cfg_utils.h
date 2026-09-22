@@ -53,6 +53,13 @@ bool init_config_user(radio *radio_h, const char *ini_name);
 /* Write hardware/radio config back to disk */
 bool write_config_radio(radio *radio_h, const char *ini_name);
 
+/* Re-read main:voice_key_file from core.ini on disk into radio_h and into
+ * the in-memory config, which is what a later config write-back dumps.
+ * hermes-voice-key adds the key after the daemon has started; without this
+ * the reload would see the startup (empty) path and a write-back would drop
+ * the line. Returns false if core.ini can't be read. */
+bool cfg_refresh_voice_key_file(radio *radio_h);
+
 /* Write user/profile config back to disk */
 bool write_config_user(radio *radio_h, const char *ini_name);
 

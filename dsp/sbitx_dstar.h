@@ -100,6 +100,11 @@ bool sbitx_dstar_rx_take_clock_error(sbitx_dstar_rx *rx, double *ppm);
 /* Feed n samples of discriminator audio at 24 kHz. Callbacks may fire. */
 void sbitx_dstar_rx_process(sbitx_dstar_rx *rx, const float *audio, int n);
 
+/* Index of the frame being delivered to data_cb, counted from the last data
+ * sync (0 = the frame carrying the sync; above 20 if a sync was missed).
+ * Only meaningful inside data_cb. */
+uint16_t sbitx_dstar_rx_frame_index(const sbitx_dstar_rx *rx);
+
 /* ── TX ───────────────────────────────────────────────────────────── */
 
 typedef struct sbitx_dstar_tx sbitx_dstar_tx;

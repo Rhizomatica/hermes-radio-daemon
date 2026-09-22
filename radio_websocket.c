@@ -34,6 +34,8 @@
 #include "radio_backend.h"
 #include "radio_controls.h"
 #include "radio_websocket.h"
+#include "cfg_utils.h"
+#include "voice_crypto.h"
 #include "radio_media.h"
 #include "radio_pipeline.h"
 
@@ -339,7 +341,9 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
           * one and clear its display when a new station takes over. */
          "\"dstar_mycall\":\"%s\",\"dstar_urcall\":\"%s\","
          "\"dstar_rpt1\":\"%s\",\"dstar_rpt2\":\"%s\","
-         "\"dstar_suffix\":\"%s\",\"dstar_heard\":%u}",
+         "\"dstar_suffix\":\"%s\",\"dstar_heard\":%u,"
+         /* 0 clear, 1 decrypting, 2 acquiring, 3 no key, 4 key mismatch */
+         "\"dstar_crypto\":%u}",
          active,
          radio_h->profiles[active].freq, radio_h->profiles[active].freq,
          mode_to_string(radio_h->profiles[active].mode),
@@ -377,7 +381,8 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
             ? "true" : "false",
          radio_pipeline_uses_daemon_audio_bridge(radio_h) ? "true" : "false",
          ds_my, ds_ur, ds_r1, ds_r2, ds_sfx,
-         (unsigned) radio_h->dstar_rx_heard);
+         (unsigned) radio_h->dstar_rx_heard,
+         (unsigned) radio_h->dstar_rx_crypto);
 }
 
 /* ─────────────────────── command dispatcher ─────────────────────── */
@@ -626,15 +631,39 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
 
     if (!strcmp(cmd, "digi_get_config"))
     {
-        char json[384];
+        char json[384], fp[17];
+        voice_crypto_fingerprint(fp);
         snprintf(json, sizeof(json),
             "{\"ok\":true,\"cmd\":\"digi_get_config\","
             "\"cw_wpm\":%d,\"cw_pitch\":%d,"
             "\"rtty_baud\":%d,\"rtty_mark\":%d,\"rtty_shift\":%d,"
-            "\"dstar_verbose\":%d,\"dstar_denoise\":%d}",
+            "\"dstar_verbose\":%d,\"dstar_denoise\":%d,\"dstar_encrypt\":%d,"
+            "\"voice_key_loaded\":%s,\"voice_key_fingerprint\":\"%s\"}",
             radio_h->cw_wpm, radio_h->cw_pitch,
             radio_h->rtty_baud, radio_h->rtty_mark, radio_h->rtty_shift,
-            radio_h->dstar_verbose, radio_h->dstar_denoise);
+            radio_h->dstar_verbose, radio_h->dstar_denoise, radio_h->dstar_encrypt,
+            voice_crypto_have_key() ? "true" : "false", fp);
+        ws_send_text(c, json); return;
+    }
+
+    /* Re-read main:voice_key_file, e.g. after hermes-voice-key switched
+     * between the group key and a pair key for a call. The path itself is
+     * re-read from core.ini first, since the tool may have just added it. A
+     * file that fails to load leaves NO key (never a stale one): encrypted
+     * overs are then muted on receive and sent as silence. */
+    if (!strcmp(cmd, "voice_key_reload"))
+    {
+        char json[192], fp[17];
+        cfg_refresh_voice_key_file(radio_h);
+        bool ok = radio_h->voice_key_file[0] != '\0' &&
+                  voice_crypto_load_key_file(radio_h->voice_key_file);
+        if (!ok)
+            voice_crypto_clear_key();
+        voice_crypto_fingerprint(fp);
+        snprintf(json, sizeof(json),
+                 "{\"ok\":%s,\"cmd\":\"voice_key_reload\",\"voice_key_loaded\":%s,"
+                 "\"fingerprint\":\"%s\"}",
+                 ok ? "true" : "false", ok ? "true" : "false", fp);
         ws_send_text(c, json); return;
     }
 
@@ -652,6 +681,7 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
         else if (!strcmp(key, "rtty_shift"))   radio_h->rtty_shift   = (uint16_t) v;
         else if (!strcmp(key, "dstar_verbose")) radio_h->dstar_verbose = (uint16_t) v;
         else if (!strcmp(key, "dstar_denoise")) radio_h->dstar_denoise = (uint16_t) v;
+        else if (!strcmp(key, "dstar_encrypt")) radio_h->dstar_encrypt = (uint16_t) (v != 0);
         else { send_cmd_error(c, cmd, "unknown key"); return; }
         send_cmd_result(c, cmd, true, "OK"); return;
     }

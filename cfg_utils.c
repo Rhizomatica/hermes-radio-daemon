@@ -368,6 +368,10 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     radio_h->dstar_verbose = (uint16_t) i;
     i = iniparser_getint(ini, "main:dstar_denoise", 1);
     radio_h->dstar_denoise = (uint16_t) i;
+    i = iniparser_getint(ini, "main:dstar_encrypt", 0);
+    radio_h->dstar_encrypt = (uint16_t) i;
+    s = iniparser_getstring(ini, "main:voice_key_file", "");
+    snprintf(radio_h->voice_key_file, sizeof(radio_h->voice_key_file), "%s", s);
 
     s = iniparser_getstring(ini, "main:recording_dir", "/var/lib/hermes-radio-daemon");
     snprintf(radio_h->recording_dir, sizeof(radio_h->recording_dir), "%s", s);
@@ -581,6 +585,23 @@ static bool write_config_common(radio *radio_h, dictionary *dict,
     fclose(f);
     free(bp);
 
+    return true;
+}
+
+bool cfg_refresh_voice_key_file(radio *radio_h)
+{
+    dictionary *disk = iniparser_load(radio_h->cfg_radio_path);
+    if (!disk)
+        return false;
+
+    const char *s = iniparser_getstring(disk, "main:voice_key_file", "");
+    pthread_mutex_lock(&radio_h->cfg_mutex);
+    snprintf(radio_h->voice_key_file, sizeof(radio_h->voice_key_file), "%s", s);
+    if (radio_h->cfg_radio != NULL && s[0] != '\0')
+        iniparser_set(radio_h->cfg_radio, "main:voice_key_file", s);
+    pthread_mutex_unlock(&radio_h->cfg_mutex);
+
+    iniparser_freedict(disk);
     return true;
 }
 

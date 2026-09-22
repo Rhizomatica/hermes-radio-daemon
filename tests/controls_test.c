@@ -15,6 +15,7 @@
 #include <string.h>
 #include <stdatomic.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "radio.h"
 #include "radio_backend.h"
@@ -243,6 +244,46 @@ static void test_rprt(void)
     assert(radio_controls_rprt(RADIO_CTRL_EIO) == -8);
 }
 
+/* hermes-voice-key adds voice_key_file to core.ini while the daemon runs:
+ * the reload must pick up the new path, and a later config write-back must
+ * keep the line rather than dump the startup copy without it. */
+static void test_voice_key_refresh(void)
+{
+    char path[] = "/tmp/controls_test_coreXXXXXX";
+    int fd = mkstemp(path);
+    assert(fd >= 0);
+    close(fd);
+
+    FILE *f = fopen(path, "w");
+    fputs("[main]\ncw_wpm = 20\n\n[tx_band0]\nscale = 1.0\n", f);
+    fclose(f);
+
+    radio *r = calloc(1, sizeof(*r));
+    pthread_mutex_init(&r->cfg_mutex, NULL);
+    snprintf(r->cfg_radio_path, sizeof(r->cfg_radio_path), "%s", path);
+    assert(init_config_radio(r, path));
+    assert(r->voice_key_file[0] == '\0');
+
+    f = fopen(path, "w");   /* what the tool writes: inside [main] */
+    fputs("[main]\ncw_wpm = 20\nvoice_key_file = /etc/hermes/voice.key\n\n"
+          "[tx_band0]\nscale = 1.0\n", f);
+    fclose(f);
+
+    assert(cfg_refresh_voice_key_file(r));
+    assert(!strcmp(r->voice_key_file, "/etc/hermes/voice.key"));
+
+    assert(write_config_radio(r, path));
+    dictionary *back = iniparser_load(path);
+    assert(back != NULL);
+    assert(!strcmp(iniparser_getstring(back, "main:voice_key_file", ""), "/etc/hermes/voice.key"));
+    iniparser_freedict(back);
+
+    close_config_radio(r);
+    pthread_mutex_destroy(&r->cfg_mutex);
+    free(r);
+    unlink(path);
+}
+
 int main(void)
 {
     radio *r = make_radio();
@@ -253,6 +294,7 @@ int main(void)
     test_json(r);
     test_value_ok();
     test_rprt();
+    test_voice_key_refresh();
 
     free(r);
     printf("controls_test: all assertions passed\n");

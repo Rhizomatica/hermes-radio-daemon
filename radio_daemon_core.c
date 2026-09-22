@@ -25,6 +25,7 @@
 #include "audio_headset.h"
 #include "shm_audio.h"
 #include "loop_audio.h"
+#include "voice_crypto.h"
 
 extern _Atomic bool shutdown_;
 
@@ -113,6 +114,12 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
         goto fail;
     }
     cfg_started = true;
+
+    if (radio_h.voice_key_file[0] != '\0')
+        voice_crypto_load_key_file(radio_h.voice_key_file);
+    if (radio_h.dstar_encrypt && !voice_crypto_have_key())
+        fprintf(stderr, "dstar_encrypt = 1 but no voice key is loaded (voice_key_file): "
+                        "encrypted overs will go out as silence, never in the clear\n");
     radio_backend_configure(&radio_h, selection);
     radio_pipeline_refresh(&radio_h);
 

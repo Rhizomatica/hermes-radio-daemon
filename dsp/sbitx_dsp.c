@@ -55,6 +55,7 @@
 #include "sbitx_cw.h"
 #include "sbitx_rtty.h"
 #include "sbitx_dstar.h"
+#include "dstar_voice.h"
 #include <mbelib-neo/mbelib.h>
 
 // set 0 for production
@@ -569,11 +570,10 @@ static inline int dstar_pcm_count(void)
 static float dstar_mic8k[160];
 static int   dstar_mic8k_n;
 static bool  dstar_tx_keyed;
-/* The header currently being transmitted, repeated in the slow-data field of
- * every voice frame so the receiving rig can show callsigns without catching
- * the one-shot header burst. */
-static uint8_t dstar_tx_header_bytes[SBITX_DSTAR_HEADER_BYTES];
-static int     dstar_tx_slot;   /* frame index within the superframe, 0..20 */
+/* The over being transmitted (header, superframe position, encryption) and
+ * the one being received (is it encrypted, and its keystream position). */
+static dstar_voice_tx dstar_vtx;
+static dstar_voice_rx dstar_vrx;
 
 
 static void dstar_pcm_fifo_put(const float *pcm, int n)
@@ -603,28 +603,32 @@ static long dstar_rx_frame_count;
 static void dstar_rx_data_cb(void *user, const uint8_t *frame)
 {
     (void)user;
-    char fr[4][24];
     char ambe_d[49];
     short pcm[160];
     float pcmf[160];
     mbe_process_result res;
 
-    mbe_decodeDStarDVData(frame, (char(*)[24])fr);
-    mbe_processAmbe3600x2400Frame(pcm, &res, (const char(*)[24])fr, ambe_d,
-                                  &dstar_rx_cur, &dstar_rx_prev, &dstar_rx_enh);
+    /* FEC decode, then decrypt if the over is encrypted; an encrypted over
+     * this station cannot decrypt is muted rather than played as noise. */
+    bool play = dstar_voice_rx_frame(&dstar_vrx, frame, sbitx_dstar_rx_frame_index(dstar_rx),
+                                     ambe_d, &res);
+    radio_h_dsp->dstar_rx_crypto = (uint16_t) dstar_vrx.status;
+    if (play)
+        mbe_processAmbe2400Data(pcm, &res, ambe_d, &dstar_rx_cur, &dstar_rx_prev, &dstar_rx_enh);
 
     if (radio_h_dsp->dstar_verbose) {
         fprintf(stderr, "DSTAR data #%ld: ambe %02x %02x %02x %02x %02x %02x %02x %02x %02x"
-                        " slow %02x%02x%02x fec_errs=%d\n",
+                        " slow %02x%02x%02x fec_errs=%d crypto=%d\n",
                 dstar_rx_frame_count, frame[0], frame[1], frame[2], frame[3], frame[4],
                 frame[5], frame[6], frame[7], frame[8], frame[9], frame[10], frame[11],
-                res.total_errors);
+                res.total_errors, (int) dstar_vrx.status);
     }
     dstar_rx_frame_count++;
 
     /* Silence frames (b0 == 127) would render as loud comfort noise; emit
      * true silence instead. */
-    if (ambe_d[0] && ambe_d[1] && ambe_d[2] && ambe_d[3] && ambe_d[4] && ambe_d[5] && ambe_d[48]) {
+    if (!play ||
+        (ambe_d[0] && ambe_d[1] && ambe_d[2] && ambe_d[3] && ambe_d[4] && ambe_d[5] && ambe_d[48])) {
         for (int i = 0; i < 160; i++)
             pcmf[i] = 0.0f;
     } else {
@@ -674,6 +678,7 @@ static void dstar_rx_header_cb(void *user, const uint8_t *header)
     dstar_publish_callsign(radio_h_dsp->dstar_rx_mycall, sizeof(radio_h_dsp->dstar_rx_mycall), mycall);
     dstar_publish_callsign(radio_h_dsp->dstar_rx_suffix, sizeof(radio_h_dsp->dstar_rx_suffix), suffix);
     radio_h_dsp->dstar_rx_heard++;
+    dstar_voice_rx_header(&dstar_vrx, header);
 
     if (radio_h_dsp->dstar_verbose) {
         fprintf(stderr, "DSTAR header: flags=0x%02x%02x%02x rpt1=%s rpt2=%s ur=%s my=%s suf=%s\n",
@@ -703,6 +708,8 @@ static void dstar_rx_lost_cb(void *user)
     if (dstar_pcm_rb_ready)
         ring_buffer_clear(&dstar_pcm_rb);   /* drop stale audio on loss of lock */
     dstar_playing = false;                  /* and re-prebuffer before speaking */
+    dstar_voice_rx_reset(&dstar_vrx);
+    radio_h_dsp->dstar_rx_crypto = DSTAR_VC_CLEAR;
 }
 
 static void dstar_rx_eot_cb(void *user)
@@ -710,6 +717,8 @@ static void dstar_rx_eot_cb(void *user)
     (void)user;
     if (radio_h_dsp->dstar_verbose)
         fprintf(stderr, "DSTAR: end of transmission (rx'd %ld frames)\n", dstar_rx_frame_count);
+    dstar_voice_rx_reset(&dstar_vrx);
+    radio_h_dsp->dstar_rx_crypto = DSTAR_VC_CLEAR;
 }
 
 static void dsp_dstar_init(void)
@@ -770,63 +779,20 @@ static long dstar_tx_frame_count;
 
 static void dsp_dstar_tx_send_header(void)
 {
-    uint8_t header[SBITX_DSTAR_HEADER_BYTES];
-    memset(header, 0, sizeof(header));
-    header[0] = 0x10;   /* DV voice, repeater off */
-    memcpy(header + 3, radio_h_dsp->dstar_mycall, 8);
-    memcpy(header + 11, radio_h_dsp->dstar_mycall, 8);
-    memcpy(header + 19, radio_h_dsp->dstar_urcall, 8);
-    memcpy(header + 27, radio_h_dsp->dstar_mycall, 8);
-    header[35] = 'A';
-    sbitx_dstar_header_finalize(header);
-    sbitx_dstar_tx_header(dstar_tx, header);
-    memcpy(dstar_tx_header_bytes, header, sizeof(dstar_tx_header_bytes));
-    dstar_tx_slot = 0;          /* first voice frame carries the data sync */
+    dstar_voice_tx_begin(&dstar_vtx, radio_h_dsp->dstar_mycall, radio_h_dsp->dstar_urcall,
+                         radio_h_dsp->dstar_encrypt != 0);
+    sbitx_dstar_tx_header(dstar_tx, dstar_vtx.header);
     dstar_tx_frame_count = 0;
     if (radio_h_dsp->dstar_verbose)
-        fprintf(stderr, "DSTAR tx: header queued (my=%.8s ur=%.8s)\n",
-                radio_h_dsp->dstar_mycall, radio_h_dsp->dstar_urcall);
+        fprintf(stderr, "DSTAR tx: header queued (my=%.8s ur=%.8s encrypted=%d)\n",
+                radio_h_dsp->dstar_mycall, radio_h_dsp->dstar_urcall, (int) dstar_vtx.encrypt);
 }
 
 /* Feed one 20 ms mic frame into the AMBE encoder and queue the DV frame. */
-/* Fill a frame's 3 slow-data bytes.
- *
- * Frame 0 of each superframe carries the data sync, unscrambled, exactly as
- * the receiver looks for it. The other 20 frames carry the header as 6-byte
- * units spanning 2 frames each -- a type byte (0x55: header segment, five
- * data bytes) followed by five header bytes -- scrambled with the fixed
- * 0x70 0x4F 0x93 pattern. Nine units cover the 41-byte header; anything past
- * it is 0x66 filler, which is what a real rig sends (verified against the
- * IC-7100's own stream). */
-static void dsp_dstar_tx_slow_fill(uint8_t *out3, int slot)
-{
-    static const uint8_t SCRAMBLE[3] = {0x70U, 0x4FU, 0x93U};
-
-    if (slot == 0) {
-        out3[0] = 0x55U; out3[1] = 0x2DU; out3[2] = 0x16U;
-        return;
-    }
-
-    const int unit = (slot - 1) / 2;
-    const int half = (slot - 1) % 2;
-
-    uint8_t u[6];
-    u[0] = 0x55U;
-    for (int i = 0; i < 5; i++) {
-        int off = unit * 5 + i;
-        u[1 + i] = (off < SBITX_DSTAR_HEADER_BYTES) ? dstar_tx_header_bytes[off] : 0x66U;
-    }
-
-    for (int i = 0; i < 3; i++)
-        out3[i] = u[half * 3 + i] ^ SCRAMBLE[i];
-}
-
 static void dsp_dstar_tx_encode_frame(const float *mic8k)
 {
     char ambe_d[49];
-    char fr[4][24];
     uint8_t frame[SBITX_DSTAR_FRAME_BYTES];
-    uint8_t sync[3] = {0x55U, 0x2DU, 0x16U};
     const float *src = mic8k;
 
     /* In-speech noise reduction front-end (libspecbleach, 8 kHz). Runtime
@@ -859,22 +825,7 @@ static void dsp_dstar_tx_encode_frame(const float *mic8k)
     }
 
     mbe_encodeAmbe2400Parms(src, ambe_d, &dstar_tx_cur, &dstar_tx_prev);
-    mbe_encodeAmbe3600x2400Frame(ambe_d, (char(*)[24])fr);
-
-    /* Wire layout is 9 bytes of AMBE followed by 3 bytes of sync-or-slow-data
-     * -- NOT sync first. The old order put the sync where the voice belongs
-     * and repeated it in every frame, so a receiving rig saw neither valid
-     * voice nor a superframe structure. Confirmed from the air: every frame
-     * the IC-7100 sends ends with 55 2D 16 only once per 21 frames, and
-     * DSTAR_DATA_SYNC_BYTES is {...9 AMBE..., 0x55, 0x2D, 0x16}. */
-    (void) sync;
-    mbe_encodeDStarDVData((const char(*)[24])fr, frame);
-    dsp_dstar_tx_slow_fill(frame + 9, dstar_tx_slot);
-
-    dstar_tx_slot++;
-    if (dstar_tx_slot >= 21)
-        dstar_tx_slot = 0;
-
+    dstar_voice_tx_frame(&dstar_vtx, ambe_d, frame);
     sbitx_dstar_tx_frame(dstar_tx, frame);
     mbe_moveMbeParms(&dstar_tx_cur, &dstar_tx_prev);
 

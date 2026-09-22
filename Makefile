@@ -43,7 +43,8 @@ all: radio_daemon radio_client
 
 TEST_CFLAGS = -O0 -Wall -Wextra -std=gnu11 -fstack-protector \
               -I. -Ihamlib -I/usr/include/iniparser -Iinclude
-TEST_BINS = tests/backend_selection_test tests/compat_surface_test tests/controls_test
+TEST_BINS = tests/backend_selection_test tests/compat_surface_test tests/controls_test \
+            tests/dstar_voice_test
 
 # ── daemon-level objects ────────────────────────────────────────
 DAEMON_TOP_OBJS = radio_daemon.o \
@@ -88,6 +89,8 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              dsp/sbitx_cw.o \
              dsp/sbitx_rtty.o \
              dsp/sbitx_dstar.o \
+             dsp/dstar_voice.o \
+             dsp/voice_crypto.o \
              sbitx/sbitx_si5351.o \
              sbitx/ring_buffer.o \
              $(SBITX_GPIOLIB_OBJS) \
@@ -120,6 +123,7 @@ compat-tests: $(TEST_BINS)
 	./tests/backend_selection_test
 	./tests/compat_surface_test
 	./tests/controls_test
+	./tests/dstar_voice_test
 
 tests/backend_selection_test: tests/backend_selection_test.c cfg_utils.c cfg_utils.h \
                               radio_backend.c radio_backend.h radio_daemon_core.h \
@@ -132,6 +136,11 @@ tests/controls_test: tests/controls_test.c radio_controls.c radio_controls.h \
                      radio_backend.c radio_backend.h cat_server.c cat_server.h \
                      cfg_utils.c cfg_utils.h radio.h
 	$(CC) $(TEST_CFLAGS) tests/controls_test.c hamlib/rig_server.c cat_server.c -o $@ -liniparser -lpthread -lm
+
+tests/dstar_voice_test: tests/dstar_voice_test.c dsp/dstar_voice.c dsp/dstar_voice.h \
+                        dsp/voice_crypto.c dsp/voice_crypto.h dsp/sbitx_dstar.c dsp/sbitx_dstar.h
+	$(CC) $(TEST_CFLAGS) -Idsp tests/dstar_voice_test.c dsp/dstar_voice.c dsp/voice_crypto.c \
+	      dsp/sbitx_dstar.c -o $@ -lmbe-neo -lcrypto -lm
 
 tests/compat_surface_test: tests/compat_surface_test.c radio_shm.c radio_shm.h \
                            radio_pipeline.c radio_pipeline.h \

@@ -34,6 +34,7 @@
 #include "../dsp/sbitx_rtty.h"
 #include "../dsp/sbitx_radae.h"
 #include "../dsp/sbitx_dstar.h"
+#include "../dsp/dstar_voice.h"
 #include <mbelib-neo/mbelib.h>
 #include <specbleach_denoiser.h>
 #include "../radio_backend.h"   /* radio_backend_set_txrx_state for auto-PTT */
@@ -233,6 +234,8 @@ typedef struct {
     int   dstar_mic8k_n;
     bool  dstar_tx_keyed;
     bool  dstar_inited;
+    dstar_voice_tx dstar_vtx;   /* over being sent: header, slot, encryption */
+    dstar_voice_rx dstar_vrx;   /* over being received */
 
     /* Phase accumulators for the freq-shift (mixer) at 1500 Hz, 8 kHz fs.
      * Carried across calls so consecutive blocks stay phase-continuous. */
@@ -534,13 +537,29 @@ static void do_rtty_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_h
 
 static void dstar_hamlib_data_cb(void *user, const uint8_t *frame);
 
+static void dstar_hamlib_header_cb(void *user, const uint8_t *header)
+{
+    hamlib_digi_state *s = (hamlib_digi_state *) user;
+    dstar_voice_rx_header(&s->dstar_vrx, header);
+}
+
+/* EOT or loss of lock: the over is gone. */
+static void dstar_hamlib_end_cb(void *user)
+{
+    hamlib_digi_state *s = (hamlib_digi_state *) user;
+    dstar_voice_rx_reset(&s->dstar_vrx);
+    s->radio_h->dstar_rx_crypto = DSTAR_VC_CLEAR;
+}
+
 static void
 dstar_hamlib_init(hamlib_digi_state *s)
 {
     if (s->dstar_inited)
         return;
     s->dstar_rx = sbitx_dstar_rx_new();
-    sbitx_dstar_rx_set_cbs(s->dstar_rx, NULL, dstar_hamlib_data_cb, NULL, NULL, s);
+    sbitx_dstar_rx_set_cbs(s->dstar_rx, dstar_hamlib_header_cb, dstar_hamlib_data_cb,
+                           dstar_hamlib_end_cb, dstar_hamlib_end_cb, s);
+    dstar_voice_rx_reset(&s->dstar_vrx);
     sbitx_dstar_rx_set_polarity(s->dstar_rx, s->radio_h->dstar_rx_polarity);
     s->dstar_tx = sbitx_dstar_tx_new();
     mbe_initMbeParms(&s->dstar_rx_cur, &s->dstar_rx_prev, &s->dstar_rx_enh);
@@ -558,18 +577,24 @@ static uint32_t g_dstar_ring_rate = 48000;
 static void dstar_hamlib_data_cb(void *user, const uint8_t *frame)
 {
     hamlib_digi_state *s = (hamlib_digi_state *) user;
-    char fr[4][24];
     char ambe_d[49];
     short pcm[160];
     float pcmf[160];
+    mbe_process_result res;
 
-    mbe_decodeDStarDVData(frame, (char(*)[24])fr);
-    mbe_processAmbe3600x2400Frame(pcm, NULL, (const char(*)[24])fr, ambe_d,
-                                  &s->dstar_rx_cur, &s->dstar_rx_prev, &s->dstar_rx_enh);
+    /* FEC decode, then decrypt if the over is encrypted; an encrypted over
+     * this station cannot decrypt is muted rather than played as noise. */
+    bool play = dstar_voice_rx_frame(&s->dstar_vrx, frame, sbitx_dstar_rx_frame_index(s->dstar_rx),
+                                     ambe_d, &res);
+    s->radio_h->dstar_rx_crypto = (uint16_t) s->dstar_vrx.status;
+    if (play)
+        mbe_processAmbe2400Data(pcm, &res, ambe_d,
+                                &s->dstar_rx_cur, &s->dstar_rx_prev, &s->dstar_rx_enh);
 
     /* Silence frames (b0 == 127) would render as loud comfort noise; emit
      * true silence instead. */
-    if (ambe_d[0] && ambe_d[1] && ambe_d[2] && ambe_d[3] && ambe_d[4] && ambe_d[5] && ambe_d[48]) {
+    if (!play ||
+        (ambe_d[0] && ambe_d[1] && ambe_d[2] && ambe_d[3] && ambe_d[4] && ambe_d[5] && ambe_d[48])) {
         for (int i = 0; i < 160; i++)
             pcmf[i] = 0.0f;
     } else {
@@ -625,21 +650,13 @@ static void do_dstar_tx(hamlib_digi_state *s, uint32_t ring_rate)
             s->dstar_mic8k[s->dstar_mic8k_n++] = mic_8k[i];
             if (s->dstar_mic8k_n == 160) {
                 char ambe_d[49];
-                char fr[4][24];
                 uint8_t frame[SBITX_DSTAR_FRAME_BYTES];
-                uint8_t sync[3] = {0x55U, 0x2DU, 0x16U};
 
                 if (!s->dstar_tx_keyed) {
-                    uint8_t header[SBITX_DSTAR_HEADER_BYTES];
-                    memset(header, 0, sizeof(header));
-                    header[0] = 0x10;
-                    memcpy(header + 3, s->radio_h->dstar_mycall, 8);
-                    memcpy(header + 11, s->radio_h->dstar_mycall, 8);
-                    memcpy(header + 19, s->radio_h->dstar_urcall, 8);
-                    memcpy(header + 27, s->radio_h->dstar_mycall, 8);
-                    header[35] = 'A';
-                    sbitx_dstar_header_finalize(header);
-                    sbitx_dstar_tx_header(s->dstar_tx, header);
+                    dstar_voice_tx_begin(&s->dstar_vtx, s->radio_h->dstar_mycall,
+                                         s->radio_h->dstar_urcall,
+                                         s->radio_h->dstar_encrypt != 0);
+                    sbitx_dstar_tx_header(s->dstar_tx, s->dstar_vtx.header);
                     s->dstar_tx_keyed = true;
                 }
 
@@ -675,9 +692,10 @@ static void do_dstar_tx(hamlib_digi_state *s, uint32_t ring_rate)
                     }
                     mbe_encodeAmbe2400Parms(src, ambe_d, &s->dstar_tx_cur, &s->dstar_tx_prev);
                 }
-                mbe_encodeAmbe3600x2400Frame(ambe_d, (char(*)[24])fr);
-                memcpy(frame, sync, 3);
-                mbe_encodeDStarDVData((const char(*)[24])fr, frame + 3);
+                /* Shared framing: 9 AMBE bytes then sync/slow data, with
+                 * the header repeated in slow data and, when enabled, the
+                 * voice bits encrypted. */
+                dstar_voice_tx_frame(&s->dstar_vtx, ambe_d, frame);
                 sbitx_dstar_tx_frame(s->dstar_tx, frame);
                 mbe_moveMbeParms(&s->dstar_tx_cur, &s->dstar_tx_prev);
                 s->dstar_mic8k_n = 0;

@@ -417,6 +417,13 @@ typedef struct {
     /* Run-time tunable: enable the specbleach denoise front-end on the
      * D-STAR TX mic path (1 on, 0 off). */
     _Atomic uint16_t dstar_denoise;
+    /* Opt-in D-STAR voice encryption (dsp/dstar_voice.h): 1 encrypts every
+     * over this station sends, with the key from voice_key_file. Receiving
+     * decrypts whenever a key is loaded, whatever this is set to. */
+    _Atomic uint16_t dstar_encrypt;
+    /* Path of the 256-bit voice key (32 raw bytes or 64 hex digits). The key
+     * itself is held in dsp/voice_crypto.c, never in this struct. */
+    char voice_key_file[256];
 
     /* Outbound text queue for FT8/CW/RTTY (filled by digi_send) */
     digi_tx_queue digi_tx;
@@ -495,6 +502,9 @@ typedef struct {
     char             dstar_rx_rpt2[9];
     char             dstar_rx_suffix[5];
     _Atomic uint32_t dstar_rx_heard;
+    /* dstar_vc_status of the over being received: 0 clear, 1 decrypting,
+     * 2 acquiring, 3 encrypted without a key, 4 key mismatch. */
+    _Atomic uint16_t dstar_rx_crypto;
 } radio;
 
 /* digi_tx_queue helpers (defined in cfg_utils.c or radio_websocket.c). */

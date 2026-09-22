@@ -1084,6 +1084,12 @@ dstar_slow_feed(sbitx_dstar_rx *rx, const uint8_t *frame, uint8_t slot)
     }
 }
 
+uint16_t
+sbitx_dstar_rx_frame_index(const sbitx_dstar_rx *rx)
+{
+    return rx->frame_count;
+}
+
 static void
 dstar_process_data(sbitx_dstar_rx *rx)
 {
