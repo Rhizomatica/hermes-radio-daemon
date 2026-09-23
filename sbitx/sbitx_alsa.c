@@ -477,6 +477,30 @@ void sound_mixer(char *card_name, char *element, int make_on)
 }
 
 
+/* Audio timing diagnostics: silent while on time, one line per anomaly.
+ * Written to find what stalls the codec path for >10 ms under load. */
+static inline int64_t diag_now_us(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t) ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+static _Atomic int64_t diag_cap_at, diag_dsp_at, diag_play_at;
+static _Atomic int32_t diag_cap_gap, diag_dsp_proc, diag_play_fill;
+
+static long diag_cpu_khz(void)
+{
+    long khz = -1;
+    FILE *f = fopen("/sys/devices/system/cpu/cpu3/cpufreq/scaling_cur_freq", "r");
+    if (f)
+    {
+        if (fscanf(f, "%ld", &khz) != 1)
+            khz = -1;
+        fclose(f);
+    }
+    return khz;
+}
+
 void *radio_capture_thread(void *device_ptr)
 {
     char *device = (char *) device_ptr;
@@ -590,6 +614,18 @@ void *radio_capture_thread(void *device_ptr)
             }
             snd_pcm_prepare (pcm_capture_handle);
             continue;
+        }
+
+        {
+            int64_t now = diag_now_us(), prev = diag_cap_at;
+            diag_cap_at = now;
+            if (prev)
+            {
+                diag_cap_gap = (int32_t) (now - prev);
+                if (now - prev > 8000)
+                    fprintf(stderr, "diag: capture period %.1f ms after the previous (nominal 5.3), cpu %ld kHz\n",
+                            (now - prev) / 1000.0, diag_cpu_khz());
+            }
         }
 
         for (int j = 0; j < hw_period_size; j++)
@@ -741,9 +777,27 @@ void *radio_playback_thread(void *device_ptr)
             memcpy(&buffer[j*sample_size*channels + sample_size], &radio[j*sample_size], sample_size);
         }
 
+        {
+            snd_pcm_sframes_t queued = 0;
+            if (snd_pcm_delay(pcm_play_handle, &queued) == 0)
+            {
+                diag_play_fill = (int32_t) queued;
+                if (queued < (snd_pcm_sframes_t) hw_period_size && snd_pcm_state(pcm_play_handle) == SND_PCM_STATE_RUNNING)
+                    fprintf(stderr, "diag: playback had only %ld frames queued (%.1f ms)\n",
+                            (long) queued, queued / 96.0);
+            }
+        }
+
     try_again_radio_play:
         if ((e = snd_pcm_mmap_writei(pcm_play_handle, buffer, hw_period_size)) != hw_period_size)
         {
+            int64_t now = diag_now_us();
+            fprintf(stderr, "diag: underrun context: last playback write %.1f ms ago (fill then %d fr), "
+                            "last capture %.1f ms ago (gap %.1f ms), last dsp block %.1f ms ago (took %.1f ms), %s, cpu %ld kHz\n",
+                    diag_play_at ? (now - diag_play_at) / 1000.0 : -1.0, (int) diag_play_fill,
+                    diag_cap_at ? (now - diag_cap_at) / 1000.0 : -1.0, diag_cap_gap / 1000.0,
+                    diag_dsp_at ? (now - diag_dsp_at) / 1000.0 : -1.0, diag_dsp_proc / 1000.0,
+                    radio_h_snd->txrx_state == IN_TX ? "tx" : "rx", diag_cpu_khz());
             fprintf (stderr, "write to audio interface %s failed (%s)\n", device, snd_strerror (e));
             if (e == -EPIPE)
             {
@@ -761,6 +815,7 @@ void *radio_playback_thread(void *device_ptr)
                 snd_pcm_mmap_writei(pcm_play_handle, silence, hw_period_size);
             goto try_again_radio_play;
         }
+        diag_play_at = diag_now_us();
     }
 
     snd_pcm_hw_params_free(hwparams);
@@ -1073,6 +1128,7 @@ void *control_thread(void *device_ptr)
 
         read_buffer(radio_to_dsp, buffer_radio_to_dsp, buffer_size); // mono
         read_buffer(mic_to_dsp, buffer_mic_to_dsp, buffer_size); // mono
+        int64_t diag_in = diag_now_us();
 
         if (use_loopback)
         {
@@ -1153,6 +1209,16 @@ void *control_thread(void *device_ptr)
             write_buffer(dsp_to_speaker, output_speaker, buffer_size); // mono 96 kHz
         else
             printf("Buffer full dsp_to_speaker!\n");
+
+        {
+            int64_t now = diag_now_us();
+            diag_dsp_proc = (int32_t) (now - diag_in);
+            diag_dsp_at = now;
+            if (now - diag_in > 4000)
+                fprintf(stderr, "diag: dsp block took %.1f ms (%s), cpu %ld kHz\n",
+                        (now - diag_in) / 1000.0,
+                        radio_h_snd->txrx_state == IN_TX ? "tx" : "rx", diag_cpu_khz());
+        }
     }
 
     free(buffer_null);
