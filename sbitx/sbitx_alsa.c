@@ -702,10 +702,32 @@ void *radio_playback_thread(void *device_ptr)
     uint8_t *buffer = malloc(buffer_size);
     uint8_t *radio = (uint8_t *) malloc(buffer_size/2);
     uint8_t *speaker = (uint8_t *) malloc(buffer_size/2);
+    uint8_t *silence = (uint8_t *) calloc(1, buffer_size);
+
+    /* Slack. The capture, DSP and playback threads run in lockstep on the
+     * codec's clock, so the playback queue only holds what was written
+     * ahead of it; ALSA's default start threshold starts playback on the
+     * first period, leaving one period (5.3 ms) of slack, and any hiccup
+     * past it underran -- in the middle of transmissions, cutting data
+     * bursts the peer then could not decode (bench, 23 Sep 2026). Queue
+     * PLAY_PRIME_PERIODS of silence first and start once the first real
+     * period is behind them: ~10.7 ms more latency, twice the slack. The
+     * same holds after an underrun, which re-primes. */
+    enum { PLAY_PRIME_PERIODS = 2 };
+    snd_pcm_sw_params_t *swparams;
+    snd_pcm_sw_params_alloca(&swparams);
+    if ((e = snd_pcm_sw_params_current(pcm_play_handle, swparams)) < 0 ||
+        (e = snd_pcm_sw_params_set_start_threshold(pcm_play_handle, swparams,
+                 (PLAY_PRIME_PERIODS + 1) * hw_period_size)) < 0 ||
+        (e = snd_pcm_sw_params_set_avail_min(pcm_play_handle, swparams, hw_period_size)) < 0 ||
+        (e = snd_pcm_sw_params(pcm_play_handle, swparams)) < 0)
+        fprintf(stderr, "radio playback: sw_params failed (%s)\n", snd_strerror(e));
 
     snd_pcm_prepare(pcm_play_handle);
     snd_pcm_drop(pcm_play_handle);
     snd_pcm_prepare(pcm_play_handle);
+    for (int p = 0; p < PLAY_PRIME_PERIODS; p++)
+        snd_pcm_mmap_writei(pcm_play_handle, silence, hw_period_size);
 
     while (!shutdown_)
     {
@@ -725,7 +747,7 @@ void *radio_playback_thread(void *device_ptr)
             fprintf (stderr, "write to audio interface %s failed (%s)\n", device, snd_strerror (e));
             if (e == -EPIPE)
             {
-                fprintf(stderr, "overrun\n");
+                fprintf(stderr, "underrun\n");
             }
             else if (e < 0)
             {
@@ -735,12 +757,15 @@ void *radio_playback_thread(void *device_ptr)
                 fprintf(stderr, "short write, wrote %d frames\n", e);
             }
             snd_pcm_prepare (pcm_play_handle);
+            for (int p = 0; p < PLAY_PRIME_PERIODS; p++)
+                snd_pcm_mmap_writei(pcm_play_handle, silence, hw_period_size);
             goto try_again_radio_play;
         }
     }
 
     snd_pcm_hw_params_free(hwparams);
     free(buffer);
+    free(silence);
 
     return NULL;
 }
