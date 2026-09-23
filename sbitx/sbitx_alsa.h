@@ -47,4 +47,7 @@ void set_tx_level(uint32_t tx_level);
 void sound_mixer(char *card_name, char *element, int make_on);
 void clear_buffers();
 
+/* Audio already queued towards the transmitter, in ms (see sbitx_alsa.c). */
+uint32_t sound_tx_pipeline_ms(void);
+
 #endif

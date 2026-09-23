@@ -60,6 +60,14 @@ static FILE *rx_speaker_dump_fp = NULL;
 unsigned int hw_rate = 96000; /* Sample rate */
 snd_pcm_uframes_t hw_period_size = 512; // in frames
 uint64_t hw_n_periods = 4; // number of periods
+/* Codec playback: 8 periods (43 ms) with 4 primed, so a stall of up to
+ * ~21 ms does not underrun. The codec DMA hands over two periods at a
+ * time (every ~10.7 ms), so 4 periods left one hand-over of slack. The
+ * extra latency is played out at PTT-off (sound_tx_pipeline_ms). */
+static const unsigned hw_play_n_periods = 8;
+
+/* Frames queued in the codec playback at its last write. */
+static _Atomic int32_t play_queued_frames = 0;
 
 unsigned int loopback_rate = 48000; /* Sample rate */
 snd_pcm_uframes_t loopback_period_size = 256; // in frames
@@ -611,6 +619,20 @@ void *radio_capture_thread(void *device_ptr)
 }
 
 
+/* Audio already on its way to the transmitter, in ms: Mercury's samples in
+ * the loopback ring (48 kHz stereo S32), the DSP block in flight (1024
+ * samples at 96 kHz), the samples waiting for the playback thread (96 kHz
+ * mono S32) and the codec's queue. Both rings hold 384 bytes per ms. */
+uint32_t sound_tx_pipeline_ms(void)
+{
+    unsigned long bytes = 0;
+    if (loopback_to_dsp)
+        bytes += size_buffer(loopback_to_dsp);
+    if (dsp_to_radio)
+        bytes += size_buffer(dsp_to_radio);
+    return (uint32_t) (bytes / 384 + 11 + play_queued_frames / 96);
+}
+
 void *radio_playback_thread(void *device_ptr)
 {
     char *device = (char *) device_ptr;
@@ -678,7 +700,7 @@ void *radio_playback_thread(void *device_ptr)
     }
 
     /* nr. of periods */
-    if ((e = snd_pcm_hw_params_set_periods(pcm_play_handle, hwparams, hw_n_periods, 0)) < 0)
+    if ((e = snd_pcm_hw_params_set_periods(pcm_play_handle, hwparams, hw_play_n_periods, 0)) < 0)
     {
         fprintf(stderr, "Error setting playback periods.\n");
         return NULL;
@@ -713,7 +735,7 @@ void *radio_playback_thread(void *device_ptr)
      * PLAY_PRIME_PERIODS of silence first and start once the first real
      * period is behind them: ~10.7 ms more latency, twice the slack. The
      * same holds after an underrun, which re-primes. */
-    enum { PLAY_PRIME_PERIODS = 2 };
+    enum { PLAY_PRIME_PERIODS = 4 };
     snd_pcm_sw_params_t *swparams;
     snd_pcm_sw_params_alloca(&swparams);
     if ((e = snd_pcm_sw_params_current(pcm_play_handle, swparams)) < 0 ||
@@ -739,6 +761,12 @@ void *radio_playback_thread(void *device_ptr)
         {
             memcpy(&buffer[j*sample_size*channels], &speaker[j*sample_size], sample_size);
             memcpy(&buffer[j*sample_size*channels + sample_size], &radio[j*sample_size], sample_size);
+        }
+
+        {
+            snd_pcm_sframes_t queued;
+            if (snd_pcm_delay(pcm_play_handle, &queued) == 0 && queued >= 0)
+                play_queued_frames = (int32_t) queued;
         }
 
     try_again_radio_play:
