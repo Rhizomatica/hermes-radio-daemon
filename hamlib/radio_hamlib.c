@@ -470,6 +470,14 @@ static bool radio_hamlib_init(radio *radio_h)
         return false;
     }
 
+    /* Unkey first, whatever state the rig is in: a daemon that died while
+     * transmitting (crash, SIGKILL, power cut on the Pi) leaves the rig
+     * keyed, and nothing else would ever release it. */
+    ret = rig_set_ptt(rig, RIG_VFO_CURR, RIG_PTT_OFF);
+    if (ret != RIG_OK)
+        fprintf(stderr, "radio_hamlib_init: PTT off failed: %s\n",
+                rigerror(ret));
+
     radio_h->rig = (void *) rig;
     radio_h->s_meter_db = -200;   /* no S-meter reading until the first RX poll */
 
@@ -506,6 +514,35 @@ static bool radio_hamlib_init(radio *radio_h)
     return true;
 }
 
+static bool radio_hamlib_force_ptt_off(radio *radio_h)
+{
+    rig_set_debug(RIG_DEBUG_WARN);
+
+    RIG *rig = rig_init(radio_h->hamlib_model);
+    if (!rig)
+        return false;
+
+    hamlib_configure_ports(rig, radio_h);
+
+    int ret = rig_open(rig);
+    if (ret != RIG_OK)
+    {
+        fprintf(stderr, "radio_hamlib_force_ptt_off: rig_open failed: %s\n",
+                rigerror(ret));
+        rig_cleanup(rig);
+        return false;
+    }
+
+    ret = rig_set_ptt(rig, RIG_VFO_CURR, RIG_PTT_OFF);
+    if (ret != RIG_OK)
+        fprintf(stderr, "radio_hamlib_force_ptt_off: rig_set_ptt failed: %s\n",
+                rigerror(ret));
+
+    rig_close(rig);
+    rig_cleanup(rig);
+    return ret == RIG_OK;
+}
+
 static void radio_hamlib_shutdown(radio *radio_h)
 {
     hamlib_digi_stop(radio_h);
@@ -515,10 +552,13 @@ static void radio_hamlib_shutdown(radio *radio_h)
 
     RIG *rig = (RIG *) radio_h->rig;
 
-    /* Make sure we are in RX before closing */
+    /* Make sure we are in RX before closing, whatever the cached state
+     * says (see tr_switch). */
     RIG_LOCK();
-    if (radio_h->txrx_state == IN_TX)
-        rig_set_ptt(rig, RIG_VFO_CURR, RIG_PTT_OFF);
+    int ret = rig_set_ptt(rig, RIG_VFO_CURR, RIG_PTT_OFF);
+    if (ret != RIG_OK)
+        fprintf(stderr, "radio_hamlib_shutdown: PTT off failed: %s\n",
+                rigerror(ret));
 
     rig_close(rig);
     rig_cleanup(rig);
@@ -604,8 +644,18 @@ static void set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
 
 static void tr_switch(radio *radio_h, bool txrx_state)
 {
-    if (txrx_state == radio_h->txrx_state)
+    /* Keying is deduplicated against the cached state, unkeying never is:
+     * RX always reaches the rig, as on the sBitx (60148cc). The cache can
+     * read IN_RX while the rig transmits (a failed rig_get_ptt keeps the old
+     * value, a keying request can race the 200 ms poll), and a skipped
+     * PTT-off then leaves the transmitter keyed with every client told it
+     * is not. A redundant PTT-off costs one CAT command; a redundant call
+     * can never key the radio. */
+    if (txrx_state == IN_TX && radio_h->txrx_state == IN_TX)
         return;
+
+    if (txrx_state == IN_RX && radio_h->txrx_state == IN_RX)
+        printf("tr_switch: PTT off while already in RX, sending it anyway\n");
 
     if (radio_h->swr_protection_enabled && txrx_state == IN_TX)
     {
@@ -625,8 +675,8 @@ static void tr_switch(radio *radio_h, bool txrx_state)
         RIG_UNLOCK();
         if (ret != RIG_OK)
         {
-            fprintf(stderr, "tr_switch: rig_set_ptt failed: %s\n",
-                    rigerror(ret));
+            fprintf(stderr, "tr_switch: rig_set_ptt(%s) failed: %s\n",
+                    txrx_state == IN_TX ? "ON" : "OFF", rigerror(ret));
             return;
         }
 
@@ -2214,4 +2264,5 @@ const radio_backend_ops hamlib_backend_ops = {
     .cat_raw                 = hl_cat_raw,
     .cat_terminator          = hl_cat_terminator,
     .dump_state              = hl_dump_state,
+    .force_ptt_off           = radio_hamlib_force_ptt_off,
 };

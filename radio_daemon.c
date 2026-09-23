@@ -20,6 +20,7 @@
  *
  */
 
+#include <getopt.h>
 #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
@@ -34,12 +35,14 @@ static void print_usage(const char *prog)
 {
     fprintf(stderr,
             "Usage:\n"
-            "  %s [-r radio.ini] [-u user.ini] [-c cpu_nr] [-h]\n\n"
+            "  %s [-r radio.ini] [-u user.ini] [-c cpu_nr] [-P] [-h]\n\n"
             "Options:\n"
             "  -r radio.ini   Path to radio/hardware config  (default: %s)\n"
             "  -u user.ini    Path to user/profile config    (default: %s)\n"
             "  -c cpu_nr      Pin process to CPU cpu_nr      (default: no pinning)\n"
             "                 Use -1 to disable CPU pinning\n"
+            "  -P, --ptt-off  Put the radio in receive and exit (run by\n"
+            "                 systemd after the daemon stops or dies)\n"
             "  -h             Show this help\n",
              prog, CFG_RADIO_PATH, CFG_USER_PATH);
 }
@@ -52,11 +55,21 @@ int main(int argc, char *argv[])
     radio_backend_selection backend_selection;
     radio_daemon_runtime runtime;
 
+    bool ptt_off_only = false;
+    static const struct option long_opts[] = {
+        { "ptt-off", no_argument, NULL, 'P' },
+        { "help",    no_argument, NULL, 'h' },
+        { NULL, 0, NULL, 0 }
+    };
+
     int opt;
-    while ((opt = getopt(argc, argv, "hr:u:c:")) != -1)
+    while ((opt = getopt_long(argc, argv, "hr:u:c:P", long_opts, NULL)) != -1)
     {
         switch (opt)
         {
+        case 'P':
+            ptt_off_only = true;
+            break;
         case 'r':
             cfg_radio_path = optarg;
             break;
@@ -78,6 +91,10 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Failed to resolve radio backend. Exiting.\n");
         return EXIT_FAILURE;
     }
+
+    if (ptt_off_only)
+        return radio_backend_force_ptt_off(&backend_selection, cfg_radio_path) == 0
+               ? EXIT_SUCCESS : EXIT_FAILURE;
 
     runtime.cfg_radio_path = cfg_radio_path;
     runtime.cfg_user_path = cfg_user_path;

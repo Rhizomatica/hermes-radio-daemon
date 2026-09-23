@@ -393,7 +393,7 @@ static int rig_handle_line(radio *radio_h, int fd, const char *line)
             rig_respond_rprt(fd, RADIO_CTRL_EINVAL);
             return 0;
         }
-        radio_backend_set_txrx_state(radio_h, val != 0);
+        radio_backend_set_ptt(radio_h, val != 0, PTT_SRC_RIGCTLD, fd);
         rig_respond(fd, "RPRT 0\n");
         return 0;
     }
@@ -790,6 +790,10 @@ static void *rig_server_thread(void *arg)
             int rc = rig_handle_client(radio_h, &clients[i]);
             if (rc < 0)
             {
+                /* Before close(): the fd is the owner id, and it can be
+                 * reused by the next accept. */
+                radio_backend_release_ptt(radio_h, PTT_SRC_RIGCTLD, clients[i].fd,
+                                          "disconnected");
                 close(clients[i].fd);
                 clients[i] = clients[--nclients];
                 i--;
@@ -799,7 +803,11 @@ static void *rig_server_thread(void *arg)
 
     /* Cleanup */
     for (int i = 0; i < nclients; i++)
+    {
+        radio_backend_release_ptt(radio_h, PTT_SRC_RIGCTLD, clients[i].fd,
+                                  "disconnected");
         close(clients[i].fd);
+    }
 
     return NULL;
 }

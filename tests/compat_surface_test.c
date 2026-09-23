@@ -15,10 +15,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
+#include <sys/mman.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "radio.h"
+#include "radio_backend.h"
 #include "radio_pipeline.h"
 #include "include/radio_cmds.h"
 #include "include/sbitx_io.h"
@@ -38,6 +41,7 @@ static struct {
     bool     digital_voice;
     bool     tone_generation;
     bool     txrx_state;
+    int      txrx_calls;
     uint32_t profile;
     bool     set_profile_called;
 } backend_call;
@@ -51,7 +55,29 @@ void radio_backend_set_mode(radio *radio_h, uint16_t m, uint32_t p)
   if (p < radio_h->profiles_count) radio_h->profiles[p].mode = m; }
 
 void radio_backend_set_txrx_state(radio *radio_h, bool s)
-{ backend_call.txrx_state = s; radio_h->txrx_state = s; }
+{ backend_call.txrx_state = s; backend_call.txrx_calls++; radio_h->txrx_state = s; }
+
+/* Owner bookkeeping as radio_backend.c does it, minus the lock. */
+static struct { ptt_source src; long id; int releases; } ptt_owner;
+
+void radio_backend_set_ptt(radio *radio_h, bool s, ptt_source src, long id)
+{
+    ptt_owner.src = s ? src : PTT_SRC_NONE;
+    ptt_owner.id  = s ? id : 0;
+    radio_backend_set_txrx_state(radio_h, s);
+}
+
+bool radio_backend_release_ptt(radio *radio_h, ptt_source src, long id, const char *why)
+{
+    (void) why;
+    if (src == PTT_SRC_NONE || ptt_owner.src != src || ptt_owner.id != id)
+        return false;
+    ptt_owner.src = PTT_SRC_NONE;
+    ptt_owner.id  = 0;
+    ptt_owner.releases++;
+    radio_backend_set_txrx_state(radio_h, IN_RX);
+    return true;
+}
 
 void radio_backend_set_bfo(radio *radio_h, uint32_t f)
 { backend_call.bfo = f; radio_h->bfo_frequency = f; }
@@ -224,10 +250,150 @@ static void test_shm_profile_and_message_semantics(void)
     destroy_test_radio(&radio_h);
 }
 
+/* CMD_PTT_OFF must reach the backend even when the cached state already
+ * reads RX (the radio may still be keyed: the estacao8 incident) and while
+ * SWR protection is on. The replies keep their old meaning. */
+static void test_shm_ptt_off_always_unkeys(void)
+{
+    radio radio_h;
+    controller_conn connector;
+    uint8_t cmd[5] = {0};
+    uint8_t response[5] = {0};
+
+    init_test_radio(&radio_h, RADIO_BACKEND_HAMLIB, false);
+    memset(&connector, 0, sizeof(connector));
+    connector_local = &connector;
+    radio_h_shm = &radio_h;
+
+    reset_backend_call();
+    radio_h.txrx_state = IN_RX;
+    cmd[4] = CMD_PTT_OFF;
+    process_radio_command(cmd, response);
+    assert(backend_call.txrx_calls == 1 && backend_call.txrx_state == IN_RX);
+    assert(response[0] == CMD_RESP_PTT_OFF_NACK);
+
+    reset_backend_call();
+    radio_h.txrx_state = IN_TX;
+    radio_h.swr_protection_enabled = true;
+    process_radio_command(cmd, response);
+    assert(backend_call.txrx_calls == 1 && radio_h.txrx_state == IN_RX);
+    assert(response[0] == CMD_ALERT_PROTECTION_ON);
+    radio_h.swr_protection_enabled = false;
+
+    reset_backend_call();
+    radio_h.txrx_state = IN_TX;
+    process_radio_command(cmd, response);
+    assert(backend_call.txrx_calls == 1 && radio_h.txrx_state == IN_RX);
+    assert(response[0] == CMD_RESP_ACK);
+
+    destroy_test_radio(&radio_h);
+    puts("  shm PTT off always unkeys ............ ok");
+}
+
+/* A client that keys over hermes_shm and dies without unkeying (killed
+ * mid-transmission) must not leave the radio in TX; one that is alive, or
+ * that unkeyed before exiting, must not be touched. The child plays
+ * radio_cmd(): it holds response_mutex while its command is processed. */
+static int keyer_fork(controller_conn *conn, int *ctl_w)
+{
+    int up[2], down[2];
+    assert(pipe(up) == 0 && pipe(down) == 0);
+    pid_t pid = fork();
+    assert(pid >= 0);
+    if (pid == 0)
+    {
+        char c;
+        close(up[0]);
+        close(down[1]);
+        pthread_mutex_lock(&conn->response_mutex);
+        assert(write(up[1], "L", 1) == 1);
+        if (read(down[0], &c, 1) == 1 && c == 'U')      /* reply read */
+            pthread_mutex_unlock(&conn->response_mutex);
+        (void) read(down[0], &c, 1);                    /* wait to die */
+        _exit(0);
+    }
+    char c;
+    assert(read(up[0], &c, 1) == 1 && c == 'L');
+    close(up[0]); close(up[1]); close(down[0]);
+    *ctl_w = down[1];
+    return pid;
+}
+
+static void keyer_reap(pid_t pid, int ctl_w)
+{
+    close(ctl_w);                       /* EOF: the child exits */
+    assert(waitpid(pid, NULL, 0) == pid);
+}
+
+static void test_shm_keyer_death_releases_ptt(void)
+{
+    radio radio_h;
+    uint8_t on[5] = {0, 0, 0, 0, CMD_PTT_ON};
+    uint8_t off[5] = {0, 0, 0, 0, CMD_PTT_OFF};
+    uint8_t response[5] = {0};
+
+    controller_conn *conn = mmap(NULL, sizeof(*conn), PROT_READ | PROT_WRITE,
+                                 MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    assert(conn != MAP_FAILED);
+    memset(conn, 0, sizeof(*conn));
+    assert(initialize_connector(conn));
+
+    init_test_radio(&radio_h, RADIO_BACKEND_HAMLIB, false);
+    connector_local = conn;
+    radio_h_shm = &radio_h;
+
+    /* Keys, then dies holding PTT: released on the next loop pass. */
+    reset_backend_call();
+    int ctl;
+    pid_t pid = keyer_fork(conn, &ctl);
+    process_radio_command(on, response);
+    assert(response[0] == CMD_RESP_ACK && radio_h.txrx_state == IN_TX);
+    assert(ptt_owner.src == PTT_SRC_SHM && ptt_owner.id == pid);
+    assert(write(ctl, "U", 1) == 1);
+
+    shm_check_keyer(&radio_h);          /* alive: leave it keyed */
+    assert(radio_h.txrx_state == IN_TX && ptt_owner.releases == 0);
+
+    keyer_reap(pid, ctl);
+    shm_check_keyer(&radio_h);
+    assert(radio_h.txrx_state == IN_RX && ptt_owner.releases == 1);
+    shm_check_keyer(&radio_h);          /* once only */
+    assert(ptt_owner.releases == 1);
+
+    /* Keys, unkeys, then exits: nothing to release. */
+    pid = keyer_fork(conn, &ctl);
+    process_radio_command(on, response);
+    assert(write(ctl, "U", 1) == 1);
+    process_radio_command(off, response);
+    assert(radio_h.txrx_state == IN_RX);
+    int calls = backend_call.txrx_calls;
+    keyer_reap(pid, ctl);
+    shm_check_keyer(&radio_h);
+    assert(backend_call.txrx_calls == calls && ptt_owner.releases == 1);
+
+    /* Keys; another source takes PTT over; the first then dies: the
+     * other source's transmission must go on. */
+    pid = keyer_fork(conn, &ctl);
+    process_radio_command(on, response);
+    assert(write(ctl, "U", 1) == 1);
+    ptt_owner.src = PTT_SRC_WEBSOCKET;
+    ptt_owner.id = 7;
+    keyer_reap(pid, ctl);
+    shm_check_keyer(&radio_h);
+    assert(radio_h.txrx_state == IN_TX && ptt_owner.releases == 1);
+
+    shm_keyer_forget();
+    destroy_test_radio(&radio_h);
+    munmap(conn, sizeof(*conn));
+    puts("  shm keyer death releases PTT ......... ok");
+}
+
 int main(void)
 {
     reset_backend_call();
     test_shm_profile_and_message_semantics();
+    test_shm_ptt_off_always_unkeys();
+    test_shm_keyer_death_releases_ptt();
     puts("compat_surface_test: ok");
     return 0;
 }

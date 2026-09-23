@@ -421,14 +421,22 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
     {
         if (radio_h->swr_protection_enabled)             send_cmd_result(c, cmd, false, "SWR");
         else if (radio_h->txrx_state == IN_TX)           send_cmd_result(c, cmd, false, "NOK");
-        else { radio_backend_set_txrx_state(radio_h, IN_TX);  send_cmd_result(c, cmd, true, "OK"); }
+        else
+        {
+            radio_backend_set_ptt(radio_h, IN_TX, PTT_SRC_WEBSOCKET, (long) c->id);
+            send_cmd_result(c, cmd, true, "OK");
+        }
         return;
     }
     if (!strcmp(cmd, "ptt_off"))
     {
+        /* Unkey whatever the cached state says (see radio_shm.c); the
+         * replies keep their old meaning. */
+        bool was_tx = radio_h->txrx_state == IN_TX;
+        radio_backend_set_ptt(radio_h, IN_RX, PTT_SRC_WEBSOCKET, (long) c->id);
         if (radio_h->swr_protection_enabled)             send_cmd_result(c, cmd, false, "SWR");
-        else if (radio_h->txrx_state == IN_RX)           send_cmd_result(c, cmd, false, "NOK");
-        else { radio_backend_set_txrx_state(radio_h, IN_RX);  send_cmd_result(c, cmd, true, "OK"); }
+        else if (!was_tx)                                send_cmd_result(c, cmd, false, "NOK");
+        else                                             send_cmd_result(c, cmd, true, "OK");
         return;
     }
 
@@ -1199,6 +1207,10 @@ static void fn(struct mg_connection *c, int ev, void *ev_data)
     }
     else if (ev == MG_EV_CLOSE)
     {
+        /* A push-to-talk client (browser tab, hermes-voice-key) that drops
+         * its connection while keyed would otherwise leave the radio in TX. */
+        radio_backend_release_ptt(ctx->radio_h, PTT_SRC_WEBSOCKET, (long) c->id,
+                                  "disconnected");
         if (c->fn_data) { free(c->fn_data); c->fn_data = NULL; }
     }
 }
