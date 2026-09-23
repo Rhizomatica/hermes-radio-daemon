@@ -307,14 +307,15 @@ static uint32_t current_width(radio *radio_h)
 
 /* --- main per-line dispatch ------------------------------------------ */
 
-static void rig_handle_line(radio *radio_h, int fd, const char *line)
+/* Returns 0 to keep the connection, -1 to close it after this line. */
+static int rig_handle_line(radio *radio_h, int fd, const char *line)
 {
     char cmd[64] = {0};
     long val = 0;
     int n = 0;
 
     if (sscanf(line, "%63s%n", cmd, &n) != 1)
-        return;
+        return 0;
 
     const char *arg = skip_vfo_arg(line + n);
 
@@ -323,18 +324,18 @@ static void rig_handle_line(radio *radio_h, int fd, const char *line)
     {
         rig_respond(fd, "%u\n",
                     (unsigned) radio_h->profiles[radio_h->profile_active_idx].freq);
-        return;
+        return 0;
     }
     if (!strcmp(cmd, "F") || !strcmp(cmd, "\\set_freq"))
     {
         if (sscanf(arg, "%ld", &val) != 1 || val < 0)
         {
             rig_respond_rprt(fd, RADIO_CTRL_EINVAL);
-            return;
+            return 0;
         }
         radio_backend_set_frequency(radio_h, (uint32_t) val, radio_h->profile_active_idx);
         rig_respond(fd, "RPRT 0\n");
-        return;
+        return 0;
     }
 
     /* Mode + passband. Asked of the rig by name, so a data submode
@@ -351,7 +352,7 @@ static void rig_handle_line(radio *radio_h, int fd, const char *line)
             rig_respond(fd, "%s\n%u\n",
                         mode_to_hamlib(radio_h->profiles[radio_h->profile_active_idx].mode),
                         current_width(radio_h));
-        return;
+        return 0;
     }
     if (!strcmp(cmd, "M") || !strcmp(cmd, "\\set_mode"))
     {
@@ -362,7 +363,7 @@ static void rig_handle_line(radio *radio_h, int fd, const char *line)
         if (got < 1)
         {
             rig_respond_rprt(fd, RADIO_CTRL_EINVAL);
-            return;
+            return 0;
         }
         uint32_t w = (got == 2 && width > 0) ? (uint32_t) width : 0;
 
@@ -376,25 +377,25 @@ static void rig_handle_line(radio *radio_h, int fd, const char *line)
             rc = RADIO_CTRL_OK;
         }
         rig_respond_rprt(fd, rc);
-        return;
+        return 0;
     }
 
     /* PTT */
     if (!strcmp(cmd, "t") || !strcmp(cmd, "\\get_ptt"))
     {
         rig_respond(fd, "%d\n", radio_h->txrx_state ? 1 : 0);
-        return;
+        return 0;
     }
     if (!strcmp(cmd, "T") || !strcmp(cmd, "\\set_ptt"))
     {
         if (sscanf(arg, "%ld", &val) != 1)
         {
             rig_respond_rprt(fd, RADIO_CTRL_EINVAL);
-            return;
+            return 0;
         }
         radio_backend_set_txrx_state(radio_h, val != 0);
         rig_respond(fd, "RPRT 0\n");
-        return;
+        return 0;
     }
 
     /* VFO selection */
@@ -405,7 +406,7 @@ static void rig_handle_line(radio *radio_h, int fd, const char *line)
             rig_respond(fd, "%s\n", vfo);
         else
             rig_respond(fd, "VFOA\n");
-        return;
+        return 0;
     }
     if (!strcmp(cmd, "V") || !strcmp(cmd, "\\set_vfo"))
     {
@@ -413,24 +414,30 @@ static void rig_handle_line(radio *radio_h, int fd, const char *line)
         if (sscanf(line + n, " %15s", vfo) != 1)
         {
             rig_respond_rprt(fd, RADIO_CTRL_EINVAL);
-            return;
+            return 0;
         }
         rig_respond_rprt(fd, radio_backend_set_vfo(radio_h, vfo));
-        return;
+        return 0;
     }
     if (!strcmp(cmd, "\\chk_vfo"))
     {
-        rig_respond(fd, "CHKVFO 1\n");
-        return;
+        /* Plain value. rigctld only uses the "CHKVFO n" form in its
+         * extended/prompt mode; sending it to a normal client made hamlib
+         * log "unknown value returned from netrigctl_transaction=9" -- 9
+         * being the length of "CHKVFO 1\n". 0 means the client need not
+         * append a VFO argument, which suits these handlers: they tolerate
+         * one via skip_vfo_arg() but act on the current VFO regardless. */
+        rig_respond(fd, "0\n");
+        return 0;
     }
 
     /* Levels / functions / parameters */
-    if (!strcmp(cmd, "l") || !strcmp(cmd, "\\get_level")) { handle_get_level(radio_h, fd, arg); return; }
-    if (!strcmp(cmd, "L") || !strcmp(cmd, "\\set_level")) { handle_set_level(radio_h, fd, arg); return; }
-    if (!strcmp(cmd, "u") || !strcmp(cmd, "\\get_func"))  { handle_get_func(radio_h, fd, arg);  return; }
-    if (!strcmp(cmd, "U") || !strcmp(cmd, "\\set_func"))  { handle_set_func(radio_h, fd, arg);  return; }
-    if (!strcmp(cmd, "p") || !strcmp(cmd, "\\get_parm"))  { handle_get_parm(radio_h, fd, arg);  return; }
-    if (!strcmp(cmd, "P") || !strcmp(cmd, "\\set_parm"))  { handle_set_parm(radio_h, fd, arg);  return; }
+    if (!strcmp(cmd, "l") || !strcmp(cmd, "\\get_level")) { handle_get_level(radio_h, fd, arg); return 0; }
+    if (!strcmp(cmd, "L") || !strcmp(cmd, "\\set_level")) { handle_set_level(radio_h, fd, arg); return 0; }
+    if (!strcmp(cmd, "u") || !strcmp(cmd, "\\get_func"))  { handle_get_func(radio_h, fd, arg);  return 0; }
+    if (!strcmp(cmd, "U") || !strcmp(cmd, "\\set_func"))  { handle_set_func(radio_h, fd, arg);  return 0; }
+    if (!strcmp(cmd, "p") || !strcmp(cmd, "\\get_parm"))  { handle_get_parm(radio_h, fd, arg);  return 0; }
+    if (!strcmp(cmd, "P") || !strcmp(cmd, "\\set_parm"))  { handle_set_parm(radio_h, fd, arg);  return 0; }
 
     /* Split. Note s/S are split in the rigctld protocol — squelch is the
      * SQL level, reached through l/L. */
@@ -445,7 +452,7 @@ static void rig_handle_line(radio *radio_h, int fd, const char *line)
             rig_respond(fd, "0\nVFOA\n");   /* single-VFO rig: never split */
         else
             rig_respond_rprt(fd, rc);
-        return;
+        return 0;
     }
     if (!strcmp(cmd, "S") || !strcmp(cmd, "\\set_split_vfo"))
     {
@@ -453,11 +460,11 @@ static void rig_handle_line(radio *radio_h, int fd, const char *line)
         if (sscanf(line + n, " %ld %15s", &val, tx_vfo) < 1)
         {
             rig_respond_rprt(fd, RADIO_CTRL_EINVAL);
-            return;
+            return 0;
         }
         rig_respond_rprt(fd, radio_backend_set_split(radio_h, val != 0,
                                                      tx_vfo[0] ? tx_vfo : NULL));
-        return;
+        return 0;
     }
     if (!strcmp(cmd, "i") || !strcmp(cmd, "\\get_split_freq"))
     {
@@ -467,17 +474,17 @@ static void rig_handle_line(radio *radio_h, int fd, const char *line)
             rig_respond(fd, "%u\n", hz);
         else
             rig_respond_rprt(fd, rc);
-        return;
+        return 0;
     }
     if (!strcmp(cmd, "I") || !strcmp(cmd, "\\set_split_freq"))
     {
         if (sscanf(arg, "%ld", &val) != 1 || val < 0)
         {
             rig_respond_rprt(fd, RADIO_CTRL_EINVAL);
-            return;
+            return 0;
         }
         rig_respond_rprt(fd, radio_backend_set_split_freq(radio_h, (uint32_t) val));
-        return;
+        return 0;
     }
     if (!strcmp(cmd, "x") || !strcmp(cmd, "\\get_split_mode"))
     {
@@ -488,7 +495,7 @@ static void rig_handle_line(radio *radio_h, int fd, const char *line)
             rig_respond(fd, "%s\n%u\n", mode, width);
         else
             rig_respond_rprt(fd, rc);
-        return;
+        return 0;
     }
     if (!strcmp(cmd, "X") || !strcmp(cmd, "\\set_split_mode"))
     {
@@ -497,11 +504,11 @@ static void rig_handle_line(radio *radio_h, int fd, const char *line)
         if (sscanf(arg, "%15s %ld", mode, &width) < 1)
         {
             rig_respond_rprt(fd, RADIO_CTRL_EINVAL);
-            return;
+            return 0;
         }
         rig_respond_rprt(fd, radio_backend_set_split_mode(radio_h, mode,
                                                           width > 0 ? (uint32_t) width : 0));
-        return;
+        return 0;
     }
 
     /* RIT / XIT */
@@ -513,17 +520,17 @@ static void rig_handle_line(radio *radio_h, int fd, const char *line)
             rig_respond(fd, "%d\n", hz);
         else
             rig_respond_rprt(fd, rc);
-        return;
+        return 0;
     }
     if (!strcmp(cmd, "J") || !strcmp(cmd, "\\set_rit"))
     {
         if (sscanf(arg, "%ld", &val) != 1)
         {
             rig_respond_rprt(fd, RADIO_CTRL_EINVAL);
-            return;
+            return 0;
         }
         rig_respond_rprt(fd, radio_backend_set_rit(radio_h, (int32_t) val));
-        return;
+        return 0;
     }
     if (!strcmp(cmd, "z") || !strcmp(cmd, "\\get_xit"))
     {
@@ -533,17 +540,17 @@ static void rig_handle_line(radio *radio_h, int fd, const char *line)
             rig_respond(fd, "%d\n", hz);
         else
             rig_respond_rprt(fd, rc);
-        return;
+        return 0;
     }
     if (!strcmp(cmd, "Z") || !strcmp(cmd, "\\set_xit"))
     {
         if (sscanf(arg, "%ld", &val) != 1)
         {
             rig_respond_rprt(fd, RADIO_CTRL_EINVAL);
-            return;
+            return 0;
         }
         rig_respond_rprt(fd, radio_backend_set_xit(radio_h, (int32_t) val));
-        return;
+        return 0;
     }
 
     /* Antenna */
@@ -555,17 +562,17 @@ static void rig_handle_line(radio *radio_h, int fd, const char *line)
             rig_respond(fd, "%d\n0\n%d\n%d\n", ant, ant, ant);
         else
             rig_respond_rprt(fd, rc);
-        return;
+        return 0;
     }
     if (!strcmp(cmd, "Y") || !strcmp(cmd, "\\set_ant"))
     {
         if (sscanf(arg, "%ld", &val) != 1)
         {
             rig_respond_rprt(fd, RADIO_CTRL_EINVAL);
-            return;
+            return 0;
         }
         rig_respond_rprt(fd, radio_backend_set_ant(radio_h, (int) val));
-        return;
+        return 0;
     }
 
     /* Memory channel */
@@ -577,17 +584,17 @@ static void rig_handle_line(radio *radio_h, int fd, const char *line)
             rig_respond(fd, "%d\n", ch);
         else
             rig_respond_rprt(fd, rc);
-        return;
+        return 0;
     }
     if (!strcmp(cmd, "H") || !strcmp(cmd, "\\set_mem"))
     {
         if (sscanf(arg, "%ld", &val) != 1)
         {
             rig_respond_rprt(fd, RADIO_CTRL_EINVAL);
-            return;
+            return 0;
         }
         rig_respond_rprt(fd, radio_backend_set_mem(radio_h, (int) val));
-        return;
+        return 0;
     }
 
     /* VFO operations: TUNE (antenna tuner cycle), BAND_UP, XCHG, ... */
@@ -597,10 +604,10 @@ static void rig_handle_line(radio *radio_h, int fd, const char *line)
         if (sscanf(arg, "%23s", op) != 1)
         {
             rig_respond_rprt(fd, RADIO_CTRL_EINVAL);
-            return;
+            return 0;
         }
         rig_respond_rprt(fd, radio_backend_vfo_op(radio_h, op));
-        return;
+        return 0;
     }
 
     /* Rig-side CW keyer */
@@ -608,12 +615,12 @@ static void rig_handle_line(radio *radio_h, int fd, const char *line)
     {
         while (*arg == ' ') arg++;
         rig_respond_rprt(fd, radio_backend_send_morse(radio_h, arg));
-        return;
+        return 0;
     }
     if (!strcmp(cmd, "\\stop_morse"))
     {
         rig_respond_rprt(fd, radio_backend_stop_morse(radio_h));
-        return;
+        return 0;
     }
 
     /* Power state */
@@ -625,17 +632,17 @@ static void rig_handle_line(radio *radio_h, int fd, const char *line)
             rig_respond(fd, "%d\n", on);
         else
             rig_respond_rprt(fd, rc);
-        return;
+        return 0;
     }
     if (!strcmp(cmd, "\\set_powerstat"))
     {
         if (sscanf(arg, "%ld", &val) != 1)
         {
             rig_respond_rprt(fd, RADIO_CTRL_EINVAL);
-            return;
+            return 0;
         }
         rig_respond_rprt(fd, radio_backend_set_powerstat(radio_h, (int) val));
-        return;
+        return 0;
     }
 
     /* Compact state query used by newer hamlib clients. */
@@ -652,7 +659,7 @@ static void rig_handle_line(radio *radio_h, int fd, const char *line)
         rig_respond(fd, "%u\n%s\n%u\n%d\n0\n",
                     (unsigned) radio_h->profiles[radio_h->profile_active_idx].freq,
                     mode, width ? width : current_width(radio_h), split);
-        return;
+        return 0;
     }
 
     /* Capability probe. The backend describes the rig Hamlib actually
@@ -665,16 +672,24 @@ static void rig_handle_line(radio *radio_h, int fd, const char *line)
             rig_respond_raw(fd, state);
         else
             rig_respond_rprt(fd, RADIO_CTRL_ENOTSUP);
-        return;
+        return 0;
     }
 
-    /* Quit */
+    /* Quit. hamlib's netrigctl_close() sends "q\n" and then WAITS for a
+     * reply before closing its socket, so staying silent here cost every
+     * one-shot "rigctl -m 2" a 20 s read timeout on exit -- which looked
+     * like the command itself hanging, whatever the command was. Answer,
+     * then ask the accept loop to drop this client. */
     if (!strcmp(cmd, "q") || !strcmp(cmd, "Q") || !strcmp(cmd, "\\quit"))
-        return;  /* client will close */
+    {
+        rig_respond(fd, "RPRT 0\n");
+        return -1;
+    }
 
     /* Unknown command — rigctld convention is RPRT -11 (function not
      * available) rather than a generic -1. */
     rig_respond(fd, "RPRT -11\n");
+    return 0;
 }
 
 /* --- per-client buffered read -------------------------------------- */
@@ -703,8 +718,10 @@ static int rig_handle_client(radio *radio_h, rig_client *cl)
         /* trim trailing CR */
         if (end > start && *(end - 1) == '\r')
             *(end - 1) = '\0';
-        rig_handle_line(radio_h, cl->fd, start);
+        int want_close = rig_handle_line(radio_h, cl->fd, start);
         start = end + 1;
+        if (want_close < 0)
+            return -1;      /* accept loop closes the fd */
     }
 
     /* Move the partial line back to the start of the buffer. */

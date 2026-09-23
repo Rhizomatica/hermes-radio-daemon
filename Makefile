@@ -44,7 +44,7 @@ all: radio_daemon radio_client
 TEST_CFLAGS = -O0 -Wall -Wextra -std=gnu11 -fstack-protector \
               -I. -Ihamlib -I/usr/include/iniparser -Iinclude
 TEST_BINS = tests/backend_selection_test tests/compat_surface_test tests/controls_test \
-            tests/dstar_voice_test tests/upsample2_test
+            tests/dstar_voice_test tests/upsample2_test tests/rig_server_test
 
 # ── daemon-level objects ────────────────────────────────────────
 DAEMON_TOP_OBJS = radio_daemon.o \
@@ -130,6 +130,7 @@ compat-tests: $(TEST_BINS)
 	./tests/controls_test
 	./tests/dstar_voice_test
 	./tests/upsample2_test
+	./tests/rig_server_test
 
 tests/backend_selection_test: tests/backend_selection_test.c cfg_utils.c cfg_utils.h \
                               radio_backend.c radio_backend.h radio_daemon_core.h \
@@ -137,6 +138,10 @@ tests/backend_selection_test: tests/backend_selection_test.c cfg_utils.c cfg_uti
                               tests/fixtures/backend-default.ini \
                               tests/fixtures/backend-zbitx.ini
 	$(CC) $(TEST_CFLAGS) tests/backend_selection_test.c hamlib/rig_server.c radio_controls.c cat_server.c -o $@ -liniparser -lpthread -lm
+
+tests/rig_server_test: tests/rig_server_test.c hamlib/rig_server.c hamlib/rig_server.h \
+                      radio_controls.c radio_backend.c cfg_utils.c radio.h
+	$(CC) $(TEST_CFLAGS) tests/rig_server_test.c hamlib/rig_server.c cat_server.c -o $@ -liniparser -lpthread -lm
 
 tests/controls_test: tests/controls_test.c radio_controls.c radio_controls.h \
                      radio_backend.c radio_backend.h cat_server.c cat_server.h \
