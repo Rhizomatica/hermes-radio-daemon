@@ -90,6 +90,18 @@ static void shm_keyer_forget(void)
     shm_keyer_pid = 0;
 }
 
+/* The command-line clients send one command and exit. The API keys the
+ * radio that way (the web panel's PTT button runs "sbitx_client -c
+ * ptt_on", later "ptt_off"), so their PTT is latched until a PTT-off, as
+ * with a front-panel switch; releasing it when they exit would unkey the
+ * radio 200 ms after every such key. Old installs run hermes-net's
+ * sbitx_client, hence names rather than a protocol flag. */
+static bool shm_client_is_one_shot(const char *comm)
+{
+    return !strcmp(comm, "sbitx_client") || !strcmp(comm, "radio_client") ||
+           !strcmp(comm, "ubitx_client");
+}
+
 static void shm_keyer_watch(pid_t pid)
 {
     shm_keyer_forget();
@@ -100,19 +112,27 @@ static void shm_keyer_watch(pid_t pid)
         return;
     }
 
+    char path[64], comm[32] = "?";
+    snprintf(path, sizeof(path), "/proc/%d/comm", (int) pid);
+    FILE *f = fopen(path, "r");
+    if (f)
+    {
+        if (fgets(comm, sizeof(comm), f))
+            comm[strcspn(comm, "\n")] = '\0';
+        fclose(f);
+    }
+
+    if (shm_client_is_one_shot(comm))
+    {
+        printf("radio_shm: PTT ON from %s (pid %d), latched until PTT off\n",
+               comm, (int) pid);
+        return;
+    }
+
     /* Name the process once per keyer, not on every over. */
     static pid_t last_named = 0;
     if (pid != last_named)
     {
-        char path[64], comm[32] = "?";
-        snprintf(path, sizeof(path), "/proc/%d/comm", (int) pid);
-        FILE *f = fopen(path, "r");
-        if (f)
-        {
-            if (fgets(comm, sizeof(comm), f))
-                comm[strcspn(comm, "\n")] = '\0';
-            fclose(f);
-        }
         printf("radio_shm: PTT keyed by pid %d (%s)\n", (int) pid, comm);
         last_named = pid;
     }

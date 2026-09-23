@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdatomic.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -294,7 +295,7 @@ static void test_shm_ptt_off_always_unkeys(void)
  * mid-transmission) must not leave the radio in TX; one that is alive, or
  * that unkeyed before exiting, must not be touched. The child plays
  * radio_cmd(): it holds response_mutex while its command is processed. */
-static int keyer_fork(controller_conn *conn, int *ctl_w)
+static int keyer_fork_named(controller_conn *conn, int *ctl_w, const char *name)
 {
     int up[2], down[2];
     assert(pipe(up) == 0 && pipe(down) == 0);
@@ -305,6 +306,8 @@ static int keyer_fork(controller_conn *conn, int *ctl_w)
         char c;
         close(up[0]);
         close(down[1]);
+        if (name)
+            prctl(PR_SET_NAME, name, 0, 0, 0);
         pthread_mutex_lock(&conn->response_mutex);
         assert(write(up[1], "L", 1) == 1);
         if (read(down[0], &c, 1) == 1 && c == 'U')      /* reply read */
@@ -317,6 +320,11 @@ static int keyer_fork(controller_conn *conn, int *ctl_w)
     close(up[0]); close(up[1]); close(down[0]);
     *ctl_w = down[1];
     return pid;
+}
+
+static int keyer_fork(controller_conn *conn, int *ctl_w)
+{
+    return keyer_fork_named(conn, ctl_w, NULL);
 }
 
 static void keyer_reap(pid_t pid, int ctl_w)
@@ -381,6 +389,21 @@ static void test_shm_keyer_death_releases_ptt(void)
     keyer_reap(pid, ctl);
     shm_check_keyer(&radio_h);
     assert(radio_h.txrx_state == IN_TX && ptt_owner.releases == 1);
+
+    /* The command-line client keys and exits by design (the web panel's
+     * PTT button): its PTT stays latched until a PTT-off. */
+    process_radio_command(off, response);
+    ptt_owner.releases = 0;
+    pid = keyer_fork_named(conn, &ctl, "sbitx_client");
+    process_radio_command(on, response);
+    assert(response[0] == CMD_RESP_ACK && radio_h.txrx_state == IN_TX);
+    assert(write(ctl, "U", 1) == 1);
+    keyer_reap(pid, ctl);
+    shm_check_keyer(&radio_h);
+    assert(radio_h.txrx_state == IN_TX && ptt_owner.releases == 0 &&
+           "the web panel's PTT was released when sbitx_client exited");
+    process_radio_command(off, response);
+    assert(radio_h.txrx_state == IN_RX);
 
     shm_keyer_forget();
     destroy_test_radio(&radio_h);
