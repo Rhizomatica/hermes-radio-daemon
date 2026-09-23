@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "loop_audio.h"
 #include "radio_media.h"
@@ -72,8 +73,60 @@ static snd_pcm_t *loop_open(const char *dev, snd_pcm_stream_t stream, unsigned r
         snd_pcm_close(pcm);
         return NULL;
     }
+
+    /* Playback: start only with two periods queued, so the stream never
+     * runs with zero headroom (see rx_thread). */
+    if (stream == SND_PCM_STREAM_PLAYBACK)
+    {
+        snd_pcm_sw_params_t *sw;
+        snd_pcm_sw_params_alloca(&sw);
+        if ((err = snd_pcm_sw_params_current(pcm, sw)) < 0 ||
+            (err = snd_pcm_sw_params_set_start_threshold(pcm, sw, 2 * period)) < 0 ||
+            (err = snd_pcm_sw_params_set_avail_min(pcm, sw, period)) < 0 ||
+            (err = snd_pcm_sw_params(pcm, sw)) < 0)
+            fprintf(stderr, "loop_audio: sw_params(%s) failed: %s\n", dev, snd_strerror(err));
+    }
     snd_pcm_prepare(pcm);
     return pcm;
+}
+
+/* One period of silence, queued ahead of the audio after the stream is
+ * (re)prepared: the cushion that absorbs scheduling jitter. */
+static void prime_playback(snd_pcm_t *pcm)
+{
+    static int32_t silence[LOOP_PERIOD * LOOP_CHANNELS];
+    snd_pcm_writei(pcm, silence, LOOP_PERIOD);
+}
+
+/* Write all n frames. On an underrun, re-prepare, re-prime and write the
+ * same frames again: they are the audio that did not make it yet. Returns
+ * the number of underruns hit. */
+static unsigned play_all(snd_pcm_t *pcm, const int32_t *st, size_t n)
+{
+    unsigned xruns = 0;
+    int tries = 0;
+
+    while (n > 0 && s_run && tries < 4)
+    {
+        snd_pcm_sframes_t wrote = snd_pcm_writei(pcm, st, n);
+        if (wrote > 0)
+        {
+            st += (size_t) wrote * LOOP_CHANNELS;
+            n -= (size_t) wrote;
+            tries = 0;
+            continue;
+        }
+        tries++;
+        if (wrote == -EPIPE)
+        {
+            xruns++;
+            snd_pcm_prepare(pcm);
+            prime_playback(pcm);
+        }
+        else if (wrote < 0 && snd_pcm_recover(pcm, (int) wrote, 1) < 0)
+            break;
+    }
+    return xruns;
 }
 
 /* Drain the RX staging ring and write it (blocking) to the loopback playback.
@@ -84,6 +137,10 @@ static void *rx_thread(void *arg)
     (void) arg;
     int16_t mono[LOOP_FRAMES];
     int32_t st[LOOP_FRAMES * LOOP_CHANNELS];
+    unsigned xruns = 0;
+    time_t xruns_since = time(NULL);
+
+    prime_playback(s_play);
 
     while (s_run)
     {
@@ -110,11 +167,20 @@ static void *rx_thread(void *arg)
             st[i * LOOP_CHANNELS]     = s;
             st[i * LOOP_CHANNELS + 1] = s;
         }
-        snd_pcm_sframes_t wrote = snd_pcm_writei(s_play, st, n);
-        if (wrote == -EPIPE)
-            snd_pcm_prepare(s_play);
-        else if (wrote < 0)
-            snd_pcm_recover(s_play, (int) wrote, 1);
+        /* Before: an underrun made this chunk get dropped, and with no
+         * headroom the stream underran on every other write, so the modem
+         * heard only half of the received audio, in 10 ms pieces. */
+        xruns += play_all(s_play, st, n);
+
+        time_t now = time(NULL);
+        if (now - xruns_since >= 60)
+        {
+            if (xruns)
+                fprintf(stderr, "loop_audio: %u RX playback underrun(s) in the last %ld s\n",
+                        xruns, (long) (now - xruns_since));
+            xruns = 0;
+            xruns_since = now;
+        }
     }
     return NULL;
 }
