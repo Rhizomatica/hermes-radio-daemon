@@ -1182,6 +1182,15 @@ void sound_system_init(radio *radio_h, pthread_t *control_tid, pthread_t *radio_
     pthread_setschedparam(*loop_capture, SCHED_FIFO, &sch);
     pthread_setschedparam(*loop_playback, SCHED_FIFO, &sch);
 
+    /* The DSP thread sits between the capture and the playback threads and
+     * has to keep pace with them, but it ran at normal priority: anything
+     * else on the daemon's core (spectra for the websocket, CAT, the I2C
+     * power polling while transmitting, RADAE) could hold it past the
+     * codec's ~21 ms of buffer, and the codec underran in the middle of
+     * transmissions. Just below the I/O threads, which only move buffers;
+     * it blocks on its input, so it cannot starve the core. */
+    sch.sched_priority = sched_get_priority_max(SCHED_FIFO) - 1;
+    pthread_setschedparam(*control_tid, SCHED_FIFO, &sch);
 }
 
 // shutdown the ALSA sound system

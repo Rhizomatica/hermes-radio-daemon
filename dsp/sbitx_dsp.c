@@ -970,11 +970,48 @@ static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, in
 // - out output_loopback: 48 kHz stereo for loopback input
 // - out output_tx: NULL buffer
 // - block_size: number of samples
+/* RADAE runs only while the active profile is a digital-voice (RADE) one.
+ * Started unconditionally at dsp_init, it kept its decoder thread and two
+ * lpcnet_demo helpers running on every data profile, all on the daemon's one
+ * core, and every PTT-off rebuilt its model (radae_rx_flush makes the RX
+ * thread rade_close + rade_open) on that core while the DSP thread had
+ * ~21 ms of codec buffer left. The codec underran, around the switch and in
+ * the middle of transmissions: on the bench (23 Sep 2026) every data burst
+ * the peer failed to decode had an underrun mid-burst. Runs in the DSP
+ * thread, so it is ordered with the RADAE use below; the start or stop
+ * costs once per profile change. */
+static void dsp_radae_follow_profile(void)
+{
+    static bool init_failed = false;
+    bool dv = radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].digital_voice;
+
+    if (dv && !radae_ctx.initialized && !init_failed)
+    {
+        printf("Starting RADAE digital voice (digital-voice profile active)\n");
+        if (!radae_init(&radae_ctx, radio_h_dsp, RADAE_DIR))
+        {
+            fprintf(stderr, "Warning: RADAE initialization failed, digital voice will not be available\n");
+            init_failed = true;
+            return;
+        }
+        radae_rx_start(&radae_ctx);
+    }
+    else if (!dv && radae_ctx.initialized)
+    {
+        printf("Stopping RADAE digital voice (no digital-voice profile active)\n");
+        radae_shutdown(&radae_ctx);
+        radae_tx_active = false;
+        init_failed = false;
+    }
+}
+
 void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *output_loopback, uint8_t *output_tx, uint32_t block_size)
 {
     double i_sample;
 
     int32_t *input_rx = (int32_t *) signal_input;
+
+    dsp_radae_follow_profile();
 
     //fix the burst at the start of transmission
     if (rx_starting)
@@ -982,7 +1019,8 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
         fft_reset_m_bins();
         clear_buffers();
         // Flush RADAE RX buffers to discard stale data from before TX
-        radae_rx_flush(&radae_ctx);
+        if (radae_ctx.rx_running)
+            radae_rx_flush(&radae_ctx);
         rx_starting = false;
     }
 
@@ -1767,6 +1805,8 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
 // - input_is_48k_stereo: if true, input is 48 kHz stereo (loopback), otherwise, 96 kHz mono (mic)
 void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *output_loopback, uint8_t *output_tx, uint32_t block_size, bool input_is_48k_stereo)
 {
+    dsp_radae_follow_profile();
+
     static double loopback_in[512]; // n_samples / 2
     static double signal_input_f[1024]; // n_samples
 
@@ -2467,14 +2507,8 @@ void dsp_init(radio *radio_h)
     vfo_init_phase_table();
     vfo_start(&tone, 1000, 0);
 
-    // Initialize RADAE digital voice subsystem
-    printf("Initializing RADAE digital voice subsystem\n");
-    if (!radae_init(&radae_ctx, radio_h, RADAE_DIR)) {
-        fprintf(stderr, "Warning: RADAE initialization failed, digital voice will not be available\n");
-    } else {
-        // Start RADAE RX by default (always listening)
-        radae_rx_start(&radae_ctx);
-    }
+    // RADAE is started by dsp_radae_follow_profile() when a digital-voice
+    // profile is active, not here.
 }
 
 void dsp_free(radio *radio_h)
