@@ -232,9 +232,17 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     i = iniparser_getint(ini, "main:serial_rate", 9600);
     radio_h->serial_rate = i;
 
-    /* PTT type */
-    s = cfg_getstring_alias(ini, "main:ptt_type", "main:ptt_mode", "0");
-    radio_h->ptt_type = cfg_ptt_type_from_string(s, PTT_NONE);
+    /* PTT type. A Hamlib rig without ptt_type used to get PTT_NONE, which
+     * Hamlib takes as "no PTT": rig_set_ptt() then returns OK without
+     * keying and rig_get_ptt() echoes the cache, so transmit requests
+     * (Mercury over hermes_shm, rigctld T 1) looked fine and sent nothing.
+     * Default to CAT keying, which every Hamlib rig has; an explicit NONE
+     * (VOX setups) is still honoured, with a warning. */
+    s = cfg_getstring_alias(ini, "main:ptt_type", "main:ptt_mode", "");
+    radio_h->ptt_type = cfg_ptt_type_from_string(
+        s, radio_h->backend_kind == RADIO_BACKEND_HAMLIB ? PTT_RIG : PTT_NONE);
+    if (radio_h->backend_kind == RADIO_BACKEND_HAMLIB && radio_h->ptt_type == PTT_NONE)
+        fprintf(stderr, "cfg: ptt_type = NONE: transmit requests will not key the rig\n");
 
     /* PTT port */
     s = cfg_getstring_alias(ini, "main:ptt_pathname", "main:ptt_path", "");

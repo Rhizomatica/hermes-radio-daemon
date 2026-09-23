@@ -44,7 +44,7 @@ all: radio_daemon radio_client
 TEST_CFLAGS = -O0 -Wall -Wextra -std=gnu11 -fstack-protector \
               -I. -Ihamlib -I/usr/include/iniparser -Iinclude
 TEST_BINS = tests/backend_selection_test tests/compat_surface_test tests/controls_test \
-            tests/dstar_voice_test
+            tests/dstar_voice_test tests/upsample2_test tests/rig_server_test
 
 # ── daemon-level objects ────────────────────────────────────────
 DAEMON_TOP_OBJS = radio_daemon.o \
@@ -81,6 +81,7 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              sbitx/sbitx_bridge.o \
              sbitx/sbitx_core.o \
              dsp/sbitx_dsp.o \
+             dsp/upsample2.o \
              sbitx/sbitx_gpio.o \
              sbitx/sbitx_i2c.o \
              dsp/sbitx_radae.o \
@@ -128,6 +129,8 @@ compat-tests: $(TEST_BINS)
 	./tests/compat_surface_test
 	./tests/controls_test
 	./tests/dstar_voice_test
+	./tests/upsample2_test
+	./tests/rig_server_test
 
 tests/backend_selection_test: tests/backend_selection_test.c cfg_utils.c cfg_utils.h \
                               radio_backend.c radio_backend.h radio_daemon_core.h \
@@ -135,6 +138,10 @@ tests/backend_selection_test: tests/backend_selection_test.c cfg_utils.c cfg_uti
                               tests/fixtures/backend-default.ini \
                               tests/fixtures/backend-zbitx.ini
 	$(CC) $(TEST_CFLAGS) tests/backend_selection_test.c hamlib/rig_server.c radio_controls.c cat_server.c -o $@ -liniparser -lpthread -lm
+
+tests/rig_server_test: tests/rig_server_test.c hamlib/rig_server.c hamlib/rig_server.h \
+                      radio_controls.c radio_backend.c cfg_utils.c radio.h
+	$(CC) $(TEST_CFLAGS) tests/rig_server_test.c hamlib/rig_server.c cat_server.c -o $@ -liniparser -lpthread -lm
 
 tests/controls_test: tests/controls_test.c radio_controls.c radio_controls.h \
                      radio_backend.c radio_backend.h cat_server.c cat_server.h \
@@ -145,6 +152,9 @@ tests/dstar_voice_test: tests/dstar_voice_test.c dsp/dstar_voice.c dsp/dstar_voi
                         dsp/voice_crypto.c dsp/voice_crypto.h dsp/sbitx_dstar.c dsp/sbitx_dstar.h
 	$(CC) $(TEST_CFLAGS) -Idsp tests/dstar_voice_test.c dsp/dstar_voice.c dsp/voice_crypto.c \
 	      dsp/sbitx_dstar.c -o $@ -lmbe-neo -lcrypto -lm
+
+tests/upsample2_test: tests/upsample2_test.c dsp/upsample2.c dsp/upsample2.h
+	$(CC) $(TEST_CFLAGS) -I/usr/include/csdr tests/upsample2_test.c dsp/upsample2.c -o $@ -lcsdr -lfftw3f -lm
 
 tests/compat_surface_test: tests/compat_surface_test.c radio_shm.c radio_shm.h \
                            radio_pipeline.c radio_pipeline.h \

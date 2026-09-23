@@ -43,6 +43,8 @@
 #include <libcsdr_gpl.h>
 #include <specbleach_denoiser.h>
 
+#include "upsample2.h"
+
 
 #include "sbitx_dsp.h"
 #include "sbitx_core.h"
@@ -165,9 +167,9 @@ static float fm_audio_buf[2048];
 static float tx_float_buf[1024];
 static float tx_float_out[1024];
 
-static rational_resampler_ff_t rs_state = {0, 0, 0};
-static float *rs_taps = NULL;
-static int rs_taps_len = 0;
+/* 48 kHz loopback -> 96 kHz TX interpolator, history kept across blocks */
+static upsample2 loop_up;
+static bool loop_up_ready = false;
 
 static void maybe_dump_tx_modem_iq(const float *iq_samples, int n_complex_samples)
 {
@@ -1783,6 +1785,8 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     {
         fft_reset_m_bins();
         clear_buffers();
+        if (loop_up_ready)
+            upsample2_reset(&loop_up);
         tx_starting = false;
     }
 
@@ -1806,25 +1810,27 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             loopback_in[i/2] = (1.0 * (signal_input_int[i] >> 8)) / MAX_SAMPLE_VALUE;
         }
 
-        if (!rs_taps)
-        {
-            float transition_bw = 0.05f;
-            rs_taps_len = firdes_filter_len(transition_bw);
-            rs_taps = malloc(rs_taps_len * sizeof(float));
-            rational_resampler_get_lowpass_f(rs_taps, rs_taps_len, 2, 1, WINDOW_BLACKMAN);
-        }
+        /* Every input sample in, exactly block_size samples out: see
+         * upsample2.c for why this is not csdr's rational_resampler_ff(). */
+        if (!loop_up_ready)
+            loop_up_ready = (upsample2_init(&loop_up, 0.05f, 512) == 0);
 
         float loop_f[512];
         float resamp_out[1024];
         for (i = 0; i < block_size / 2; i++)
             loop_f[i] = (float) loopback_in[i];
 
-        rs_state = rational_resampler_ff(loop_f, resamp_out, block_size / 2,
-                                         2, 1, rs_taps, rs_taps_len,
-                                         rs_state.last_taps_delay);
-
-        for (i = 0; i < rs_state.output_size; i++)
-            signal_input_f[i] = (double) resamp_out[i];
+        if (loop_up_ready)
+        {
+            upsample2_process(&loop_up, loop_f, block_size / 2, resamp_out);
+            for (i = 0; i < block_size; i++)
+                signal_input_f[i] = (double) resamp_out[i];
+        }
+        else
+        {
+            for (i = 0; i < block_size; i++)
+                signal_input_f[i] = 0.0;
+        }
     }
     else // mic input from wm8731
     {
@@ -2499,8 +2505,11 @@ void dsp_free(radio *radio_h)
         nr_initialized = false;
     }
 
-    free(rs_taps);
-    rs_taps = NULL;
+    if (loop_up_ready)
+    {
+        upsample2_free(&loop_up);
+        loop_up_ready = false;
+    }
 
     sbitx_drm_shutdown();
 }
