@@ -505,6 +505,9 @@ void lpf_set(radio *radio_h)
         set_drive(lpf, DRIVE_HIGH);
 }
 
+/* Set around the SWR trip: unkey at once, without playing out the tail. */
+static _Atomic bool tr_switch_urgent = false;
+
 void swr_protection_check(radio *radio_h)
 {
     uint32_t vswr = get_swr(radio_h);
@@ -518,7 +521,9 @@ void swr_protection_check(radio *radio_h)
 
     if (peak_removal_counter > REF_PEAK_REMOVAL)
     {
+        tr_switch_urgent = true;
         tr_switch(radio_h, IN_RX);
+        tr_switch_urgent = false;
         radio_h->swr_protection_enabled = true;
         peak_removal_counter = 0;
         radio_h->send_ws_update = true;
@@ -594,7 +599,20 @@ static void tr_switch(radio *radio_h, bool txrx_state)
         if (dstar_eot_sent)
             usleep(150000);
 
-        usleep(10000);
+        /* Let the audio already on its way play out before the transmitter
+         * is muted. Mercury drops PTT once its own buffer is empty, and the
+         * loopback ring, the DSP block and the codec queue (some 40-60 ms)
+         * still hold the end of the burst: cutting it cost the last symbols
+         * of every frame. At least the 10 ms this waited before, at most
+         * 100 ms. */
+        uint32_t tail_ms = sound_tx_pipeline_ms();
+        if (tail_ms < 10)
+            tail_ms = 10;
+        if (tail_ms > 100)
+            tail_ms = 100;
+        if (tr_switch_urgent)   /* SWR trip: stop transmitting now */
+            tail_ms = 10;
+        usleep(tail_ms * 1000);
 
         set_speaker_level(radio_h->profiles[radio_h->profile_active_idx].speaker_level);
         set_tx_level(0);
