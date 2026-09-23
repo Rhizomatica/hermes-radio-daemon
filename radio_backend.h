@@ -101,6 +101,11 @@ typedef struct radio_backend_ops {
      * Yaesu/Kenwood/Elecraft, 0xFD for Icom CI-V), so the gateway knows
      * where a client's frame ends. 0 when the backend has no CAT rig. */
     uint8_t (*cat_terminator)(radio *radio_h);
+
+    /* Release PTT with nothing else running: opens just the PTT path from
+     * radio.ini, drives it to receive and closes it (radio_daemon
+     * --ptt-off, run by systemd after the daemon stops or dies). */
+    bool (*force_ptt_off)(radio *radio_h);
     /* rigctld \dump_state payload describing the REAL rig, so remote
      * clients (WSJT-X, fldigi, VARA, Winlink) see true capabilities. */
     int (*dump_state)(radio *radio_h, char *out, size_t out_len);
@@ -115,6 +120,8 @@ bool radio_backend_detect(const char *cfg_radio_path, radio_backend_selection *s
 void radio_backend_configure(radio *radio_h, const radio_backend_selection *selection);
 int radio_backend_run(const radio_backend_selection *selection,
                       const radio_daemon_runtime *runtime);
+int radio_backend_force_ptt_off(const radio_backend_selection *selection,
+                                const char *cfg_radio_path);
 
 bool radio_backend_init(radio *radio_h);
 void radio_backend_shutdown(radio *radio_h);
@@ -123,6 +130,27 @@ void *radio_backend_io_thread(void *radio_h_v);
 void radio_backend_set_frequency(radio *radio_h, uint32_t frequency, uint32_t profile);
 void radio_backend_set_mode(radio *radio_h, uint16_t mode, uint32_t profile);
 void radio_backend_set_txrx_state(radio *radio_h, bool txrx_state);
+
+/* PTT ownership. Every key request names who made it; the daemon remembers
+ * the last one, and when that client goes away without unkeying (a modem
+ * killed mid-transmission, a dropped rigctld/CAT/websocket connection) its
+ * transport calls radio_backend_release_ptt(), which unkeys only if that
+ * client still owns PTT. radio_backend_set_txrx_state() is the daemon's own
+ * request (SWR trip, digital-mode pump): PTT_SRC_INTERNAL. */
+typedef enum {
+    PTT_SRC_NONE = 0,
+    PTT_SRC_INTERNAL,
+    PTT_SRC_SHM,        /* hermes_shm controller, id = client pid       */
+    PTT_SRC_RIGCTLD,    /* rigctld server, id = connection fd           */
+    PTT_SRC_CAT,        /* CAT server (emulate), id = connection fd     */
+    PTT_SRC_WEBSOCKET,  /* websocket, id = mongoose connection id       */
+} ptt_source;
+
+void radio_backend_set_ptt(radio *radio_h, bool txrx_state,
+                           ptt_source src, long id);
+/* Unkey if (src, id) still owns PTT. Returns true when it did. */
+bool radio_backend_release_ptt(radio *radio_h, ptt_source src, long id,
+                               const char *why);
 void radio_backend_set_bfo(radio *radio_h, uint32_t frequency);
 void radio_backend_set_reflected_threshold(radio *radio_h, uint32_t ref_threshold);
 void radio_backend_set_speaker_volume(radio *radio_h, uint32_t speaker_level, uint32_t profile);

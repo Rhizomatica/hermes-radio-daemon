@@ -262,8 +262,8 @@ static void ts_handle(radio *radio_h, int fd, const char *frame)
     }
 
     /* PTT */
-    if (!strncmp(frame, "TX", 2)) { radio_backend_set_txrx_state(radio_h, true);  return; }
-    if (!strncmp(frame, "RX", 2)) { radio_backend_set_txrx_state(radio_h, false); return; }
+    if (!strncmp(frame, "TX", 2)) { radio_backend_set_ptt(radio_h, IN_TX, PTT_SRC_CAT, fd); return; }
+    if (!strncmp(frame, "RX", 2)) { radio_backend_set_ptt(radio_h, IN_RX, PTT_SRC_CAT, fd); return; }
 
     /* S-meter, on the Kenwood 0..30 scale. Our S-meter is dB relative to S9
      * (S9 = 0, one S-unit = 6 dB), and Kenwood puts S9 at 15. */
@@ -527,6 +527,10 @@ static void *cat_server_thread(void *arg)
             if (cat_handle_client(radio_h, &clients[i]) == 0)
                 continue;
 
+            /* Emulate mode keys through the daemon; release a client that
+             * drops while keyed. Before close(): the fd is the owner id. */
+            radio_backend_release_ptt(radio_h, PTT_SRC_CAT, clients[i].fd,
+                                      "disconnected");
             close(clients[i].fd);
             clients[i] = clients[nclients - 1];
             clients[nclients - 1].fd = -1;
@@ -536,7 +540,11 @@ static void *cat_server_thread(void *arg)
     }
 
     for (int i = 0; i < nclients; i++)
+    {
+        radio_backend_release_ptt(radio_h, PTT_SRC_CAT, clients[i].fd,
+                                  "disconnected");
         close(clients[i].fd);
+    }
 
     return NULL;
 }

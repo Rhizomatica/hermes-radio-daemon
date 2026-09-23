@@ -8,6 +8,10 @@ User=root
 Group=root
 SupplementaryGroups=ssl-cert
 ExecStart=/usr/bin/radio_daemon -c 3
+# Whatever way the daemon ended (clean stop, crash, SIGKILL after a hung
+# shutdown), leave the transmitter in receive. "-": a radio that cannot be
+# reached must not fail the unit.
+ExecStopPost=-/usr/bin/radio_daemon --ptt-off
 KillSignal=SIGTERM
 IgnoreSIGPIPE=no
 Restart=always

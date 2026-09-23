@@ -29,6 +29,9 @@
 #include <errno.h>
 #include <time.h>
 #include <pthread.h>
+#include <poll.h>
+#include <signal.h>
+#include <sys/syscall.h>
 
 #include "radio_backend.h"
 #include "radio.h"
@@ -41,6 +44,129 @@ extern _Atomic bool shutdown_;
 
 static controller_conn *connector_local;
 static radio *radio_h_shm;
+
+/* The client process that keyed PTT over this connector, watched so that
+ * PTT is released if it exits without unkeying (killed mid-transmission,
+ * crashed, forced exit). pidfd when the kernel has it, else pid polling. */
+static pid_t shm_keyer_pid = 0;
+static int shm_keyer_pidfd = -1;
+
+/* Which process sent the command being processed. The protocol carries no
+ * pid, but radio_cmd() holds response_mutex from before it posts the
+ * command until it has read the reply, and glibc records the holder's
+ * thread id in the mutex; map that to its process. 0 when unknown. */
+static pid_t shm_command_sender(controller_conn *conn)
+{
+#ifdef __GLIBC__
+    pid_t tid = conn->response_mutex.__data.__owner;
+    if (tid <= 0)
+        return 0;
+
+    char path[64], line[128];
+    snprintf(path, sizeof(path), "/proc/%d/status", (int) tid);
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return 0;
+
+    pid_t pid = 0;
+    while (fgets(line, sizeof(line), f))
+    {
+        if (sscanf(line, "Tgid: %d", &pid) == 1)
+            break;
+    }
+    fclose(f);
+    return pid;
+#else
+    (void) conn;
+    return 0;
+#endif
+}
+
+static void shm_keyer_forget(void)
+{
+    if (shm_keyer_pidfd >= 0)
+        close(shm_keyer_pidfd);
+    shm_keyer_pidfd = -1;
+    shm_keyer_pid = 0;
+}
+
+/* The command-line clients send one command and exit. The API keys the
+ * radio that way (the web panel's PTT button runs "sbitx_client -c
+ * ptt_on", later "ptt_off"), so their PTT is latched until a PTT-off, as
+ * with a front-panel switch; releasing it when they exit would unkey the
+ * radio 200 ms after every such key. Old installs run hermes-net's
+ * sbitx_client, hence names rather than a protocol flag. */
+static bool shm_client_is_one_shot(const char *comm)
+{
+    return !strcmp(comm, "sbitx_client") || !strcmp(comm, "radio_client") ||
+           !strcmp(comm, "ubitx_client");
+}
+
+static void shm_keyer_watch(pid_t pid)
+{
+    shm_keyer_forget();
+    if (pid <= 0)
+    {
+        fprintf(stderr, "radio_shm: PTT ON from an unknown client; "
+                        "it will not be released if the client dies\n");
+        return;
+    }
+
+    char path[64], comm[32] = "?";
+    snprintf(path, sizeof(path), "/proc/%d/comm", (int) pid);
+    FILE *f = fopen(path, "r");
+    if (f)
+    {
+        if (fgets(comm, sizeof(comm), f))
+            comm[strcspn(comm, "\n")] = '\0';
+        fclose(f);
+    }
+
+    if (shm_client_is_one_shot(comm))
+    {
+        printf("radio_shm: PTT ON from %s (pid %d), latched until PTT off\n",
+               comm, (int) pid);
+        return;
+    }
+
+    /* Name the process once per keyer, not on every over. */
+    static pid_t last_named = 0;
+    if (pid != last_named)
+    {
+        printf("radio_shm: PTT keyed by pid %d (%s)\n", (int) pid, comm);
+        last_named = pid;
+    }
+
+    shm_keyer_pid = pid;
+#ifdef SYS_pidfd_open
+    shm_keyer_pidfd = (int) syscall(SYS_pidfd_open, pid, 0);
+#endif
+}
+
+static bool shm_keyer_gone(void)
+{
+    if (shm_keyer_pid <= 0)
+        return false;
+
+    if (shm_keyer_pidfd >= 0)
+    {
+        struct pollfd pfd = { .fd = shm_keyer_pidfd, .events = POLLIN };
+        return poll(&pfd, 1, 0) > 0;
+    }
+
+    return kill(shm_keyer_pid, 0) < 0 && errno == ESRCH;
+}
+
+/* Called every command-loop pass (at least every 200 ms). */
+static void shm_check_keyer(radio *radio_h)
+{
+    if (!shm_keyer_gone())
+        return;
+
+    pid_t pid = shm_keyer_pid;
+    shm_keyer_forget();
+    radio_backend_release_ptt(radio_h, PTT_SRC_SHM, pid, "exited");
+}
 
 static void process_radio_command(uint8_t *cmd, uint8_t *response)
 {
@@ -62,7 +188,9 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
         }
         else if (radio_h->txrx_state == IN_RX)
         {
-            radio_backend_set_txrx_state(radio_h, IN_TX);
+            pid_t pid = shm_command_sender(connector_local);
+            shm_keyer_watch(pid);
+            radio_backend_set_ptt(radio_h, IN_TX, PTT_SRC_SHM, pid);
             response[0] = CMD_RESP_ACK;
         }
         else
@@ -72,20 +200,23 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
         break;
 
     case CMD_PTT_OFF:
+    {
+        /* Always unkey, whatever the cached state or SWR protection say: a
+         * PTT-off that is refused because the cache already reads RX (a
+         * client restarted to clear a stuck transmitter, say) leaves the
+         * radio keyed. The replies keep their old meaning. */
+        bool was_tx = radio_h->txrx_state == IN_TX;
+        shm_keyer_forget();
+        radio_backend_set_ptt(radio_h, IN_RX, PTT_SRC_SHM,
+                              shm_command_sender(connector_local));
         if (radio_h->swr_protection_enabled)
-        {
             response[0] = CMD_ALERT_PROTECTION_ON;
-        }
-        else if (radio_h->txrx_state == IN_TX)
-        {
-            radio_backend_set_txrx_state(radio_h, IN_RX);
+        else if (was_tx)
             response[0] = CMD_RESP_ACK;
-        }
         else
-        {
             response[0] = CMD_RESP_PTT_OFF_NACK;
-        }
         break;
+    }
 
     case CMD_GET_TXRX_STATUS:
         response[0] = (radio_h->txrx_state == IN_TX)
@@ -481,6 +612,7 @@ static void *process_radio_command_thread(void *arg)
 
         /* Runs at least every 200 ms (each timedwait expiry). */
         pump_connector_message(conn, radio_h_shm);
+        shm_check_keyer(radio_h_shm);
 
         /* Don't key off rc alone: a client can slip its command in exactly at
          * the timeout boundary (it grabs cmd_mutex the moment the expiring

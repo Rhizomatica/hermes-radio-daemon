@@ -28,6 +28,10 @@
 #include "gpiolib/gpiolib.h"
 
 void gpio_init(radio *radio_h);
+/* Map the GPIOs and put the transmitter in receive; nothing else. */
+bool gpio_force_rx(radio *radio_h);
+/* Drive TX_LINE low if the GPIOs are mapped. */
+void gpio_tx_off(void);
 
 void set_drive(unsigned gpio, GPIO_DRIVE_T drv);
 int get_level(unsigned gpio);

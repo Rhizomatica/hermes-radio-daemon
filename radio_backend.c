@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -78,6 +79,27 @@ int radio_backend_run(const radio_backend_selection *selection,
     return radio_daemon_core_run(selection, runtime);
 }
 
+int radio_backend_force_ptt_off(const radio_backend_selection *selection,
+                                const char *cfg_radio_path)
+{
+    static radio radio_h;
+
+    if (!selection || !selection->ops || !selection->ops->force_ptt_off)
+        return -1;
+
+    memset(&radio_h, 0, sizeof(radio_h));
+    radio_backend_configure(&radio_h, selection);
+    pthread_mutex_init(&radio_h.cfg_mutex, NULL);
+    if (!init_config_radio(&radio_h, cfg_radio_path))
+        return -1;
+    radio_backend_configure(&radio_h, selection);
+
+    bool ok = selection->ops->force_ptt_off(&radio_h);
+    close_config_radio(&radio_h);
+    printf("radio_daemon: PTT off %s\n", ok ? "sent" : "FAILED");
+    return ok ? 0 : -1;
+}
+
 bool radio_backend_init(radio *radio_h)
 {
     const radio_backend_ops *ops = radio_backend_ops_from_radio(radio_h);
@@ -123,11 +145,76 @@ void radio_backend_set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
         ops->set_mode(radio_h, mode, profile);
 }
 
-void radio_backend_set_txrx_state(radio *radio_h, bool txrx_state)
+/* Serialises every PTT change with the owner bookkeeping, so a release can
+ * never unkey a transmission that another client started in between. */
+static pthread_mutex_t ptt_lock = PTHREAD_MUTEX_INITIALIZER;
+static ptt_source ptt_owner_src = PTT_SRC_NONE;
+static long ptt_owner_id = 0;
+
+static const char *ptt_source_name(ptt_source src)
+{
+    switch (src)
+    {
+    case PTT_SRC_INTERNAL:  return "internal";
+    case PTT_SRC_SHM:       return "shm pid";
+    case PTT_SRC_RIGCTLD:   return "rigctld fd";
+    case PTT_SRC_CAT:       return "cat fd";
+    case PTT_SRC_WEBSOCKET: return "websocket conn";
+    default:                return "none";
+    }
+}
+
+static void ptt_apply(radio *radio_h, bool txrx_state)
 {
     const radio_backend_ops *ops = radio_backend_ops_from_radio(radio_h);
     if (ops && ops->set_txrx_state)
         ops->set_txrx_state(radio_h, txrx_state);
+}
+
+void radio_backend_set_ptt(radio *radio_h, bool txrx_state,
+                           ptt_source src, long id)
+{
+    pthread_mutex_lock(&ptt_lock);
+    if (txrx_state == IN_TX)
+    {
+        ptt_owner_src = src;
+        ptt_owner_id = id;
+    }
+    else
+    {
+        ptt_owner_src = PTT_SRC_NONE;
+        ptt_owner_id = 0;
+    }
+    if (src != PTT_SRC_INTERNAL)
+        printf("radio: PTT %s by %s %ld\n",
+               txrx_state == IN_TX ? "ON" : "OFF", ptt_source_name(src), id);
+    ptt_apply(radio_h, txrx_state);
+    pthread_mutex_unlock(&ptt_lock);
+}
+
+bool radio_backend_release_ptt(radio *radio_h, ptt_source src, long id,
+                               const char *why)
+{
+    bool released = false;
+
+    pthread_mutex_lock(&ptt_lock);
+    if (src != PTT_SRC_NONE && ptt_owner_src == src && ptt_owner_id == id)
+    {
+        ptt_owner_src = PTT_SRC_NONE;
+        ptt_owner_id = 0;
+        printf("radio: PTT OFF, %s %ld %s while keyed\n",
+               ptt_source_name(src), id, why);
+        ptt_apply(radio_h, IN_RX);
+        released = true;
+    }
+    pthread_mutex_unlock(&ptt_lock);
+
+    return released;
+}
+
+void radio_backend_set_txrx_state(radio *radio_h, bool txrx_state)
+{
+    radio_backend_set_ptt(radio_h, txrx_state, PTT_SRC_INTERNAL, 0);
 }
 
 void radio_backend_set_bfo(radio *radio_h, uint32_t frequency)

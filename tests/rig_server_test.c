@@ -39,8 +39,18 @@
 _Atomic bool shutdown_ = false;
 _Atomic bool timer_reset = false;
 
-/* radio_backend.c reaches for both real vtables at link time. */
-const radio_backend_ops hamlib_backend_ops = { .name = "hamlib" };
+/* radio_backend.c reaches for both real vtables at link time. The hamlib
+ * one records PTT changes, standing in for the rig. */
+static _Atomic int ptt_calls = 0;
+static void fake_set_txrx_state(radio *radio_h, bool txrx_state)
+{
+    ptt_calls++;
+    radio_h->txrx_state = txrx_state;
+}
+const radio_backend_ops hamlib_backend_ops = {
+    .name = "hamlib",
+    .set_txrx_state = fake_set_txrx_state,
+};
 const radio_backend_ops sbitx_backend_ops  = { .name = "hfsignals" };
 
 int radio_daemon_core_run(const radio_backend_selection *selection,
@@ -161,10 +171,87 @@ static void test_ordinary_and_unknown(void)
     printf("  ordinary + unknown commands .......... ok\n");
 }
 
+static radio *test_radio;
+
+static bool expect_ptt(bool state, int ms)
+{
+    for (int i = 0; i < ms / 10; i++)
+    {
+        if (test_radio->txrx_state == state)
+            return true;
+        usleep(10000);
+    }
+    return test_radio->txrx_state == state;
+}
+
+static void cmd_ok(int fd, const char *line)
+{
+    char buf[128];
+    send_line(fd, line);
+    assert(read_line(fd, buf, sizeof(buf)) > 0);
+    assert(strcmp(buf, "RPRT 0\n") == 0);
+}
+
+/* A client that keys with "T 1" and drops the connection without "T 0"
+ * (a modem killed mid-transmission) must not leave the radio keyed. */
+static void test_ptt_released_when_keyer_disconnects(void)
+{
+    int fd = connect_server();
+    cmd_ok(fd, "T 1\n");
+    assert(expect_ptt(IN_TX, 100));
+
+    close(fd);
+    assert(expect_ptt(IN_RX, 1000) && "keyer dropped: PTT must be released");
+    printf("  keyer disconnect releases PTT ........ ok\n");
+}
+
+/* Another client connecting and leaving must not cut a transmission, and a
+ * keyer that unkeyed before leaving costs no extra PTT command. */
+static void test_ptt_kept_for_other_clients(void)
+{
+    char buf[128];
+    int keyer = connect_server();
+    cmd_ok(keyer, "T 1\n");
+    assert(expect_ptt(IN_TX, 100));
+
+    int other = connect_server();
+    send_line(other, "t\n");
+    assert(read_line(other, buf, sizeof(buf)) > 0 && strcmp(buf, "1\n") == 0);
+    close(other);
+    usleep(300000);
+    assert(test_radio->txrx_state == IN_TX && "a reader left: keep transmitting");
+
+    cmd_ok(keyer, "T 0\n");
+    int calls = ptt_calls;
+    close(keyer);
+    usleep(300000);
+    assert(ptt_calls == calls && "unkeyed before leaving: nothing to release");
+    printf("  other clients leave PTT alone ........ ok\n");
+}
+
+/* When a second client takes PTT over, the first one leaving must not unkey
+ * it; the second one leaving must. */
+static void test_ptt_follows_last_keyer(void)
+{
+    int a = connect_server();
+    int b = connect_server();
+    cmd_ok(a, "T 1\n");
+    cmd_ok(b, "T 1\n");
+
+    close(a);
+    usleep(300000);
+    assert(test_radio->txrx_state == IN_TX);
+
+    close(b);
+    assert(expect_ptt(IN_RX, 1000));
+    printf("  PTT follows the last keyer ........... ok\n");
+}
+
 int main(void)
 {
     radio *r = calloc(1, sizeof(*r));
     assert(r);
+    test_radio = r;
     r->backend_kind     = RADIO_BACKEND_HAMLIB;
     r->backend_ops      = &hamlib_backend_ops;
     r->profiles_count   = 1;
@@ -178,6 +265,9 @@ int main(void)
     test_ordinary_and_unknown();
     test_chk_vfo_is_a_bare_value();
     test_quit_replies_and_closes();
+    test_ptt_released_when_keyer_disconnects();
+    test_ptt_kept_for_other_clients();
+    test_ptt_follows_last_keyer();
 
     rig_server_stop();
     free(r);

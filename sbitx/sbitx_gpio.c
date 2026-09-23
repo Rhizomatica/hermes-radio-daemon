@@ -40,6 +40,34 @@ static radio *radio_gpio_h;
 extern _Atomic bool shutdown_;
 
 
+/* Set once gpio_init has mapped the GPIOs; before that, driving a pin
+ * would write through an unmapped pointer. */
+static bool gpio_mapped = false;
+
+void gpio_tx_off(void)
+{
+    if (gpio_mapped)
+        set_drive(TX_LINE, DRIVE_LOW);
+}
+
+bool gpio_force_rx(radio *radio_h)
+{
+    if (gpiolib_init() <= 0 || gpiolib_mmap())
+    {
+        fprintf(stderr, "gpio_force_rx: cannot map the GPIOs\n");
+        return false;
+    }
+
+    gpio_set_drive(TX_LINE, DRIVE_LOW);
+    gpio_set_fsel(TX_LINE, GPIO_FSEL_OUTPUT);
+    if (radio_h->hw_profile == HW_PROFILE_ZBITX)
+    {
+        gpio_set_drive(ZBITX_RX_LINE, DRIVE_HIGH);
+        gpio_set_fsel(ZBITX_RX_LINE, GPIO_FSEL_OUTPUT);
+    }
+    return true;
+}
+
 // for now this initializes the GPIO and also initializes the structures for
 // encoder/knobs for easy reading by application
 void gpio_init(radio *radio_h)
@@ -69,6 +97,7 @@ void gpio_init(radio *radio_h)
         shutdown_ = true;
         return ;
     }
+    gpio_mapped = true;
 
     // INPUT pins
     unsigned int input_pins[8] = {ENC1_A, ENC1_B, ENC1_SW, ENC2_A, ENC2_B, ENC2_SW, PTT, DASH};

@@ -101,6 +101,9 @@ bool hw_shutdown(radio *radio_h, pthread_t *hw_tids)
 
     pthread_join(hw_tids[1], NULL);
 
+    /* Leave the transmitter off whatever txrx_state says. */
+    gpio_tx_off();
+
     i2c_close(radio_h);
 
     return true;
@@ -877,6 +880,12 @@ static void *sbitx_op_io_thread(void *radio_h_v)
     return NULL;
 }
 
+static bool sbitx_op_force_ptt_off(radio *radio_h)
+{
+    radio_apply_defaults(radio_h);
+    return gpio_force_rx(radio_h);
+}
+
 static void sbitx_op_shutdown(radio *radio_h)
 {
     if (hfs_sound_started)
@@ -1368,4 +1377,5 @@ const radio_backend_ops sbitx_backend_ops = {
     .get_width               = sb_get_width,
     .set_width               = sb_set_width,
     .dump_state              = sb_dump_state,
+    .force_ptt_off           = sbitx_op_force_ptt_off,
 };
