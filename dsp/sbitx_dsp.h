@@ -79,6 +79,10 @@ double get_band_multiplier();
 // session or DV is off.
 bool dsp_radae_tx_emit_eoo_if_dv(void);
 
+// Block until the EOO frame requested above, and the modem IQ queued
+// before it, have left the RADAE TX buffer for the DSP -- at most max_ms.
+void dsp_radae_tx_wait_drained(unsigned max_ms);
+
 // Companion to dsp_radae_tx_emit_eoo_if_dv: clear the RADAE TX
 // flow-control state so the next PTT-on re-enters radae_tx_start
 // cleanly.  Must be called only after the EOO IQ has had time to

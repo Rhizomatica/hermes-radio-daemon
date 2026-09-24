@@ -328,6 +328,20 @@ bool radae_tx_emit_eoo(radae_context *ctx)
     return true;
 }
 
+bool radae_tx_drained(radae_context *ctx)
+{
+    if (!ctx || !ctx->initialized)
+        return true;
+
+    pthread_mutex_lock(&ctx->tx_mutex);
+    bool drained = !ctx->tx_eoo_pending &&
+                   BUFFER_SIZE(ctx->tx_modem_buffer_write_idx,
+                               ctx->tx_modem_buffer_read_idx,
+                               RADAE_MODEM_BUFFER_SIZE * 2) == 0;
+    pthread_mutex_unlock(&ctx->tx_mutex);
+    return drained;
+}
+
 bool radae_rx_start(radae_context *ctx)
 {
     if (!ctx->initialized || ctx->rx_running)
@@ -535,8 +549,6 @@ static void *radae_tx_thread(void *arg)
         pthread_mutex_lock(&ctx->tx_mutex);
         bool emit_eoo = ctx->tx_eoo_pending;
         bool eoo_only = ctx->tx_eoo_only;
-        if (emit_eoo)
-            ctx->tx_eoo_pending = false;
         pthread_mutex_unlock(&ctx->tx_mutex);
 
         if (emit_eoo) {
@@ -544,6 +556,12 @@ static void *radae_tx_thread(void *arg)
             int n_out = rade_tx_eoo(tx_rade, tx_out);
             if (n_out > 0)
                 tx_store_modem_iq(ctx, tx_out, n_out);
+            /* Clear the request only once the frame is queued, so
+             * radae_tx_drained() cannot see "nothing pending, buffer
+             * empty" in between and let PTT drop before it is sent. */
+            pthread_mutex_lock(&ctx->tx_mutex);
+            ctx->tx_eoo_pending = false;
+            pthread_mutex_unlock(&ctx->tx_mutex);
             continue;
         }
 
@@ -679,7 +697,8 @@ static void *radae_rx_thread(void *arg)
 
         int has_eoo_out = 0;
         int n_features = rade_rx(rx_rade, features_out, &has_eoo_out, NULL, rx_in);
-        (void)has_eoo_out;
+        if (has_eoo_out)
+            fprintf(stderr, "RADAE RX: end of over\n");
         for (int k = 0; k + RADAE_VOCODER_FEATURES <= n_features; k += RADAE_VOCODER_FEATURES) {
             int n = radae_synthesis_frame(synthesis, &features_out[k], pcm);
             if (n > 0)

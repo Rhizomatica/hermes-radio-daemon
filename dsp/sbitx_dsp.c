@@ -104,6 +104,12 @@ static _Atomic bool radae_tx_active = false;
 // is deliberately file-private.  We also require radae_tx_active so
 // we don't signal into a pipeline that never ran any speech (first
 // PTT in a fresh DV session would otherwise emit a bogus EOO).
+void dsp_radae_tx_wait_drained(unsigned max_ms)
+{
+    for (unsigned waited = 0; waited < max_ms && !radae_tx_drained(&radae_ctx); waited += 5)
+        usleep(5000);
+}
+
 bool dsp_radae_tx_emit_eoo_if_dv(void)
 {
     if (!radae_tx_active)

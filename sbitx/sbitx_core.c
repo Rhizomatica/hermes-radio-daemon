@@ -589,10 +589,14 @@ static void tr_switch(radio *radio_h, bool txrx_state)
         // tracker.  The DSP is still in IN_TX here (txrx_state flips
         // at the end of this branch), so dsp_process_tx keeps draining
         // the TX modem buffer into the DAC while the EOO IQ arrives.
-        // 150 ms covers ~30 ms of EOO IQ + the ALSA+DSP tail.
+        // Wait until the EOO frame -- 960 samples, 120 ms, in V2 -- and
+        // any modem IQ queued ahead of it have left the RADAE buffer;
+        // the codec/ALSA tail is waited out below. A fixed 150 ms here
+        // (sized for V1's ~30 ms EOO) cut the V2 frame short, so the
+        // receiver missed the end of over and went on decoding noise.
         bool dv_eoo_sent = dsp_radae_tx_emit_eoo_if_dv();
         if (dv_eoo_sent)
-            usleep(150000);
+            dsp_radae_tx_wait_drained(500);
 
         /* D-STAR: queue the end-of-transmission pattern the same way. */
         bool dstar_eot_sent = dsp_dstar_tx_emit_eot_if_active();
