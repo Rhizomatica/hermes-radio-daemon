@@ -1182,7 +1182,28 @@ void *control_thread(void *device_ptr)
         read_buffer(radio_to_dsp, buffer_radio_to_dsp, buffer_size); // mono
         read_buffer(mic_to_dsp, buffer_mic_to_dsp, buffer_size); // mono
 
-        if (use_loopback)
+        static int16_t rtp_tx[2048];
+        size_t rtp_n = block_size / 2;          /* stereo 48 kHz frames per block */
+        if (rtp_n > sizeof(rtp_tx) / sizeof(rtp_tx[0]))
+            rtp_n = sizeof(rtp_tx) / sizeof(rtp_tx[0]);
+
+        if (use_loopback && radio_h_snd->enable_rtp_audio &&
+            rtp_audio_pop_tx(rtp_tx, rtp_n) == rtp_n)
+        {
+            /* The modem's RTP TX stream holds PTT: its audio replaces the
+             * loopback capture, in the same stereo S32 layout. */
+            int32_t *lb = (int32_t *) buffer_loop_to_dsp;
+            for (size_t k = 0; k < rtp_n; k++)
+                lb[2 * k] = lb[2 * k + 1] = (int32_t) ((uint32_t) (uint16_t) rtp_tx[k] << 16);
+            clear_buffer(loopback_to_dsp);
+            signal_to_tx = buffer_loop_to_dsp;
+        }
+        else if (use_loopback && radio_h_snd->enable_rtp_audio)
+        {
+            clear_buffer(loopback_to_dsp);      /* nothing writes the loopback now */
+            signal_to_tx = buffer_null;
+        }
+        else if (use_loopback)
         {
             // in case the alsa loopback device is not started, it will block in the read()
             if (size_buffer(loopback_to_dsp) >= buffer_size)

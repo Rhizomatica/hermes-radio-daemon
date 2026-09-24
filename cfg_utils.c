@@ -309,6 +309,8 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     radio_h->enable_rtp_audio = (bool) b;
     s = iniparser_getstring(ini, "main:rtp_rx_group", "239.255.72.1");
     snprintf(radio_h->rtp_rx_group, sizeof(radio_h->rtp_rx_group), "%s", s);
+    s = iniparser_getstring(ini, "main:rtp_tx_group", "239.255.72.2");
+    snprintf(radio_h->rtp_tx_group, sizeof(radio_h->rtp_tx_group), "%s", s);
     s = iniparser_getstring(ini, "main:rtp_iface", "lo");
     snprintf(radio_h->rtp_iface, sizeof(radio_h->rtp_iface), "%s", s);
     i = iniparser_getint(ini, "main:rtp_ttl", 0);

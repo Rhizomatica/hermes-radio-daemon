@@ -86,20 +86,41 @@ with the TX samples.
 ```
 enable_rtp_audio = 1
 rtp_rx_group = 239.255.72.1   ; RX stream group (data :5004, status :5006)
+rtp_tx_group = 239.255.72.2   ; TX stream group (data :5004)
 rtp_iface = lo
 rtp_ttl = 0                   ; 0 = this host only (forces lo)
 ```
 
-The RX stream is added alongside the existing modem bridges (ALSA loopback,
-SHM), which keep working. Where it is tapped:
+It runs alongside the ALSA loopback and SHM bridges, which keep working.
 
-- **sBitx:** the modem feed that goes to the loopback (48 kHz), scaled so the
-  demodulator's full scale is int16 full scale (the loopback carries it 24 dB
-  lower, in the top bits of S32).
-- **Hamlib rigs:** the captured codec audio at `audio_sample_rate`.
+- **RX**, where it is tapped:
+  - **sBitx:** the modem feed that goes to the loopback (48 kHz), scaled so
+    the demodulator's full scale is int16 full scale (the loopback carries
+    it 24 dB lower, in the top bits of S32).
+  - **Hamlib rigs:** the captured codec audio at `audio_sample_rate`.
 
-Both are low-passed at 3.4 kHz and decimated to 8 kHz; the input rate must
-be a multiple of 8000.
+  Both are low-passed at 3.4 kHz and decimated to 8 kHz; the input rate
+  must be a multiple of 8000.
+- **TX:** the stream's audio is interpolated to the radio's rate.
+  - **sBitx:** it replaces the loopback capture while the stream holds PTT
+    (in the digital, loopback operating mode), after 40 ms of prebuffer.
+  - **Hamlib rigs:** it goes to the codec playback ring.
+
+  PTT is keyed as its own owner (`rtp ssrc <n>` in the log). An end packet
+  unkeys once the queued audio has played (at most 1 s). A dead-keyer
+  unkeys 200 ms after the last TX packet, and so does shutdown.
+
+## Modem side (Mercury)
+
+```
+mercury -x rtp -i 239.255.72.1,lo -o 239.255.72.2
+```
+
+`-i` is the RX group with an optional `,iface` (default `lo`), and `-o` is
+the TX group; both default to the values above. Mercury keys the radio
+through the TX stream, so leave its own PTT method (`radio_io`) unset:
+keying through both is harmless, but the SHM unkey can cut the end of the
+TX tail.
 
 ## Checking a stream with ka9q-radio tools
 

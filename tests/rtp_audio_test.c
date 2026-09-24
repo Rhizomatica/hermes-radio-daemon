@@ -2,7 +2,10 @@
  *
  * Joins the test group on lo, feeds rtp_audio 48 kHz audio (a 1 kHz tone,
  * then a 5 kHz tone that must not alias into the 8 kHz stream), and checks
- * the RTP packets and the status TLVs against docs/RTP-AUDIO.md. */
+ * the RTP packets and the status TLVs against docs/RTP-AUDIO.md; then plays
+ * the modem, sending TX streams and checking the in-stream PTT (marker keys,
+ * empty packet ends, 200 ms dead-keyer, SSRC lock) and the 8 -> 48 kHz TX
+ * audio on both the Hamlib (tx_audio_ring) and sBitx (pop) paths. */
 
 #include <arpa/inet.h>
 #include <math.h>
@@ -16,9 +19,12 @@
 #include <unistd.h>
 
 #include "radio.h"
+#include "radio_backend.h"
+#include "radio_media.h"
 #include "rtp_audio.h"
 
 #define GROUP "239.255.72.99"
+#define TX_GROUP "239.255.72.98"
 #define IN_RATE 48000
 #define SEG_SAMPLES 24000          /* 0.5 s per tone at 48 kHz */
 #define MAX_PKTS 200
@@ -26,6 +32,156 @@
 static int failures;
 #define CHECK(c, ...) do { if (!(c)) { failures++; printf("FAIL %s:%d: ", __FILE__, __LINE__); \
                                          printf(__VA_ARGS__); printf("\n"); } } while (0)
+
+/* Stubs for the daemon side the module drives. */
+static int ptt_on_count, ptt_off_count;
+static long ptt_id;
+static int16_t pushed[48000 * 4];
+static size_t npushed;
+
+void radio_backend_set_ptt(radio *radio_h, bool txrx_state, ptt_source src, long id)
+{
+    (void) radio_h;
+    if (txrx_state == IN_TX && src == PTT_SRC_RTP)
+    {
+        ptt_on_count++;
+        ptt_id = id;
+    }
+}
+
+void radio_backend_end_ptt(radio *radio_h, ptt_source src, long id)
+{
+    (void) radio_h;
+    if (src == PTT_SRC_RTP && id == ptt_id)
+        ptt_off_count++;
+}
+
+void radio_media_push_tx_audio(radio *radio_h, const int16_t *samples, size_t nsamples)
+{
+    (void) radio_h;
+    for (size_t i = 0; i < nsamples && npushed < sizeof(pushed) / sizeof(pushed[0]); i++)
+        pushed[npushed++] = samples[i];
+}
+
+static int tx_fd;
+static uint16_t tx_seq;
+static uint32_t tx_ts;
+
+static void msleep(int ms)
+{
+    nanosleep(&(struct timespec){ ms / 1000, (ms % 1000) * 1000000L }, NULL);
+}
+
+/* One modem TX packet: n samples of a 1 kHz tone (n = 0: end packet). */
+static void send_tx(uint32_t ssrc, int marker, int n)
+{
+    uint8_t pkt[12 + 2 * RTP_AUDIO_FRAME];
+    struct sockaddr_in sa = { .sin_family = AF_INET, .sin_port = htons(RTP_AUDIO_DATA_PORT) };
+    inet_pton(AF_INET, TX_GROUP, &sa.sin_addr);
+    pkt[0] = 0x80;
+    pkt[1] = (uint8_t) ((marker ? 0x80 : 0) | RTP_AUDIO_PT);
+    pkt[2] = (uint8_t) (tx_seq >> 8);
+    pkt[3] = (uint8_t) tx_seq;
+    for (int i = 0; i < 4; i++)
+    {
+        pkt[4 + i] = (uint8_t) (tx_ts >> (24 - 8 * i));
+        pkt[8 + i] = (uint8_t) (ssrc >> (24 - 8 * i));
+    }
+    for (int i = 0; i < n; i++)
+    {
+        int16_t v = (int16_t) lrint(16000.0 * sin(2 * M_PI * 1000.0 * (tx_ts + (uint32_t) i) / 8000.0));
+        pkt[12 + 2 * i] = (uint8_t) ((uint16_t) v >> 8);
+        pkt[13 + 2 * i] = (uint8_t) v;
+    }
+    sendto(tx_fd, pkt, 12 + 2 * (size_t) n, 0, (struct sockaddr *) &sa, sizeof(sa));
+    tx_seq++;
+    tx_ts += (uint32_t) n;
+}
+
+static int open_tx_sender(void)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    unsigned char ttl = 0;
+    struct ip_mreqn m = { .imr_ifindex = (int) if_nametoindex("lo") };
+    m.imr_address.s_addr = htonl(INADDR_LOOPBACK);
+    setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
+    setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, &m, sizeof(m));
+    return fd;
+}
+
+/* Amplitude of the 1 kHz component of x at `rate`. */
+static double tone_amp_at(const int16_t *x, int n, double rate)
+{
+    double re = 0, im = 0;
+    for (int i = 0; i < n; i++)
+    {
+        re += x[i] * cos(2 * M_PI * 1000.0 * i / rate);
+        im -= x[i] * sin(2 * M_PI * 1000.0 * i / rate);
+    }
+    return 2 * sqrt(re * re + im * im) / n;
+}
+
+static void test_tx(radio *r)
+{
+    tx_fd = open_tx_sender();
+
+    /* Hamlib path: TX goes to radio_media_push_tx_audio at 48 kHz. */
+    npushed = 0;
+    send_tx(111, 0, RTP_AUDIO_FRAME);           /* no marker: does not key */
+    msleep(50);
+    CHECK(ptt_on_count == 0 && npushed == 0, "unmarked packet keyed (%d, %zu)", ptt_on_count, npushed);
+
+    send_tx(111, 1, RTP_AUDIO_FRAME);
+    for (int i = 1; i < 50; i++)
+    {
+        send_tx(111, 0, RTP_AUDIO_FRAME);
+        if (i == 25)
+            send_tx(222, 1, RTP_AUDIO_FRAME);   /* another SSRC while keyed: ignored */
+        msleep(20);
+    }
+    msleep(50);
+    CHECK(ptt_on_count == 1 && ptt_id == 111, "PTT on %d times, id %ld", ptt_on_count, ptt_id);
+    CHECK(npushed == 50 * RTP_AUDIO_FRAME * 6, "pushed %zu samples, want %d", npushed, 50 * RTP_AUDIO_FRAME * 6);
+    double a = tone_amp_at(pushed + 2000, (int) npushed - 4000, 48000.0);
+    printf("TX 1 kHz at 48 kHz: amplitude %.0f\n", a);
+    CHECK(fabs(a - 16000.0) < 200.0, "TX tone amplitude %.0f", a);
+    CHECK(ptt_off_count == 0, "unkeyed while the stream ran");
+
+    send_tx(111, 0, 0);                          /* end packet */
+    msleep(60);
+    CHECK(ptt_off_count == 1, "end packet did not unkey (%d)", ptt_off_count);
+
+    /* Dead keyer: key, then go quiet. */
+    send_tx(333, 1, RTP_AUDIO_FRAME);
+    msleep(100);
+    CHECK(ptt_on_count == 2 && ptt_off_count == 1, "second key (%d/%d)", ptt_on_count, ptt_off_count);
+    msleep(250);
+    CHECK(ptt_off_count == 2, "dead keyer did not unkey after 200 ms (%d)", ptt_off_count);
+
+    /* sBitx path: the DSP loop pops 48 kHz blocks. */
+    int16_t blk[480];
+    r->backend_kind = RADIO_BACKEND_HFSIGNALS;
+    CHECK(rtp_audio_pop_tx(blk, 480) == 0, "pop while unkeyed");
+    send_tx(444, 1, RTP_AUDIO_FRAME);
+    msleep(30);
+    CHECK(rtp_audio_pop_tx(blk, 480) == 480, "pop while keyed");
+    int pre_silent = 1;
+    for (int i = 0; i < 480; i++)
+        pre_silent &= blk[i] == 0;
+    CHECK(pre_silent, "played before the 40 ms prebuffer");
+    send_tx(444, 0, RTP_AUDIO_FRAME);
+    msleep(30);
+    static int16_t got[1920];
+    rtp_audio_pop_tx(got, 1920);                  /* 2 packets = 1920 samples at 48 kHz */
+    double b = tone_amp_at(got + 400, 1920 - 800, 48000.0);
+    CHECK(fabs(b - 16000.0) < 400.0, "sBitx TX tone amplitude %.0f", b);
+    send_tx(444, 0, 0);
+    msleep(60);
+    CHECK(ptt_off_count == 3, "sBitx end packet did not unkey once drained (%d)", ptt_off_count);
+    CHECK(rtp_audio_pop_tx(blk, 480) == 0, "pop after unkey");
+    r->backend_kind = RADIO_BACKEND_HAMLIB;
+    close(tx_fd);
+}
 
 static int join(uint16_t port)
 {
@@ -85,6 +241,8 @@ int main(void)
     r.backend_kind = RADIO_BACKEND_HAMLIB;
     r.profiles[0].freq = 7050000;
     snprintf(r.rtp_rx_group, sizeof(r.rtp_rx_group), GROUP);
+    snprintf(r.rtp_tx_group, sizeof(r.rtp_tx_group), TX_GROUP);
+    r.audio_sample_rate = 48000;
     snprintf(r.rtp_iface, sizeof(r.rtp_iface), "lo");
     r.rtp_ttl = 0;
     if (!rtp_audio_init(&r))
@@ -204,6 +362,8 @@ int main(void)
         CHECK(!strcmp(desc, "hermes-radio-daemon hamlib"), "description '%s'", desc);
     }
     CHECK(nstat >= 2, "got %d status packets", nstat);
+
+    test_tx(&r);
 
     rtp_audio_shutdown();
     printf("rtp_audio_test: %d packets, %d status, %s\n", npkt, nstat, failures ? "FAILED" : "ok");

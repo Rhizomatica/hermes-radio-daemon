@@ -6,6 +6,7 @@
 #include <math.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -17,6 +18,8 @@
 #include <unistd.h>
 
 #include "rtp_audio.h"
+#include "radio_backend.h"
+#include "radio_media.h"
 
 /* ka9q-radio status.h type codes (only those we send). */
 enum {
@@ -41,7 +44,7 @@ enum {
 #define GPS_EPOCH_UNIX 315964800LL
 #define GPS_UTC_OFFSET 18LL
 
-/* ── decimator: windowed-sinc low-pass + integer decimation to 8 kHz ── */
+/* ── resampling: windowed-sinc low-pass + integer decimation / interpolation ── */
 
 #define DECIM_TAPS_PER_FACTOR 32  /* ntaps = 32*D + 1 */
 #define DECIM_CUTOFF_HZ       3400.0
@@ -55,6 +58,24 @@ typedef struct {
     int      pos;
     int      phase;      /* input samples since the last output */
 } decimator;
+
+/* Windowed-sinc (Blackman) low-pass, fc in cycles per sample, unity DC gain. */
+static void fir_design(float *taps, int ntaps, double fc)
+{
+    int mid = ntaps / 2;
+    double sum = 0.0;
+    for (int i = 0; i < ntaps; i++)
+    {
+        int n = i - mid;
+        double sinc = n ? sin(2.0 * M_PI * fc * n) / (M_PI * n) : 2.0 * fc;
+        double w = 0.42 - 0.5 * cos(2.0 * M_PI * i / (ntaps - 1))
+                        + 0.08 * cos(4.0 * M_PI * i / (ntaps - 1));
+        taps[i] = (float) (sinc * w);
+        sum += sinc * w;
+    }
+    for (int i = 0; i < ntaps; i++)
+        taps[i] = (float) (taps[i] / sum);
+}
 
 static void decim_free(decimator *d)
 {
@@ -84,20 +105,7 @@ static bool decim_setup(decimator *d, uint32_t rate)
         return false;
     }
 
-    double fc = DECIM_CUTOFF_HZ / rate;           /* cycles per sample */
-    int mid = d->ntaps / 2;
-    double sum = 0.0;
-    for (int i = 0; i < d->ntaps; i++)
-    {
-        int n = i - mid;
-        double sinc = n ? sin(2.0 * M_PI * fc * n) / (M_PI * n) : 2.0 * fc;
-        double w = 0.42 - 0.5 * cos(2.0 * M_PI * i / (d->ntaps - 1))
-                        + 0.08 * cos(4.0 * M_PI * i / (d->ntaps - 1));   /* Blackman */
-        d->taps[i] = (float) (sinc * w);
-        sum += sinc * w;
-    }
-    for (int i = 0; i < d->ntaps; i++)
-        d->taps[i] = (float) (d->taps[i] / sum);  /* unity gain at DC */
+    fir_design(d->taps, d->ntaps, DECIM_CUTOFF_HZ / rate);
     d->rate = rate;
     return true;
 }
@@ -128,6 +136,84 @@ static size_t decim_run(decimator *d, const int16_t *in, size_t n, int16_t *out)
             acc += h[k] * d->taps[k];
         long v = lrintf(acc);
         out[nout++] = (int16_t) (v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+    }
+    return nout;
+}
+
+/* 8 kHz -> rate (a multiple of 8000): zero-stuff by L and low-pass, as a
+ * polyphase filter so only the non-zero inputs are multiplied. */
+typedef struct {
+    uint32_t rate;
+    int      factor;
+    int      ntaps;      /* multiple of factor */
+    float   *taps;       /* scaled by factor to keep unity gain */
+    float   *hist;       /* 2 * ntaps/factor */
+    int      pos;
+} interpolator;
+
+static void interp_free(interpolator *ip)
+{
+    free(ip->taps);
+    free(ip->hist);
+    memset(ip, 0, sizeof(*ip));
+}
+
+static bool interp_setup(interpolator *ip, uint32_t rate)
+{
+    interp_free(ip);
+    if (rate < RTP_AUDIO_RATE || rate % RTP_AUDIO_RATE)
+        return false;
+    ip->factor = (int) (rate / RTP_AUDIO_RATE);
+    ip->ntaps = DECIM_TAPS_PER_FACTOR * ip->factor;
+    int nhist = ip->ntaps / ip->factor;
+    ip->taps = calloc((size_t) ip->ntaps, sizeof(float));
+    ip->hist = calloc((size_t) nhist * 2, sizeof(float));
+    if (!ip->taps || !ip->hist)
+    {
+        interp_free(ip);
+        return false;
+    }
+    if (ip->factor > 1)
+    {
+        fir_design(ip->taps, ip->ntaps, DECIM_CUTOFF_HZ / rate);
+        for (int i = 0; i < ip->ntaps; i++)
+            ip->taps[i] *= (float) ip->factor;
+    }
+    ip->rate = rate;
+    return true;
+}
+
+static void interp_reset(interpolator *ip)
+{
+    if (ip->hist)
+        memset(ip->hist, 0, sizeof(float) * 2 * (size_t) (ip->ntaps / ip->factor));
+    ip->pos = 0;
+}
+
+/* n 8 kHz samples in, n * factor out. */
+static size_t interp_run(interpolator *ip, const int16_t *in, size_t n, int16_t *out)
+{
+    if (ip->factor == 1)
+    {
+        memcpy(out, in, n * sizeof(*in));
+        return n;
+    }
+    int nhist = ip->ntaps / ip->factor;
+    size_t nout = 0;
+    for (size_t i = 0; i < n; i++)
+    {
+        ip->hist[ip->pos] = ip->hist[ip->pos + nhist] = (float) in[i];
+        if (++ip->pos == nhist)
+            ip->pos = 0;
+        const float *h = ip->hist + ip->pos;     /* oldest .. newest */
+        for (int ph = 0; ph < ip->factor; ph++)
+        {
+            float acc = 0.0f;
+            for (int k = 0; k < nhist; k++)      /* newest input meets tap ph */
+                acc += h[nhist - 1 - k] * ip->taps[k * ip->factor + ph];
+            long v = lrintf(acc);
+            out[nout++] = (int16_t) (v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+        }
     }
     return nout;
 }
@@ -418,6 +504,296 @@ static int open_output(const struct sockaddr_in *group, const char *iface, int t
     return fd;
 }
 
+/* ── TX stream (modem -> radio) ──
+ *
+ * The modem answers each RX packet with one TX packet while it transmits,
+ * so TX arrives at the radio's own sample rate.  PTT is the stream: a
+ * marker packet keys, an empty packet ends the transmission (the radio
+ * unkeys once what it holds has been played), and 200 ms without a TX
+ * packet while keyed unkeys it anyway (a modem that died keyed).  While
+ * keyed, only the keying SSRC is heard.
+ *
+ * The samples are interpolated to the radio's rate.  On a Hamlib rig they
+ * go to the playback path (tx_audio_ring); the sBitx DSP loop pulls them
+ * with rtp_audio_pop_tx() in place of the loopback capture. */
+
+#define TX_DEAD_KEYER_MS  200
+#define TX_DRAIN_MAX_MS   1000   /* longest wait for queued TX after an end packet */
+#define TX_PREBUFFER_MS   40     /* sBitx: queue this much before playing */
+#define TX_RING_SAMPLES   96000  /* 1 s at 96 kHz */
+
+static int             s_tx_fd = -1;
+static pthread_t       s_tx_tid;
+static volatile bool   s_tx_run;
+static bool            s_tx_started;
+static interpolator    s_interp;        /* TX thread only */
+
+static pthread_mutex_t s_tx_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int16_t         s_tx_ring[TX_RING_SAMPLES];
+static size_t          s_tx_rd, s_tx_count;
+static bool            s_tx_playing;    /* prebuffer reached */
+static uint32_t        s_tx_underruns;
+static _Atomic bool    s_tx_keyed;
+static uint32_t        s_tx_ssrc;       /* the keying SSRC */
+
+static bool tx_to_sbitx(void)
+{
+    return s_radio->backend_kind != RADIO_BACKEND_HAMLIB;
+}
+
+static uint32_t tx_rate(void)
+{
+    return tx_to_sbitx() ? 48000 : s_radio->audio_sample_rate;
+}
+
+static void tx_ring_clear(void)
+{
+    pthread_mutex_lock(&s_tx_mutex);
+    s_tx_rd = s_tx_count = 0;
+    s_tx_playing = false;
+    pthread_mutex_unlock(&s_tx_mutex);
+}
+
+static size_t tx_queued(void)
+{
+    if (tx_to_sbitx())
+    {
+        pthread_mutex_lock(&s_tx_mutex);
+        size_t n = s_tx_count;
+        pthread_mutex_unlock(&s_tx_mutex);
+        return n;
+    }
+    audio_ring_buffer *ring = &s_radio->tx_audio_ring;
+    pthread_mutex_lock(&ring->mutex);
+    size_t n = ring->count;
+    pthread_mutex_unlock(&ring->mutex);
+    return n;
+}
+
+static void tx_deliver(const int16_t *pcm8k, size_t n)
+{
+    int16_t out[RTP_AUDIO_FRAME * 12];
+
+    if (n > RTP_AUDIO_FRAME)
+        n = RTP_AUDIO_FRAME;
+    size_t nout = interp_run(&s_interp, pcm8k, n, out);
+
+    if (!tx_to_sbitx())
+    {
+        radio_media_push_tx_audio(s_radio, out, nout);
+        return;
+    }
+    pthread_mutex_lock(&s_tx_mutex);
+    for (size_t i = 0; i < nout && s_tx_count < TX_RING_SAMPLES; i++)
+    {
+        s_tx_ring[(s_tx_rd + s_tx_count) % TX_RING_SAMPLES] = out[i];
+        s_tx_count++;
+    }
+    pthread_mutex_unlock(&s_tx_mutex);
+}
+
+size_t rtp_audio_pop_tx(int16_t *out, size_t n)
+{
+    if (!s_tx_started || !s_tx_keyed)
+        return 0;
+
+    pthread_mutex_lock(&s_tx_mutex);
+    if (!s_tx_playing && s_tx_count < 48000 / 1000 * TX_PREBUFFER_MS)
+    {
+        pthread_mutex_unlock(&s_tx_mutex);
+        memset(out, 0, n * sizeof(*out));
+        return n;
+    }
+    s_tx_playing = true;
+    size_t got = n < s_tx_count ? n : s_tx_count;
+    for (size_t i = 0; i < got; i++)
+    {
+        out[i] = s_tx_ring[s_tx_rd];
+        s_tx_rd = (s_tx_rd + 1) % TX_RING_SAMPLES;
+    }
+    s_tx_count -= got;
+    if (got < n)
+        s_tx_underruns++;
+    pthread_mutex_unlock(&s_tx_mutex);
+    memset(out + got, 0, (n - got) * sizeof(*out));
+    return n;
+}
+
+/* Minimal RTP parse: version, CSRCs, extension, padding. */
+static bool rtp_parse(const uint8_t *p, size_t len, bool *marker, uint32_t *ssrc,
+                      const uint8_t **payload, size_t *plen)
+{
+    if (len < 12 || (p[0] >> 6) != 2 || (p[1] & 0x7f) != RTP_AUDIO_PT)
+        return false;
+    size_t off = 12 + 4u * (p[0] & 0x0f);
+    if (off > len)
+        return false;
+    if (p[0] & 0x10)
+    {
+        if (off + 4 > len)
+            return false;
+        off += 4 + 4u * (size_t) ((p[off + 2] << 8) | p[off + 3]);
+        if (off > len)
+            return false;
+    }
+    size_t end = len;
+    if (p[0] & 0x20)
+    {
+        if (p[len - 1] == 0 || p[len - 1] > len - off)
+            return false;
+        end -= p[len - 1];
+    }
+    *marker = (p[1] & 0x80) != 0;
+    *ssrc = (uint32_t) p[8] << 24 | (uint32_t) p[9] << 16 | (uint32_t) p[10] << 8 | p[11];
+    *payload = p + off;
+    *plen = end - off;
+    return true;
+}
+
+static void tx_unkey(const char *why)
+{
+    s_tx_keyed = false;
+    radio_backend_end_ptt(s_radio, PTT_SRC_RTP, (long) s_tx_ssrc);
+    fprintf(stderr, "rtp_audio: TX from ssrc %u %s", s_tx_ssrc, why);
+    if (s_tx_underruns)
+        fprintf(stderr, " (%u underruns)", s_tx_underruns);
+    fprintf(stderr, "\n");
+    tx_ring_clear();
+}
+
+static void *tx_thread(void *arg)
+{
+    (void) arg;
+    uint8_t pkt[2048];
+    int64_t last_ms = 0, end_ms = 0;     /* end_ms != 0: draining after an end packet */
+
+    while (s_tx_run)
+    {
+        struct pollfd pfd = { .fd = s_tx_fd, .events = POLLIN };
+        int ready = poll(&pfd, 1, 10);
+        int64_t now = now_ns(CLOCK_MONOTONIC) / 1000000;
+
+        if (ready > 0)
+        {
+            ssize_t len = recv(s_tx_fd, pkt, sizeof(pkt), 0);
+            bool marker;
+            uint32_t ssrc;
+            const uint8_t *pl;
+            size_t plen;
+            if (len > 0 && rtp_parse(pkt, (size_t) len, &marker, &ssrc, &pl, &plen)
+                && (!s_tx_keyed || ssrc == s_tx_ssrc))
+            {
+                if (!s_tx_keyed && marker && plen > 0)
+                {
+                    if (tx_rate() != s_interp.rate && !interp_setup(&s_interp, tx_rate()))
+                    {
+                        fprintf(stderr, "rtp_audio: TX rate %u Hz is not a multiple of %d Hz\n",
+                                tx_rate(), RTP_AUDIO_RATE);
+                        continue;
+                    }
+                    interp_reset(&s_interp);
+                    tx_ring_clear();
+                    s_tx_underruns = 0;
+                    s_tx_ssrc = ssrc;
+                    s_tx_keyed = true;
+                    radio_backend_set_ptt(s_radio, IN_TX, PTT_SRC_RTP, (long) ssrc);
+                    fprintf(stderr, "rtp_audio: TX from ssrc %u keyed\n", ssrc);
+                }
+                if (s_tx_keyed)
+                {
+                    last_ms = now;
+                    if (plen == 0)
+                        end_ms = end_ms ? end_ms : now;
+                    else
+                    {
+                        end_ms = 0;         /* the modem went on after all */
+                        int16_t pcm[RTP_AUDIO_FRAME];
+                        size_t n = plen / 2 > RTP_AUDIO_FRAME ? RTP_AUDIO_FRAME : plen / 2;
+                        for (size_t i = 0; i < n; i++)
+                            pcm[i] = (int16_t) ((uint16_t) pl[2 * i] << 8 | pl[2 * i + 1]);
+                        tx_deliver(pcm, n);
+                    }
+                }
+            }
+        }
+
+        if (!s_tx_keyed)
+            continue;
+        if (end_ms)
+        {
+            if (tx_queued() == 0 || now - end_ms >= TX_DRAIN_MAX_MS)
+            {
+                tx_unkey("ended");
+                end_ms = 0;
+            }
+        }
+        else if (now - last_ms >= TX_DEAD_KEYER_MS)
+            tx_unkey("stopped sending while keyed: unkeyed by the 200 ms dead-keyer");
+    }
+
+    if (s_tx_keyed)                     /* never leave the radio keyed */
+        tx_unkey("unkeyed at shutdown");
+    return NULL;
+}
+
+static int open_input(const struct sockaddr_in *group, const char *iface, int ttl)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0), one = 1;
+    if (fd < 0)
+        return -1;
+    bool loopback = ttl <= 0 || !iface || !iface[0] || !strcmp(iface, "lo");
+    struct ip_mreqn m = { .imr_multiaddr = group->sin_addr };
+    m.imr_ifindex = (int) if_nametoindex(loopback ? "lo" : iface);
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    /* Bind to the group, not INADDR_ANY: the RX group uses the same port. */
+    if (bind(fd, (const struct sockaddr *) group, sizeof(*group)) < 0
+        || setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &m, sizeof(m)) < 0)
+    {
+        fprintf(stderr, "rtp_audio: listen on TX group: %s\n", strerror(errno));
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static bool tx_start(radio *radio_h)
+{
+    struct sockaddr_in tx_addr;
+    if (!parse_group(radio_h->rtp_tx_group, RTP_AUDIO_DATA_PORT, &tx_addr))
+    {
+        fprintf(stderr, "rtp_audio: rtp_tx_group '%s' is not an IPv4 multicast address\n",
+                radio_h->rtp_tx_group);
+        return false;
+    }
+    s_tx_fd = open_input(&tx_addr, radio_h->rtp_iface, radio_h->rtp_ttl);
+    if (s_tx_fd < 0)
+        return false;
+    s_tx_keyed = false;
+    tx_ring_clear();
+    s_tx_run = true;
+    if (pthread_create(&s_tx_tid, NULL, tx_thread, NULL) != 0)
+    {
+        s_tx_run = false;
+        close(s_tx_fd);
+        s_tx_fd = -1;
+        return false;
+    }
+    s_tx_started = true;
+    fprintf(stderr, "rtp_audio: TX stream from %s:%d\n", radio_h->rtp_tx_group, RTP_AUDIO_DATA_PORT);
+    return true;
+}
+
+static void tx_stop(void)
+{
+    if (!s_tx_started)
+        return;
+    s_tx_run = false;
+    pthread_join(s_tx_tid, NULL);
+    s_tx_started = false;
+    close(s_tx_fd);
+    s_tx_fd = -1;
+}
+
 bool rtp_audio_init(radio *radio_h)
 {
     if (s_started)
@@ -463,6 +839,11 @@ bool rtp_audio_init(radio *radio_h)
         return false;
     }
     s_started = true;
+    if (!tx_start(radio_h))
+    {
+        rtp_audio_shutdown();
+        return false;
+    }
     fprintf(stderr, "rtp_audio: RX stream to %s:%d (status :%d), ssrc %u, iface %s ttl %d\n",
             radio_h->rtp_rx_group, RTP_AUDIO_DATA_PORT, RTP_AUDIO_STATUS_PORT, s_ssrc,
             radio_h->rtp_ttl <= 0 || !radio_h->rtp_iface[0] ? "lo" : radio_h->rtp_iface,
@@ -475,6 +856,7 @@ void rtp_audio_shutdown(void)
     if (!s_started)
         return;
     s_started = false;                  /* audio thread stops pushing */
+    tx_stop();
 
     pthread_mutex_lock(&s_mutex);
     s_run = false;
