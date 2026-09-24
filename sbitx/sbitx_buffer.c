@@ -21,6 +21,30 @@
 
 #include "sbitx_buffer.h"
 
+#include <stdatomic.h>
+#include <stdbool.h>
+#include <string.h>
+#include <time.h>
+
+extern _Atomic bool shutdown_;
+
+/* Wait on a ring for at most 100 ms. The audio threads block here for data
+ * from the thread before them; at shutdown that data stops (capture exits
+ * first), and an unbounded wait kept the DSP and playback threads, and so
+ * the daemon, from ever exiting: systemd killed it after 90 s. */
+static void ring_wait(buffer *b)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_nsec += 100 * 1000 * 1000;
+    if (ts.tv_nsec >= 1000000000L)
+    {
+        ts.tv_sec += 1;
+        ts.tv_nsec -= 1000000000L;
+    }
+    pthread_cond_timedwait(&b->cond, &b->mutex, &ts);
+}
+
 buffer *radio_to_dsp;
 buffer *dsp_to_radio;
 
@@ -72,7 +96,15 @@ try_again_read:
     }
     else
     {
-        pthread_cond_wait( &buf_in->cond, &buf_in->mutex );
+        if (shutdown_)
+        {
+            /* Shutting down: nothing more will come. Hand back silence so
+             * the caller reaches its loop test and exits. */
+            pthread_mutex_unlock( &buf_in->mutex );
+            memset( buffer_out, 0, size );
+            return;
+        }
+        ring_wait( buf_in );
         pthread_mutex_unlock( &buf_in->mutex );
         goto try_again_read;
     }
@@ -95,7 +127,13 @@ try_again_write:
     }
     else
     {
-        pthread_cond_wait( &buf_out->cond, &buf_out->mutex );
+        if (shutdown_)
+        {
+            /* Shutting down: nobody will make room; drop this block. */
+            pthread_mutex_unlock( &buf_out->mutex );
+            return;
+        }
+        ring_wait( buf_out );
         pthread_mutex_unlock( &buf_out->mutex );
         goto try_again_write;
     }
