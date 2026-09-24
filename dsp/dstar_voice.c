@@ -30,8 +30,10 @@ static const uint8_t NULL_AMBE[9] = {0x9EU, 0x8DU, 0x32U, 0x88U, 0x26U, 0x1AU, 0
 /* A synced receiver that sees no sync-block unit at all for this many
  * superframes is hearing a clear over (a missed EOT): drop the sync. */
 #define RX_MAX_MISS 8
-/* Sync blocks failing the key check before the status reads "bad key". */
+/* Sync blocks failing the key check before the status reads "bad key", and,
+ * in a row, before a locked receiver unlocks (the key no longer matches). */
 #define RX_BAD_KEY_AFTER 3
+#define RX_UNLOCK_AFTER  3
 
 static bool keystream_xor(const uint8_t r[VOICE_NONCE_RAND_BYTES], uint32_t frame_idx,
                           char ambe_d[DSTAR_VOICE_AMBE_BITS])
@@ -193,6 +195,7 @@ void dstar_voice_rx_header(dstar_voice_rx *r, const uint8_t header[SBITX_DSTAR_H
     if (!r->hdr_enc) {
         r->synced = false;
         r->enc_seen = false;
+        r->cand = false;
     }
 }
 
@@ -226,15 +229,48 @@ static void rx_try_sync(dstar_voice_rx *r)
     const uint16_t sf = (uint16_t) ((sync[6] << 8) | sync[7]);
     uint8_t check;
     if (!sync_check(sync, sf, &check) || check != sync[8]) {
+        /* A failure breaks a pending confirmation, and a run of them means
+         * the key does not match (wrong key, key changed mid-over, or the
+         * rare two-block false lock): stop decrypting, mute. */
+        r->cand = false;
+        r->last_ok = false;
         if (r->bad < 0xFFU)
             r->bad++;
+        if (r->synced && r->bad >= RX_UNLOCK_AFTER)
+            r->synced = false;
         return;
     }
 
-    r->bad = 0;
-    memcpy(r->r, sync, VOICE_NONCE_RAND_BYTES);
-    r->sf = sf;
-    r->synced = true;
+    /* A lone pass after failures is what a wrong key produces once in 256
+     * blocks, so it does not clear the failure count; two in a row, or a
+     * confirmed lock, do. */
+    const bool run = r->last_ok;
+    r->last_ok = true;
+
+    if (r->synced) {
+        if (memcmp(r->r, sync, VOICE_NONCE_RAND_BYTES) == 0) {
+            r->sf = sf;          /* same over: keep the frame count honest */
+            if (run)
+                r->bad = 0;
+            return;
+        }
+        r->synced = false;       /* another over: confirm it before playing */
+    }
+
+    /* One byte of check lets a wrong key through once in 256 blocks: lock
+     * only when the next superframe's block confirms this one. */
+    if (r->cand && memcmp(r->cand_r, sync, VOICE_NONCE_RAND_BYTES) == 0 && r->cand_sf == sf) {
+        memcpy(r->r, sync, VOICE_NONCE_RAND_BYTES);
+        r->sf = sf;
+        r->synced = true;
+        r->cand = false;
+        r->bad = 0;
+        return;
+    }
+    r->cand = true;
+    r->cand_age = 0;
+    memcpy(r->cand_r, sync, VOICE_NONCE_RAND_BYTES);
+    r->cand_sf = sf;
 }
 
 bool dstar_voice_rx_frame(dstar_voice_rx *r, const uint8_t frame[SBITX_DSTAR_FRAME_BYTES],
@@ -246,12 +282,19 @@ bool dstar_voice_rx_frame(dstar_voice_rx *r, const uint8_t frame[SBITX_DSTAR_FRA
     if (fc == 0) {
         /* A new superframe. A missed data sync lets fc run past 20, so
          * advance by however many superframes actually went by. */
+        const uint32_t elapsed = (uint32_t) (r->last_fc / DSTAR_VOICE_SF_FRAMES) + 1U;
         if (r->synced) {
-            r->sf += (uint32_t) (r->last_fc / DSTAR_VOICE_SF_FRAMES) + 1U;
+            r->sf += elapsed;
             if (++r->miss > RX_MAX_MISS) {
                 r->synced = false;
                 r->enc_seen = false;
             }
+        }
+        /* A candidate must be confirmed by the very next superframe. */
+        if (r->cand) {
+            r->cand_sf += elapsed;
+            if (++r->cand_age > 1)
+                r->cand = false;
         }
         r->slow_mask = 0;
     }
