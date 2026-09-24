@@ -635,6 +635,7 @@ static void *radae_rx_thread(void *arg)
     RADE_COMP *rx_in = NULL;
     float *features_out = NULL;
     int16_t pcm[RADAE_VOCODER_FRAME];
+    bool was_synced = false;
 
     synthesis = radae_synthesis_new();
     if (!synthesis) {
@@ -662,6 +663,7 @@ static void *radae_rx_thread(void *arg)
             if (!radae_reset_rx_session(&rx_rade))
                 break;
             radae_synthesis_reset(synthesis);
+            was_synced = false;
             ctx->rx_reset_requested = false;
         }
 
@@ -699,6 +701,17 @@ static void *radae_rx_thread(void *arg)
         int n_features = rade_rx(rx_rade, features_out, &has_eoo_out, NULL, rx_in);
         if (has_eoo_out)
             fprintf(stderr, "RADAE RX: end of over\n");
+        /* Log lock changes: without them a receiver that never locks and
+         * one that locks but misses the end of over look the same. */
+        bool synced = rade_sync(rx_rade) != 0;
+        if (synced != was_synced) {
+            if (synced)
+                fprintf(stderr, "RADAE RX: sync (SNR %.1f dB, offset %+.1f Hz)\n",
+                        (double) rade_snrdB_3k_est(rx_rade), (double) rade_freq_offset(rx_rade));
+            else
+                fprintf(stderr, "RADAE RX: sync lost%s\n", has_eoo_out ? " (end of over)" : "");
+            was_synced = synced;
+        }
         for (int k = 0; k + RADAE_VOCODER_FEATURES <= n_features; k += RADAE_VOCODER_FEATURES) {
             int n = radae_synthesis_frame(synthesis, &features_out[k], pcm);
             if (n > 0)
