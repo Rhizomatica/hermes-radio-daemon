@@ -25,6 +25,7 @@
 #include "audio_headset.h"
 #include "shm_audio.h"
 #include "loop_audio.h"
+#include "rtp_audio.h"
 #include "voice_crypto.h"
 
 extern _Atomic bool shutdown_;
@@ -95,6 +96,7 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     bool media_started = false;
     bool shm_audio_started = false;
     bool loop_audio_started = false;
+    bool rtp_audio_started = false;
     bool websocket_started = false;
     bool shm_started = false;
     bool headset_started = false;
@@ -153,6 +155,9 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     if (radio_h.enable_loop_audio)
         loop_audio_started = loop_audio_init(&radio_h);
 
+    if (radio_h.enable_rtp_audio)
+        rtp_audio_started = rtp_audio_init(&radio_h);
+
     if (!radio_websocket_init(&radio_h, &websocket_tid))
     {
         fprintf(stderr, "Failed to initialize websocket service. Exiting.\n");
@@ -184,6 +189,8 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
         shm_audio_shutdown();
     if (loop_audio_started)
         loop_audio_shutdown();
+    if (rtp_audio_started)
+        rtp_audio_shutdown();
     if (media_started)
         radio_media_shutdown(&radio_h, &capture_tid, &playback_tid);
     if (backend_started)
@@ -208,6 +215,8 @@ fail:
         shm_audio_shutdown();
     if (loop_audio_started)
         loop_audio_shutdown();
+    if (rtp_audio_started)
+        rtp_audio_shutdown();
     if (media_started)
         radio_media_shutdown(&radio_h, &capture_tid, &playback_tid);
     if (backend_started)

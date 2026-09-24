@@ -305,6 +305,15 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     b = iniparser_getboolean(ini, "main:enable_loop_audio", 0);
     radio_h->enable_loop_audio = (bool) b;
 
+    b = iniparser_getboolean(ini, "main:enable_rtp_audio", 0);
+    radio_h->enable_rtp_audio = (bool) b;
+    s = iniparser_getstring(ini, "main:rtp_rx_group", "239.255.72.1");
+    snprintf(radio_h->rtp_rx_group, sizeof(radio_h->rtp_rx_group), "%s", s);
+    s = iniparser_getstring(ini, "main:rtp_iface", "lo");
+    snprintf(radio_h->rtp_iface, sizeof(radio_h->rtp_iface), "%s", s);
+    i = iniparser_getint(ini, "main:rtp_ttl", 0);
+    radio_h->rtp_ttl = i;
+
     s = iniparser_getstring(ini, "main:capture_device", "default");
     snprintf(radio_h->capture_device, sizeof(radio_h->capture_device), "%s", s);
 

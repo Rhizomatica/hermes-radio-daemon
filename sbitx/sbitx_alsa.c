@@ -35,6 +35,7 @@
 #include "sbitx_buffer.h"
 #include "../radio_media.h"
 #include "../audio_bridge.h"
+#include "../rtp_audio.h"
 
 char *radio_capture_dev = "hw:0,0";
 char *radio_playback_dev = "hw:0,0";
@@ -1241,6 +1242,24 @@ void *control_thread(void *device_ptr)
             }
 
             dsp_process_tx(signal_to_tx, output_speaker, output_loopback, output_tx, block_size, use_loopback);
+        }
+
+        /* The modem feed (output_loopback: 48 kHz stereo S32, both channels
+         * equal, at fm * 2^27) also goes out as the RTP RX stream, scaled so
+         * the demodulator's full scale is int16 full scale. */
+        if (radio_h_snd->enable_rtp_audio)
+        {
+            static int16_t rtp_rx[2048];
+            const int32_t *lb = (const int32_t *) output_loopback;
+            size_t n = block_size / 2;
+            if (n > sizeof(rtp_rx) / sizeof(rtp_rx[0]))
+                n = sizeof(rtp_rx) / sizeof(rtp_rx[0]);
+            for (size_t k = 0; k < n; k++)
+            {
+                int32_t v = lb[2 * k] >> 12;
+                rtp_rx[k] = (int16_t) (v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+            }
+            rtp_audio_push_rx(rtp_rx, n, 48000);
         }
 
         if (free_size_buffer(dsp_to_loopback) >= buffer_size)
