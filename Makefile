@@ -47,7 +47,7 @@ TEST_CFLAGS = -O0 -Wall -Wextra -std=gnu11 -fstack-protector \
               -I. -Ihamlib -I/usr/include/iniparser -Iinclude
 TEST_BINS = tests/backend_selection_test tests/compat_surface_test tests/controls_test \
             tests/dstar_voice_test tests/upsample2_test tests/rig_server_test \
-            tests/hamlib_ptt_test tests/radae_vocoder_test
+            tests/hamlib_ptt_test tests/radae_vocoder_test tests/sbitx_buffer_test
 
 # ── daemon-level objects ────────────────────────────────────────
 DAEMON_TOP_OBJS = radio_daemon.o \
@@ -147,6 +147,7 @@ compat-tests: $(TEST_BINS)
 	./tests/upsample2_test
 	./tests/rig_server_test
 	./tests/hamlib_ptt_test
+	./tests/sbitx_buffer_test
 
 tests/backend_selection_test: tests/backend_selection_test.c cfg_utils.c cfg_utils.h \
                               radio_backend.c radio_backend.h radio_daemon_core.h \
@@ -158,6 +159,10 @@ tests/backend_selection_test: tests/backend_selection_test.c cfg_utils.c cfg_uti
 tests/rig_server_test: tests/rig_server_test.c hamlib/rig_server.c hamlib/rig_server.h \
                       radio_controls.c radio_backend.c cfg_utils.c radio.h
 	$(CC) $(TEST_CFLAGS) tests/rig_server_test.c hamlib/rig_server.c cat_server.c -o $@ -liniparser -lpthread -lm
+
+tests/sbitx_buffer_test: tests/sbitx_buffer_test.c sbitx/sbitx_buffer.c sbitx/sbitx_buffer.h \
+                         sbitx/ring_buffer.c sbitx/ring_buffer.h
+	$(CC) $(TEST_CFLAGS) -Isbitx tests/sbitx_buffer_test.c -o $@ -lpthread
 
 tests/hamlib_ptt_test: tests/hamlib_ptt_test.c hamlib/radio_hamlib.c hamlib/rig_server.c \
                        hamlib/rig_server.h radio_controls.c radio_backend.c radio_backend.h \
