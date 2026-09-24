@@ -534,6 +534,7 @@ static size_t          s_tx_rd, s_tx_count;
 static bool            s_tx_playing;    /* prebuffer reached */
 static uint32_t        s_tx_underruns;
 static _Atomic bool    s_tx_keyed;
+static _Atomic bool    s_tx_ending;     /* end packet seen: the ring is draining */
 static uint32_t        s_tx_ssrc;       /* the keying SSRC */
 
 static bool tx_to_sbitx(void)
@@ -612,7 +613,7 @@ size_t rtp_audio_pop_tx(int16_t *out, size_t n)
         s_tx_rd = (s_tx_rd + 1) % TX_RING_SAMPLES;
     }
     s_tx_count -= got;
-    if (got < n)
+    if (got < n && !s_tx_ending)       /* the final drain is not an underrun */
         s_tx_underruns++;
     pthread_mutex_unlock(&s_tx_mutex);
     memset(out + got, 0, (n - got) * sizeof(*out));
@@ -653,6 +654,7 @@ static bool rtp_parse(const uint8_t *p, size_t len, bool *marker, uint32_t *ssrc
 static void tx_unkey(const char *why)
 {
     s_tx_keyed = false;
+    s_tx_ending = false;
     radio_backend_end_ptt(s_radio, PTT_SRC_RTP, (long) s_tx_ssrc);
     fprintf(stderr, "rtp_audio: TX from ssrc %u %s", s_tx_ssrc, why);
     if (s_tx_underruns)
@@ -703,10 +705,14 @@ static void *tx_thread(void *arg)
                 {
                     last_ms = now;
                     if (plen == 0)
+                    {
                         end_ms = end_ms ? end_ms : now;
+                        s_tx_ending = true;
+                    }
                     else
                     {
                         end_ms = 0;         /* the modem went on after all */
+                        s_tx_ending = false;
                         int16_t pcm[RTP_AUDIO_FRAME];
                         size_t n = plen / 2 > RTP_AUDIO_FRAME ? RTP_AUDIO_FRAME : plen / 2;
                         for (size_t i = 0; i < n; i++)

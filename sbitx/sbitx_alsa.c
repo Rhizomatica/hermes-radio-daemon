@@ -1198,12 +1198,7 @@ void *control_thread(void *device_ptr)
             clear_buffer(loopback_to_dsp);
             signal_to_tx = buffer_loop_to_dsp;
         }
-        else if (use_loopback && radio_h_snd->enable_rtp_audio)
-        {
-            clear_buffer(loopback_to_dsp);      /* nothing writes the loopback now */
-            signal_to_tx = buffer_null;
-        }
-        else if (use_loopback)
+        else if (use_loopback)      /* no RTP transmission: the loopback, as before */
         {
             // in case the alsa loopback device is not started, it will block in the read()
             if (size_buffer(loopback_to_dsp) >= buffer_size)
