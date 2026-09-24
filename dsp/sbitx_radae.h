@@ -111,6 +111,11 @@ void radae_tx_stop(radae_context *ctx);
 // worker thread to append to the modem ring buffer.
 bool radae_tx_emit_eoo(radae_context *ctx);
 
+// True once a requested EOO frame and all modem IQ before it have been
+// handed to the DSP (the TX modem buffer is empty). The audio pipeline
+// after that is the caller's to wait out.
+bool radae_tx_drained(radae_context *ctx);
+
 // Start RX processing
 bool radae_rx_start(radae_context *ctx);
 

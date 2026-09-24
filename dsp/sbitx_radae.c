@@ -328,6 +328,20 @@ bool radae_tx_emit_eoo(radae_context *ctx)
     return true;
 }
 
+bool radae_tx_drained(radae_context *ctx)
+{
+    if (!ctx || !ctx->initialized)
+        return true;
+
+    pthread_mutex_lock(&ctx->tx_mutex);
+    bool drained = !ctx->tx_eoo_pending &&
+                   BUFFER_SIZE(ctx->tx_modem_buffer_write_idx,
+                               ctx->tx_modem_buffer_read_idx,
+                               RADAE_MODEM_BUFFER_SIZE * 2) == 0;
+    pthread_mutex_unlock(&ctx->tx_mutex);
+    return drained;
+}
+
 bool radae_rx_start(radae_context *ctx)
 {
     if (!ctx->initialized || ctx->rx_running)
@@ -535,8 +549,6 @@ static void *radae_tx_thread(void *arg)
         pthread_mutex_lock(&ctx->tx_mutex);
         bool emit_eoo = ctx->tx_eoo_pending;
         bool eoo_only = ctx->tx_eoo_only;
-        if (emit_eoo)
-            ctx->tx_eoo_pending = false;
         pthread_mutex_unlock(&ctx->tx_mutex);
 
         if (emit_eoo) {
@@ -544,6 +556,12 @@ static void *radae_tx_thread(void *arg)
             int n_out = rade_tx_eoo(tx_rade, tx_out);
             if (n_out > 0)
                 tx_store_modem_iq(ctx, tx_out, n_out);
+            /* Clear the request only once the frame is queued, so
+             * radae_tx_drained() cannot see "nothing pending, buffer
+             * empty" in between and let PTT drop before it is sent. */
+            pthread_mutex_lock(&ctx->tx_mutex);
+            ctx->tx_eoo_pending = false;
+            pthread_mutex_unlock(&ctx->tx_mutex);
             continue;
         }
 
@@ -617,6 +635,7 @@ static void *radae_rx_thread(void *arg)
     RADE_COMP *rx_in = NULL;
     float *features_out = NULL;
     int16_t pcm[RADAE_VOCODER_FRAME];
+    bool was_synced = false;
 
     synthesis = radae_synthesis_new();
     if (!synthesis) {
@@ -644,6 +663,7 @@ static void *radae_rx_thread(void *arg)
             if (!radae_reset_rx_session(&rx_rade))
                 break;
             radae_synthesis_reset(synthesis);
+            was_synced = false;
             ctx->rx_reset_requested = false;
         }
 
@@ -679,7 +699,19 @@ static void *radae_rx_thread(void *arg)
 
         int has_eoo_out = 0;
         int n_features = rade_rx(rx_rade, features_out, &has_eoo_out, NULL, rx_in);
-        (void)has_eoo_out;
+        if (has_eoo_out)
+            fprintf(stderr, "RADAE RX: end of over\n");
+        /* Log lock changes: without them a receiver that never locks and
+         * one that locks but misses the end of over look the same. */
+        bool synced = rade_sync(rx_rade) != 0;
+        if (synced != was_synced) {
+            if (synced)
+                fprintf(stderr, "RADAE RX: sync (SNR %.1f dB, offset %+.1f Hz)\n",
+                        (double) rade_snrdB_3k_est(rx_rade), (double) rade_freq_offset(rx_rade));
+            else
+                fprintf(stderr, "RADAE RX: sync lost%s\n", has_eoo_out ? " (end of over)" : "");
+            was_synced = synced;
+        }
         for (int k = 0; k + RADAE_VOCODER_FEATURES <= n_features; k += RADAE_VOCODER_FEATURES) {
             int n = radae_synthesis_frame(synthesis, &features_out[k], pcm);
             if (n > 0)

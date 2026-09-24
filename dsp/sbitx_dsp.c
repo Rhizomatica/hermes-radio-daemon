@@ -104,6 +104,14 @@ static _Atomic bool radae_tx_active = false;
 // is deliberately file-private.  We also require radae_tx_active so
 // we don't signal into a pipeline that never ran any speech (first
 // PTT in a fresh DV session would otherwise emit a bogus EOO).
+unsigned dsp_radae_tx_wait_drained(unsigned max_ms)
+{
+    unsigned waited = 0;
+    for (; waited < max_ms && !radae_tx_drained(&radae_ctx); waited += 5)
+        usleep(5000);
+    return waited;
+}
+
 bool dsp_radae_tx_emit_eoo_if_dv(void)
 {
     if (!radae_tx_active)
@@ -205,8 +213,8 @@ static void maybe_dump_tx_modem_iq(const float *iq_samples, int n_complex_sample
 //     SSB zero-sideband step (LSB zeros positive freqs) keeps the signal
 //     instead of destroying it.
 //
-// RADAE Python pipeline still needs 16 kHz speech from the mic/loopback, so
-// the speech feed is unchanged.
+// RADAE's LPCNet front end takes 16 kHz speech from the mic/loopback, so the
+// speech feed is resampled to that.
 static void dsp_prepare_digital_voice_tx(double *signal_input_f, uint32_t block_size, bool input_is_48k_stereo)
 {
     // Race guard: an ALSA block can start while txrx_state == IN_TX but
