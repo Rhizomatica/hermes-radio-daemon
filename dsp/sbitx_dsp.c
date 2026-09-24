@@ -971,9 +971,9 @@ static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, in
 // - out output_tx: NULL buffer
 // - block_size: number of samples
 /* RADAE runs only while the active profile is a digital-voice (RADE) one.
- * Started unconditionally at dsp_init, it kept its decoder thread and two
- * lpcnet_demo helpers running on every data profile, all on the daemon's one
- * core, and every PTT-off rebuilt its model (radae_rx_flush makes the RX
+ * Started unconditionally at dsp_init, it kept its decoder thread (then
+ * also two lpcnet_demo helper processes) running on every data profile, all
+ * on the daemon's one core, and every PTT-off rebuilt its model (radae_rx_flush makes the RX
  * thread rade_close + rade_open) on that core while the DSP thread had
  * ~21 ms of codec buffer left. The codec underran, around the switch and in
  * the middle of transmissions: on the bench (23 Sep 2026) every data burst
@@ -988,7 +988,7 @@ static void dsp_radae_follow_profile(void)
     if (dv && !radae_ctx.initialized && !init_failed)
     {
         printf("Starting RADAE digital voice (digital-voice profile active)\n");
-        if (!radae_init(&radae_ctx, radio_h_dsp, RADAE_DIR))
+        if (!radae_init(&radae_ctx, radio_h_dsp))
         {
             fprintf(stderr, "Warning: RADAE initialization failed, digital voice will not be available\n");
             init_failed = true;

@@ -19,26 +19,21 @@
  * the Free Software Foundation, Inc., 51 Franklin Street,
  * Boston, MA 02110-1301, USA.
  *
- * RADEv2 - Radio Autoencoder Version 2.
- * Uses the vendored in-process C encoder/decoder and keeps lpcnet_demo
- * only for speech/feature conversion.
+ * RADEv2 - Radio Autoencoder Version 2, entirely in-process: speech <->
+ * features with the LPCNet feature extractor and FARGAN vocoder
+ * (radae_vocoder.c, vendor/opus_dnn), features <-> modem signal with the
+ * RADE V2 encoder/decoder (vendor/rade_c).
  */
 
-#include <errno.h>
-#include <fcntl.h>
 #include <math.h>
-#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <sys/wait.h>
 #include <time.h>
-#include <unistd.h>
 
 #include "rade_api.h"
+#include "radae_vocoder.h"
 #include "sbitx_core.h"
 #include "sbitx_radae.h"
 
@@ -54,11 +49,12 @@ bool radae_is_debug(void) { return radae_debug != 0; }
 #define BUFFER_FREE(write_idx, read_idx, max_size) \
     ((max_size) - 1 - BUFFER_SIZE(write_idx, read_idx, max_size))
 
-#define RADAE_PCM_FRAME_BYTES        ((size_t)RADAE_FRAME_SIZE * sizeof(int16_t))
-#define RADAE_FEATURE_FRAME_FLOATS   36
-#define RADAE_FEATURE_ACCUM_BYTES    8192
-#define RADAE_PCM_ACCUM_BYTES        8192
 #define RADAE_TX_COMP_CAPACITY       1024
+#define RADAE_TX_FEATURE_CAPACITY    256   /* floats per rade_tx() call, at most */
+
+#if RADAE_FRAME_SIZE != RADAE_VOCODER_FRAME
+#error "RADAE_FRAME_SIZE must be the vocoder's 10 ms frame"
+#endif
 
 // Sample-rate instrumentation: accumulates counts and prints once per second to
 // stderr when radae_debug is on. `tag` is a literal string identifying the
@@ -89,134 +85,11 @@ bool radae_is_debug(void) { return radae_debug != 0; }
     }                                                                          \
 } while (0)
 
-// TX thread: reads speech from lpcnet, runs vendored RADEv2 TX, writes modem IQ.
+// TX thread: speech -> features (LPCNet) -> RADEv2 TX -> modem IQ.
 static void *radae_tx_thread(void *arg);
 
-// RX thread: reads modem IQ, runs vendored RADEv2 RX, writes speech to lpcnet.
+// RX thread: modem IQ -> RADEv2 RX -> features -> speech (FARGAN).
 static void *radae_rx_thread(void *arg);
-
-static bool set_nonblocking(int fd)
-{
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags < 0)
-        return false;
-    return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
-}
-
-static bool spawn_stdio_pipeline(const char *cmd, pid_t *pid_out, int *write_fd_out, int *read_fd_out)
-{
-    int stdin_pipe[2] = {-1, -1};
-    int stdout_pipe[2] = {-1, -1};
-    pid_t pid;
-
-    if (pipe(stdin_pipe) < 0) {
-        fprintf(stderr, "RADAE: Failed to create stdin pipe: %s\n", strerror(errno));
-        return false;
-    }
-    if (pipe(stdout_pipe) < 0) {
-        fprintf(stderr, "RADAE: Failed to create stdout pipe: %s\n", strerror(errno));
-        close(stdin_pipe[0]);
-        close(stdin_pipe[1]);
-        return false;
-    }
-
-    pid = fork();
-    if (pid < 0) {
-        fprintf(stderr, "RADAE: Fork failed: %s\n", strerror(errno));
-        close(stdin_pipe[0]);
-        close(stdin_pipe[1]);
-        close(stdout_pipe[0]);
-        close(stdout_pipe[1]);
-        return false;
-    }
-
-    if (pid == 0) {
-        close(stdin_pipe[1]);
-        close(stdout_pipe[0]);
-        dup2(stdin_pipe[0], STDIN_FILENO);
-        dup2(stdout_pipe[1], STDOUT_FILENO);
-        close(stdin_pipe[0]);
-        close(stdout_pipe[1]);
-        execl("/bin/sh", "sh", "-c", cmd, NULL);
-        _exit(1);
-    }
-
-    close(stdin_pipe[0]);
-    close(stdout_pipe[1]);
-
-    if (!set_nonblocking(stdout_pipe[0])) {
-        fprintf(stderr, "RADAE: Failed to set non-blocking mode: %s\n", strerror(errno));
-        close(stdin_pipe[1]);
-        close(stdout_pipe[0]);
-        kill(pid, SIGTERM);
-        waitpid(pid, NULL, 0);
-        return false;
-    }
-
-    *pid_out = pid;
-    *write_fd_out = stdin_pipe[1];
-    *read_fd_out = stdout_pipe[0];
-    return true;
-}
-
-static void terminate_stdio_pipeline(pid_t *pid, int *write_fd, int *read_fd)
-{
-    if (write_fd && *write_fd >= 0) {
-        close(*write_fd);
-        *write_fd = -1;
-    }
-    if (read_fd && *read_fd >= 0) {
-        close(*read_fd);
-        *read_fd = -1;
-    }
-    if (pid && *pid > 0) {
-        kill(*pid, SIGTERM);
-        waitpid(*pid, NULL, 0);
-        *pid = 0;
-    }
-}
-
-static bool write_all(int fd, const void *buf, size_t len)
-{
-    const uint8_t *p = (const uint8_t *)buf;
-
-    while (len > 0) {
-        ssize_t written = write(fd, p, len);
-        if (written < 0) {
-            if (errno == EINTR)
-                continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                struct timespec slp = {0, 1000000};
-                nanosleep(&slp, NULL);
-                continue;
-            }
-            return false;
-        }
-        if (written == 0)
-            return false;
-        p += written;
-        len -= (size_t)written;
-    }
-
-    return true;
-}
-
-static void drain_fd(int fd)
-{
-    uint8_t sink[512];
-
-    if (fd < 0)
-        return;
-
-    for (;;) {
-        ssize_t bytes_read = read(fd, sink, sizeof(sink));
-        if (bytes_read > 0)
-            continue;
-        if (bytes_read < 0 && errno == EINTR)
-            continue;
-        break;
-    }
-}
 
 static void tx_store_modem_iq(radae_context *ctx, const RADE_COMP *samples, int n_complex)
 {
@@ -300,104 +173,11 @@ static bool radae_reset_rx_session(struct rade **rx_rade)
     return *rx_rade != NULL;
 }
 
-static bool tx_drain_lpcnet_features(radae_context *ctx,
-                                     struct rade *tx_rade,
-                                     int read_fd,
-                                     uint8_t feature_accum[],
-                                     size_t *feature_accum_len,
-                                     RADE_COMP tx_out[])
-{
-    const size_t feature_bytes_needed = (size_t)rade_n_features_in_out(tx_rade) * sizeof(float);
-    float features[256];
-
-    if (feature_bytes_needed > sizeof(features) || feature_bytes_needed > RADAE_FEATURE_ACCUM_BYTES) {
-        fprintf(stderr, "RADAE TX: unexpected feature payload size %zu\n", feature_bytes_needed);
-        return false;
-    }
-
-    for (;;) {
-        ssize_t bytes_read = read(read_fd,
-                                  feature_accum + *feature_accum_len,
-                                  RADAE_FEATURE_ACCUM_BYTES - *feature_accum_len);
-        if (bytes_read < 0) {
-            if (errno == EINTR)
-                continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-                return true;
-            fprintf(stderr, "RADAE TX: lpcnet feature read error: %s\n", strerror(errno));
-            return false;
-        }
-        if (bytes_read == 0) {
-            fprintf(stderr, "RADAE TX: lpcnet feature extractor closed stdout\n");
-            return false;
-        }
-
-        *feature_accum_len += (size_t)bytes_read;
-        while (*feature_accum_len >= feature_bytes_needed) {
-            memcpy(features, feature_accum, feature_bytes_needed);
-            int n_out = rade_tx(tx_rade, tx_out, features);
-            if (n_out > 0)
-                tx_store_modem_iq(ctx, tx_out, n_out);
-            memmove(feature_accum,
-                    feature_accum + feature_bytes_needed,
-                    *feature_accum_len - feature_bytes_needed);
-            *feature_accum_len -= feature_bytes_needed;
-        }
-
-        if (*feature_accum_len == RADAE_FEATURE_ACCUM_BYTES) {
-            fprintf(stderr, "RADAE TX: feature accumulator overflow\n");
-            return false;
-        }
-    }
-}
-
-static bool rx_drain_lpcnet_speech(radae_context *ctx,
-                                   int read_fd,
-                                   uint8_t pcm_accum[],
-                                   size_t *pcm_accum_len)
-{
-    int16_t pcm_samples[RADAE_PCM_ACCUM_BYTES / sizeof(int16_t)];
-
-    for (;;) {
-        ssize_t bytes_read = read(read_fd,
-                                  pcm_accum + *pcm_accum_len,
-                                  RADAE_PCM_ACCUM_BYTES - *pcm_accum_len);
-        if (bytes_read < 0) {
-            if (errno == EINTR)
-                continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-                return true;
-            fprintf(stderr, "RADAE RX: lpcnet speech read error: %s\n", strerror(errno));
-            return false;
-        }
-        if (bytes_read == 0) {
-            fprintf(stderr, "RADAE RX: lpcnet synthesizer closed stdout\n");
-            return false;
-        }
-
-        *pcm_accum_len += (size_t)bytes_read;
-        size_t full_bytes = (*pcm_accum_len / sizeof(int16_t)) * sizeof(int16_t);
-        if (full_bytes > 0) {
-            int n_samples = (int)(full_bytes / sizeof(int16_t));
-            memcpy(pcm_samples, pcm_accum, full_bytes);
-            rx_store_speech_pcm(ctx, pcm_samples, n_samples);
-            memmove(pcm_accum, pcm_accum + full_bytes, *pcm_accum_len - full_bytes);
-            *pcm_accum_len -= full_bytes;
-        }
-
-        if (*pcm_accum_len == RADAE_PCM_ACCUM_BYTES) {
-            fprintf(stderr, "RADAE RX: speech accumulator overflow\n");
-            return false;
-        }
-    }
-}
-
-bool radae_init(radae_context *ctx, radio *radio_h, const char *radae_dir)
+bool radae_init(radae_context *ctx, radio *radio_h)
 {
     memset(ctx, 0, sizeof(radae_context));
 
     ctx->radio_h = radio_h;
-    strncpy(ctx->radae_dir, radae_dir, sizeof(ctx->radae_dir) - 1);
 
     pthread_mutex_init(&ctx->tx_mutex, NULL);
     pthread_mutex_init(&ctx->rx_mutex, NULL);
@@ -450,7 +230,7 @@ bool radae_init(radae_context *ctx, radio *radio_h, const char *radae_dir)
         goto cleanup_rade;
     }
 
-    fprintf(stderr, "RADAE: Initialized with radae_dir=%s\n", ctx->radae_dir);
+    fprintf(stderr, "RADAE: Initialized (in-process LPCNet/FARGAN + RADEv2)\n");
     return true;
 
 cleanup_rade:
@@ -481,8 +261,6 @@ void radae_shutdown(radae_context *ctx)
     radae_rx_stop(ctx);
 
     pthread_cond_signal(&ctx->tx_cond);
-    if (ctx->tx_feature_pid > 0)
-        kill(ctx->tx_feature_pid, SIGTERM);
     pthread_join(ctx->tx_thread, NULL);
 
     pthread_mutex_destroy(&ctx->tx_mutex);
@@ -579,8 +357,6 @@ void radae_rx_stop(radae_context *ctx)
 
     ctx->rx_running = false;
     pthread_cond_signal(&ctx->rx_cond);
-    if (ctx->rx_synth_pid > 0)
-        kill(ctx->rx_synth_pid, SIGTERM);
     pthread_join(ctx->rx_thread, NULL);
 
     fprintf(stderr, "RADAE RX: Stopped\n");
@@ -699,23 +475,20 @@ static void *radae_tx_thread(void *arg)
 {
     radae_context *ctx = (radae_context *)arg;
     struct rade *tx_rade = NULL;
+    radae_analysis *analysis = NULL;
     RADE_COMP tx_out[RADAE_TX_COMP_CAPACITY];
-    uint8_t feature_accum[RADAE_FEATURE_ACCUM_BYTES];
-    size_t feature_accum_len = 0;
+    float features[RADAE_TX_FEATURE_CAPACITY];
+    int n_features = 0;             /* floats collected for the next rade_tx() */
+    int features_per_tx = 0;
     int16_t pcm_buffer[RADAE_FRAME_SIZE];
     float speech_buffer[RADAE_FRAME_SIZE];
-    int lpcnet_write_fd = -1;
-    int lpcnet_read_fd = -1;
     bool session_ready = false;
-    char cmd[1024];
 
-    snprintf(cmd, sizeof(cmd),
-             "cd %s && stdbuf -o0 %s -features - -",
-             ctx->radae_dir,
-             RADAE_LPCNET_BINARY_PATH);
-
-    if (!spawn_stdio_pipeline(cmd, &ctx->tx_feature_pid, &lpcnet_write_fd, &lpcnet_read_fd))
+    analysis = radae_analysis_new();
+    if (!analysis) {
+        fprintf(stderr, "RADAE TX: cannot allocate the LPCNet feature extractor\n");
         goto cleanup;
+    }
 
     tx_rade = radae_open_tx_session();
     if (!tx_rade)
@@ -724,13 +497,17 @@ static void *radae_tx_thread(void *arg)
         fprintf(stderr, "RADAE TX: output buffer too small for EOO frame\n");
         goto cleanup;
     }
+    features_per_tx = rade_n_features_in_out(tx_rade);
+    if (features_per_tx > RADAE_TX_FEATURE_CAPACITY || features_per_tx % RADAE_VOCODER_FEATURES) {
+        fprintf(stderr, "RADAE TX: unexpected feature payload of %d floats\n", features_per_tx);
+        goto cleanup;
+    }
 
-    fprintf(stderr, "RADAE TX: in-process RADEv2 encoder ready\n");
+    fprintf(stderr, "RADAE TX: in-process LPCNet + RADEv2 encoder ready\n");
 
     while (!ctx->shutdown_requested) {
         if (!ctx->tx_running) {
-            drain_fd(lpcnet_read_fd);
-            feature_accum_len = 0;
+            n_features = 0;
             session_ready = false;
             pthread_mutex_lock(&ctx->tx_mutex);
             struct timespec ts;
@@ -748,9 +525,10 @@ static void *radae_tx_thread(void *arg)
         if (!session_ready || ctx->tx_reset_requested) {
             if (!radae_reset_tx_session(&tx_rade))
                 break;
+            /* A new over is a new stream: start the feature extractor afresh. */
+            radae_analysis_reset(analysis);
             ctx->tx_reset_requested = false;
-            feature_accum_len = 0;
-            drain_fd(lpcnet_read_fd);
+            n_features = 0;
             session_ready = true;
         }
 
@@ -762,71 +540,69 @@ static void *radae_tx_thread(void *arg)
         pthread_mutex_unlock(&ctx->tx_mutex);
 
         if (emit_eoo) {
-            drain_fd(lpcnet_read_fd);
-            feature_accum_len = 0;
+            n_features = 0;
             int n_out = rade_tx_eoo(tx_rade, tx_out);
             if (n_out > 0)
                 tx_store_modem_iq(ctx, tx_out, n_out);
             continue;
         }
 
-        if (!eoo_only) {
-            bool have_frame = false;
-
-            pthread_mutex_lock(&ctx->tx_mutex);
-            int available = BUFFER_SIZE(ctx->tx_speech_buffer_write_idx,
-                                        ctx->tx_speech_buffer_read_idx,
-                                        RADAE_SPEECH_BUFFER_SIZE);
-            if (available >= RADAE_FRAME_SIZE) {
-                for (int i = 0; i < RADAE_FRAME_SIZE; i++) {
-                    speech_buffer[i] = ctx->tx_speech_buffer[ctx->tx_speech_buffer_read_idx];
-                    ctx->tx_speech_buffer_read_idx = (ctx->tx_speech_buffer_read_idx + 1) % RADAE_SPEECH_BUFFER_SIZE;
-                }
-                have_frame = true;
-            } else {
-                struct timespec ts;
-                clock_gettime(CLOCK_REALTIME, &ts);
-                ts.tv_nsec += 10 * 1000 * 1000;
-                if (ts.tv_nsec >= 1000000000) {
-                    ts.tv_sec++;
-                    ts.tv_nsec -= 1000000000;
-                }
-                pthread_cond_timedwait(&ctx->tx_cond, &ctx->tx_mutex, &ts);
-            }
-            pthread_mutex_unlock(&ctx->tx_mutex);
-
-            if (have_frame) {
-                for (int i = 0; i < RADAE_FRAME_SIZE; i++) {
-                    float s = speech_buffer[i] * 32767.0f;
-                    if (s > 32767.0f)
-                        s = 32767.0f;
-                    if (s < -32768.0f)
-                        s = -32768.0f;
-                    pcm_buffer[i] = (int16_t)s;
-                }
-                if (!write_all(lpcnet_write_fd, pcm_buffer, RADAE_PCM_FRAME_BYTES)) {
-                    fprintf(stderr, "RADAE TX: lpcnet feature write error: %s\n", strerror(errno));
-                    break;
-                }
-                RADAE_RATE_LOG("tx_lpcnet stdin", "samp", RADAE_FRAME_SIZE, "16000 samp/s");
-            }
-        } else {
-            drain_fd(lpcnet_read_fd);
+        if (eoo_only) {
+            n_features = 0;
             struct timespec slp = {0, 10 * 1000 * 1000};
             nanosleep(&slp, NULL);
+            continue;
         }
 
-        if (!tx_drain_lpcnet_features(ctx,
-                                      tx_rade,
-                                      lpcnet_read_fd,
-                                      feature_accum,
-                                      &feature_accum_len,
-                                      tx_out))
-            break;
+        bool have_frame = false;
+
+        pthread_mutex_lock(&ctx->tx_mutex);
+        int available = BUFFER_SIZE(ctx->tx_speech_buffer_write_idx,
+                                    ctx->tx_speech_buffer_read_idx,
+                                    RADAE_SPEECH_BUFFER_SIZE);
+        if (available >= RADAE_FRAME_SIZE) {
+            for (int i = 0; i < RADAE_FRAME_SIZE; i++) {
+                speech_buffer[i] = ctx->tx_speech_buffer[ctx->tx_speech_buffer_read_idx];
+                ctx->tx_speech_buffer_read_idx = (ctx->tx_speech_buffer_read_idx + 1) % RADAE_SPEECH_BUFFER_SIZE;
+            }
+            have_frame = true;
+        } else {
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_nsec += 10 * 1000 * 1000;
+            if (ts.tv_nsec >= 1000000000) {
+                ts.tv_sec++;
+                ts.tv_nsec -= 1000000000;
+            }
+            pthread_cond_timedwait(&ctx->tx_cond, &ctx->tx_mutex, &ts);
+        }
+        pthread_mutex_unlock(&ctx->tx_mutex);
+
+        if (!have_frame)
+            continue;
+
+        for (int i = 0; i < RADAE_FRAME_SIZE; i++) {
+            float smp = speech_buffer[i] * 32767.0f;
+            if (smp > 32767.0f)
+                smp = 32767.0f;
+            if (smp < -32768.0f)
+                smp = -32768.0f;
+            pcm_buffer[i] = (int16_t)smp;
+        }
+        radae_analysis_frame(analysis, pcm_buffer, &features[n_features]);
+        n_features += RADAE_VOCODER_FEATURES;
+        RADAE_RATE_LOG("tx_lpcnet", "samp", RADAE_FRAME_SIZE, "16000 samp/s");
+
+        if (n_features == features_per_tx) {
+            int n_out = rade_tx(tx_rade, tx_out, features);
+            if (n_out > 0)
+                tx_store_modem_iq(ctx, tx_out, n_out);
+            n_features = 0;
+        }
     }
 
 cleanup:
-    terminate_stdio_pipeline(&ctx->tx_feature_pid, &lpcnet_write_fd, &lpcnet_read_fd);
+    radae_analysis_free(analysis);
     if (tx_rade)
         rade_close(tx_rade);
     fprintf(stderr, "RADAE TX: Thread exiting\n");
@@ -837,21 +613,16 @@ static void *radae_rx_thread(void *arg)
 {
     radae_context *ctx = (radae_context *)arg;
     struct rade *rx_rade = NULL;
-    uint8_t pcm_accum[RADAE_PCM_ACCUM_BYTES];
-    size_t pcm_accum_len = 0;
-    int lpcnet_write_fd = -1;
-    int lpcnet_read_fd = -1;
-    char cmd[1024];
+    radae_synthesis *synthesis = NULL;
     RADE_COMP *rx_in = NULL;
     float *features_out = NULL;
+    int16_t pcm[RADAE_VOCODER_FRAME];
 
-    snprintf(cmd, sizeof(cmd),
-             "cd %s && stdbuf -o0 %s -fargan-synthesis - -",
-             ctx->radae_dir,
-             RADAE_LPCNET_BINARY_PATH);
-
-    if (!spawn_stdio_pipeline(cmd, &ctx->rx_synth_pid, &lpcnet_write_fd, &lpcnet_read_fd))
+    synthesis = radae_synthesis_new();
+    if (!synthesis) {
+        fprintf(stderr, "RADAE RX: cannot allocate the FARGAN vocoder\n");
         goto cleanup;
+    }
 
     rx_rade = radae_open_rx_session();
     if (!rx_rade)
@@ -866,15 +637,14 @@ static void *radae_rx_thread(void *arg)
         goto cleanup;
     }
 
-    fprintf(stderr, "RADAE RX: in-process RADEv2 decoder ready\n");
+    fprintf(stderr, "RADAE RX: in-process RADEv2 decoder + FARGAN ready\n");
 
     while (ctx->rx_running && !ctx->shutdown_requested) {
         if (ctx->rx_reset_requested) {
             if (!radae_reset_rx_session(&rx_rade))
                 break;
+            radae_synthesis_reset(synthesis);
             ctx->rx_reset_requested = false;
-            pcm_accum_len = 0;
-            drain_fd(lpcnet_read_fd);
         }
 
         int nin = rade_nin(rx_rade);
@@ -904,25 +674,23 @@ static void *radae_rx_thread(void *arg)
         }
         pthread_mutex_unlock(&ctx->rx_mutex);
 
-        if (have_frame) {
-            int has_eoo_out = 0;
-            int n_features = rade_rx(rx_rade, features_out, &has_eoo_out, NULL, rx_in);
-            (void)has_eoo_out;
-            if (n_features > 0) {
-                if (!write_all(lpcnet_write_fd, features_out, (size_t)n_features * sizeof(float))) {
-                    fprintf(stderr, "RADAE RX: lpcnet synth write error: %s\n", strerror(errno));
-                    break;
-                }
-                RADAE_RATE_LOG("rx_lpcnet stdin", "feat", n_features, "decoded features");
-            }
-        }
+        if (!have_frame)
+            continue;
 
-        if (!rx_drain_lpcnet_speech(ctx, lpcnet_read_fd, pcm_accum, &pcm_accum_len))
-            break;
+        int has_eoo_out = 0;
+        int n_features = rade_rx(rx_rade, features_out, &has_eoo_out, NULL, rx_in);
+        (void)has_eoo_out;
+        for (int k = 0; k + RADAE_VOCODER_FEATURES <= n_features; k += RADAE_VOCODER_FEATURES) {
+            int n = radae_synthesis_frame(synthesis, &features_out[k], pcm);
+            if (n > 0)
+                rx_store_speech_pcm(ctx, pcm, n);
+        }
+        if (n_features > 0)
+            RADAE_RATE_LOG("rx_fargan", "feat", n_features, "decoded features");
     }
 
 cleanup:
-    terminate_stdio_pipeline(&ctx->rx_synth_pid, &lpcnet_write_fd, &lpcnet_read_fd);
+    radae_synthesis_free(synthesis);
     free(rx_in);
     free(features_out);
     if (rx_rade)

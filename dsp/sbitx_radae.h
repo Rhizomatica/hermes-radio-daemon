@@ -34,7 +34,7 @@
 
 // Sample rates
 #define RADAE_MODEM_RATE     8000   // RADAE modem IQ sample rate
-#define RADAE_SPEECH_RATE    16000  // RADAE speech sample rate (for lpcnet)
+#define RADAE_SPEECH_RATE    16000  // RADAE speech sample rate (LPCNet/FARGAN)
 
 
 // Buffer sizes
@@ -48,17 +48,8 @@
 // (ignored, log-only) model name handed to rade_open().
 #define RADAE_MODEL_NAME         "builtin"
 
-// lpcnet_demo (speech <-> features) is still an external C binary, run from
-// RADAE_DIR (relative path below).
-#define RADAE_LPCNET_BINARY_PATH "build/src/lpcnet_demo"
-#define RADAE_DIR                "/opt/radae"
-
 // RADAE context structure
 typedef struct {
-    // Companion lpcnet subprocesses (RADEv2 itself runs in-process)
-    pid_t tx_feature_pid;    // TX speech -> feature extractor
-    pid_t rx_synth_pid;      // RX feature -> speech synthesizer
-
     // Circular buffers for sample rate conversion
     float *tx_speech_buffer;         // 16kHz speech input buffer
     int tx_speech_buffer_write_idx;
@@ -91,7 +82,7 @@ typedef struct {
     // State flags
     _Atomic bool initialized;
     _Atomic bool tx_running;
-    _Atomic bool tx_eoo_only;    // stop feeding stdin, drain EOO/stdout only
+    _Atomic bool tx_eoo_only;    // stop feeding speech, only the EOO frame goes out
     _Atomic bool tx_eoo_pending;
     _Atomic bool tx_reset_requested;
     _Atomic bool rx_running;
@@ -101,13 +92,10 @@ typedef struct {
     // Radio handle reference
     radio *radio_h;
 
-    // RADAE directory path
-    char radae_dir[256];
-
 } radae_context;
 
 // Initialize RADAE subsystem
-bool radae_init(radae_context *ctx, radio *radio_h, const char *radae_dir);
+bool radae_init(radae_context *ctx, radio *radio_h);
 
 // Shutdown RADAE subsystem
 void radae_shutdown(radae_context *ctx);

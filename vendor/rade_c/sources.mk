@@ -1,10 +1,10 @@
 RADE_C_EMBED_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 
-RADE_C_EMBED_CPPFLAGS += -I$(RADE_C_EMBED_DIR)/src -I$(RADE_C_EMBED_DIR)/support
+# Builds against the Opus nnet core in vendor/opus_dnn (include its sources.mk too).
+RADE_C_EMBED_CPPFLAGS += -I$(RADE_C_EMBED_DIR)/src
 RADE_C_EMBED_CFLAGS +=
 RADE_C_EMBED_SRCS += \
 $(RADE_C_EMBED_DIR)/src/rade_api.c \
-$(RADE_C_EMBED_DIR)/src/rade_nnet.c \
 $(RADE_C_EMBED_DIR)/src/rade_enc.c \
 $(RADE_C_EMBED_DIR)/src/rade_enc_data.c \
 $(RADE_C_EMBED_DIR)/src/rade_dec.c \

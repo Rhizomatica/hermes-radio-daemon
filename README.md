@@ -49,6 +49,7 @@ hermes-radio-daemon/
 ├── sbitx/                   HF Signals hardware backend (GPIO, I2C, Si5351, ALSA, encoders)
 ├── dsp/                     SSB DSP + FM/AM demodulators + DRM (Dream subprocess) + digi encoders
 ├── vendor/rade_c/           rade_c pure-C RADE V1+V2 library (freedv/rade_c)
+├── vendor/opus_dnn/         Opus subset: LPCNet features, FARGAN vocoder, nnet core
 ├── vendor/ft8_lib/          Vendored ft8_lib (MIT)
 ├── vendor/minimodem/        Vendored minimodem FSK core (GPLv3)
 ├── config/                  Sample core.ini and user.ini
@@ -420,7 +421,7 @@ Uses vendored `minimodem` FSK core (FFT-based FSK detector + Baudot codec):
 
 ### Digital Voice (RADEv2)
 
-Neural-network-based digital voice codec. Activated per-profile with `digital_voice = 1`. Uses the vendored rade_c pure-C RADE V2 encoder/decoder at `vendor/rade_c/` (from https://github.com/freedv/rade_c). The full voice DSP chain (compressor, pre-emphasis, noise reduction) is automatically bypassed when `digital_voice = 1`.
+Neural-network-based digital voice codec. Activated per-profile with `digital_voice = 1`. Runs entirely inside the daemon, in C: speech ↔ features with the LPCNet feature extractor and FARGAN vocoder from the vendored Opus subset at `vendor/opus_dnn/`, and features ↔ modem signal with the rade_c RADE V2 encoder/decoder at `vendor/rade_c/` (from https://github.com/freedv/rade_c). No external programs (such as `lpcnet_demo` or `/opt/radae`) are needed. The full voice DSP chain (compressor, pre-emphasis, noise reduction) is automatically bypassed when `digital_voice = 1`.
 
 ### Unified Digital Mode WebSocket API
 
