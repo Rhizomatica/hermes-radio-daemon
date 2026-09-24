@@ -628,8 +628,8 @@ static void tr_switch(radio *radio_h, bool txrx_state)
         if (tr_switch_urgent)   /* SWR trip: stop transmitting now */
             tail_ms = 10;
         if (dv_eoo_sent)
-            printf("RADAE TX: end of over sent (buffer drained in %u ms, then %u ms codec tail)\n",
-                   eoo_drain_ms, tail_ms);
+            fprintf(stderr, "RADAE TX: end of over sent (buffer drained in %u ms, then %u ms codec tail)\n",
+                    eoo_drain_ms, tail_ms);
         usleep(tail_ms * 1000);
 
         set_speaker_level(radio_h->profiles[radio_h->profile_active_idx].speaker_level);

@@ -213,8 +213,8 @@ static void maybe_dump_tx_modem_iq(const float *iq_samples, int n_complex_sample
 //     SSB zero-sideband step (LSB zeros positive freqs) keeps the signal
 //     instead of destroying it.
 //
-// RADAE Python pipeline still needs 16 kHz speech from the mic/loopback, so
-// the speech feed is unchanged.
+// RADAE's LPCNet front end takes 16 kHz speech from the mic/loopback, so the
+// speech feed is resampled to that.
 static void dsp_prepare_digital_voice_tx(double *signal_input_f, uint32_t block_size, bool input_is_48k_stereo)
 {
     // Race guard: an ALSA block can start while txrx_state == IN_TX but
