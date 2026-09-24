@@ -33,6 +33,7 @@ static const uint8_t KEY_B[VOICE_KEY_BYTES] = { 0xff, 0xee, 0xdd };
 static char    plain[NFRAMES][DSTAR_VOICE_AMBE_BITS];
 static uint8_t wire[NFRAMES][SBITX_DSTAR_FRAME_BYTES];
 static uint8_t wire_hdr[SBITX_DSTAR_HEADER_BYTES];
+static uint8_t wire_r[VOICE_NONCE_RAND_BYTES];   /* the over's nonce */
 
 /* A vowel-like test signal: 120 Hz harmonics under a slow syllable envelope. */
 static void make_plain(void)
@@ -70,6 +71,7 @@ static void transmit(bool encrypt)
     dstar_voice_tx tx;
     dstar_voice_tx_begin(&tx, "PU2UIT  ", "CQCQCQ  ", encrypt);
     memcpy(wire_hdr, tx.header, sizeof(wire_hdr));
+    memcpy(wire_r, tx.r, sizeof(wire_r));
     for (int f = 0; f < NFRAMES; f++)
         dstar_voice_tx_frame(&tx, plain[f], wire[f]);
 }
@@ -146,24 +148,26 @@ static void test_encrypted(void)
     double frac = (double) diff / (NFRAMES * (DSTAR_VOICE_AMBE_BITS - 1));
     CHECK(frac > 0.45 && frac < 0.55, "ciphertext differs in %.1f%% of bits, want ~50%%", 100 * frac);
 
-    /* From the start of the over: the header mutes superframe 0 until its
-     * sync block (slot 20), then every frame decrypts exactly. */
+    /* From the start of the over: the header mutes until superframe 1's
+     * sync block (slot 20) confirms superframe 0's, then every frame
+     * decrypts exactly. */
     rx_result r = receive(0, true, -1);
-    CHECK(r.first_match == 20, "decrypt starts at frame %d, want 20", r.first_match);
-    CHECK(r.muted == 20 && r.played == NFRAMES - 20 && r.match == r.played,
+    CHECK(r.first_match == 41, "decrypt starts at frame %d, want 41", r.first_match);
+    CHECK(r.muted == 41 && r.played == NFRAMES - 41 && r.match == r.played,
           "start of over: muted %d played %d match %d", r.muted, r.played, r.match);
     CHECK(r.status == DSTAR_VC_DECRYPTING, "status %d, want decrypting", r.status);
 
     /* Late entry at superframe 5, no header yet: the first 20 frames can't be
      * told from a clear over and play as-is (garbage, not speech); from the
-     * sync block on, exact. */
+     * first sync block the over is known to be encrypted and mutes; from
+     * the confirming block (superframe 6), exact. */
     r = receive(5 * 21, false, -1);
-    CHECK(r.first_match == 5 * 21 + 20, "late entry decrypt starts at %d", r.first_match);
-    CHECK(r.match == NFRAMES - (5 * 21 + 20), "late entry match %d", r.match);
+    CHECK(r.first_match == 6 * 21 + 20, "late entry decrypt starts at %d", r.first_match);
+    CHECK(r.match == NFRAMES - (6 * 21 + 20), "late entry match %d", r.match);
 
     /* A missed data sync (fc runs to 41) keeps the frame count right. */
     r = receive(0, true, 4);
-    CHECK(r.match == r.played && r.played == NFRAMES - 20,
+    CHECK(r.match == r.played && r.played == NFRAMES - 41,
           "missed data sync: played %d match %d", r.played, r.match);
 
     /* A second over draws a new nonce: same speech, different ciphertext. */
@@ -189,13 +193,87 @@ static void test_wrong_and_no_key(void)
     CHECK(r.status == DSTAR_VC_NO_KEY, "no key status %d", r.status);
 }
 
+/* The sync block's keyed check is one byte, so a receiver holding the wrong
+ * key sees a block pass it about once in 256 superframes. Taken alone, that
+ * block locked the receiver onto a keystream it cannot produce, and it
+ * played garbage until the over ended. Find overs where that happens and
+ * check the receiver stays muted. */
+static uint8_t check_byte(const uint8_t key[VOICE_KEY_BYTES], uint32_t sf)
+{
+    uint8_t blk[VOICE_BLOCK_BYTES];
+    voice_crypto_set_key(key);
+    voice_crypto_block(VOICE_DOMAIN_CHECK, wire_r, sf, blk);
+    return blk[0];
+}
+
+static void test_wrong_key_false_check(void)
+{
+    const int nsf = NFRAMES / DSTAR_VOICE_SF_FRAMES;
+    int cases = 0, overs = 0;
+
+    while (cases < 8 && overs < 5000) {
+        voice_crypto_set_key(KEY_A);
+        transmit(true);
+        overs++;
+
+        int hit = -1, adjacent = 0;
+        for (int sf = 0; sf < nsf; sf++) {
+            if (check_byte(KEY_A, sf) != check_byte(KEY_B, sf))
+                continue;
+            if (hit == sf - 1 && hit >= 0)
+                adjacent = 1;   /* two in a row: the 1-in-65536 case */
+            hit = sf;
+        }
+        if (hit < 0 || adjacent)
+            continue;
+
+        cases++;
+        voice_crypto_set_key(KEY_B);
+        rx_result r = receive(0, true, -1);
+        CHECK(r.played == 0, "wrong key, check collision at superframe %d: played %d frames",
+              hit, r.played);
+    }
+    CHECK(cases == 8, "found only %d false-check overs in %d", cases, overs);
+}
+
+/* A receiver whose key stops matching mid-over (the key was switched during
+ * the over) must go quiet within a few superframes, not keep playing
+ * garbage. Three failing blocks unlock it; a chance pass (1 in 256) can add
+ * a superframe, so allow two of those. */
+static void test_key_lost_mid_over(void)
+{
+    voice_crypto_set_key(KEY_A);
+    transmit(true);
+
+    dstar_voice_rx rx;
+    dstar_voice_rx_reset(&rx);
+    dstar_voice_rx_header(&rx, wire_hdr);
+    int played_after = 0;
+    uint16_t fc = 0;
+    for (int f = 0; f < NFRAMES; f++) {
+        if (f % DSTAR_VOICE_SF_FRAMES == 0 && f)
+            fc = 0;
+        if (f == 4 * DSTAR_VOICE_SF_FRAMES)
+            voice_crypto_set_key(KEY_B);
+        char ambe_d[DSTAR_VOICE_AMBE_BITS];
+        bool play = dstar_voice_rx_frame(&rx, wire[f], fc, ambe_d, NULL);
+        if (play && f >= 9 * DSTAR_VOICE_SF_FRAMES)
+            played_after++;
+        fc++;
+    }
+    CHECK(played_after == 0, "key lost mid-over: still playing %d frames 5 superframes later",
+          played_after);
+    CHECK(rx.status == DSTAR_VC_BAD_KEY, "key lost mid-over: status %d, want key mismatch",
+          rx.status);
+}
+
 static void test_corrupt_sync(void)
 {
     voice_crypto_set_key(KEY_A);
     transmit(true);
     wire[19][10] ^= 0x04;   /* one bit of superframe 0's sync block */
     rx_result r = receive(0, true, -1);
-    CHECK(r.first_match == 21 + 20, "corrupt sync: decrypt starts at %d, want 41", r.first_match);
+    CHECK(r.first_match == 2 * 21 + 20, "corrupt sync: decrypt starts at %d, want 62", r.first_match);
     CHECK(r.match == r.played, "corrupt sync: played %d match %d", r.played, r.match);
 }
 
@@ -292,8 +370,8 @@ static void test_modem_e2e(void)
     printf("modem e2e: %d frames delivered, %d played, %d exact, status %d\n",
            e2e_frames, e2e_played, e2e_match, e2e_rx.status);
     CHECK(e2e_frames == NFRAMES, "modem delivered %d of %d frames", e2e_frames, NFRAMES);
-    CHECK(e2e_match == NFRAMES - 20 && e2e_played == e2e_match,
-          "modem e2e: played %d exact %d, want %d", e2e_played, e2e_match, NFRAMES - 20);
+    CHECK(e2e_match == NFRAMES - 41 && e2e_played == e2e_match,
+          "modem e2e: played %d exact %d, want %d", e2e_played, e2e_match, NFRAMES - 41);
     sbitx_dstar_tx_free(mod);
     sbitx_dstar_rx_free(e2e_demod);
 }
@@ -304,6 +382,8 @@ int main(void)
     test_clear();
     test_encrypted();
     test_wrong_and_no_key();
+    test_wrong_key_false_check();
+    test_key_lost_mid_over();
     test_corrupt_sync();
     test_fail_closed();
     test_key_files();

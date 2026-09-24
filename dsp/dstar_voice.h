@@ -18,9 +18,12 @@
  * - For late entry and resync, every superframe carries a 9-byte sync
  *   block in slow data -- R[6], the 16-bit superframe counter, and a keyed
  *   8-bit check -- in the spare bytes of slow-data unit 8 (after the last
- *   header byte) and in unit 9, marked with slow-data type 0xE5. A receiver
- *   joining mid-over decodes from the end of the first superframe whose
- *   sync block arrives clean (at most ~420 ms plus one superframe).
+ *   header byte) and in unit 9, marked with slow-data type 0xE5. One byte
+ *   of check passes a wrong key once in 256 blocks, so a receiver locks on
+ *   only when two consecutive blocks pass it with the same R and
+ *   consecutive counters (once in 65536), and unlocks after three failing
+ *   blocks in a row. It decodes from the second superframe after it starts
+ *   hearing the over: ~0.8 s into an over, a little more on late entry.
  * - A receiver without the key, or with the wrong key, mutes the encrypted
  *   over instead of playing garbage.
  *
@@ -96,6 +99,11 @@ typedef struct {
     uint8_t  slow_mask;
     uint8_t  miss;          /* superframes since the last valid sync block */
     uint8_t  bad;           /* consecutive sync blocks failing the check */
+    bool     last_ok;       /* the previous sync block passed its check */
+    bool     cand;          /* one block passed; the next must confirm it */
+    uint8_t  cand_age;      /* superframes since the candidate */
+    uint8_t  cand_r[VOICE_NONCE_RAND_BYTES];
+    uint32_t cand_sf;       /* counter the confirming block must carry */
     dstar_vc_status status;
 } dstar_voice_rx;
 

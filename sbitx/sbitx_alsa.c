@@ -485,6 +485,72 @@ void sound_mixer(char *card_name, char *element, int make_on)
 }
 
 
+/* Playback that keeps running through an underrun, as OSS does. With the
+ * stop threshold at the boundary ALSA never stops the stream, and with the
+ * silence size at the boundary it keeps the part of the buffer we have not
+ * written silent. A late period then plays as silence for exactly the time
+ * it was late, and the device stays in step with capture, instead of stop,
+ * prepare, restart and a fresh prime on every underrun. Playback starts
+ * once `prime` periods of silence and the first real period are queued. */
+static void play_setup_sw(snd_pcm_t *pcm, snd_pcm_uframes_t period,
+                          unsigned prime, const char *name)
+{
+    snd_pcm_sw_params_t *sw;
+    snd_pcm_uframes_t boundary = 0;
+    int e;
+
+    snd_pcm_sw_params_alloca(&sw);
+    if ((e = snd_pcm_sw_params_current(pcm, sw)) < 0 ||
+        (e = snd_pcm_sw_params_get_boundary(sw, &boundary)) < 0 ||
+        (e = snd_pcm_sw_params_set_start_threshold(pcm, sw, (prime + 1) * period)) < 0 ||
+        (e = snd_pcm_sw_params_set_avail_min(pcm, sw, period)) < 0 ||
+        (e = snd_pcm_sw_params_set_stop_threshold(pcm, sw, boundary)) < 0 ||
+        (e = snd_pcm_sw_params_set_silence_threshold(pcm, sw, 0)) < 0 ||
+        (e = snd_pcm_sw_params_set_silence_size(pcm, sw, boundary)) < 0 ||
+        (e = snd_pcm_sw_params(pcm, sw)) < 0)
+        fprintf(stderr, "%s: sw_params failed (%s)\n", name, snd_strerror(e));
+}
+
+static void play_prime(snd_pcm_t *pcm, const uint8_t *silence,
+                       snd_pcm_uframes_t period, unsigned prime)
+{
+    for (unsigned p = 0; p < prime; p++)
+        snd_pcm_mmap_writei(pcm, silence, period);
+}
+
+/* When the device has played past what we wrote (an underrun that did not
+ * stop it), move our write position to where it is, plus `prime` frames of
+ * the silence ALSA keeps there, so that we are ahead again. Returns the
+ * frames that were played as silence, 0 when on time. Logs at most every
+ * 100 ms, with a count, so a starved loopback cannot flood the journal. */
+static snd_pcm_sframes_t play_catch_up(snd_pcm_t *pcm, snd_pcm_uframes_t buffer_frames,
+                                       snd_pcm_uframes_t prime, unsigned rate,
+                                       const char *name)
+{
+    static _Thread_local struct timespec last_log;
+    static _Thread_local unsigned pending;
+    snd_pcm_sframes_t avail = snd_pcm_avail_update(pcm);
+
+    if (avail < 0 || (snd_pcm_uframes_t) avail <= buffer_frames)
+        return 0;
+
+    snd_pcm_sframes_t late = avail - (snd_pcm_sframes_t) buffer_frames;
+    snd_pcm_forward(pcm, (snd_pcm_uframes_t) late + prime);
+
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    pending++;
+    if ((now.tv_sec - last_log.tv_sec) * 1000 + (now.tv_nsec - last_log.tv_nsec) / 1000000 >= 100)
+    {
+        fprintf(stderr, "%s: underrun, %.1f ms played as silence (stream kept running%s)\n",
+                name, late * 1000.0 / rate,
+                pending > 1 ? ", more in the last 100 ms" : "");
+        last_log = now;
+        pending = 0;
+    }
+    return late;
+}
+
 void *radio_capture_thread(void *device_ptr)
 {
     char *device = (char *) device_ptr;
@@ -736,20 +802,12 @@ void *radio_playback_thread(void *device_ptr)
      * period is behind them: ~10.7 ms more latency, twice the slack. The
      * same holds after an underrun, which re-primes. */
     enum { PLAY_PRIME_PERIODS = 4 };
-    snd_pcm_sw_params_t *swparams;
-    snd_pcm_sw_params_alloca(&swparams);
-    if ((e = snd_pcm_sw_params_current(pcm_play_handle, swparams)) < 0 ||
-        (e = snd_pcm_sw_params_set_start_threshold(pcm_play_handle, swparams,
-                 (PLAY_PRIME_PERIODS + 1) * hw_period_size)) < 0 ||
-        (e = snd_pcm_sw_params_set_avail_min(pcm_play_handle, swparams, hw_period_size)) < 0 ||
-        (e = snd_pcm_sw_params(pcm_play_handle, swparams)) < 0)
-        fprintf(stderr, "radio playback: sw_params failed (%s)\n", snd_strerror(e));
+    play_setup_sw(pcm_play_handle, hw_period_size, PLAY_PRIME_PERIODS, "radio playback");
 
     snd_pcm_prepare(pcm_play_handle);
     snd_pcm_drop(pcm_play_handle);
     snd_pcm_prepare(pcm_play_handle);
-    for (int p = 0; p < PLAY_PRIME_PERIODS; p++)
-        snd_pcm_mmap_writei(pcm_play_handle, silence, hw_period_size);
+    play_prime(pcm_play_handle, silence, hw_period_size, PLAY_PRIME_PERIODS);
 
     while (!shutdown_)
     {
@@ -762,6 +820,9 @@ void *radio_playback_thread(void *device_ptr)
             memcpy(&buffer[j*sample_size*channels], &speaker[j*sample_size], sample_size);
             memcpy(&buffer[j*sample_size*channels + sample_size], &radio[j*sample_size], sample_size);
         }
+
+        play_catch_up(pcm_play_handle, hw_period_size * hw_play_n_periods,
+                      PLAY_PRIME_PERIODS * hw_period_size, hw_rate, "radio playback");
 
         {
             snd_pcm_sframes_t queued;
@@ -784,9 +845,10 @@ void *radio_playback_thread(void *device_ptr)
             {
                 fprintf(stderr, "short write, wrote %d frames\n", e);
             }
+            /* Only reached if the stream stopped anyway (an error other
+             * than the underruns play_catch_up absorbs). */
             snd_pcm_prepare (pcm_play_handle);
-            for (int p = 0; p < PLAY_PRIME_PERIODS; p++)
-                snd_pcm_mmap_writei(pcm_play_handle, silence, hw_period_size);
+            play_prime(pcm_play_handle, silence, hw_period_size, PLAY_PRIME_PERIODS);
             goto try_again_radio_play;
         }
     }
@@ -1011,14 +1073,29 @@ void *loop_playback_thread(void *device_ptr)
     uint32_t buffer_size = loopback_period_size * sample_size * channels;
 
     uint8_t *buffer = malloc(buffer_size);
+    uint8_t *silence = (uint8_t *) calloc(1, buffer_size);
+
+    /* The receive audio to Mercury. At every switch back to RX the rings
+     * are cleared, and the loopback then ran dry: it restarted on one
+     * period after each underrun and underran again, dozens of times in a
+     * row. Same treatment as the codec: 2 periods of slack, and keep
+     * running through an underrun. */
+    enum { LOOP_PRIME_PERIODS = 2 };
+    play_setup_sw(loopback_play_handle, loopback_period_size, LOOP_PRIME_PERIODS,
+                  "loopback playback");
 
     snd_pcm_prepare(loopback_play_handle);
     snd_pcm_drop(loopback_play_handle);
     snd_pcm_prepare(loopback_play_handle);
+    play_prime(loopback_play_handle, silence, loopback_period_size, LOOP_PRIME_PERIODS);
 
     while (!shutdown_)
     {
         read_buffer(dsp_to_loopback, buffer, buffer_size);
+
+        play_catch_up(loopback_play_handle, loopback_period_size * loopback_n_periods,
+                      LOOP_PRIME_PERIODS * loopback_period_size, loopback_rate,
+                      "loopback playback");
 
     try_again_loop_play:
         if ((e = snd_pcm_mmap_writei(loopback_play_handle, buffer, loopback_period_size)) != loopback_period_size)
@@ -1037,12 +1114,14 @@ void *loop_playback_thread(void *device_ptr)
             }
 
             snd_pcm_prepare (loopback_play_handle);
+            play_prime(loopback_play_handle, silence, loopback_period_size, LOOP_PRIME_PERIODS);
             goto try_again_loop_play;
         }
     }
 
     snd_pcm_hw_params_free(hloop_params);
     free(buffer);
+    free(silence);
 
     return NULL;
 }
