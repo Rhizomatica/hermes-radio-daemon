@@ -35,6 +35,7 @@
 #include "sbitx_buffer.h"
 #include "../radio_media.h"
 #include "../audio_bridge.h"
+#include "../rtp_audio.h"
 
 char *radio_capture_dev = "hw:0,0";
 char *radio_playback_dev = "hw:0,0";
@@ -1181,7 +1182,23 @@ void *control_thread(void *device_ptr)
         read_buffer(radio_to_dsp, buffer_radio_to_dsp, buffer_size); // mono
         read_buffer(mic_to_dsp, buffer_mic_to_dsp, buffer_size); // mono
 
-        if (use_loopback)
+        static int16_t rtp_tx[2048];
+        size_t rtp_n = block_size / 2;          /* stereo 48 kHz frames per block */
+        if (rtp_n > sizeof(rtp_tx) / sizeof(rtp_tx[0]))
+            rtp_n = sizeof(rtp_tx) / sizeof(rtp_tx[0]);
+
+        if (use_loopback && radio_h_snd->enable_rtp_audio &&
+            rtp_audio_pop_tx(rtp_tx, rtp_n) == rtp_n)
+        {
+            /* The modem's RTP TX stream holds PTT: its audio replaces the
+             * loopback capture, in the same stereo S32 layout. */
+            int32_t *lb = (int32_t *) buffer_loop_to_dsp;
+            for (size_t k = 0; k < rtp_n; k++)
+                lb[2 * k] = lb[2 * k + 1] = (int32_t) ((uint32_t) (uint16_t) rtp_tx[k] << 16);
+            clear_buffer(loopback_to_dsp);
+            signal_to_tx = buffer_loop_to_dsp;
+        }
+        else if (use_loopback)      /* no RTP transmission: the loopback, as before */
         {
             // in case the alsa loopback device is not started, it will block in the read()
             if (size_buffer(loopback_to_dsp) >= buffer_size)
@@ -1241,6 +1258,24 @@ void *control_thread(void *device_ptr)
             }
 
             dsp_process_tx(signal_to_tx, output_speaker, output_loopback, output_tx, block_size, use_loopback);
+        }
+
+        /* The modem feed (output_loopback: 48 kHz stereo S32, both channels
+         * equal, at fm * 2^27) also goes out as the RTP RX stream, scaled so
+         * the demodulator's full scale is int16 full scale. */
+        if (radio_h_snd->enable_rtp_audio)
+        {
+            static int16_t rtp_rx[2048];
+            const int32_t *lb = (const int32_t *) output_loopback;
+            size_t n = block_size / 2;
+            if (n > sizeof(rtp_rx) / sizeof(rtp_rx[0]))
+                n = sizeof(rtp_rx) / sizeof(rtp_rx[0]);
+            for (size_t k = 0; k < n; k++)
+            {
+                int32_t v = lb[2 * k] >> 12;
+                rtp_rx[k] = (int16_t) (v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+            }
+            rtp_audio_push_rx(rtp_rx, n, 48000);
         }
 
         if (free_size_buffer(dsp_to_loopback) >= buffer_size)

@@ -144,10 +144,13 @@ typedef enum {
     PTT_SRC_RIGCTLD,    /* rigctld server, id = connection fd           */
     PTT_SRC_CAT,        /* CAT server (emulate), id = connection fd     */
     PTT_SRC_WEBSOCKET,  /* websocket, id = mongoose connection id       */
+    PTT_SRC_RTP,        /* RTP TX stream (rtp_audio), id = SSRC         */
 } ptt_source;
 
 void radio_backend_set_ptt(radio *radio_h, bool txrx_state,
                            ptt_source src, long id);
+/* (src, id) finished its transmission: unkey if it still owns PTT. */
+void radio_backend_end_ptt(radio *radio_h, ptt_source src, long id);
 /* Unkey if (src, id) still owns PTT. Returns true when it did. */
 bool radio_backend_release_ptt(radio *radio_h, ptt_source src, long id,
                                const char *why);

@@ -160,6 +160,7 @@ static const char *ptt_source_name(ptt_source src)
     case PTT_SRC_RIGCTLD:   return "rigctld fd";
     case PTT_SRC_CAT:       return "cat fd";
     case PTT_SRC_WEBSOCKET: return "websocket conn";
+    case PTT_SRC_RTP:       return "rtp ssrc";
     default:                return "none";
     }
 }
@@ -189,6 +190,19 @@ void radio_backend_set_ptt(radio *radio_h, bool txrx_state,
         printf("radio: PTT %s by %s %ld\n",
                txrx_state == IN_TX ? "ON" : "OFF", ptt_source_name(src), id);
     ptt_apply(radio_h, txrx_state);
+    pthread_mutex_unlock(&ptt_lock);
+}
+
+void radio_backend_end_ptt(radio *radio_h, ptt_source src, long id)
+{
+    pthread_mutex_lock(&ptt_lock);
+    if (src != PTT_SRC_NONE && ptt_owner_src == src && ptt_owner_id == id)
+    {
+        ptt_owner_src = PTT_SRC_NONE;
+        ptt_owner_id = 0;
+        printf("radio: PTT OFF by %s %ld\n", ptt_source_name(src), id);
+        ptt_apply(radio_h, IN_RX);
+    }
     pthread_mutex_unlock(&ptt_lock);
 }
 

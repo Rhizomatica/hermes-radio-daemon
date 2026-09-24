@@ -358,6 +358,15 @@ typedef struct {
     _Atomic bool enable_loop_audio;
     char loop_capture_device[AUDIO_DEVICE_NAME_MAX];
     char loop_playback_device[AUDIO_DEVICE_NAME_MAX];
+    /* RTP modem link (rtp_audio, docs/RTP-AUDIO.md): the RX stream goes to
+     * rtp_rx_group:5004 as ka9q-radio style RTP, the modem's TX stream (with
+     * its in-stream PTT) comes from rtp_tx_group:5004, on rtp_iface with
+     * rtp_ttl (ttl 0 = loopback only). */
+    _Atomic bool enable_rtp_audio;
+    char rtp_rx_group[64];
+    char rtp_tx_group[64];
+    char rtp_iface[32];
+    int  rtp_ttl;
     /* Optional operator-side headset (hardware) audio path. When both
      * device names are non-empty, the daemon spawns capture+playback threads
      * that mirror the websocket browser audio path onto a local ALSA device. */

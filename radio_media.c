@@ -35,6 +35,7 @@
 #include "audio_bridge.h"
 #include "shm_audio.h"
 #include "loop_audio.h"
+#include "rtp_audio.h"
 
 extern _Atomic bool shutdown_;
 
@@ -923,6 +924,10 @@ void radio_media_tap_rx_audio(radio *radio_h, const int16_t *samples, size_t nsa
         shm_audio_push_rx(samples, nsamples);
     if (radio_h->enable_loop_audio)
         loop_audio_push_rx(samples, nsamples);
+    /* The hfsignals (sBitx) path taps its modem feed in sbitx_alsa.c instead;
+     * this tap also sees its speaker audio when the bridge is enabled. */
+    if (radio_h->enable_rtp_audio && radio_h->backend_kind == RADIO_BACKEND_HAMLIB)
+        rtp_audio_push_rx(samples, nsamples, radio_h->audio_sample_rate);
 }
 
 void radio_media_tap_tx_audio(radio *radio_h, const int16_t *samples, size_t nsamples)
