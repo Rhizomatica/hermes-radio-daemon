@@ -595,8 +595,9 @@ static void tr_switch(radio *radio_h, bool txrx_state)
         // (sized for V1's ~30 ms EOO) cut the V2 frame short, so the
         // receiver missed the end of over and went on decoding noise.
         bool dv_eoo_sent = dsp_radae_tx_emit_eoo_if_dv();
+        unsigned eoo_drain_ms = 0;
         if (dv_eoo_sent)
-            dsp_radae_tx_wait_drained(500);
+            eoo_drain_ms = dsp_radae_tx_wait_drained(500);
 
         /* D-STAR: queue the end-of-transmission pattern the same way. */
         bool dstar_eot_sent = dsp_dstar_tx_emit_eot_if_active();
@@ -614,8 +615,21 @@ static void tr_switch(radio *radio_h, bool txrx_state)
             tail_ms = 10;
         if (tail_ms > 100)
             tail_ms = 100;
+        /* The RADE end-of-over frame must reach the air whole: the receiver
+         * detects it from the frame's pilot pattern, and a clipped tail
+         * made it miss the end of over. So after one, wait the codec
+         * pipeline out in full, plus a margin, rather than the 100 ms cap
+         * that bounds data latency. */
+        if (dv_eoo_sent) {
+            tail_ms = sound_tx_pipeline_ms() + 40;
+            if (tail_ms > 300)
+                tail_ms = 300;
+        }
         if (tr_switch_urgent)   /* SWR trip: stop transmitting now */
             tail_ms = 10;
+        if (dv_eoo_sent)
+            printf("RADAE TX: end of over sent (buffer drained in %u ms, then %u ms codec tail)\n",
+                   eoo_drain_ms, tail_ms);
         usleep(tail_ms * 1000);
 
         set_speaker_level(radio_h->profiles[radio_h->profile_active_idx].speaker_level);
