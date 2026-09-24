@@ -970,7 +970,7 @@ static void *hamlib_digi_thread(void *radio_h_v)
          * USB voice frequency and toggles digital_voice on. */
         if (digital_voice) {
             if (!s->radae_inited) {
-                if (radae_init(&s->radae_ctx, radio_h, RADAE_DIR)) {
+                if (radae_init(&s->radae_ctx, radio_h)) {
                     s->radae_inited = true;
                     radae_rx_start(&s->radae_ctx);
                     s->radae_rx_running = true;

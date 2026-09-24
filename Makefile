@@ -20,6 +20,7 @@ LDFLAGS = -liniparser -lhamlib -lasound -lcrypto -lssl -lfftw3f -lfftw3 \
 CFLAGS += -DMG_ENABLE_OPENSSL=1 -DMG_TLS=MG_TLS_OPENSSL
 
 include vendor/rade_c/sources.mk
+include vendor/opus_dnn/sources.mk
 include vendor/ft8_lib/sources.mk
 include vendor/minimodem/sources.mk
 
@@ -30,10 +31,11 @@ else
 	CFLAGS += -march=x86-64-v2
 endif
 
-EXTRA_CPPFLAGS = $(RADE_C_EMBED_CPPFLAGS) $(FT8_LIB_CPPFLAGS) $(MM_FSK_CPPFLAGS)
-EXTRA_CFLAGS   = $(RADE_C_EMBED_CFLAGS)   $(FT8_LIB_CFLAGS)   $(MM_FSK_CFLAGS)
+EXTRA_CPPFLAGS = $(FT8_LIB_CPPFLAGS) $(MM_FSK_CPPFLAGS)
+EXTRA_CFLAGS   = $(FT8_LIB_CFLAGS)   $(MM_FSK_CFLAGS)
 
 RADE_C_EMBED_OBJS = $(RADE_C_EMBED_SRCS:.c=.o)
+OPUS_DNN_OBJS     = $(OPUS_DNN_SRCS:.c=.o)
 FT8_LIB_OBJS      = $(FT8_LIB_SRCS:.c=.o)
 MM_FSK_OBJS       = $(MM_FSK_SRCS:.c=.o)
 
@@ -45,7 +47,7 @@ TEST_CFLAGS = -O0 -Wall -Wextra -std=gnu11 -fstack-protector \
               -I. -Ihamlib -I/usr/include/iniparser -Iinclude
 TEST_BINS = tests/backend_selection_test tests/compat_surface_test tests/controls_test \
             tests/dstar_voice_test tests/upsample2_test tests/rig_server_test \
-            tests/hamlib_ptt_test
+            tests/hamlib_ptt_test tests/radae_vocoder_test
 
 # ── daemon-level objects ────────────────────────────────────────
 DAEMON_TOP_OBJS = radio_daemon.o \
@@ -86,6 +88,7 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              sbitx/sbitx_gpio.o \
              sbitx/sbitx_i2c.o \
              dsp/sbitx_radae.o \
+             dsp/radae_vocoder.o \
              dsp/sbitx_drm.o \
              dsp/sbitx_ft8.o \
              dsp/sbitx_cw.o \
@@ -97,6 +100,7 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              sbitx/ring_buffer.o \
              $(SBITX_GPIOLIB_OBJS) \
              $(RADE_C_EMBED_OBJS) \
+             $(OPUS_DNN_OBJS) \
              $(FT8_LIB_OBJS) \
              $(MM_FSK_OBJS)
 
@@ -104,6 +108,15 @@ DAEMON_OBJS = $(DAEMON_TOP_OBJS) $(SBITX_OBJS)
 
 radio_daemon: $(DAEMON_OBJS)
 	$(CC) -o radio_daemon $(DAEMON_OBJS) $(LDFLAGS)
+
+# RADE: rade_c and the Opus DNN subset it runs on (LPCNet features, FARGAN)
+# see their own include paths and config.h only, not ft8_lib's or
+# minimodem's: some Opus header names (kiss_fft.h, common.h) exist in ft8_lib
+# too. Opus is built as Opus builds itself, -O2 without -ffast-math.
+RADE_OBJS = $(RADE_C_EMBED_OBJS) $(OPUS_DNN_OBJS) dsp/sbitx_radae.o dsp/radae_vocoder.o
+$(RADE_OBJS): EXTRA_CPPFLAGS := $(RADE_C_EMBED_CPPFLAGS) $(OPUS_DNN_CPPFLAGS)
+$(RADE_OBJS): EXTRA_CFLAGS := $(RADE_C_EMBED_CFLAGS)
+$(OPUS_DNN_OBJS): CFLAGS := $(filter-out -Ofast,$(CFLAGS)) -O2
 
 # Generic compile rule. Sbitx hw/dsp need extra include paths for csdr,
 # vendored rade_c/ft8_lib/minimodem.
@@ -130,6 +143,7 @@ compat-tests: $(TEST_BINS)
 	./tests/compat_surface_test
 	./tests/controls_test
 	./tests/dstar_voice_test
+	./tests/radae_vocoder_test
 	./tests/upsample2_test
 	./tests/rig_server_test
 	./tests/hamlib_ptt_test
@@ -149,6 +163,10 @@ tests/hamlib_ptt_test: tests/hamlib_ptt_test.c hamlib/radio_hamlib.c hamlib/rig_
                        hamlib/rig_server.h radio_controls.c radio_backend.c radio_backend.h \
                        cfg_utils.c radio.h
 	$(CC) $(TEST_CFLAGS) tests/hamlib_ptt_test.c hamlib/rig_server.c cat_server.c -o $@ -lhamlib -liniparser -lpthread -lm
+
+# Links the daemon's own objects: the Opus subset needs its per-object flags.
+tests/radae_vocoder_test: tests/radae_vocoder_test.c dsp/radae_vocoder.h dsp/radae_vocoder.o $(OPUS_DNN_OBJS)
+	$(CC) $(TEST_CFLAGS) tests/radae_vocoder_test.c dsp/radae_vocoder.o $(OPUS_DNN_OBJS) -o $@ -lm
 
 tests/controls_test: tests/controls_test.c radio_controls.c radio_controls.h \
                      radio_backend.c radio_backend.h cat_server.c cat_server.h \
