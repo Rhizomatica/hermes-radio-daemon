@@ -229,6 +229,12 @@ typedef struct {
     bool   digi_auto_tx;
     time_t digi_tx_start;
     int    digi_drain_ticks;
+    /* The message being sent (FT8/CW/RTTY), at the ring rate, fed into
+     * tx_audio_ring as it drains: the ring holds 1/3 s at 48 kHz, and
+     * pushing a whole 12.6 s FT8 message at once overwrote all but its
+     * last third of a second. */
+    float *tx_pend;
+    size_t tx_pend_len, tx_pend_pos, tx_pend_cap;
 } hamlib_digi_state;
 
 static hamlib_digi_state g_state;
@@ -249,11 +255,81 @@ static void digi_spool_log(const char *mode, const char *dir,
 
 /* ─── TX paths ───────────────────────────────────────────────── */
 
+/* Convert one whole message to the ring rate into tx_pend. The resampler
+ * starts fresh and is flushed with zeros, so a message neither begins with
+ * the previous one's tail nor loses its own end in the filter. */
+static bool tx_pend_set(hamlib_digi_state *s, resamp_state *rs, const float *audio,
+                        size_t n, uint32_t from_rate, uint32_t ring_rate)
+{
+    const float *src = audio;
+    size_t out_n = n;
+    static float zeros[4096];
+
+    if (from_rate != ring_rate) {
+        if (rs->taps_len == 0 && !resamp_init(rs, from_rate, ring_rate))
+            return false;
+        stream_resampler_reset(&rs->rs);
+        size_t need = n * ring_rate / from_rate + 4096;
+        if (need > s->tx_pend_cap) {
+            float *p = realloc(s->tx_pend, need * sizeof(float));
+            if (!p) return false;
+            s->tx_pend = p;
+            s->tx_pend_cap = need;
+        }
+        out_n = resamp_apply(rs, audio, n);
+        memcpy(s->tx_pend, rs->out, out_n * sizeof(float));
+        size_t flush = (size_t) (rs->rs.taps_len / rs->rs.interp + 2);
+        while (flush > 0) {
+            size_t k = flush < sizeof(zeros) / sizeof(zeros[0]) ? flush : sizeof(zeros) / sizeof(zeros[0]);
+            size_t m = resamp_apply(rs, zeros, k);
+            if (out_n + m > s->tx_pend_cap)
+                m = s->tx_pend_cap - out_n;
+            memcpy(s->tx_pend + out_n, rs->out, m * sizeof(float));
+            out_n += m;
+            flush -= k;
+        }
+    } else {
+        if (n > s->tx_pend_cap) {
+            float *p = realloc(s->tx_pend, n * sizeof(float));
+            if (!p) return false;
+            s->tx_pend = p;
+            s->tx_pend_cap = n;
+        }
+        memcpy(s->tx_pend, src, n * sizeof(float));
+    }
+    s->tx_pend_len = out_n;
+    s->tx_pend_pos = 0;
+    return true;
+}
+
+static bool tx_pend_busy(const hamlib_digi_state *s)
+{
+    return s->tx_pend_pos < s->tx_pend_len;
+}
+
+/* Top tx_audio_ring up from tx_pend, never past its capacity. */
+static void tx_pend_feed(hamlib_digi_state *s)
+{
+    if (!tx_pend_busy(s))
+        return;
+    audio_ring_buffer *ring = &s->radio_h->tx_audio_ring;
+    pthread_mutex_lock(&ring->mutex);
+    size_t space = ring->capacity > ring->count ? ring->capacity - ring->count : 0;
+    pthread_mutex_unlock(&ring->mutex);
+    size_t n = s->tx_pend_len - s->tx_pend_pos;
+    if (n > space)
+        n = space;
+    if (n) {
+        ring_push_f_gain(ring, s->tx_pend + s->tx_pend_pos, n, s->radio_h->digi_tx_gain);
+        s->tx_pend_pos += n;
+    }
+}
+
 static void do_cw_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz,
                      int wpm, int pitch)
 {
     char text[DIGI_TX_MSG_MAX];
-    if (!digi_tx_queue_pop(&s->radio_h->digi_tx, text, sizeof(text)))
+    if (tx_pend_busy(s) || !digi_tx_queue_pop(&s->radio_h->digi_tx, text, sizeof(text)))
         return;
 
     /* CW encodes at 96 kHz; bound the buffer at 8 s. */
@@ -261,31 +337,15 @@ static void do_cw_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz,
     int n96 = sbitx_cw_encode(text, cw_audio,
                               (int)(sizeof(cw_audio) / sizeof(cw_audio[0])),
                               wpm, pitch);
-    if (n96 <= 0)
+    if (n96 <= 0 || !tx_pend_set(s, &s->cw_to_ring, cw_audio, (size_t) n96, 96000, ring_rate))
         return;
-
-    if (s->cw_to_ring.taps_len == 0 && 96000 != ring_rate)
-        if (!resamp_init(&s->cw_to_ring, 96000, ring_rate))
-            return;
-
-    size_t out_n;
-    const float *ring_audio;
-    if (96000 == ring_rate) {
-        ring_audio = cw_audio;
-        out_n = (size_t) n96;
-    } else {
-        out_n = resamp_apply(&s->cw_to_ring, cw_audio, (size_t) n96);
-        ring_audio = s->cw_to_ring.out;
-    }
-    ring_push_f_gain(&s->radio_h->tx_audio_ring, ring_audio, out_n,
-                     s->radio_h->digi_tx_gain);
     digi_spool_log("CW", "tx", freq_hz, text);
 }
 
 static void do_ft8_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz)
 {
     char text[DIGI_TX_MSG_MAX];
-    if (!digi_tx_queue_pop(&s->radio_h->digi_tx, text, sizeof(text)))
+    if (tx_pend_busy(s) || !digi_tx_queue_pop(&s->radio_h->digi_tx, text, sizeof(text)))
         return;
 
     /* 16 s at 12 kHz is plenty for one FT8 slot. */
@@ -293,24 +353,12 @@ static void do_ft8_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz
     int n12 = sbitx_ft8_encode(text, ft8_audio,
                                (int)(sizeof(ft8_audio) / sizeof(ft8_audio[0])),
                                1500.0f);
-    if (n12 <= 0)
+    if (n12 <= 0) {
+        fprintf(stderr, "FT8 tx: cannot encode \"%s\"\n", text);
         return;
-
-    if (s->ft8_to_ring.taps_len == 0 && 12000 != ring_rate)
-        if (!resamp_init(&s->ft8_to_ring, 12000, ring_rate))
-            return;
-
-    size_t out_n;
-    const float *ring_audio;
-    if (12000 == ring_rate) {
-        ring_audio = ft8_audio;
-        out_n = (size_t) n12;
-    } else {
-        out_n = resamp_apply(&s->ft8_to_ring, ft8_audio, (size_t) n12);
-        ring_audio = s->ft8_to_ring.out;
     }
-    ring_push_f_gain(&s->radio_h->tx_audio_ring, ring_audio, out_n,
-                     s->radio_h->digi_tx_gain);
+    if (!tx_pend_set(s, &s->ft8_to_ring, ft8_audio, (size_t) n12, 12000, ring_rate))
+        return;
     digi_spool_log("FT8", "tx", freq_hz, text);
 }
 
@@ -318,7 +366,7 @@ static void do_rtty_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_h
                        int baud, int mark, int shift)
 {
     char text[DIGI_TX_MSG_MAX];
-    if (!digi_tx_queue_pop(&s->radio_h->digi_tx, text, sizeof(text)))
+    if (tx_pend_busy(s) || !digi_tx_queue_pop(&s->radio_h->digi_tx, text, sizeof(text)))
         return;
 
     /* RTTY encodes at 96 kHz; bound at 8 s. */
@@ -326,30 +374,14 @@ static void do_rtty_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_h
     int n96 = sbitx_rtty_encode(text, rtty_audio,
                                 (int)(sizeof(rtty_audio) / sizeof(rtty_audio[0])),
                                 baud, mark, shift);
-    if (n96 <= 0)
+    if (n96 <= 0 || !tx_pend_set(s, &s->rtty_to_ring, rtty_audio, (size_t) n96, 96000, ring_rate))
         return;
-
-    if (s->rtty_to_ring.taps_len == 0 && 96000 != ring_rate)
-        if (!resamp_init(&s->rtty_to_ring, 96000, ring_rate))
-            return;
-
-    size_t out_n;
-    const float *ring_audio;
-    if (96000 == ring_rate) {
-        ring_audio = rtty_audio;
-        out_n = (size_t) n96;
-    } else {
-        out_n = resamp_apply(&s->rtty_to_ring, rtty_audio, (size_t) n96);
-        ring_audio = s->rtty_to_ring.out;
-    }
-    ring_push_f_gain(&s->radio_h->tx_audio_ring, ring_audio, out_n,
-                     s->radio_h->digi_tx_gain);
     digi_spool_log("RTTY", "tx", freq_hz, text);
 }
 
 /* ─── RX paths ───────────────────────────────────────────────── */
 
-/* Pull one period from rx_audio_ring at ring_rate, downsample to 12 kHz
+/* Pull one period from rx_digi_ring at ring_rate, downsample to 12 kHz
  * floats into *out (caller-supplied), return count. */
 static size_t pull_rx_12k(hamlib_digi_state *s, uint32_t ring_rate,
                           size_t period_frames, float *out12k, size_t out_cap)
@@ -358,7 +390,7 @@ static size_t pull_rx_12k(hamlib_digi_state *s, uint32_t ring_rate,
     size_t want = period_frames;
     if (want > sizeof(pull)/sizeof(pull[0])) want = sizeof(pull)/sizeof(pull[0]);
 
-    size_t got = ring_pop_i16(&s->radio_h->rx_audio_ring, pull, want);
+    size_t got = ring_pop_i16(&s->radio_h->rx_digi_ring, pull, want);
     if (got == 0)
         return 0;
 
@@ -744,7 +776,7 @@ static void do_dstar_rx(hamlib_digi_state *s, uint32_t ring_rate)
     static int16_t pull_i16[4096];
     size_t want = ring_rate / 50;   /* 20 ms */
     if (want > sizeof(pull_i16)/sizeof(pull_i16[0])) want = sizeof(pull_i16)/sizeof(pull_i16[0]);
-    size_t got = ring_pop_i16(&s->radio_h->rx_audio_ring, pull_i16, want);
+    size_t got = ring_pop_i16(&s->radio_h->rx_digi_ring, pull_i16, want);
     if (!got)
         return;
 
@@ -886,7 +918,7 @@ static void do_radae_rx(hamlib_digi_state *s, uint32_t ring_rate)
     static int16_t pull_i16[4096];
     size_t want = ring_rate / 25;  /* 40 ms */
     if (want > sizeof(pull_i16)/sizeof(pull_i16[0])) want = sizeof(pull_i16)/sizeof(pull_i16[0]);
-    size_t got = ring_pop_i16(&s->radio_h->rx_audio_ring, pull_i16, want);
+    size_t got = ring_pop_i16(&s->radio_h->rx_digi_ring, pull_i16, want);
     if (!got)
         return;
 
@@ -1004,6 +1036,7 @@ static void *hamlib_digi_thread(void *radio_h_v)
                 s->digi_auto_tx = false;
                 s->digi_drain_ticks = 0;
             }
+            s->tx_pend_len = s->tx_pend_pos = 0;
             usleep(50000);
             continue;
         }
@@ -1056,9 +1089,8 @@ static void *hamlib_digi_thread(void *radio_h_v)
                 do_dstar_tx(s, ring_rate);
                 break;
             }
-            /* TX paths push a whole message worth of audio at once; idle
-             * a beat so the playback thread can drain before we check the
-             * queue again. */
+            tx_pend_feed(s);
+            /* Let the playback thread drain before topping up again. */
             usleep(20000);
 
             /* Auto-unkey our own PTT once the queue is empty and the TX ring
@@ -1069,7 +1101,7 @@ static void *hamlib_digi_thread(void *radio_h_v)
                 size_t txfill = radio_h->tx_audio_ring.count;
                 pthread_mutex_unlock(&radio_h->tx_audio_ring.mutex);
 
-                if (digi_tx_queue_pending(&radio_h->digi_tx) || txfill > 0)
+                if (digi_tx_queue_pending(&radio_h->digi_tx) || txfill > 0 || tx_pend_busy(s))
                     s->digi_drain_ticks = 0;
                 else
                     s->digi_drain_ticks++;
@@ -1085,12 +1117,16 @@ static void *hamlib_digi_thread(void *radio_h_v)
                     s->digi_auto_tx = false;
                     s->digi_drain_ticks = 0;
                     if (timed_out) {   /* flush a stuck queue so we don't re-key */
+                        s->tx_pend_len = s->tx_pend_pos = 0;
                         char junk[DIGI_TX_MSG_MAX];
                         while (digi_tx_queue_pop(&radio_h->digi_tx, junk, sizeof(junk))) {}
                     }
                 }
             }
         } else {
+            /* Unkeyed mid-message (by hand, or the timeout): drop the rest
+             * rather than start the next transmission with it. */
+            s->tx_pend_len = s->tx_pend_pos = 0;
             switch (mode) {
             case MODE_CW:
                 do_cw_rx(s, ring_rate, freq_hz, radio_h->cw_wpm, radio_h->cw_pitch);
@@ -1111,6 +1147,9 @@ static void *hamlib_digi_thread(void *radio_h_v)
     }
 
     /* Cleanup */
+    free(s->tx_pend);
+    s->tx_pend = NULL;
+    s->tx_pend_len = s->tx_pend_pos = s->tx_pend_cap = 0;
     resamp_free(&s->cw_to_ring);
     resamp_free(&s->rtty_to_ring);
     resamp_free(&s->ft8_to_ring);
