@@ -58,6 +58,8 @@ static void print_usage(const char *prog)
             "  get_bfo | set_bfo              Set requires -a <Hz>\n"
             "  get_filter_width | set_filter_width    Set requires -a <Hz>\n"
             "  digi_get_config | digi_set_config      Set requires -a <key=value>\n"
+            "  digi_send                      Queue text for TX in the active mode (FT8/CW/RTTY), -a <text>\n"
+            "  digi_messages                  Decoded/sent digi messages (-a <count>, default 20)\n"
             "  get_message | get_timeout | reset_timeout\n",
             prog, g_url);
 }
@@ -123,6 +125,26 @@ static char *build_payload(void)
                  key, value, profile);
         return json;
     }
+    if (!strcmp(g_cmd, "digi_send")) {
+        /* Free text: escape what JSON needs escaped. */
+        if (!g_arg || !*g_arg)
+            return NULL;
+        char text[256];
+        size_t k = 0;
+        for (const char *q = g_arg; *q && k + 2 < sizeof(text); q++) {
+            if (*q == '"' || *q == '\\')
+                text[k++] = '\\';
+            text[k++] = *q;
+        }
+        text[k] = '\0';
+        snprintf(json, 512, "{\"cmd\":\"digi_send\",\"text\":\"%s\"%s}", text, profile);
+        return json;
+    }
+    if (!strcmp(g_cmd, "digi_messages")) {
+        snprintf(json, 512, "{\"cmd\":\"digi_messages\",\"count\":%ld%s}",
+                 g_arg ? atol(g_arg) : 20L, profile);
+        return json;
+    }
     if (!strcmp(g_cmd, "get_message"))            SIMPLE("get_message");
     if (!strcmp(g_cmd, "get_timeout"))            SIMPLE("get_timeout");
 
@@ -141,7 +163,7 @@ static void print_response(const char *resp)
     const char *sta = strstr(resp, "\"status\":\"");
     const char *type = strstr(resp, "\"type\":\"state\"");
 
-    if (type)
+    if (type || strstr(resp, "\"cmd\":\"digi_messages\""))
         printf("%s\n", resp);
     else if (bad) {
         if (sta) {
@@ -162,7 +184,7 @@ static void print_response(const char *resp)
             sscanf(vals + 9, "%127[^\"]", s);
             printf("%s\n", s);
         } else if (valn) {
-            printf("%s\n", valn + 8);
+            printf("%.*s\n", (int) strcspn(valn + 8, ",}"), valn + 8);
         } else {
             printf("OK\n");
         }
@@ -173,7 +195,13 @@ static void print_response(const char *resp)
 
 static void on_event(struct mg_connection *c, int ev, void *ev_data)
 {
-    if (ev == MG_EV_WS_OPEN) {
+    if (ev == MG_EV_CONNECT && mg_url_is_ssl(g_url)) {
+        /* The daemon terminates wss:// with a self-signed certificate:
+         * encrypt, but do not verify. Without this the TLS handshake never
+         * started and every wss:// command closed silently. */
+        struct mg_tls_opts opts = {.skip_verification = 1};
+        mg_tls_init(c, &opts);
+    } else if (ev == MG_EV_WS_OPEN) {
         char *payload = build_payload();
         if (!payload) {
             fprintf(stderr, "unknown command '%s' or missing/invalid argument\n", g_cmd);
@@ -185,12 +213,23 @@ static void on_event(struct mg_connection *c, int ev, void *ev_data)
         free(payload);
     } else if (ev == MG_EV_WS_MSG) {
         struct mg_ws_message *wm = (struct mg_ws_message *) ev_data;
-        char buf[4096];
+        if ((wm->flags & 0x0F) == WEBSOCKET_OP_BINARY)
+            return; /* audio/spectrum stream frames, not our reply */
+        char buf[16384];
         size_t n = wm->data.len < sizeof(buf) - 1 ? wm->data.len : sizeof(buf) - 1;
         memcpy(buf, wm->data.buf, n);
         buf[n] = '\0';
         if (strstr(buf, "\"type\":\"hello\""))
             return; /* skip the server hello, wait for our response */
+        /* Skip unsolicited state pushes and replies to other commands. */
+        if (strstr(buf, "\"type\":\"state\"") && strcmp(g_cmd, "get_state") != 0)
+            return;
+        {
+            char want[80];
+            snprintf(want, sizeof(want), "\"cmd\":\"%s\"", g_cmd);
+            if (strstr(buf, "\"cmd\":\"") && !strstr(buf, want))
+                return;
+        }
         print_response(buf);
         g_done = 1;
         c->is_draining = 1;
@@ -200,6 +239,10 @@ static void on_event(struct mg_connection *c, int ev, void *ev_data)
         g_done = 1;
         c->is_draining = 1;
     } else if (ev == MG_EV_CLOSE) {
+        if (!g_done) {
+            fprintf(stderr, "connection closed before a response\n");
+            g_ok = 0;
+        }
         g_done = 1;
     }
 }
