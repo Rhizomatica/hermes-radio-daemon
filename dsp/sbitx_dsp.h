@@ -100,6 +100,9 @@ bool dsp_dstar_tx_emit_eot_if_active(void);
 // Wait (up to max_ms) until the queued EOT and everything ahead of it has
 // left the D-STAR modem for the DAC path; returns the ms waited.
 unsigned dsp_dstar_tx_wait_drained(unsigned max_ms);
+
+/* An FT8/CW/RTTY message is still being transmitted. */
+bool dsp_digi_tx_busy(void);
 void dsp_dstar_tx_end_over(void);
 
 // by Ashhar Farhan, from https://github.com/afarhan/sbitx/blob/main/fft_filter.c

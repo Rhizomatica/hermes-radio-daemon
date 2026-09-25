@@ -1021,28 +1021,62 @@ void dsp_dstar_tx_end_over(void)
     dstar_tx_eot_latched = false;
 }
 
+/* True while an FT8/CW/RTTY message is still being clocked out (updated
+ * every TX block); the sBitx control loop keys and unkeys around it. */
+static _Atomic bool digi_tx_sending = false;
+
+bool dsp_digi_tx_busy(void)
+{
+    return digi_tx_sending;
+}
+
 static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, int freq_khz)
 {
-    static float                   *rs_taps12 = NULL;
-    static int                      rs_taps12_len = 0;
-    static rational_resampler_ff_t  rs12 = {0, 0, 0};
-    static float                    out12[2048];
+    static float *dec_taps = NULL;
+    static int    dec_taps_len = 0;
+    static float *dec_hist = NULL;          /* last dec_taps_len - 1 inputs */
+    static int    dec_phase = 0;            /* input index of the next output */
+    static float  xext[2048 + 256];
+    static float  out12[2048];
 
     if (mode != MODE_FT8 && mode != MODE_CW && mode != MODE_RTTY)
         return;
 
-    if (!rs_taps12) {
-        rs_taps12_len = firdes_filter_len(0.05f);
-        rs_taps12 = malloc(rs_taps12_len * sizeof(float));
-        if (!rs_taps12) return;
-        rational_resampler_get_lowpass_f(rs_taps12, rs_taps12_len, 1, DIGI_RX_DECIM,
-                                         WINDOW_BLACKMAN);
+    /* Decimate 96 kHz -> 12 kHz with the filter history kept across blocks.
+     * csdr's rational_resampler_ff() consumes only input_processed samples
+     * per call (952 of 1024 here) and this code passed each block alone, so
+     * 7% of the audio vanished every 10.7 ms: FT8 never decoded, and CW and
+     * RTTY timing jumped ~94 times a second. Every input sample is used, and
+     * each 1024-sample block gives exactly 128 outputs. */
+    if (!dec_taps) {
+        dec_taps_len = firdes_filter_len(0.05f);
+        dec_taps = malloc((size_t) dec_taps_len * sizeof(float));
+        dec_hist = calloc((size_t) dec_taps_len, sizeof(float));
+        if (!dec_taps || !dec_hist) {
+            free(dec_taps);
+            free(dec_hist);
+            dec_taps = dec_hist = NULL;
+            return;
+        }
+        rational_resampler_get_lowpass_f(dec_taps, dec_taps_len, 1, DIGI_RX_DECIM,
+                                         WINDOW_BLACKMAN);    /* unity DC gain */
     }
+    const int T = dec_taps_len;
+    if (n96 <= 0 || n96 + T > (int) (sizeof(xext) / sizeof(xext[0])))
+        return;
 
-    rs12 = rational_resampler_ff((float *) audio96k, out12, n96,
-                                 1, DIGI_RX_DECIM, rs_taps12, rs_taps12_len,
-                                 rs12.last_taps_delay);
-    int n12 = rs12.output_size;
+    memcpy(xext, dec_hist, (size_t) (T - 1) * sizeof(float));
+    memcpy(xext + (T - 1), audio96k, (size_t) n96 * sizeof(float));
+    int n12 = 0;
+    for (; dec_phase < n96 && n12 < (int) (sizeof(out12) / sizeof(out12[0])); dec_phase += DIGI_RX_DECIM) {
+        const float *w = xext + dec_phase;      /* ends at input dec_phase */
+        float acc = 0.0f;
+        for (int k = 0; k < T; k++)
+            acc += w[k] * dec_taps[k];
+        out12[n12++] = acc;
+    }
+    dec_phase -= n96;
+    memcpy(dec_hist, xext + n96, (size_t) (T - 1) * sizeof(float));
     if (n12 <= 0)
         return;
 
@@ -1095,8 +1129,18 @@ static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, in
         if (slotn >= slot_samples) {
             char decoded[1024] = {0};
             sbitx_ft8_decode(slot, slot_samples, decoded, sizeof(decoded));
-            if (decoded[0])
+            /* Windows overlap by 13 s, so one transmission can decode in
+             * two of them: log the same text once per 15 s. */
+            static char     last_decoded[1024];
+            static uint64_t last_decoded_at = 0;          /* in 2 s steps */
+            static uint64_t window_no = 0;
+            window_no++;
+            if (decoded[0] && (strcmp(decoded, last_decoded) != 0 ||
+                               window_no - last_decoded_at > FT8_RX_SLOT_S / 2)) {
                 digi_rx_spool("FT8", freq_khz, decoded);
+                snprintf(last_decoded, sizeof(last_decoded), "%s", decoded);
+                last_decoded_at = window_no;
+            }
             /* Slide by only 2 s. FT8 here isn't UTC-slot-aligned, so the
              * ~12.6 s burst sits at an arbitrary offset in the 15 s window;
              * a small step guarantees some window contains the full burst
@@ -2077,6 +2121,7 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             fft_in[i] = (double) tone;
             fft_m[k]  = fft_in[i];
         }
+        digi_tx_sending = cw_audio_pos < cw_audio_len;
     }
     // FT8 TX: pop messages from the digi_tx queue, encode to 12 kHz
     // GFSK audio via sbitx_ft8_encode, then upsample 8× to 96 kHz once
@@ -2180,6 +2225,7 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             fft_in[i] = (double) tone;
             fft_m[k]  = fft_in[i];
         }
+        digi_tx_sending = ft8_audio_96k_pos < ft8_audio_96k_len;
     }
     // RTTY TX: FSK modulator. Pulls one message at a time from the
     // websocket digi_tx_queue (filled by `digi_send`); emits silence
@@ -2244,6 +2290,7 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             fft_in[i] = (double) tone;
             fft_m[k]  = fft_in[i];
         }
+        digi_tx_sending = rtty_audio_pos < rtty_audio_len;
     }
     // D-STAR TX: mic 96k -> 8k -> AMBE -> GMSK 24k -> 96k -> FM modulator
     else if (tx_mode == MODE_DSTAR)
