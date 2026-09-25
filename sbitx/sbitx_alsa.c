@@ -183,17 +183,17 @@ static bool read_mic_inject(uint8_t *buffer, uint32_t size)
 
 /* Optional test hooks. While the trigger file exists, the matching 96 kHz
  * mono S32_LE buffer is appended to the dump file; removing the trigger
- * closes it. The trigger is checked about every 250 ms (24 blocks).
+ * closes it. Each hook checks its trigger about every 250 ms (24 of its
+ * own blocks: one counter per hook -- a shared one advanced twice a block,
+ * so only one of the two hooks ever reached a check).
  *   /tmp/sbitx_rx_speaker_dump -> the speaker buffer, receiving only
  *   /tmp/sbitx_mic_dump        -> the raw mic buffer, always (the mic is
  *                                 read while receiving too, so no need to
  *                                 key to record an idle mic) */
-static void dump_hook(FILE **fp, const char *trigger, const char *path, const char *name,
-                      const uint8_t *buffer, uint32_t size)
+static void dump_hook(FILE **fp, unsigned *tick, const char *trigger, const char *path,
+                      const char *name, const uint8_t *buffer, uint32_t size)
 {
-    static _Thread_local unsigned tick;
-
-    if ((tick++ % 24) == 0)
+    if (((*tick)++ % 24) == 0)
     {
         bool on = access(trigger, F_OK) == 0;
         if (on && !*fp)
@@ -217,14 +217,16 @@ static void dump_hook(FILE **fp, const char *trigger, const char *path, const ch
 
 static void maybe_dump_rx_speaker(const uint8_t *buffer, uint32_t size, bool active_rx)
 {
+    static unsigned tick;
     if (active_rx)
-        dump_hook(&rx_speaker_dump_fp, RX_SPEAKER_DUMP_TRIGGER, RX_SPEAKER_DUMP_PATH,
+        dump_hook(&rx_speaker_dump_fp, &tick, RX_SPEAKER_DUMP_TRIGGER, RX_SPEAKER_DUMP_PATH,
                   "RX speaker", buffer, size);
 }
 
 static void maybe_dump_mic(const uint8_t *buffer, uint32_t size)
 {
-    dump_hook(&mic_dump_fp, MIC_DUMP_TRIGGER, MIC_DUMP_PATH, "Mic", buffer, size);
+    static unsigned tick;
+    dump_hook(&mic_dump_fp, &tick, MIC_DUMP_TRIGGER, MIC_DUMP_PATH, "Mic", buffer, size);
 }
 
 void show_alsa(snd_pcm_t *handle, snd_pcm_hw_params_t *params)

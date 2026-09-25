@@ -179,6 +179,24 @@ static float tx_float_out[1024];
 static upsample2 loop_up;
 static bool loop_up_ready = false;
 
+/* Test dump hooks: the dump runs while the trigger file exists and closes
+ * as soon as it is removed. Returns the (possibly new or closed) file.
+ * Hooks that only ever opened wrote until radiod restarted. */
+static FILE *dump_follow_trigger(FILE *fp, const char *trigger, const char *path, const char *name)
+{
+    bool want = access(trigger, F_OK) == 0;
+    if (fp == NULL && want) {
+        fp = fopen(path, "wb");
+        if (fp)
+            fprintf(stderr, "%s dump: writing %s\n", name, path);
+    } else if (fp != NULL && !want) {
+        fclose(fp);
+        fp = NULL;
+        fprintf(stderr, "%s dump closed\n", name);
+    }
+    return fp;
+}
+
 static void maybe_dump_tx_modem_iq(const float *iq_samples, int n_complex_samples)
 {
     static FILE *dump_fp = NULL;
@@ -186,12 +204,8 @@ static void maybe_dump_tx_modem_iq(const float *iq_samples, int n_complex_sample
     if (!iq_samples || n_complex_samples <= 0)
         return;
 
-    if (!dump_fp && access("/tmp/radae_tx_dump", F_OK) == 0) {
-        dump_fp = fopen("/tmp/tx_clip.cf32", "wb");
-        if (dump_fp)
-            fprintf(stderr, "RADAE TX dump: writing /tmp/tx_clip.cf32 (complex)\n");
-    }
-
+    dump_fp = dump_follow_trigger(dump_fp, "/tmp/radae_tx_dump", "/tmp/tx_clip.cf32",
+                                  "RADAE TX (complex)");
     if (!dump_fp)
         return;
 
@@ -300,17 +314,14 @@ static void dsp_process_digital_voice_rx(double *rx_baseband_i, double *rx_baseb
     }
 
     // Optional raw 8 kHz complex float32 dump (interleaved I,Q) that feeds the
-    // RADAE RX. Enabled by touching /tmp/radae_rx_dump (file's presence is
-    // checked once per call). Lets us capture a live over-the-air signal
+    // RADAE RX. Runs while /tmp/radae_rx_dump exists (checked once per
+    // call; removing it closes the dump). Lets us capture a live over-the-air signal
     // and offline-decode it with radae_rxe2.py to separate a pipeline
     // issue from a sync/SNR issue.
     {
         static FILE *dump_fp = NULL;
-        if (!dump_fp && access("/tmp/radae_rx_dump", F_OK) == 0) {
-            dump_fp = fopen("/tmp/radae_rx_dump.cf32", "wb");
-            if (dump_fp)
-                fprintf(stderr, "RADAE RX dump: writing /tmp/radae_rx_dump.cf32 (complex)\n");
-        }
+        dump_fp = dump_follow_trigger(dump_fp, "/tmp/radae_rx_dump", "/tmp/radae_rx_dump.cf32",
+                                      "RADAE RX (complex)");
         if (dump_fp) {
             // Write interleaved complex samples for offline analysis
             for (int i = 0; i < modem_len; i++) {
@@ -1371,10 +1382,7 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
 
         {
             static FILE *iqdbgf = NULL;
-            if (iqdbgf == NULL && access("/tmp/dstar_iq_dump", F_OK) == 0) {
-                iqdbgf = fopen("/tmp/dstar_iq.s16", "wb");
-                fprintf(stderr, "DSTAR IQ dump active\n");
-            }
+            iqdbgf = dump_follow_trigger(iqdbgf, "/tmp/dstar_iq_dump", "/tmp/dstar_iq.s16", "DSTAR IQ");
             if (iqdbgf != NULL) {
                 for (int k = 0; k < MAX_BINS / 2; k++) {
                     short sv;
@@ -1415,10 +1423,7 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
 
         {
             static FILE *dbgf = NULL;
-            if (dbgf == NULL && access("/tmp/dstar_fm_dump", F_OK) == 0) {
-                dbgf = fopen("/tmp/dstar_fm.s16", "wb");
-                fprintf(stderr, "DSTAR fm demod dump active\n");
-            }
+            dbgf = dump_follow_trigger(dbgf, "/tmp/dstar_fm_dump", "/tmp/dstar_fm.s16", "DSTAR fm demod");
             if (dbgf != NULL) {
                 for (int k = 0; k < MAX_BINS / 2; k++) {
                     float v = fm_audio_buf[k] * 10.0f;
