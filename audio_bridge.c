@@ -123,53 +123,71 @@ void audio_bridge_shutdown(audio_bridge *b)
     free(b->scratch_f_in);
     free(b->scratch_f_out);
     free(b->scratch_i16);
+    free(b->pend_up);
+    free(b->pend_down);
     memset(b, 0, sizeof(*b));
 }
 
-/* Resample n_in samples (native_rate, int16) up to dsp_rate; write into the
- * bridge scratch_i16, return count. Caller pushes from scratch_i16. */
-static size_t resample_up(audio_bridge *b, const int16_t *samples, size_t n_in)
+/* One rational resampling step. csdr's rational_resampler_ff consumes only
+ * state->input_processed of its input (it needs the filter's look-ahead), so
+ * the unconsumed tail is kept in *pend and leads the next call. Dropping it,
+ * as this code used to, lost samples on every block (16% at 48k -> 8k) and
+ * left a discontinuity at each block boundary: the output no longer
+ * resembled the input at all. Writes int16 into scratch_i16; returns count. */
+static size_t resample_step(audio_bridge *b, const int16_t *samples, size_t n_in,
+                            int interp, int decim, float *taps, int taps_len,
+                            rational_resampler_ff_t *state,
+                            float **pend, size_t *pend_len, size_t *pend_cap)
 {
-    size_t n_out_cap = (size_t)((double) n_in *
-                                (double) b->interp_up / (double) b->decim_up) + 32;
-    if (!grow_scratch(b, n_in, n_out_cap))
+    size_t n_all = *pend_len + n_in;
+    size_t n_out_cap = (size_t)((double) n_all * (double) interp / (double) decim) + 32;
+    if (!grow_scratch(b, n_all, n_out_cap))
         return 0;
 
-    i16_to_f(samples, b->scratch_f_in, n_in);
+    if (*pend_len)
+        memcpy(b->scratch_f_in, *pend, *pend_len * sizeof(float));
+    i16_to_f(samples, b->scratch_f_in + *pend_len, n_in);
 
-    b->state_up = rational_resampler_ff(b->scratch_f_in, b->scratch_f_out,
-                                        (int) n_in,
-                                        b->interp_up, b->decim_up,
-                                        b->taps_up, b->taps_up_len,
-                                        b->state_up.last_taps_delay);
-    int n_out = b->state_up.output_size;
+    *state = rational_resampler_ff(b->scratch_f_in, b->scratch_f_out, (int) n_all,
+                                   interp, decim, taps, taps_len, state->last_taps_delay);
+
+    size_t used = state->input_processed > 0 ? (size_t) state->input_processed : 0;
+    if (used > n_all)
+        used = n_all;
+    size_t left = n_all - used;
+    if (left > *pend_cap) {
+        float *p = realloc(*pend, left * sizeof(float));
+        if (!p) {
+            *pend_len = 0;
+            return 0;
+        }
+        *pend = p;
+        *pend_cap = left;
+    }
+    memmove(*pend, b->scratch_f_in + used, left * sizeof(float));
+    *pend_len = left;
+
+    int n_out = state->output_size;
     if (n_out <= 0)
         return 0;
     f_to_i16(b->scratch_f_out, b->scratch_i16, (size_t) n_out);
     return (size_t) n_out;
 }
 
-/* Resample n_in samples (dsp_rate, int16) down to native_rate; write into
- * the bridge scratch_i16, return count. Caller consumes from scratch_i16. */
+/* native_rate -> dsp_rate */
+static size_t resample_up(audio_bridge *b, const int16_t *samples, size_t n_in)
+{
+    return resample_step(b, samples, n_in, b->interp_up, b->decim_up,
+                         b->taps_up, b->taps_up_len, &b->state_up,
+                         &b->pend_up, &b->pend_up_len, &b->pend_up_cap);
+}
+
+/* dsp_rate -> native_rate */
 static size_t resample_down(audio_bridge *b, const int16_t *samples, size_t n_in)
 {
-    size_t n_out_cap = (size_t)((double) n_in *
-                                (double) b->interp_down / (double) b->decim_down) + 32;
-    if (!grow_scratch(b, n_in, n_out_cap))
-        return 0;
-
-    i16_to_f(samples, b->scratch_f_in, n_in);
-
-    b->state_down = rational_resampler_ff(b->scratch_f_in, b->scratch_f_out,
-                                          (int) n_in,
-                                          b->interp_down, b->decim_down,
-                                          b->taps_down, b->taps_down_len,
-                                          b->state_down.last_taps_delay);
-    int n_out = b->state_down.output_size;
-    if (n_out <= 0)
-        return 0;
-    f_to_i16(b->scratch_f_out, b->scratch_i16, (size_t) n_out);
-    return (size_t) n_out;
+    return resample_step(b, samples, n_in, b->interp_down, b->decim_down,
+                         b->taps_down, b->taps_down_len, &b->state_down,
+                         &b->pend_down, &b->pend_down_len, &b->pend_down_cap);
 }
 
 void audio_bridge_push_rx_native(audio_bridge *b, radio *radio_h,

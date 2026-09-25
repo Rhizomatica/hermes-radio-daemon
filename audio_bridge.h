@@ -35,6 +35,11 @@ typedef struct {
     float *taps_up;
     int   taps_up_len;
     rational_resampler_ff_t state_up;
+    /* Input the resampler has not consumed yet (its filter look-ahead):
+     * rational_resampler_ff processes only input_processed samples per call
+     * and the rest must lead the next call's input. */
+    float *pend_up;
+    size_t pend_up_len, pend_up_cap;
 
     /* Rational down (dsp -> native). */
     int   interp_down;
@@ -42,6 +47,8 @@ typedef struct {
     float *taps_down;
     int   taps_down_len;
     rational_resampler_ff_t state_down;
+    float *pend_down;
+    size_t pend_down_len, pend_down_cap;
 
     /* Scratch buffers (grown on demand). */
     float   *scratch_f_in;
