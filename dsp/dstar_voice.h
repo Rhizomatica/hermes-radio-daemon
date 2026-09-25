@@ -15,7 +15,17 @@
  *   bit 0 of the header marks the over as encrypted.
  * - Each over draws a random 48-bit nonce R. Frame n of the over (n =
  *   superframe * 21 + slot) uses keystream block n of nonce R.
- * - For late entry and resync, every superframe carries a 9-byte sync
+ * - The DV header carries R (bytes 3..8) and a keyed 64-bit check (bytes
+ *   9..16) in its repeater fields (HF simplex does not use them), where the
+ *   header's
+ *   convolutional FEC and CRC protect them. A receiver that decodes the
+ *   header -- the burst at the start of the over, or its repetition in slow
+ *   data, which is bit-voted and CRC-checked -- knows R with certainty: at
+ *   the start of an over it decrypts from the first voice frame, and a
+ *   check that does not match is a wrong key for sure (the CRC rules out
+ *   corruption), so the over is muted.
+ * - For late entry (joining after the header) and resync, every superframe
+ *   carries a 9-byte sync
  *   block in slow data -- R[6], the 16-bit superframe counter, and a keyed
  *   8-bit check -- in the spare bytes of slow-data unit 8 (after the last
  *   header byte) and in unit 9, marked with slow-data type 0xE5.
@@ -124,6 +134,10 @@ typedef struct {
     uint16_t last_sf;
     uint32_t last_local;
     bool     bad_key;       /* evidence of a wrong key seen, and no lock since */
+    bool     hdr_bad;       /* a CRC-valid header proved the key wrong: no lock */
+    bool     hdr_r_valid;   /* R known from a CRC-valid header (key verified) */
+    uint8_t  hdr_r[VOICE_NONCE_RAND_BYTES];
+    uint32_t frames;        /* frames since the reset (0: nothing heard yet) */
     int16_t  cusum;         /* locked: accumulated wrong-key evidence (x0.1 nats) */
     /* The last blocks' check bytes and our superframe count at each, so
      * they can all be re-scored as the vote of R converges. */

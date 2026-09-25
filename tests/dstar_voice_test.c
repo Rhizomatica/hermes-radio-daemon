@@ -148,12 +148,11 @@ static void test_encrypted(void)
     double frac = (double) diff / (NFRAMES * (DSTAR_VOICE_AMBE_BITS - 1));
     CHECK(frac > 0.45 && frac < 0.55, "ciphertext differs in %.1f%% of bits, want ~50%%", 100 * frac);
 
-    /* From the start of the over: the header mutes until superframe 1's
-     * sync block (slot 20) confirms superframe 0's, then every frame
-     * decrypts exactly. */
+    /* From the start of the over: the header carries R under its FEC and
+     * CRC, so every frame decrypts from the first one. */
     rx_result r = receive(0, true, -1);
-    CHECK(r.first_match == 41, "decrypt starts at frame %d, want 41", r.first_match);
-    CHECK(r.muted == 41 && r.played == NFRAMES - 41 && r.match == r.played,
+    CHECK(r.first_match == 0, "decrypt starts at frame %d, want 0", r.first_match);
+    CHECK(r.muted == 0 && r.played == NFRAMES && r.match == NFRAMES,
           "start of over: muted %d played %d match %d", r.muted, r.played, r.match);
     CHECK(r.status == DSTAR_VC_DECRYPTING, "status %d, want decrypting", r.status);
 
@@ -167,8 +166,18 @@ static void test_encrypted(void)
 
     /* A missed data sync (fc runs to 41) keeps the frame count right. */
     r = receive(0, true, 4);
-    CHECK(r.match == r.played && r.played == NFRAMES - 41,
+    CHECK(r.match == r.played && r.played == NFRAMES,
           "missed data sync: played %d match %d", r.played, r.match);
+
+    /* A header that fails its CRC is not trusted: the sync blocks lock as
+     * before (superframe 1's block confirms superframe 0's). */
+    uint8_t saved = wire_hdr[20];
+    wire_hdr[20] ^= 0x10;                      /* a callsign bit: CRC fails */
+    r = receive(0, true, -1);
+    wire_hdr[20] = saved;
+    CHECK(r.first_match == 41 && r.match == r.played,
+          "corrupt header: decrypt starts at %d (want 41), played %d match %d",
+          r.first_match, r.played, r.match);
 
     /* A second over draws a new nonce: same speech, different ciphertext. */
     uint8_t first[SBITX_DSTAR_FRAME_BYTES];
@@ -257,11 +266,11 @@ static void test_key_lost_mid_over(void)
             voice_crypto_set_key(KEY_B);
         char ambe_d[DSTAR_VOICE_AMBE_BITS];
         bool play = dstar_voice_rx_frame(&rx, wire[f], fc, ambe_d, NULL);
-        if (play && f >= 9 * DSTAR_VOICE_SF_FRAMES)
+        if (play && f >= 10 * DSTAR_VOICE_SF_FRAMES)
             played_after++;
         fc++;
     }
-    CHECK(played_after == 0, "key lost mid-over: still playing %d frames 5 superframes later",
+    CHECK(played_after == 0, "key lost mid-over: still playing %d frames 6 superframes later",
           played_after);
     CHECK(rx.status == DSTAR_VC_BAD_KEY, "key lost mid-over: status %d, want key mismatch",
           rx.status);
@@ -272,9 +281,12 @@ static void test_corrupt_sync(void)
     voice_crypto_set_key(KEY_A);
     transmit(true);
     wire[19][10] ^= 0x04;   /* one bit of superframe 0's sync block */
+    /* With the header, the sync blocks do not matter at the start. */
     rx_result r = receive(0, true, -1);
-    CHECK(r.first_match == 2 * 21 + 20, "corrupt sync: decrypt starts at %d, want 62", r.first_match);
-    CHECK(r.match == r.played, "corrupt sync: played %d match %d", r.played, r.match);
+    CHECK(r.first_match == 0 && r.match == NFRAMES, "corrupt sync, header: starts at %d match %d",
+          r.first_match, r.match);
+    /* Joined mid-over (superframe 0 is before the join, so its corrupt
+     * block is not seen): superframes 1 and 2 confirm each other. */
 }
 
 /* Slow data has no FEC. At a few percent bit errors most 72-bit sync
@@ -315,6 +327,44 @@ static void test_bit_errors(void)
             CHECK(worst <= 6 * DSTAR_VOICE_SF_FRAMES, "BER %.0f%%: locked as late as frame %d",
                   100 * ber[k], worst);
     }
+}
+
+/* Joining mid-over: the slow-data repetition of the header (bit-voted and
+ * CRC-checked by the modem) gives R and proves the key; the next sync block
+ * whose check passes on its own counter gives the counter. */
+static void test_late_header(void)
+{
+    voice_crypto_set_key(KEY_A);
+    transmit(true);
+    dstar_voice_rx rx;
+    dstar_voice_rx_reset(&rx);
+    int first = -1, played = 0, match = 0;
+    uint16_t fc = 0;
+    for (int f = 3 * 21; f < NFRAMES; f++) {
+        if (f % 21 == 0 && f != 3 * 21)
+            fc = 0;
+        if (f == 3 * 21 + 10)
+            dstar_voice_rx_header(&rx, wire_hdr);     /* the slow-data copy arrives */
+        char ambe_d[DSTAR_VOICE_AMBE_BITS];
+        if (dstar_voice_rx_frame(&rx, wire[f], fc, ambe_d, NULL) && f > 3 * 21 + 10) {
+            played++;
+            if (same_voice(ambe_d, plain[f])) {
+                match++;
+                if (first < 0)
+                    first = f;
+            }
+        }
+        fc++;
+    }
+    CHECK(first == 3 * 21 + 20, "late header: decrypt starts at %d, want %d", first, 3 * 21 + 20);
+    CHECK(match == played && rx.status == DSTAR_VC_DECRYPTING,
+          "late header: played %d match %d status %d", played, match, rx.status);
+
+    /* ...and with the wrong key the header proves it at once: nothing plays. */
+    voice_crypto_set_key(KEY_B);
+    rx_result r = receive(0, true, -1);
+    CHECK(r.played == 0 && r.status == DSTAR_VC_BAD_KEY, "wrong key, header: played %d status %d",
+          r.played, r.status);
 }
 
 static void test_fail_closed(void)
@@ -410,8 +460,10 @@ static void test_modem_e2e(void)
     printf("modem e2e: %d frames delivered, %d played, %d exact, status %d\n",
            e2e_frames, e2e_played, e2e_match, e2e_rx.status);
     CHECK(e2e_frames == NFRAMES, "modem delivered %d of %d frames", e2e_frames, NFRAMES);
-    CHECK(e2e_match == NFRAMES - 41 && e2e_played == e2e_match,
-          "modem e2e: played %d exact %d, want %d", e2e_played, e2e_match, NFRAMES - 41);
+    /* The header comes through the real modulator and demodulator (FEC,
+     * CRC), so decryption starts with the first voice frame. */
+    CHECK(e2e_match == NFRAMES && e2e_played == e2e_match,
+          "modem e2e: played %d exact %d, want %d", e2e_played, e2e_match, NFRAMES);
     sbitx_dstar_tx_free(mod);
     sbitx_dstar_rx_free(e2e_demod);
 }
@@ -451,6 +503,7 @@ int main(void)
     test_wrong_key_false_check();
     test_bit_errors();
     test_tx_eot_drains();
+    test_late_header();
     test_key_lost_mid_over();
     test_corrupt_sync();
     test_fail_closed();

@@ -38,11 +38,12 @@ static const uint8_t NULL_AMBE[9] = {0x9EU, 0x8DU, 0x32U, 0x88U, 0x26U, 0x1AU, 0
 #define RX_LOCK_MAX_BITS 3
 /* Unlock: CUSUM of ln(P_wrong(d) / P_right(d)) for each check distance d,
  * P_wrong = Binomial(8, 0.5), P_right = Binomial(8, 0.04), in tenths of a
- * nat, floored at 0. A wrong key adds ~7 nats a block (unlocks in ~2), the
- * right key at 4% bit errors drifts down and crosses the threshold about
- * once in 10^5 blocks (~12 h of continuous talk). */
+ * nat, floored at 0. A wrong key adds ~7 nats a block (unlocks in ~1.4),
+ * the right key at 4% bit errors drifts down and crosses 10 nats about
+ * once in 2e4 blocks (~2.6 h of continuous talk), after which the next
+ * two exact sync blocks relock it (~0.8 s). */
 static const int16_t RX_LLR[9] = { -52, -20, 11, 43, 75, 107, 130, 140, 150 };
-#define RX_CUSUM_UNLOCK  120
+#define RX_CUSUM_UNLOCK  100
 /* A check this many bits off counts against the key. The right key at 3%
  * bit errors misses by 3+ bits in ~0.13% of blocks, a wrong key in ~85%.
  * Two such blocks among the last three unlock a locked receiver (right
@@ -75,6 +76,29 @@ static bool sync_check(const uint8_t r[VOICE_NONCE_RAND_BYTES], uint16_t sf, uin
         return false;
     *check = blk[0];
     return true;
+}
+
+/* The header carries R in bytes 3..8 and a keyed 64-bit check in 9..16
+ * (both repeater fields; HF simplex does not use them). 64 bits, so a wrong
+ * key never passes (a 16-bit check let one through once in 65536 overs). */
+#define HDR_R_OFF     3
+#define HDR_CHK_OFF   9
+#define HDR_CHK_BYTES 8
+
+static bool hdr_check(const uint8_t r[VOICE_NONCE_RAND_BYTES], uint8_t chk[HDR_CHK_BYTES])
+{
+    uint8_t blk[VOICE_BLOCK_BYTES];
+    if (!voice_crypto_block(VOICE_DOMAIN_HDRCHECK, r, 0, blk))
+        return false;
+    memcpy(chk, blk, HDR_CHK_BYTES);
+    return true;
+}
+
+static bool hdr_crc_ok(const uint8_t h[SBITX_DSTAR_HEADER_BYTES])
+{
+    uint16_t crc = sbitx_dstar_crc16(h, SBITX_DSTAR_HEADER_BYTES - 2U);
+    return h[SBITX_DSTAR_HEADER_BYTES - 2U] == (uint8_t) (crc & 0xFFU) &&
+           h[SBITX_DSTAR_HEADER_BYTES - 1U] == (uint8_t) (crc >> 8);
 }
 
 /* ── TX ─────────────────────────────────────────────────────────── */
@@ -110,6 +134,13 @@ void dstar_voice_tx_begin(dstar_voice_tx *t, const char *mycall8, const char *ur
     memcpy(t->header + 19, urcall8, 8);
     memcpy(t->header + 27, mycall8, 8);
     t->header[35] = 'A';
+    if (t->encrypt) {
+        /* R and its keyed check in the first repeater field, under the
+         * header's FEC and CRC. */
+        memcpy(t->header + HDR_R_OFF, t->r, VOICE_NONCE_RAND_BYTES);
+        if (!hdr_check(t->r, t->header + HDR_CHK_OFF))
+            t->fail_closed = true;
+    }
     sbitx_dstar_header_finalize(t->header);
 
     if (t->encrypt)
@@ -232,7 +263,43 @@ void dstar_voice_rx_header(dstar_voice_rx *r, const uint8_t header[SBITX_DSTAR_H
     if (!r->hdr_enc) {
         r->synced = false;
         r->enc_seen = false;
+        r->hdr_bad = false;
+        r->hdr_r_valid = false;
         rx_forget_votes(r);
+        return;
+    }
+
+    /* An encrypted header whose CRC checks gives R with certainty. */
+    uint8_t want[HDR_CHK_BYTES];
+    if (!hdr_crc_ok(header) || !hdr_check(header + HDR_R_OFF, want))
+        return;                          /* corrupt, or no key: the status says so */
+    if (memcmp(header + HDR_CHK_OFF, want, HDR_CHK_BYTES) != 0) {
+        /* Not corruption (the CRC checked): the key is wrong. */
+        r->hdr_bad = true;
+        r->bad_key = true;
+        r->synced = false;
+        r->hdr_r_valid = false;
+        return;
+    }
+    r->hdr_bad = false;
+    r->bad_key = false;
+    if (r->synced && memcmp(r->r, header + HDR_R_OFF, VOICE_NONCE_RAND_BYTES) == 0)
+        return;                          /* the header repeating our own over */
+    if (r->frames == 0) {
+        /* The start of the over: decrypt from the first voice frame. The
+         * counter is bumped to 0 when that frame (fc 0) arrives. */
+        memcpy(r->r, header + HDR_R_OFF, VOICE_NONCE_RAND_BYTES);
+        r->sf = UINT32_MAX;
+        r->synced = true;
+        r->cusum = 0;
+        r->dist_n = 0;
+        r->enc_seen = true;
+    } else {
+        /* Mid-over (the slow-data repetition): R is known and the key is
+         * right; the next sync block gives the counter. */
+        memcpy(r->hdr_r, header + HDR_R_OFF, VOICE_NONCE_RAND_BYTES);
+        r->hdr_r_valid = true;
+        r->synced = false;
     }
 }
 
@@ -360,6 +427,21 @@ static void rx_try_sync(dstar_voice_rx *r)
     r->last_sf = sf_blk;
     r->last_local = r->local_sf;
 
+    if (!r->synced && r->hdr_bad)
+        return;                          /* the header proved the key wrong */
+
+    if (!r->synced && r->hdr_r_valid) {
+        /* R and the key are known from the header: the block only has to
+         * give the counter. An exact check on the block's own counter
+         * (with R certain, a corrupt counter passes once in 256) locks. */
+        uint8_t c;
+        if (sync_check(r->hdr_r, sf_blk, &c) && c == sync[8]) {
+            rx_forget_votes(r);
+            rx_lock(r, r->hdr_r, sf_blk);
+        }
+        return;
+    }
+
     if (r->synced) {
         /* Judge the lock against its own R and counter. */
         uint8_t want;
@@ -444,6 +526,8 @@ bool dstar_voice_rx_frame(dstar_voice_rx *r, const uint8_t frame[SBITX_DSTAR_FRA
         r->slow_mask = 0;
     }
     r->last_fc = fc;
+    if (r->frames < UINT32_MAX)
+        r->frames++;
 
     if (fc >= SYNC_FIRST_SLOT && fc <= SYNC_LAST_SLOT) {
         for (int i = 0; i < 3; i++)
