@@ -321,7 +321,7 @@ static int rx_bad_blocks(const dstar_voice_rx *r, int last, int *n)
 static bool bad_key_evidence(dstar_voice_rx *r)
 {
     int n, bad = rx_bad_blocks(r, DSTAR_VC_DIST_HIST, &n);
-    if (n >= 2 && 2 * bad >= n)          /* a lock that went bad */
+    if (n >= DSTAR_VC_DIST_HIST && bad >= DSTAR_VC_DIST_HIST - 1)   /* a lock that went bad */
         r->bad_key = true;
     return r->bad_key;
 }
@@ -498,7 +498,9 @@ static void rx_try_sync(dstar_voice_rx *r)
         bits += d;
         bad += d >= RX_BAD_BITS;
     }
-    if (n >= 2 && 2 * bad >= n)
+    /* Only a full window: before the R vote settles, bit errors alone
+     * make blocks look bad (the right key read "bad key" on air). */
+    if (n >= DSTAR_VC_DIST_HIST && bad >= DSTAR_VC_DIST_HIST - 1)
         r->bad_key = true;               /* the status reads "bad key" */
     if (n >= DSTAR_VC_DIST_HIST && bits <= RX_LOCK_MAX_BITS)
         rx_lock(r, vr, (uint16_t) (r->local_sf + off));

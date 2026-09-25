@@ -86,6 +86,14 @@ typedef struct {
 void sbitx_dstar_rx_set_slow_debug(sbitx_dstar_rx *rx,
                                    void (*cb)(void *user, const uint8_t *hdr41, bool crc_ok));
 
+/* Diagnostic hook: every header burst collected after a frame sync, decoded
+ * or not: the 41 bytes as decoded, the CRC verdict, whether the soft Viterbi
+ * (rather than the hard fallback) produced them, and the frame-sync
+ * correlation that started the collection. */
+void sbitx_dstar_rx_set_burst_debug(sbitx_dstar_rx *rx,
+                                    void (*cb)(void *user, const uint8_t *hdr41, bool crc_ok,
+                                               bool soft, int32_t corr));
+
 void sbitx_dstar_rx_get_stats(const sbitx_dstar_rx *rx, sbitx_dstar_rx_stats *out);
 
 /* Sampling-clock error against the transmitter, in ppm, measured from the

@@ -427,6 +427,7 @@ struct sbitx_dstar_rx {
      * them -- still gets the callsigns. The stream carries no FEC, so the
      * assembled header is only trusted once its CRC16 verifies. */
     void (*slow_debug_cb)(void *user, const uint8_t *hdr41, bool crc_ok);
+    void (*burst_debug_cb)(void *user, const uint8_t *hdr41, bool crc_ok, bool soft, int32_t corr);
     uint8_t  slow_unit[6];
     uint8_t  slow_unit_n;
     uint8_t  slow_header[SBITX_DSTAR_HEADER_BYTES];
@@ -938,6 +939,7 @@ dstar_process_header(sbitx_dstar_rx *rx, float sample)
                               buffer, DSTAR_FEC_SECTION_LENGTH_SAMPLES);
 
         uint8_t header[41];
+        const uint32_t soft_before = rx->stat_header_soft_ok;
         bool ok = dstar_rx_header_soft(rx, rx->header_buffer, DSTAR_RADIO_SYMBOL_LENGTH, header);
         if (ok)
             rx->stat_header_soft_ok++;
@@ -950,6 +952,9 @@ dstar_process_header(sbitx_dstar_rx *rx, float sample)
         } else {
             rx->stat_header_bad++;
         }
+        if (rx->burst_debug_cb != NULL)
+            rx->burst_debug_cb(rx->user, header, ok, rx->stat_header_soft_ok != soft_before,
+                               rx->max_frame_corr);
         if (!ok) {
             rx->state = 0;
             rx->max_frame_corr = 0;
@@ -1224,6 +1229,15 @@ sbitx_dstar_rx_set_slow_debug(sbitx_dstar_rx *rx,
 {
     if (rx != NULL)
         rx->slow_debug_cb = cb;
+}
+
+void
+sbitx_dstar_rx_set_burst_debug(sbitx_dstar_rx *rx,
+                               void (*cb)(void *user, const uint8_t *hdr41, bool crc_ok,
+                                          bool soft, int32_t corr))
+{
+    if (rx != NULL)
+        rx->burst_debug_cb = cb;
 }
 
 void

@@ -758,12 +758,63 @@ static void dstar_rx_header_cb(void *user, const uint8_t *header)
     }
 }
 
+/* Every header burst the modem collected, decoded or not. The fields that
+ * are the same in every over from one station (flags, calls, suffix) show
+ * how many bits a failed decode got wrong. */
+static uint8_t dstar_hdr_ref[SBITX_DSTAR_HEADER_BYTES];
+static bool    dstar_hdr_ref_valid;
+
+static void dstar_rx_burst_debug_cb(void *user, const uint8_t *h, bool crc_ok, bool soft,
+                                    int32_t corr)
+{
+    (void)user;
+    if (!radio_h_dsp->dstar_verbose)
+        return;
+    char fixed[24] = "?";
+    if (dstar_hdr_ref_valid) {
+        int errs = 0;
+        for (int i = 0; i < SBITX_DSTAR_HEADER_BYTES - 2; i++)
+            if (i < 3 || i >= 19)
+                errs += __builtin_popcount((unsigned) (h[i] ^ dstar_hdr_ref[i]));
+        snprintf(fixed, sizeof(fixed), "%d", errs);
+    }
+    char hex[2 * SBITX_DSTAR_HEADER_BYTES + 1];
+    for (int i = 0; i < SBITX_DSTAR_HEADER_BYTES; i++)
+        snprintf(hex + 2 * i, 3, "%02x", h[i]);
+    fprintf(stderr, "DSTAR header burst: crc=%s via=%s frame_corr=%d fixed_field_bit_errs=%s bytes=%s\n",
+            crc_ok ? "ok" : "BAD", crc_ok ? (soft ? "soft" : "hard") : "-", (int) corr, fixed, hex);
+    if (crc_ok) {
+        memcpy(dstar_hdr_ref, h, sizeof(dstar_hdr_ref));
+        dstar_hdr_ref_valid = true;
+    }
+}
+
+/* What the header machinery did during the over that just ended. */
+static sbitx_dstar_rx_stats dstar_stats_prev;
+
+static void dstar_log_over_stats(void)
+{
+    sbitx_dstar_rx_stats st;
+    sbitx_dstar_rx_get_stats(dstar_rx, &st);
+    if (radio_h_dsp->dstar_verbose)
+        fprintf(stderr, "DSTAR over headers: bursts=%u ok=%u (soft %u) bad=%u, "
+                "locked via data sync=%u, slow-data headers=%u\n",
+                st.frame_sync - dstar_stats_prev.frame_sync,
+                st.header_ok - dstar_stats_prev.header_ok,
+                st.header_soft_ok - dstar_stats_prev.header_soft_ok,
+                st.header_bad - dstar_stats_prev.header_bad,
+                st.data_sync - dstar_stats_prev.data_sync,
+                st.header_slow - dstar_stats_prev.header_slow);
+    dstar_stats_prev = st;
+}
+
 static void dstar_rx_lost_cb(void *user)
 {
     (void)user;
     if (radio_h_dsp->dstar_verbose)
         fprintf(stderr, "DSTAR: lost sync (got %ld frames)%s\n", dstar_rx_frame_count,
                 dstar_rx_confirmed ? "" : " -- never confirmed, muted (false sync on noise)");
+    dstar_log_over_stats();
     dstar_rx_unconfirm();
     if (dstar_pcm_rb_ready)
         ring_buffer_clear(&dstar_pcm_rb);   /* drop stale audio on loss of lock */
@@ -777,6 +828,7 @@ static void dstar_rx_eot_cb(void *user)
     (void)user;
     if (radio_h_dsp->dstar_verbose)
         fprintf(stderr, "DSTAR: end of transmission (rx'd %ld frames)\n", dstar_rx_frame_count);
+    dstar_log_over_stats();
     dstar_rx_unconfirm();
     dstar_voice_rx_reset(&dstar_vrx);
     radio_h_dsp->dstar_rx_crypto = DSTAR_VC_CLEAR;
@@ -822,6 +874,7 @@ static void dsp_dstar_init(void)
         sbitx_dstar_rx_set_cbs(dstar_rx, dstar_rx_header_cb, dstar_rx_data_cb,
                                dstar_rx_lost_cb, dstar_rx_eot_cb, NULL);
         sbitx_dstar_rx_set_polarity(dstar_rx, radio_h_dsp->dstar_rx_polarity);
+        sbitx_dstar_rx_set_burst_debug(dstar_rx, dstar_rx_burst_debug_cb);
         mbe_initMbeParms(&dstar_rx_cur, &dstar_rx_prev, &dstar_rx_enh);
         memset(&dstar_rx_prevsyn, 0, sizeof(dstar_rx_prevsyn));
         dstar_rx_prevsyn.L = 15;
