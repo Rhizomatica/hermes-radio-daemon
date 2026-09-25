@@ -897,6 +897,23 @@ bool dsp_dstar_tx_emit_eot_if_active(void)
     return true;
 }
 
+/* The EOT is queued behind whatever the modem still holds -- at the start
+ * of an over the preamble and header delay the voice frames, and at
+ * exactly real time that backlog never drains -- so it reaches the air
+ * only once the modem queue and the GMSK FIFO are empty. A fixed 150 ms
+ * cut it off most of the time, and the receiver went on decoding noise
+ * until it lost sync. Returns the ms waited. */
+unsigned dsp_dstar_tx_wait_drained(unsigned max_ms)
+{
+    unsigned waited = 0;
+    while (waited < max_ms && dstar_tx != NULL &&
+           (sbitx_dstar_tx_pending(dstar_tx) || gmsk_fifo_n > 0)) {
+        usleep(5000);
+        waited += 5;
+    }
+    return waited;
+}
+
 void dsp_dstar_tx_end_over(void)
 {
     if (dstar_tx != NULL)
