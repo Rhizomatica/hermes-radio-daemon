@@ -277,6 +277,46 @@ static void test_corrupt_sync(void)
     CHECK(r.match == r.played, "corrupt sync: played %d match %d", r.played, r.match);
 }
 
+/* Slow data has no FEC. At a few percent bit errors most 72-bit sync
+ * blocks carry a flipped bit, and a receiver that needed clean blocks
+ * never locked, while the voice itself (AMBE FEC) was still fine. It must
+ * lock on the vote instead, and a wrong key must still play nothing. */
+static void test_bit_errors(void)
+{
+    static const double ber[] = { 0.02, 0.04 };
+    for (unsigned k = 0; k < sizeof(ber) / sizeof(ber[0]); k++) {
+        int locked = 0, runs = 10, worst = 0;
+        for (int run = 0; run < runs; run++) {
+            voice_crypto_set_key(KEY_A);
+            transmit(true);
+            srand(1000 * k + run);
+            for (int f = 0; f < NFRAMES; f++)
+                for (int b = 9; b < 12; b++)
+                    for (int bit = 0; bit < 8; bit++)
+                        if (rand() < ber[k] * RAND_MAX)
+                            wire[f][b] ^= (uint8_t) (1U << bit);
+            rx_result r = receive(0, true, -1);
+            CHECK(r.match == r.played, "BER %.0f%%: played %d but only %d exact",
+                  100 * ber[k], r.played, r.match);
+            if (r.status == DSTAR_VC_DECRYPTING && r.first_match >= 0) {
+                locked++;
+                if (r.first_match > worst)
+                    worst = r.first_match;
+            }
+
+            voice_crypto_set_key(KEY_B);
+            r = receive(0, true, -1);
+            CHECK(r.played == 0, "BER %.0f%%, wrong key: played %d frames", 100 * ber[k], r.played);
+        }
+        printf("slow-data BER %.0f%%: locked in %d of %d overs, latest at frame %d (superframe %d)\n",
+               100 * ber[k], locked, runs, worst, worst / DSTAR_VOICE_SF_FRAMES);
+        CHECK(locked == runs, "BER %.0f%%: locked in only %d of %d overs", 100 * ber[k], locked, runs);
+        if (ber[k] <= 0.02)
+            CHECK(worst <= 6 * DSTAR_VOICE_SF_FRAMES, "BER %.0f%%: locked as late as frame %d",
+                  100 * ber[k], worst);
+    }
+}
+
 static void test_fail_closed(void)
 {
     static const uint8_t null_ambe[9] = {0x9E, 0x8D, 0x32, 0x88, 0x26, 0x1A, 0x3F, 0x61, 0xE8};
@@ -383,6 +423,7 @@ int main(void)
     test_encrypted();
     test_wrong_and_no_key();
     test_wrong_key_false_check();
+    test_bit_errors();
     test_key_lost_mid_over();
     test_corrupt_sync();
     test_fail_closed();

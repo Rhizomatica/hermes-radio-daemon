@@ -18,12 +18,20 @@
  * - For late entry and resync, every superframe carries a 9-byte sync
  *   block in slow data -- R[6], the 16-bit superframe counter, and a keyed
  *   8-bit check -- in the spare bytes of slow-data unit 8 (after the last
- *   header byte) and in unit 9, marked with slow-data type 0xE5. One byte
- *   of check passes a wrong key once in 256 blocks, so a receiver locks on
- *   only when two consecutive blocks pass it with the same R and
- *   consecutive counters (once in 65536), and unlocks after three failing
- *   blocks in a row. It decodes from the second superframe after it starts
- *   hearing the over: ~0.8 s into an over, a little more on late entry.
+ *   header byte) and in unit 9, marked with slow-data type 0xE5.
+ * - Slow data has no FEC, and at a few percent bit errors (which the AMBE
+ *   FEC shrugs off) most sync blocks carry a flipped bit, so the receiver
+ *   does not need clean blocks. It locks either on two consecutive blocks
+ *   that pass the check exactly with the same R and consecutive counters
+ *   (clean link: ~0.8 s into an over, once in 65536 for a wrong key), or
+ *   on a bit-by-bit majority vote of R over the blocks, the counter from
+ *   their offset to its own superframe count, and the last five checks
+ *   within three bits in total of the expected ones, re-scored as the
+ *   vote converges (once in ~10^8 for a wrong key). Once locked it follows
+ *   its own counter through corrupted blocks and unlocks on a CUSUM of
+ *   each check's likelihood ratio, wrong key against right key at a few
+ *   percent bit errors: ~2 blocks for a wrong key, about once in 10^5
+ *   blocks for the right one -- a flipped bit is not a wrong key.
  * - A receiver without the key, or with the wrong key, mutes the encrypted
  *   over instead of playing garbage.
  *
@@ -53,6 +61,8 @@
 #define DSTAR_VC_SYNC_BYTES       9
 #define DSTAR_VC_SLOW_TYPE        0xE5U
 #define DSTAR_HDR_FLAG3_ENCRYPTED 0x01U
+#define DSTAR_VC_OFF_HIST         6
+#define DSTAR_VC_DIST_HIST        5
 
 /* ── TX ─────────────────────────────────────────────────────────── */
 
@@ -98,12 +108,28 @@ typedef struct {
     uint8_t  slow[4][3];    /* descrambled slow data of slots 17..20 */
     uint8_t  slow_mask;
     uint8_t  miss;          /* superframes since the last valid sync block */
-    uint8_t  bad;           /* consecutive sync blocks failing the check */
-    bool     last_ok;       /* the previous sync block passed its check */
-    bool     cand;          /* one block passed; the next must confirm it */
-    uint8_t  cand_age;      /* superframes since the candidate */
-    uint8_t  cand_r[VOICE_NONCE_RAND_BYTES];
-    uint32_t cand_sf;       /* counter the confirming block must carry */
+    uint32_t local_sf;      /* superframes heard this over, by our own count */
+    /* Majority vote of R, bit by bit, over the blocks of this over. */
+    uint8_t  vote_one[VOICE_NONCE_RAND_BYTES * 8];
+    uint8_t  vote_n;
+    /* Recent (block counter - local_sf) offsets; the most common one wins. */
+    uint16_t off_hist[DSTAR_VC_OFF_HIST];
+    uint8_t  off_n;
+    /* Bit distance of the last blocks' check from the expected one. */
+    uint8_t  dist_hist[DSTAR_VC_DIST_HIST];
+    uint8_t  dist_n;
+    /* The previous block, for the two-exact-blocks fast lock. */
+    bool     last_exact;
+    uint8_t  last_r[VOICE_NONCE_RAND_BYTES];
+    uint16_t last_sf;
+    uint32_t last_local;
+    bool     bad_key;       /* evidence of a wrong key seen, and no lock since */
+    int16_t  cusum;         /* locked: accumulated wrong-key evidence (x0.1 nats) */
+    /* The last blocks' check bytes and our superframe count at each, so
+     * they can all be re-scored as the vote of R converges. */
+    uint8_t  blk_chk[DSTAR_VC_DIST_HIST];
+    uint32_t blk_local[DSTAR_VC_DIST_HIST];
+    uint8_t  blk_n;
     dstar_vc_status status;
 } dstar_voice_rx;
 
