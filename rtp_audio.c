@@ -593,6 +593,11 @@ static void tx_deliver(const int16_t *pcm8k, size_t n)
     pthread_mutex_unlock(&s_tx_mutex);
 }
 
+bool rtp_audio_tx_active(void)
+{
+    return s_tx_started && s_tx_keyed;
+}
+
 size_t rtp_audio_pop_tx(int16_t *out, size_t n)
 {
     if (!s_tx_started || !s_tx_keyed)

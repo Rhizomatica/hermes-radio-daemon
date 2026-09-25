@@ -141,6 +141,7 @@ static void test_tx(radio *r)
     }
     msleep(50);
     CHECK(ptt_on_count == 1 && ptt_id == 111, "PTT on %d times, id %ld", ptt_on_count, ptt_id);
+    CHECK(rtp_audio_tx_active(), "not active while keyed");
     CHECK(npushed == 50 * RTP_AUDIO_FRAME * 6, "pushed %zu samples, want %d", npushed, 50 * RTP_AUDIO_FRAME * 6);
     double a = tone_amp_at(pushed + 2000, (int) npushed - 4000, 48000.0);
     printf("TX 1 kHz at 48 kHz: amplitude %.0f\n", a);
@@ -150,6 +151,7 @@ static void test_tx(radio *r)
     send_tx(111, 0, 0);                          /* end packet */
     msleep(60);
     CHECK(ptt_off_count == 1, "end packet did not unkey (%d)", ptt_off_count);
+    CHECK(!rtp_audio_tx_active(), "still active after the end packet");
 
     /* Dead keyer: key, then go quiet. */
     send_tx(333, 1, RTP_AUDIO_FRAME);

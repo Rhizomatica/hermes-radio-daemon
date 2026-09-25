@@ -732,11 +732,11 @@ static void *playback_thread(void *ctx_v)
 
 static bool daemon_audio_bridge_enabled(radio *radio_h)
 {
-    /* The daemon-owned codec capture/playback threads back both the websocket
-     * audio bridge (enable_audio_bridge) and the SHM bridge to mercury
-     * (enable_shm_audio). Either consumer is enough to bring the codec up. */
+    /* The daemon-owned codec capture/playback threads back the websocket
+     * audio bridge (enable_audio_bridge) and the modem bridges: SHM, the
+     * snd-aloop loopback, and RTP. Any one consumer brings the codec up. */
     if (!radio_h->enable_audio_bridge && !radio_h->enable_shm_audio &&
-        !radio_h->enable_loop_audio)
+        !radio_h->enable_loop_audio && !radio_h->enable_rtp_audio)
         return false;
 
     if (!radio_pipeline_has_capability(radio_h, RADIO_PIPELINE_CAP_DAEMON_AUDIO_BRIDGE))
