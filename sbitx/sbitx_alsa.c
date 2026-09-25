@@ -36,6 +36,7 @@
 #include "../radio_media.h"
 #include "../audio_bridge.h"
 #include "../rtp_audio.h"
+#include "../dsp/mic_filter.h"
 
 char *radio_capture_dev = "hw:0,0";
 char *radio_playback_dev = "hw:0,0";
@@ -1242,6 +1243,25 @@ void *control_thread(void *device_ptr)
 
         read_buffer(radio_to_dsp, buffer_radio_to_dsp, buffer_size); // mono
         read_buffer(mic_to_dsp, buffer_mic_to_dsp, buffer_size); // mono
+
+        /* High-pass the mic before any TX voice path sees it (DC, mains
+         * hum). Runs on every block so the filter state stays continuous;
+         * the cutoff follows core.ini mic_highpass_hz (0 = off). */
+        {
+            static mic_hpf mic_filter;
+            static bool mic_filter_ready;
+            unsigned hz = radio_h_snd->mic_highpass_hz;
+            if (!mic_filter_ready || hz != mic_filter.cutoff_hz)
+            {
+                mic_hpf_setup(&mic_filter, hz, 96000);
+                mic_filter_ready = true;
+                if (mic_filter.cutoff_hz)
+                    fprintf(stderr, "mic high-pass: %u Hz, 4th-order Butterworth\n", mic_filter.cutoff_hz);
+                else
+                    fprintf(stderr, "mic high-pass: off\n");
+            }
+            mic_hpf_run_s32(&mic_filter, (int32_t *) buffer_mic_to_dsp, block_size);
+        }
 
         static int16_t rtp_tx[2048];
         size_t rtp_n = block_size / 2;          /* stereo 48 kHz frames per block */
