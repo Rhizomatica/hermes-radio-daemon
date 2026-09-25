@@ -907,7 +907,9 @@ unsigned dsp_dstar_tx_wait_drained(unsigned max_ms)
 {
     unsigned waited = 0;
     while (waited < max_ms && dstar_tx != NULL &&
-           (sbitx_dstar_tx_pending(dstar_tx) || gmsk_fifo_n > 0)) {
+           (sbitx_dstar_tx_pending(dstar_tx) || gmsk_fifo_n > 1)) {
+        /* > 1, not > 0: the interpolator needs two samples to advance, so
+         * the very last one stays in the FIFO (already rendered) for good. */
         usleep(5000);
         waited += 5;
     }
