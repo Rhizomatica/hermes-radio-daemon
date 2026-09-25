@@ -804,6 +804,9 @@ bool radio_media_init(radio *radio_h, pthread_t *capture_tid, pthread_t *playbac
         !ring_init(&radio_h->rx_radae_ring, queue_samples) ||
         !ring_init(&radio_h->tx_radae_ring, queue_samples) ||
         !ring_init(&radio_h->rx_dstar_ring, queue_samples) ||
+        /* 2 s: the digi pump pulls ~100 ms at a time between decodes */
+        !ring_init(&radio_h->rx_digi_ring,
+                   (radio_h->audio_sample_rate ? radio_h->audio_sample_rate : 48000) * 2) ||
         !ring_init(&radio_h->tx_dstar_ring, queue_samples))
     {
         fprintf(stderr, "radio_media: failed to allocate audio queues\n");
@@ -850,6 +853,7 @@ void radio_media_shutdown(radio *radio_h, pthread_t *capture_tid, pthread_t *pla
     ring_destroy(&radio_h->rx_radae_ring);
     ring_destroy(&radio_h->tx_radae_ring);
     ring_destroy(&radio_h->rx_dstar_ring);
+    ring_destroy(&radio_h->rx_digi_ring);
     ring_destroy(&radio_h->tx_dstar_ring);
     pthread_mutex_destroy(&radio_h->spectrum_mutex);
 
