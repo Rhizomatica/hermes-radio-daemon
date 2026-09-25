@@ -1611,11 +1611,13 @@ dstar_tx_refill_po(sbitx_dstar_tx *tx)
         for (int i = 0U; i < DSTAR_DATA_LENGTH_BYTES; i++)
             tx->po_buffer[tx->po_len++] = dstar_tx_queue_get(tx);
     } else if (type == TX_TYPE_EOT) {
+        /* sbitx_dstar_tx_eot() queues the marker AND the three end-sync
+         * patterns: take them from the queue. Writing them from the table
+         * instead left those 18 bytes at the head of the queue, where no
+         * type matched, so the modem never reported empty again. */
         dstar_tx_queue_get(tx); /* marker */
-        for (int j = 0U; j < 3U; j++) {
-            for (int i = 0U; i < DSTAR_END_SYNC_LENGTH_BYTES; i++)
-                tx->po_buffer[tx->po_len++] = DSTAR_END_SYNC_BYTES[i];
-        }
+        for (int i = 0U; i < 3U * DSTAR_END_SYNC_LENGTH_BYTES; i++)
+            tx->po_buffer[tx->po_len++] = dstar_tx_queue_get(tx);
     }
 
     tx->po_ptr = 0U;

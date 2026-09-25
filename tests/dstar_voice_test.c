@@ -416,6 +416,32 @@ static void test_modem_e2e(void)
     sbitx_dstar_rx_free(e2e_demod);
 }
 
+/* After an EOT the modem must drain completely: tr_switch waits for it
+ * before unkeying, and 18 end-sync bytes left behind in the queue kept it
+ * "pending" forever, so every unkey waited out the full timeout. */
+static void test_tx_eot_drains(void)
+{
+    sbitx_dstar_tx *tx = sbitx_dstar_tx_new();
+    uint8_t frame[SBITX_DSTAR_FRAME_BYTES] = {0};
+    float buf[4096];
+    CHECK(tx != NULL, "sbitx_dstar_tx_new");
+    if (!tx)
+        return;
+    sbitx_dstar_tx_header(tx, wire_hdr);
+    for (int f = 0; f < 5; f++)
+        sbitx_dstar_tx_frame(tx, frame);
+    sbitx_dstar_tx_eot(tx);
+    long samples = 0;
+    int got;
+    while ((got = sbitx_dstar_tx_generate(tx, buf, 4096)) > 0)
+        samples += got;
+    CHECK(!sbitx_dstar_tx_pending(tx), "modem still pending after the EOT went out");
+    /* preamble 60 + header 85 + 5 x 12 data + 18 EOT bytes, 40 samples each */
+    CHECK(samples == (60 + 85 + 5 * 12 + 18) * 40L, "generated %ld samples, want %ld",
+          samples, (60 + 85 + 5 * 12 + 18) * 40L);
+    sbitx_dstar_tx_free(tx);
+}
+
 int main(void)
 {
     make_plain();
@@ -424,6 +450,7 @@ int main(void)
     test_wrong_and_no_key();
     test_wrong_key_false_check();
     test_bit_errors();
+    test_tx_eot_drains();
     test_key_lost_mid_over();
     test_corrupt_sync();
     test_fail_closed();
