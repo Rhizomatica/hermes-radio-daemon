@@ -24,6 +24,7 @@
 
 #include "loop_audio.h"
 #include "radio_media.h"
+#include "rtp_audio.h"
 
 extern _Atomic bool shutdown_;
 
@@ -203,6 +204,11 @@ static void *tx_thread(void *arg)
                 usleep(20000);
             continue;
         }
+        /* While the modem's RTP TX stream holds PTT it feeds the playback
+         * ring itself; pushing the loopback's silence as well would
+         * interleave the two. Keep draining the device either way. */
+        if (s_radio->enable_rtp_audio && rtp_audio_tx_active())
+            continue;
         for (snd_pcm_sframes_t i = 0; i < got; i++)
             out[i] = (int16_t) (in[i * LOOP_CHANNELS] >> 16);
         radio_media_push_tx_audio(s_radio, out, (size_t) got);

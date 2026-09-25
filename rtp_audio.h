@@ -51,4 +51,8 @@ void rtp_audio_push_rx(const int16_t *samples, size_t nsamples, uint32_t rate);
  * PTT, 0 otherwise (the caller then uses its normal TX source). */
 size_t rtp_audio_pop_tx(int16_t *out, size_t n);
 
+/* True while the TX stream holds PTT. Other TX sources (the Hamlib
+ * loopback bridge) stand aside meanwhile. */
+bool rtp_audio_tx_active(void);
+
 #endif /* RTP_AUDIO_H */
