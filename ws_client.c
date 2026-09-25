@@ -60,7 +60,8 @@ static void print_usage(const char *prog)
             "  digi_get_config | digi_set_config      Set requires -a <key=value>\n"
             "  digi_send                      Queue text for TX in the active mode (FT8/CW/RTTY), -a <text>\n"
             "  digi_messages                  Decoded/sent digi messages (-a <count>, default 20)\n"
-            "  get_message | get_timeout | reset_timeout\n",
+            "  get_message | get_timeout | reset_timeout\n"
+            "  raw -a '<json>'                Send a JSON command as is and print the reply\n",
             prog, g_url);
 }
 
@@ -143,6 +144,12 @@ static char *build_payload(void)
     if (!strcmp(g_cmd, "digi_messages")) {
         snprintf(json, 512, "{\"cmd\":\"digi_messages\",\"count\":%ld%s}",
                  g_arg ? atol(g_arg) : 20L, profile);
+        return json;
+    }
+    if (!strcmp(g_cmd, "raw")) {
+        if (!g_arg || g_arg[0] != '{')
+            return NULL;
+        snprintf(json, 512, "%s", g_arg);
         return json;
     }
     if (!strcmp(g_cmd, "get_message"))            SIMPLE("get_message");
@@ -229,6 +236,12 @@ static void on_event(struct mg_connection *c, int ev, void *ev_data)
         /* Skip unsolicited state pushes and replies to other commands. */
         if (strstr(buf, "\"type\":\"state\"") && strcmp(g_cmd, "get_state") != 0)
             return;
+        if (!strcmp(g_cmd, "raw")) {
+            printf("%s\n", buf);
+            g_done = 1;
+            c->is_draining = 1;
+            return;
+        }
         {
             char want[80];
             snprintf(want, sizeof(want), "\"cmd\":\"%s\"", g_cmd);
