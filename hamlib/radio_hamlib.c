@@ -50,6 +50,7 @@ _Atomic time_t timeout_counter = 0;
 static rmode_t mode_to_hamlib(uint16_t mode, bool data_path);
 static uint16_t hamlib_to_mode(rmode_t hmode);
 static bool profile_data_path(const radio_profile *p);
+static pbwidth_t mode_passband(rmode_t hmode, const radio_profile *p);
 static void wait_next_activation(void);
 static int  start_periodic_timer(uint64_t offset_us);
 
@@ -318,10 +319,9 @@ static void hamlib_apply_profile(radio *radio_h, uint32_t profile)
     uint16_t pm = radio_h->profiles[profile].mode;
     if (pm != MODE_CW && pm != MODE_RTTY && pm != MODE_FT8)
     {
-        ret = rig_set_mode(rig, RIG_VFO_CURR,
-                           mode_to_hamlib(pm,
-                                          profile_data_path(&radio_h->profiles[profile])),
-                           RIG_PASSBAND_NORMAL);
+        rmode_t hm = mode_to_hamlib(pm, profile_data_path(&radio_h->profiles[profile]));
+        ret = rig_set_mode(rig, RIG_VFO_CURR, hm,
+                           mode_passband(hm, &radio_h->profiles[profile]));
         if (ret != RIG_OK)
             fprintf(stderr, "hamlib_apply_profile: rig_set_mode failed: %s\n",
                     rigerror(ret));
@@ -373,10 +373,14 @@ static bool profile_data_path(const radio_profile *p)
  *     daemon is NOT pushing audio (data_path false, e.g. operator wired a
  *     mechanical key into the rig) do we switch the rig into RIG_MODE_CW so
  *     its internal keyer handles transmission.
- *   - RTTY: same logic. Our minimodem-based AFSK lives in audio; on the data
- *     path → PKTLSB (AFSK RTTY convention is LSB so mark>space comes out
- *     true-FSK on air). If data_path is off the rig's internal FSK keyer is
- *     used → RIG_MODE_RTTY.
+ *   - RTTY: same logic, PKTUSB on the data path. Our AFSK puts mark above
+ *     space in audio (rtty_mark 1585, space 1415), so USB puts mark on the
+ *     higher RF frequency, the amateur convention. (LSB is right for the
+ *     classic 2125/2295 tones, where mark is the lower audio tone.) This
+ *     used PKTLSB, which inverted mark and space and put CW and RTTY on
+ *     the other sideband from the sBitx (USB): the two could not hear each
+ *     other. If data_path is off the rig's internal FSK keyer is used →
+ *     RIG_MODE_RTTY.
  *   - USB/LSB/FM/AM: voice when data_path false, DATA-* variant otherwise.
  *
  * Narrow data variants (RIG_MODE_PKTFMN, FMN, AMN) need a separate narrow-
@@ -389,13 +393,26 @@ static rmode_t mode_to_hamlib(uint16_t mode, bool data_path)
     case MODE_LSB:  return data_path ? RIG_MODE_PKTLSB : RIG_MODE_LSB;
     case MODE_FM:   return data_path ? RIG_MODE_PKTFM  : RIG_MODE_FM;
     case MODE_AM:   return data_path ? RIG_MODE_PKTAM  : RIG_MODE_AM;
-    case MODE_CW:   return data_path ? RIG_MODE_PKTLSB : RIG_MODE_CW;
-    case MODE_RTTY: return data_path ? RIG_MODE_PKTLSB : RIG_MODE_RTTY;
+    case MODE_CW:   return data_path ? RIG_MODE_PKTUSB : RIG_MODE_CW;
+    case MODE_RTTY: return data_path ? RIG_MODE_PKTUSB : RIG_MODE_RTTY;
     case MODE_DRM:  return RIG_MODE_PKTUSB;   /* digital only, no voice DRM   */
     case MODE_FT8:  return RIG_MODE_PKTUSB;   /* USB worldwide by convention  */
     case MODE_DSTAR: return RIG_MODE_DSTAR; /* rig-native DV (IC-7100 etc.) */
     default:        return data_path ? RIG_MODE_PKTUSB : RIG_MODE_USB;
     }
+}
+
+/* Passband to ask for with a rig mode. Data modes (PKTUSB & co) get the
+ * profile's filter_width, or 3 kHz: RIG_PASSBAND_NORMAL gave the IC-7100
+ * a 250 Hz filter centred on 1500 Hz in USB-D, so the data modem (and CW
+ * at 700 Hz) heard next to nothing. Voice and the rig's own CW/RTTY keep
+ * the rig's normal passband. */
+static pbwidth_t mode_passband(rmode_t hmode, const radio_profile *p)
+{
+    if (hmode == RIG_MODE_PKTUSB || hmode == RIG_MODE_PKTLSB ||
+        hmode == RIG_MODE_PKTFM || hmode == RIG_MODE_PKTAM)
+        return p->filter_width ? (pbwidth_t) p->filter_width : 3000;
+    return RIG_PASSBAND_NORMAL;
 }
 
 /* Map Hamlib rmode_t to internal MODE_*. PKTUSB → USB / PKTLSB → LSB: the
@@ -620,7 +637,8 @@ static void set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
         rmode_t hmode = mode_to_hamlib(mode,
                                        profile_data_path(&radio_h->profiles[profile]));
         RIG_LOCK();
-        int ret = rig_set_mode(rig, RIG_VFO_CURR, hmode, RIG_PASSBAND_NORMAL);
+        int ret = rig_set_mode(rig, RIG_VFO_CURR, hmode,
+                               mode_passband(hmode, &radio_h->profiles[profile]));
         if (ret != RIG_OK)
             fprintf(stderr, "set_mode: rig_set_mode failed: %s\n",
                     rigerror(ret));
@@ -801,7 +819,8 @@ static void set_digital_voice(radio *radio_h, bool digital_voice, uint32_t profi
         rmode_t hmode = mode_to_hamlib(radio_h->profiles[profile].mode,
                                        profile_data_path(&radio_h->profiles[profile]));
         RIG_LOCK();
-        int ret = rig_set_mode(rig, RIG_VFO_CURR, hmode, RIG_PASSBAND_NORMAL);
+        int ret = rig_set_mode(rig, RIG_VFO_CURR, hmode,
+                               mode_passband(hmode, &radio_h->profiles[profile]));
         RIG_UNLOCK();
         if (ret != RIG_OK)
             fprintf(stderr, "set_digital_voice: rig_set_mode failed: %s\n",
