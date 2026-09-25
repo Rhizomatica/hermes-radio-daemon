@@ -224,7 +224,11 @@ install: radio_daemon radio_client
 	# hermes-net's sbitx controller to radiod (restart: a reinstall runs the
 	# new binary; ExecStopPost --ptt-off unkeys on the way down). hermes-net's
 	# take_over_radio.sh does the mirror image.
+	# hermes-net's hermes-radio.service alias names the station's controller;
+	# the modem is PartOf it, so restarting radiod restarts the modem after it.
 	if [ -z "$(DESTDIR)" ] && [ -d /run/systemd/system ]; then \
+	  [ -x /usr/lib/hermes-net/set_radio_controller.sh ] && \
+	    /usr/lib/hermes-net/set_radio_controller.sh radiod.service || true; \
 	  systemctl daemon-reload || true; \
 	  systemctl disable --now sbitx.service || true; \
 	  systemctl enable radiod.service || true; \
