@@ -34,6 +34,7 @@
 #include "radio_backend.h"
 #include "radio_controls.h"
 #include "radio_websocket.h"
+#include "dsp/sbitx_ft8.h"
 #include "cfg_utils.h"
 #include "voice_crypto.h"
 #include "radio_media.h"
@@ -601,6 +602,11 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
         char text[DIGI_TX_MSG_MAX];
         if (!extract_json_string_any(payload, "text", "value", text, sizeof(text)))
         { send_cmd_error(c, cmd, "missing text"); return; }
+        /* FT8 carries 77 bits: say so now instead of queueing a message the
+         * modulator will drop. */
+        if (radio_h->profiles[radio_h->profile_active_idx].mode == MODE_FT8 &&
+            !sbitx_ft8_can_encode(text))
+        { send_cmd_error(c, cmd, "not a valid FT8 message (free text: 13 characters max, A-Z 0-9 space + - . / ?)"); return; }
         if (!digi_tx_queue_push(&radio_h->digi_tx, text))
         { send_cmd_error(c, cmd, "queue full"); return; }
         send_cmd_result(c, cmd, true, "queued"); return;

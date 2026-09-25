@@ -48,7 +48,8 @@ TEST_CFLAGS = -O0 -Wall -Wextra -std=gnu11 -fstack-protector \
 TEST_BINS = tests/backend_selection_test tests/compat_surface_test tests/controls_test \
             tests/dstar_voice_test tests/upsample2_test tests/rig_server_test \
             tests/hamlib_ptt_test tests/radae_vocoder_test tests/sbitx_buffer_test \
-            tests/rtp_audio_test tests/audio_bridge_test tests/mic_filter_test
+            tests/rtp_audio_test tests/audio_bridge_test tests/mic_filter_test \
+            tests/stream_resampler_test tests/digi_modes_test
 
 # ── daemon-level objects ────────────────────────────────────────
 DAEMON_TOP_OBJS = radio_daemon.o \
@@ -64,6 +65,7 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   radio_shm.o \
                   radio_websocket.o \
                   audio_bridge.o \
+                  dsp/stream_resampler.o \
                   audio_headset.o \
                   shm_audio.o \
                   loop_audio.o \
@@ -154,6 +156,8 @@ compat-tests: $(TEST_BINS)
 	./tests/rtp_audio_test
 	./tests/audio_bridge_test
 	./tests/mic_filter_test
+	./tests/stream_resampler_test
+	./tests/digi_modes_test
 
 tests/backend_selection_test: tests/backend_selection_test.c cfg_utils.c cfg_utils.h \
                               radio_backend.c radio_backend.h radio_daemon_core.h \
@@ -194,6 +198,15 @@ tests/rtp_audio_test: tests/rtp_audio_test.c rtp_audio.c rtp_audio.h radio.h
 
 tests/audio_bridge_test: tests/audio_bridge_test.c audio_bridge.c audio_bridge.h radio.h
 	$(CC) $(TEST_CFLAGS) -I/usr/include/csdr tests/audio_bridge_test.c audio_bridge.c -o $@ -lcsdr -lfftw3f -lm
+
+tests/stream_resampler_test: tests/stream_resampler_test.c dsp/stream_resampler.c dsp/stream_resampler.h
+	$(CC) $(TEST_CFLAGS) -I/usr/include/csdr tests/stream_resampler_test.c dsp/stream_resampler.c -o $@ -lcsdr -lfftw3f -lm
+
+tests/digi_modes_test: tests/digi_modes_test.c dsp/stream_resampler.c dsp/sbitx_cw.c dsp/sbitx_rtty.c \
+                       dsp/sbitx_ft8.c $(FT8_LIB_SRCS) $(MM_FSK_SRCS)
+	$(CC) $(TEST_CFLAGS) -w -I/usr/include/csdr -Idsp $(FT8_LIB_CPPFLAGS) $(MM_FSK_CPPFLAGS) \
+	      tests/digi_modes_test.c dsp/stream_resampler.c dsp/sbitx_cw.c dsp/sbitx_rtty.c \
+	      dsp/sbitx_ft8.c $(FT8_LIB_SRCS) $(MM_FSK_SRCS) -o $@ -lcsdr -lfftw3f -lfftw3 -lcw -lm
 
 tests/mic_filter_test: tests/mic_filter_test.c dsp/mic_filter.c dsp/mic_filter.h
 	$(CC) $(TEST_CFLAGS) -Idsp tests/mic_filter_test.c dsp/mic_filter.c -o $@ -lm

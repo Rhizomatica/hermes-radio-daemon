@@ -98,6 +98,12 @@ bool sbitx_ft8_init(void)
 
 void sbitx_ft8_shutdown(void) {}
 
+bool sbitx_ft8_can_encode(const char *message)
+{
+    ftx_message_t msg;
+    return message && ftx_message_encode(&msg, NULL, message) == FTX_MESSAGE_RC_OK;
+}
+
 int sbitx_ft8_encode(const char *message, float *signal, int max_samples,
                      float tone_freq)
 {
@@ -119,7 +125,6 @@ int sbitx_ft8_encode(const char *message, float *signal, int max_samples,
     int n = max_samples;
     synth_gfsk(tones, FT8_NN, tone_freq, 12000, signal, &n);
 
-    sbitx_ft8_spool_add("FT8", "tx", (int)(tone_freq / 1000.0f), message);
     return n;
 }
 
@@ -191,8 +196,6 @@ int sbitx_ft8_decode(float *audio_12k, int nsamples, char *decoded,
                          "%s%s", (len > 0 ? "\n" : ""), text);
         if (n > 0) len += n;
         if (len >= max_decoded_len - 1) break;
-
-        sbitx_ft8_spool_add("FT8", "rx", 0, text);
     }
 
     monitor_free(&mon);

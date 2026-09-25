@@ -44,6 +44,7 @@
 #include <specbleach_denoiser.h>
 
 #include "upsample2.h"
+#include "stream_resampler.h"
 
 
 #include "sbitx_dsp.h"
@@ -104,10 +105,16 @@ static _Atomic bool radae_tx_active = false;
 // is deliberately file-private.  We also require radae_tx_active so
 // we don't signal into a pipeline that never ran any speech (first
 // PTT in a fresh DV session would otherwise emit a bogus EOO).
+/* 96 kHz TX modem samples waiting in the RADE FIFO, and a pending flush of
+ * the resamplers after the EOO (see dsp_process_digital_voice_tx). */
+static _Atomic int radae_tx_fifo_n = 0;
+static _Atomic bool radae_tx_flush = false;
+
 unsigned dsp_radae_tx_wait_drained(unsigned max_ms)
 {
     unsigned waited = 0;
-    for (; waited < max_ms && !radae_tx_drained(&radae_ctx); waited += 5)
+    for (; waited < max_ms && (!radae_tx_drained(&radae_ctx) || radae_tx_fifo_n > 0 ||
+                               radae_tx_flush); waited += 5)
         usleep(5000);
     return waited;
 }
@@ -119,7 +126,10 @@ bool dsp_radae_tx_emit_eoo_if_dv(void)
     if (!radio_h_dsp ||
         !radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].digital_voice)
         return false;
-    return radae_tx_emit_eoo(&radae_ctx);
+    if (!radae_tx_emit_eoo(&radae_ctx))
+        return false;
+    radae_tx_flush = true;       /* the EOO's tail sits in the filter look-ahead */
+    return true;
 }
 
 void dsp_radae_tx_end_over(void)
@@ -131,11 +141,40 @@ void dsp_radae_tx_end_over(void)
 }
 
 // Buffers for RADAE sample rate conversion
-static float radae_speech_in[2048];     // 16kHz speech input
 static float radae_speech_out[2048];    // 16kHz speech output
 static float radae_modem_iq[4096];      // 8kHz complex IQ (interleaved I,Q)
 static double radae_baseband_i[2048];   // 96kHz I component (complex IQ, upsampled)
 static double radae_baseband_q[2048];   // 96kHz Q component (complex IQ, upsampled)
+
+/* RADE rate conversion. The old per-block linear resamplers took 170 speech
+ * and 85 modem samples from each 1024-sample block (1024 is not a multiple
+ * of 6 or 12): 15937.5 / 7968.75 Hz instead of 16 / 8 kHz. They stretched
+ * time inside every block, had no anti-alias filter, and left 4 zero
+ * samples at the end of every TX modem block and every RX speech block.
+ * These keep their state across blocks; FIFOs hand out whole blocks. */
+enum { RADAE_CHUNK = 256, RADAE_FIFO = 1024 + RADAE_CHUNK * 12 + 64 };
+static stream_resampler radae_tx_speech_rs;   /* 96k -> 16k */
+static stream_resampler radae_tx_i_rs, radae_tx_q_rs;   /* 8k -> 96k */
+static stream_resampler radae_rx_i_rs, radae_rx_q_rs;   /* 96k -> 8k */
+static stream_resampler radae_rx_speech_rs;   /* 16k -> 96k */
+static bool radae_rs_ready = false;
+static float radae_tx_fifo_i[RADAE_FIFO], radae_tx_fifo_q[RADAE_FIFO];
+static float radae_rx_fifo[RADAE_FIFO];
+static int radae_rx_fifo_n = 0;
+
+static bool radae_rs_init(void)
+{
+    if (radae_rs_ready)
+        return true;
+    radae_rs_ready =
+        stream_resampler_init(&radae_tx_speech_rs, 1, 6, 0.015f) &&
+        stream_resampler_init(&radae_tx_i_rs, 12, 1, 0.01f) &&
+        stream_resampler_init(&radae_tx_q_rs, 12, 1, 0.01f) &&
+        stream_resampler_init(&radae_rx_i_rs, 1, 12, 0.01f) &&
+        stream_resampler_init(&radae_rx_q_rs, 1, 12, 0.01f) &&
+        stream_resampler_init(&radae_rx_speech_rs, 6, 1, 0.015f);
+    return radae_rs_ready;
+}
 
 static dcblock_preserve_t rx_dc_state = {0.0f, 0.0f};
 static dcblock_preserve_t tx_dc_state = {0.0f, 0.0f};
@@ -241,38 +280,77 @@ static void dsp_prepare_digital_voice_tx(double *signal_input_f, uint32_t block_
         radio_h_dsp && radio_h_dsp->txrx_state != IN_TX)
         return;
 
+    if (!radae_rs_init())
+        return;
+
     if (!radae_tx_active) {
         radae_tx_start(&radae_ctx);
         radae_tx_active = true;
+        stream_resampler_reset(&radae_tx_speech_rs);
+        stream_resampler_reset(&radae_tx_i_rs);
+        stream_resampler_reset(&radae_tx_q_rs);
+        radae_tx_fifo_n = 0;
+        radae_tx_flush = false;
     }
 
     // signal_input_f is always 96 kHz (upsampled from loopback in the caller)
     (void)input_is_48k_stereo;
-    int speech_16k_len;
-    resample_96k_to_16k(signal_input_f, block_size, radae_speech_in, &speech_16k_len);
-    radae_tx_write_speech(&radae_ctx, radae_speech_in, speech_16k_len);
-
-    // Read RADAE IQ.  Cap by block_size/12 so the 1:12 upsample cannot
-    // overflow radae_baseband_*; any extra stays in the ring buffer for
-    // the next call.  Undersupply is fine -- we zero-pad.
-    int max_modem_samples = (int)block_size / 12;
-    int modem_samples = radae_tx_read_modem_iq(&radae_ctx, radae_modem_iq, max_modem_samples);
-
-    int n = 0;
-    if (modem_samples > 0) {
-        float iq_i_8k[modem_samples];
-        float iq_q_8k[modem_samples];
-        for (int s = 0; s < modem_samples; s++) {
-            iq_i_8k[s] = radae_modem_iq[s*2];
-            iq_q_8k[s] = radae_modem_iq[s*2+1];
-        }
-        maybe_dump_tx_modem_iq(radae_modem_iq, modem_samples);
-        int len_i, len_q;
-        resample_8k_to_96k(iq_i_8k, modem_samples, radae_baseband_i, &len_i);
-        resample_8k_to_96k(iq_q_8k, modem_samples, radae_baseband_q, &len_q);
-        n = len_i < len_q ? len_i : len_q;
-        if (n > (int)block_size) n = (int)block_size;
+    {
+        float speech96[block_size];
+        for (uint32_t k = 0; k < block_size; k++)
+            speech96[k] = (float) signal_input_f[k];
+        size_t ns = stream_resampler_run(&radae_tx_speech_rs, speech96, block_size);
+        if (ns)
+            radae_tx_write_speech(&radae_ctx, radae_tx_speech_rs.out, (int) ns);
     }
+
+    // Upsample the modem IQ into the FIFO until it holds a whole block;
+    // undersupply is fine -- we zero-pad.
+    int fifo_n = radae_tx_fifo_n;
+    while (fifo_n < (int) block_size) {
+        int want = ((int) block_size - fifo_n) / 12 + 2;
+        if (want > RADAE_CHUNK)
+            want = RADAE_CHUNK;
+        float iq_i_8k[RADAE_CHUNK + 64], iq_q_8k[RADAE_CHUNK + 64];
+        int got = radae_tx_read_modem_iq(&radae_ctx, radae_modem_iq, want);
+        if (got > 0) {
+            for (int k = 0; k < got; k++) {
+                iq_i_8k[k] = radae_modem_iq[k * 2];
+                iq_q_8k[k] = radae_modem_iq[k * 2 + 1];
+            }
+            maybe_dump_tx_modem_iq(radae_modem_iq, got);
+        } else if (radae_tx_flush && radae_tx_drained(&radae_ctx)) {
+            /* The modem has nothing left: push zeros through so the
+             * EOO's last samples leave the filters' look-ahead. */
+            got = radae_tx_i_rs.taps_len / radae_tx_i_rs.interp + 4;
+            if (got > RADAE_CHUNK + 64)
+                got = RADAE_CHUNK + 64;
+            memset(iq_i_8k, 0, (size_t) got * sizeof(float));
+            memset(iq_q_8k, 0, (size_t) got * sizeof(float));
+            radae_tx_flush = false;
+        } else {
+            break;
+        }
+        size_t ni = stream_resampler_run(&radae_tx_i_rs, iq_i_8k, (size_t) got);
+        size_t nq = stream_resampler_run(&radae_tx_q_rs, iq_q_8k, (size_t) got);
+        size_t m = ni < nq ? ni : nq;
+        if (m > (size_t) (RADAE_FIFO - fifo_n))
+            m = (size_t) (RADAE_FIFO - fifo_n);
+        memcpy(radae_tx_fifo_i + fifo_n, radae_tx_i_rs.out, m * sizeof(float));
+        memcpy(radae_tx_fifo_q + fifo_n, radae_tx_q_rs.out, m * sizeof(float));
+        fifo_n += (int) m;
+    }
+    int n = fifo_n < (int) block_size ? fifo_n : (int) block_size;
+    for (int k = 0; k < n; k++) {
+        radae_baseband_i[k] = radae_tx_fifo_i[k];
+        radae_baseband_q[k] = radae_tx_fifo_q[k];
+    }
+    fifo_n -= n;
+    if (fifo_n > 0) {
+        memmove(radae_tx_fifo_i, radae_tx_fifo_i + n, (size_t) fifo_n * sizeof(float));
+        memmove(radae_tx_fifo_q, radae_tx_fifo_q + n, (size_t) fifo_n * sizeof(float));
+    }
+    radae_tx_fifo_n = fifo_n;
 
     bool is_lsb = (radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].mode == MODE_LSB);
     double q_sign = is_lsb ? -1.0 : 1.0;
@@ -301,12 +379,25 @@ static void dsp_process_digital_voice_rx(double *rx_baseband_i, double *rx_baseb
     // Resample 96kHz complex IQ to 8kHz for RADAE modem
     // SSB demod (IFFT of filtered/rotated signal) produces complex output;
     // RADAE OFDM needs both I and Q to decode properly.
-    int modem_len_i, modem_len_q;
-    float modem_8k_i[block_size / 12 + 1];
-    float modem_8k_q[block_size / 12 + 1];
-    resample_96k_to_8k(rx_baseband_i, block_size, modem_8k_i, &modem_len_i);
-    resample_96k_to_8k(rx_baseband_q, block_size, modem_8k_q, &modem_len_q);
-    int modem_len = modem_len_i < modem_len_q ? modem_len_i : modem_len_q;
+    if (!radae_rs_init()) {
+        memset(speech_out, 0, block_size * sizeof(double));
+        return;
+    }
+    size_t modem_len_i, modem_len_q;
+    {
+        float in_i[block_size], in_q[block_size];
+        for (uint32_t k = 0; k < block_size; k++) {
+            in_i[k] = (float) rx_baseband_i[k];
+            in_q[k] = (float) rx_baseband_q[k];
+        }
+        modem_len_i = stream_resampler_run(&radae_rx_i_rs, in_i, block_size);
+        modem_len_q = stream_resampler_run(&radae_rx_q_rs, in_q, block_size);
+    }
+    const float *modem_8k_i = radae_rx_i_rs.out;
+    const float *modem_8k_q = radae_rx_q_rs.out;
+    int modem_len = (int) (modem_len_i < modem_len_q ? modem_len_i : modem_len_q);
+    if (modem_len > (int) (sizeof(radae_modem_iq) / sizeof(radae_modem_iq[0]) / 2))
+        modem_len = (int) (sizeof(radae_modem_iq) / sizeof(radae_modem_iq[0]) / 2);
 
     // Amplitude of the complex baseband entering the RADAE decoder
     for (int i = 0; i < modem_len; i++) {
@@ -340,27 +431,38 @@ static void dsp_process_digital_voice_rx(double *rx_baseband_i, double *rx_baseb
     // Feed modem IQ to RADAE RX
     radae_rx_write_modem_iq(&radae_ctx, radae_modem_iq, modem_len);
 
-    // Try to get decoded speech from RADAE RX
-    // Limit to MAX_BINS/12 samples (170) since 16kHz->96kHz upsampling multiplies by 6,
-    // and we need output to fit in MAX_BINS/2 (1024) buffer
-    int max_speech_samples = (MAX_BINS / 2) / 6;  // = 170 samples max
-    int speech_samples = radae_rx_read_speech(&radae_ctx, radae_speech_out, max_speech_samples);
-
-    if (speech_samples > 0) {
-        // Amplitude of the 16 kHz speech the decoder produced this block.
-        // If rx_dv baseband_in is non-zero but speech_out stays at 0, the
-        // RADAE decoder is receiving signal but failing to sync/decode.
+    // Decoded 16 kHz speech -> 96 kHz, through a FIFO so every block gets
+    // exactly block_size samples while speech lasts.
+    while (radae_rx_fifo_n < (int) block_size) {
+        int want = ((int) block_size - radae_rx_fifo_n) / 6 + 2;
+        if (want > RADAE_CHUNK)
+            want = RADAE_CHUNK;
+        int speech_samples = radae_rx_read_speech(&radae_ctx, radae_speech_out, want);
+        if (speech_samples <= 0)
+            break;
+        // Amplitude of the 16 kHz speech the decoder produced. If rx_dv
+        // baseband_in is non-zero but speech_out stays at 0, the RADAE
+        // decoder is receiving signal but failing to sync/decode.
         for (int i = 0; i < speech_samples; i++) {
             RADAE_AMPL_LOG("rx_dv speech_out", radae_speech_out[i]);
         }
+        size_t m = stream_resampler_run(&radae_rx_speech_rs, radae_speech_out,
+                                        (size_t) speech_samples);
+        if (m > (size_t) (RADAE_FIFO - radae_rx_fifo_n))
+            m = (size_t) (RADAE_FIFO - radae_rx_fifo_n);
+        memcpy(radae_rx_fifo + radae_rx_fifo_n, radae_rx_speech_rs.out, m * sizeof(float));
+        radae_rx_fifo_n += (int) m;
+    }
 
-        // Upsample 16kHz speech to 96kHz for speaker output
-        int output_len;
-        resample_16k_to_96k(radae_speech_out, speech_samples, speech_out, &output_len);
-        // Zero remaining samples to avoid stale data if output_len < block_size
-        if ((uint32_t)output_len < block_size) {
-            memset(speech_out + output_len, 0, (block_size - output_len) * sizeof(double));
-        }
+    if (radae_rx_fifo_n > 0) {
+        int n = radae_rx_fifo_n < (int) block_size ? radae_rx_fifo_n : (int) block_size;
+        for (int i = 0; i < n; i++)
+            speech_out[i] = radae_rx_fifo[i];
+        if (n < (int) block_size)
+            memset(speech_out + n, 0, (block_size - (uint32_t) n) * sizeof(double));
+        radae_rx_fifo_n -= n;
+        if (radae_rx_fifo_n > 0)
+            memmove(radae_rx_fifo, radae_rx_fifo + n, (size_t) radae_rx_fifo_n * sizeof(float));
 
         // Amplitude of the 96 kHz speech heading to the speaker ALSA device,
         // post scale to int32. This is what the user would actually hear.
@@ -409,12 +511,13 @@ static void     digi_rtty_char_cb(char c)
 
 static char g_cw_rx_line[256];
 static int  g_cw_rx_pos;
+static int  g_cw_rx_freq_khz;
 static void digi_cw_char_cb(char c)
 {
     if (c == ' ' || c == '\n') {
         if (g_cw_rx_pos > 0) {
             g_cw_rx_line[g_cw_rx_pos] = '\0';
-            digi_rx_spool("CW", 0, g_cw_rx_line);
+            digi_rx_spool("CW", g_cw_rx_freq_khz, g_cw_rx_line);
             g_cw_rx_pos = 0;
         }
         return;
@@ -594,6 +697,8 @@ static inline int dstar_pcm_count(void)
 
 static float dstar_mic8k[160];
 static int   dstar_mic8k_n;
+static stream_resampler dstar_mic_rs;          /* 96k -> 8k mic */
+static bool  dstar_mic_rs_ready = false;
 
 /* D-STAR TX upsampler state (24 kHz GMSK -> 96 kHz). It must start every
  * over fresh: left over from the previous over, the FIFO still holds its
@@ -1019,32 +1124,40 @@ void dsp_dstar_tx_end_over(void)
     tx_up_pos = 0.0;
     dstar_tx_keyed = false;          /* the next over starts with a header */
     dstar_tx_eot_latched = false;
+    if (dstar_mic_rs_ready)
+        stream_resampler_reset(&dstar_mic_rs);   /* no last-over mic in the next */
+}
+
+/* True while an FT8/CW/RTTY message is still being clocked out (updated
+ * every TX block); the sBitx control loop keys and unkeys around it. */
+static _Atomic bool digi_tx_sending = false;
+/* A new transmission began: drop what an unkeyed one left unsent. */
+static bool digi_tx_new_over = false;
+
+bool dsp_digi_tx_busy(void)
+{
+    return digi_tx_sending;
 }
 
 static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, int freq_khz)
 {
-    static float                   *rs_taps12 = NULL;
-    static int                      rs_taps12_len = 0;
-    static rational_resampler_ff_t  rs12 = {0, 0, 0};
-    static float                    out12[2048];
+    static stream_resampler dec;
+    static bool dec_ready = false;
 
     if (mode != MODE_FT8 && mode != MODE_CW && mode != MODE_RTTY)
         return;
 
-    if (!rs_taps12) {
-        rs_taps12_len = firdes_filter_len(0.05f);
-        rs_taps12 = malloc(rs_taps12_len * sizeof(float));
-        if (!rs_taps12) return;
-        rational_resampler_get_lowpass_f(rs_taps12, rs_taps12_len, 1, DIGI_RX_DECIM,
-                                         WINDOW_BLACKMAN);
-    }
-
-    rs12 = rational_resampler_ff((float *) audio96k, out12, n96,
-                                 1, DIGI_RX_DECIM, rs_taps12, rs_taps12_len,
-                                 rs12.last_taps_delay);
-    int n12 = rs12.output_size;
+    /* Decimate 96 kHz -> 12 kHz with the filter state kept across blocks.
+     * csdr's rational_resampler_ff() called once per block with only that
+     * block used 952 of every 1024 samples: 7% of the audio vanished every
+     * 10.7 ms, FT8 never decoded, and CW/RTTY timing jumped ~94 times a
+     * second. */
+    if (!dec_ready && !(dec_ready = stream_resampler_init(&dec, 1, DIGI_RX_DECIM, 0.02f)))
+        return;
+    int n12 = (int) stream_resampler_run(&dec, audio96k, (size_t) n96);
     if (n12 <= 0)
         return;
+    const float *out12 = dec.out;
 
     if (mode == MODE_CW) {
         static bool inited = false;
@@ -1053,6 +1166,7 @@ static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, in
         static float acc[8192]; static int accn = 0;
         for (int i = 0; i < n12 && accn < (int) (sizeof(acc)/sizeof(acc[0])); i++)
             acc[accn++] = out12[i];
+        g_cw_rx_freq_khz = freq_khz;
         while (accn >= block) {
             char decoded[64] = {0};
             int got = sbitx_cw_rx_process(acc, block, decoded, sizeof(decoded),
@@ -1076,11 +1190,20 @@ static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, in
             acc[accn++] = out12[i];
         g_rtty_rx_freq_khz = freq_khz;
         while (accn >= block) {
+            int before = g_rtty_rx_pos;
             sbitx_rtty_rx_process(acc, block, radio_h_dsp->rtty_baud,
                                   radio_h_dsp->rtty_mark, radio_h_dsp->rtty_shift,
                                   digi_rtty_char_cb);
             memmove(acc, acc + block, (accn - block) * sizeof(float));
             accn -= block;
+            /* Log a line left without CR/LF after 2 s of no new text. */
+            static int idle = 0;
+            if (g_rtty_rx_pos != before)
+                idle = 0;
+            else if (g_rtty_rx_pos > 0 && (idle += block) >= 2 * DIGI_RX_RATE) {
+                digi_rtty_char_cb('\n');
+                idle = 0;
+            }
         }
     }
     else if (mode == MODE_FT8) {
@@ -1095,8 +1218,18 @@ static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, in
         if (slotn >= slot_samples) {
             char decoded[1024] = {0};
             sbitx_ft8_decode(slot, slot_samples, decoded, sizeof(decoded));
-            if (decoded[0])
+            /* Windows overlap by 13 s, so one transmission can decode in
+             * two of them: log the same text once per 15 s. */
+            static char     last_decoded[1024];
+            static uint64_t last_decoded_at = 0;          /* in 2 s steps */
+            static uint64_t window_no = 0;
+            window_no++;
+            if (decoded[0] && (strcmp(decoded, last_decoded) != 0 ||
+                               window_no - last_decoded_at > FT8_RX_SLOT_S / 2)) {
                 digi_rx_spool("FT8", freq_khz, decoded);
+                snprintf(last_decoded, sizeof(last_decoded), "%s", decoded);
+                last_decoded_at = window_no;
+            }
             /* Slide by only 2 s. FT8 here isn't UTC-slot-aligned, so the
              * ~12.6 s burst sits at an arbitrary offset in the 15 s window;
              * a small step guarantees some window contains the full burst
@@ -1960,6 +2093,7 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     //fix the burst at the start of transmission
     if (tx_starting)
     {
+        digi_tx_new_over = true;
         fft_reset_m_bins();
         clear_buffers();
         if (loop_up_ready)
@@ -2040,11 +2174,19 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             cw_tx_inited = true;
         }
 
+        if (digi_tx_new_over) {
+            cw_audio_pos = cw_audio_len;
+            digi_tx_new_over = false;
+        }
         if (cw_audio_pos >= cw_audio_len)
         {
             char text[DIGI_TX_MSG_MAX];
             if (digi_tx_queue_pop(&radio_h_dsp->digi_tx, text, sizeof(text)))
             {
+                /* Busy from the moment the text leaves the queue: FT8's
+                 * encode + 8x upsample takes long enough that io_tick
+                 * saw an empty queue and an idle DSP, and unkeyed. */
+                digi_tx_sending = true;
                 cw_audio_len = sbitx_cw_encode(
                     text, cw_audio,
                     (int) (sizeof(cw_audio) / sizeof(cw_audio[0])),
@@ -2077,6 +2219,7 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             fft_in[i] = (double) tone;
             fft_m[k]  = fft_in[i];
         }
+        digi_tx_sending = cw_audio_pos < cw_audio_len;
     }
     // FT8 TX: pop messages from the digi_tx queue, encode to 12 kHz
     // GFSK audio via sbitx_ft8_encode, then upsample 8× to 96 kHz once
@@ -2092,18 +2235,32 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
         static int   ft8_audio_96k_len = 0;
         static int   ft8_audio_96k_pos = 0;
 
+        if (digi_tx_new_over) {
+            ft8_audio_96k_pos = ft8_audio_96k_len;
+            digi_tx_new_over = false;
+        }
         if (ft8_audio_96k_pos >= ft8_audio_96k_len)
         {
             char text[DIGI_TX_MSG_MAX];
             if (digi_tx_queue_pop(&radio_h_dsp->digi_tx, text, sizeof(text)))
             {
+                /* Busy from the moment the text leaves the queue: FT8's
+                 * encode + 8x upsample takes long enough that io_tick
+                 * saw an empty queue and an idle DSP, and unkeyed. */
+                digi_tx_sending = true;
                 /* Center FT8 GFSK tones around 1500 Hz inside the SSB
                  * passband, matching the pattern the RX path expects. */
                 int n12 = sbitx_ft8_encode(
                     text, ft8_audio_12k,
                     (int) (sizeof(ft8_audio_12k) / sizeof(ft8_audio_12k[0])),
                     1500.0f);
-                if (n12 < 0) n12 = 0;
+                if (n12 < 0) {
+                    /* Not encodable (free text is at most 13 characters
+                     * of A-Z 0-9 space + - . / ?): send and log nothing
+                     * rather than a "tx" line for a message never sent. */
+                    fprintf(stderr, "FT8 tx: cannot encode \"%s\"\n", text);
+                    n12 = 0;
+                }
 
                 /* 8× upsample: zero-stuff then convolve with a small
                  * sinc-windowed lowpass at fc ≈ 5 kHz (well above the
@@ -2154,7 +2311,7 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
                 ft8_audio_96k_len = n96;
                 ft8_audio_96k_pos = 0;
 
-                FILE *f = fopen("/var/spool/hermes-digi/spool.log", "a");
+                FILE *f = n96 > 0 ? fopen("/var/spool/hermes-digi/spool.log", "a") : NULL;
                 if (f) {
                     uint32_t freq_khz = radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].freq / 1000;
                     fprintf(f, "FT8 tx %u.%03u: %s\n",
@@ -2180,6 +2337,7 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             fft_in[i] = (double) tone;
             fft_m[k]  = fft_in[i];
         }
+        digi_tx_sending = ft8_audio_96k_pos < ft8_audio_96k_len;
     }
     // RTTY TX: FSK modulator. Pulls one message at a time from the
     // websocket digi_tx_queue (filled by `digi_send`); emits silence
@@ -2203,11 +2361,19 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
 
         /* When the previous message has been fully clocked out, see if
          * there's another one waiting. If not, emit silence. */
+        if (digi_tx_new_over) {
+            rtty_audio_pos = rtty_audio_len;
+            digi_tx_new_over = false;
+        }
         if (rtty_audio_pos >= rtty_audio_len)
         {
             char text[DIGI_TX_MSG_MAX];
             if (digi_tx_queue_pop(&radio_h_dsp->digi_tx, text, sizeof(text)))
             {
+                /* Busy from the moment the text leaves the queue: FT8's
+                 * encode + 8x upsample takes long enough that io_tick
+                 * saw an empty queue and an idle DSP, and unkeyed. */
+                digi_tx_sending = true;
                 rtty_audio_len = sbitx_rtty_encode(
                     text, rtty_audio,
                     (int) (sizeof(rtty_audio) / sizeof(rtty_audio[0])),
@@ -2244,16 +2410,30 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             fft_in[i] = (double) tone;
             fft_m[k]  = fft_in[i];
         }
+        digi_tx_sending = rtty_audio_pos < rtty_audio_len;
     }
     // D-STAR TX: mic 96k -> 8k -> AMBE -> GMSK 24k -> 96k -> FM modulator
     else if (tx_mode == MODE_DSTAR)
     {
         dsp_dstar_init();
 
-        /* 1. Decimate mic audio 96k -> 8k and encode 20 ms frames */
-        static float mic8k_buf[4096];
+        /* 1. Decimate mic audio 96k -> 8k and encode 20 ms frames.
+         * A real low-pass decimator with its state kept across blocks: the
+         * old per-block linear resampler gave 85 samples per 1024 (7968.75
+         * Hz, so frames came 0.4% slow), stretched time inside each block
+         * and, with no anti-alias filter, folded mic hiss above 4 kHz into
+         * the voice band. */
+        if (!dstar_mic_rs_ready)
+            dstar_mic_rs_ready = stream_resampler_init(&dstar_mic_rs, 1, 12, 0.01f);
+        const float *mic8k_buf = NULL;
         int n8 = 0;
-        resample_96k_to_8k(signal_input_f, block_size, mic8k_buf, &n8);
+        if (dstar_mic_rs_ready) {
+            float mic96[block_size];
+            for (uint32_t k = 0; k < block_size; k++)
+                mic96[k] = (float) signal_input_f[k];
+            n8 = (int) stream_resampler_run(&dstar_mic_rs, mic96, block_size);
+            mic8k_buf = dstar_mic_rs.out;
+        }
 
         /* Debug hook: touch /tmp/dstar_tx8k_dump to capture exactly what the
          * AMBE encoder is fed, 8 kHz float32 mono. Isolates the audio path

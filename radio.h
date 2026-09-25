@@ -483,6 +483,12 @@ typedef struct {
      * the websocket to broadcast. */
     audio_ring_buffer rx_dstar_ring;
     audio_ring_buffer tx_dstar_ring;
+    /* A private copy of the raw RX audio for the hamlib digital-mode pump
+     * (FT8/CW/RTTY decoders, D-STAR and RADAE on hamlib). rx_audio_ring is
+     * also drained by the websocket audio broadcast, every ~50 ms and with
+     * or without clients, so the decoders got part of the audio and FT8
+     * never decoded. Allocated by radio_media only (hamlib). */
+    audio_ring_buffer rx_digi_ring;
     wav_recording     rx_recording;
     wav_recording     tx_recording;
 

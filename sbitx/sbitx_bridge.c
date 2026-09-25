@@ -71,10 +71,16 @@ void sbitx_bridge_shutdown(radio *radio_h)
     pthread_cond_destroy(&radio_h->tx_audio_ring.cond);
 }
 
+static void push_ring(audio_ring_buffer *ring, const int16_t *samples, size_t nsamples);
+
 void sbitx_bridge_push_rx(radio *radio_h, const int16_t *samples, size_t nsamples)
 {
-    audio_ring_buffer *ring = &radio_h->rx_audio_ring;
+    push_ring(&radio_h->rx_audio_ring, samples, nsamples);
+    push_ring(&radio_h->rx_digi_ring, samples, nsamples);   /* hamlib digi pump */
+}
 
+static void push_ring(audio_ring_buffer *ring, const int16_t *samples, size_t nsamples)
+{
     if (!ring->samples || !ring->capacity || !samples || !nsamples)
         return;
 

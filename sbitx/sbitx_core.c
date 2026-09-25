@@ -791,6 +791,53 @@ void io_tick(radio *radio_h)
     if (set_dirty_ws)
         radio_h->send_ws_update = true;
 
+    /* Digital text modes (FT8/CW/RTTY): digi_send only queues the text,
+     * and the DSP pulls it only while transmitting -- so key for queued
+     * text, and unkey once the queue is empty and the last message has
+     * left the DSP, after a short hold for the codec's playback queue.
+     * (The Hamlib backend does the same in hamlib_digi.c.) Without this a
+     * queued message just sat there until someone keyed by hand. */
+    {
+        static bool digi_keyed = false;
+        static int  digi_idle_ticks = 0;             /* 10 ms each */
+        enum { DIGI_UNKEY_HOLD_TICKS = 20 };         /* 200 ms */
+        uint16_t m = radio_h->profiles[radio_h->profile_active_idx].mode;
+        bool digi_mode = (m == MODE_FT8 || m == MODE_CW || m == MODE_RTTY);
+        bool pending = digi_tx_queue_pending(&radio_h->digi_tx);
+
+        if (!digi_keyed)
+        {
+            if (digi_mode && pending && radio_h->txrx_state == IN_RX &&
+                !radio_h->key_down && !radio_h->swr_protection_enabled)
+            {
+                tr_switch(radio_h, IN_TX);
+                if (radio_h->txrx_state == IN_TX)
+                {
+                    digi_keyed = true;
+                    digi_idle_ticks = 0;
+                    sbitx_timer_reset = true;        /* activity */
+                }
+            }
+        }
+        else if (radio_h->txrx_state != IN_TX)
+        {
+            digi_keyed = false;                      /* unkeyed elsewhere */
+        }
+        else if (!digi_mode || (!pending && !dsp_digi_tx_busy()))
+        {
+            if (!digi_mode || ++digi_idle_ticks >= DIGI_UNKEY_HOLD_TICKS)
+            {
+                tr_switch(radio_h, IN_RX);
+                digi_keyed = false;
+                sbitx_timer_reset = true;
+            }
+        }
+        else
+        {
+            digi_idle_ticks = 0;
+        }
+    }
+
     // the stop watch for reverting to default profile
     static time_t last_time = 0;
 

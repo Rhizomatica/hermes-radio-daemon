@@ -141,13 +141,6 @@ int radae_rx_write_modem_iq(radae_context *ctx, const float *iq_samples, int n_s
 // Returns number of samples read
 int radae_rx_read_speech(radae_context *ctx, float *samples, int max_samples);
 
-// Sample rate conversion utilities
-void resample_96k_to_16k(const double *in, int in_len, float *out, int *out_len);
-void resample_16k_to_96k(const float *in, int in_len, double *out, int *out_len);
-void resample_48k_to_16k(const double *in, int in_len, float *out, int *out_len);
-void resample_96k_to_8k(const double *in, int in_len, float *out, int *out_len);
-void resample_8k_to_96k(const float *in, int in_len, double *out, int *out_len);
-
 // True when RADAE_DEBUG env var was set to 1/true at radae_init time.
 bool radae_is_debug(void);
 
