@@ -166,7 +166,12 @@ static void print_response(const char *resp)
     if (type || strstr(resp, "\"cmd\":\"digi_messages\""))
         printf("%s\n", resp);
     else if (bad) {
-        if (sta) {
+        const char *err = strstr(resp, "\"error\":\"");
+        if (err) {
+            char e[256];
+            sscanf(err + 9, "%255[^\"]", e);
+            printf("ERROR: %s\n", e);
+        } else if (sta) {
             char s[128];
             sscanf(sta + 10, "%127[^\"]", s);
             printf("%s\n", s);
