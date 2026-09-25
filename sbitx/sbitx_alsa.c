@@ -71,7 +71,7 @@ static const unsigned hw_play_n_periods = 8;
 static _Atomic int32_t play_queued_frames = 0;
 
 unsigned int loopback_rate = 48000; /* Sample rate */
-snd_pcm_uframes_t loopback_period_size = 256; // in frames
+enum { LOOPBACK_PERIOD = 256 }; // frames: at 48 kHz, one 512-frame period of the 96 kHz codec
 uint64_t loopback_n_periods = 4; // number of periods
 
 snd_pcm_format_t format = SND_PCM_FORMAT_S32_LE;
@@ -861,8 +861,62 @@ void *radio_playback_thread(void *device_ptr)
     return NULL;
 }
 
+/* The snd-aloop cables run with timer_source=hw:0,0: the codec's period
+ * clocks them, and both ends of a cable must use the same period size, set
+ * by whoever opens it first. radiod's LOOPBACK_PERIOD at 48 kHz is exactly
+ * one codec period; a cable the modem opened first keeps the modem's period
+ * (e.g. 288 frames), no longer lines up with the timer, and the stream
+ * XRUNs on every tick, which no re-prepare can fix. Say so plainly. */
+static void loop_check_period(const char *device, snd_pcm_uframes_t period)
+{
+    if (period != LOOPBACK_PERIOD)
+        fprintf(stderr, "loopback %s: the cable is already set to %lu-frame periods, not %d "
+                        "(the modem opened it first?). It will not run in step with the "
+                        "codec: restart the modem now that radiod is up.\n",
+                device, (unsigned long) period, LOOPBACK_PERIOD);
+}
+
+/* Both loop threads report here once their device is configured, so that
+ * sound_system_wait_ready() can tell systemd the cables are open. */
+static pthread_mutex_t loop_ready_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  loop_ready_cond = PTHREAD_COND_INITIALIZER;
+static int             loop_ready_count, loop_ready_expected;
+
+static void loop_opened(void)
+{
+    pthread_mutex_lock(&loop_ready_lock);
+    loop_ready_count++;
+    pthread_cond_broadcast(&loop_ready_cond);
+    pthread_mutex_unlock(&loop_ready_lock);
+}
+
+bool sound_system_wait_ready(int timeout_ms)
+{
+    struct timespec dl;
+    bool ready;
+
+    clock_gettime(CLOCK_REALTIME, &dl);
+    dl.tv_sec += timeout_ms / 1000;
+    dl.tv_nsec += (long) (timeout_ms % 1000) * 1000000L;
+    if (dl.tv_nsec >= 1000000000L)
+    {
+        dl.tv_sec++;
+        dl.tv_nsec -= 1000000000L;
+    }
+    pthread_mutex_lock(&loop_ready_lock);
+    while (loop_ready_count < loop_ready_expected &&
+           pthread_cond_timedwait(&loop_ready_cond, &loop_ready_lock, &dl) == 0)
+        ;
+    ready = loop_ready_count >= loop_ready_expected;
+    pthread_mutex_unlock(&loop_ready_lock);
+    return ready;
+}
+
 void *loop_capture_thread(void *device_ptr)
 {
+    /* Per thread: both loop threads negotiate a period, and on a cable the
+     * modem opened first the result can differ from LOOPBACK_PERIOD. */
+    snd_pcm_uframes_t period = LOOPBACK_PERIOD;
     char *device = (char *) device_ptr;
     uint32_t exact_rate;
 
@@ -920,7 +974,7 @@ void *loop_capture_thread(void *device_ptr)
     }
 
     /* Set period size. */
-    if ((e = snd_pcm_hw_params_set_period_size_near(loopback_capture_handle, hloop_params, &loopback_period_size, 0)) < 0)
+    if ((e = snd_pcm_hw_params_set_period_size_near(loopback_capture_handle, hloop_params, &period, 0)) < 0)
     {
         fprintf (stderr, "cannot set period size (%s)\n",snd_strerror (e));
         return NULL;
@@ -937,6 +991,8 @@ void *loop_capture_thread(void *device_ptr)
         fprintf(stderr, "*Error setting capture HW params.\n");
         return NULL;
     }
+    loop_check_period(device, period);
+    loop_opened();
 
 #ifdef DEBUG_
     printf("============= REPORT LOOPBACK CAPTURE DEVICE %s ==============\n", device);
@@ -946,7 +1002,7 @@ void *loop_capture_thread(void *device_ptr)
     // TODO: apply sw parameters... ?
 
     int sample_size = snd_pcm_format_width(format) / 8;
-    uint32_t buffer_size = loopback_period_size * sample_size * channels;
+    uint32_t buffer_size = period * sample_size * channels;
 
     uint8_t *buffer = malloc(buffer_size);
 
@@ -957,7 +1013,7 @@ void *loop_capture_thread(void *device_ptr)
     while (!shutdown_)
     {
 
-        if ((e = snd_pcm_mmap_readi(loopback_capture_handle, buffer, loopback_period_size)) != loopback_period_size)
+        if ((e = snd_pcm_mmap_readi(loopback_capture_handle, buffer, period)) != period)
         {
 
             fprintf (stderr, "read from audio interface %s failed (%s)\n", device, snd_strerror (e));
@@ -967,7 +1023,7 @@ void *loop_capture_thread(void *device_ptr)
             }
             else if (e < 0) {
                 fprintf(stderr,"error from readi: %s\n", snd_strerror(e));
-            } else if (e != loopback_period_size)
+            } else if (e != period)
             {
                 fprintf(stderr, "short read, read %d frames\n", e);
             }
@@ -986,6 +1042,9 @@ void *loop_capture_thread(void *device_ptr)
 
 void *loop_playback_thread(void *device_ptr)
 {
+    /* Per thread: both loop threads negotiate a period, and on a cable the
+     * modem opened first the result can differ from LOOPBACK_PERIOD. */
+    snd_pcm_uframes_t period = LOOPBACK_PERIOD;
     char *device = (char *) device_ptr;
     uint32_t exact_rate;
 
@@ -1045,7 +1104,7 @@ void *loop_playback_thread(void *device_ptr)
     }
 
     /* Set period size. */
-    if ((e = snd_pcm_hw_params_set_period_size_near(loopback_play_handle, hloop_params, &loopback_period_size, 0)) < 0)
+    if ((e = snd_pcm_hw_params_set_period_size_near(loopback_play_handle, hloop_params, &period, 0)) < 0)
     {
         fprintf (stderr, "cannot set period size (%s)\n",snd_strerror (e));
         return NULL;
@@ -1063,6 +1122,8 @@ void *loop_playback_thread(void *device_ptr)
         fprintf(stderr, "*Error setting loopback playback HW params.\n");
         return NULL;
     }
+    loop_check_period(device, period);
+    loop_opened();
 
 #ifdef DEBUG_
     printf("============= REPORT LOOPBACK PLAYBACK DEVICE %s =============\n", device);
@@ -1071,7 +1132,7 @@ void *loop_playback_thread(void *device_ptr)
 #endif
 
     int sample_size = snd_pcm_format_width(format) / 8;
-    uint32_t buffer_size = loopback_period_size * sample_size * channels;
+    uint32_t buffer_size = period * sample_size * channels;
 
     uint8_t *buffer = malloc(buffer_size);
     uint8_t *silence = (uint8_t *) calloc(1, buffer_size);
@@ -1082,24 +1143,24 @@ void *loop_playback_thread(void *device_ptr)
      * row. Same treatment as the codec: 2 periods of slack, and keep
      * running through an underrun. */
     enum { LOOP_PRIME_PERIODS = 2 };
-    play_setup_sw(loopback_play_handle, loopback_period_size, LOOP_PRIME_PERIODS,
+    play_setup_sw(loopback_play_handle, period, LOOP_PRIME_PERIODS,
                   "loopback playback");
 
     snd_pcm_prepare(loopback_play_handle);
     snd_pcm_drop(loopback_play_handle);
     snd_pcm_prepare(loopback_play_handle);
-    play_prime(loopback_play_handle, silence, loopback_period_size, LOOP_PRIME_PERIODS);
+    play_prime(loopback_play_handle, silence, period, LOOP_PRIME_PERIODS);
 
     while (!shutdown_)
     {
         read_buffer(dsp_to_loopback, buffer, buffer_size);
 
-        play_catch_up(loopback_play_handle, loopback_period_size * loopback_n_periods,
-                      LOOP_PRIME_PERIODS * loopback_period_size, loopback_rate,
+        play_catch_up(loopback_play_handle, period * loopback_n_periods,
+                      LOOP_PRIME_PERIODS * period, loopback_rate,
                       "loopback playback");
 
     try_again_loop_play:
-        if ((e = snd_pcm_mmap_writei(loopback_play_handle, buffer, loopback_period_size)) != loopback_period_size)
+        if ((e = snd_pcm_mmap_writei(loopback_play_handle, buffer, period)) != period)
         {
             fprintf (stderr, "write to audio interface %s failed (%s)\n", device, snd_strerror (e));
             if (e == -EPIPE)
@@ -1109,13 +1170,13 @@ void *loop_playback_thread(void *device_ptr)
             else if (e < 0)
             {
                 fprintf(stderr, "error from writei: %s\n", snd_strerror(e));
-            } else if (e != loopback_period_size)
+            } else if (e != period)
             {
                 fprintf(stderr, "short write, wrote %d frames\n", e);
             }
 
             snd_pcm_prepare (loopback_play_handle);
-            play_prime(loopback_play_handle, silence, loopback_period_size, LOOP_PRIME_PERIODS);
+            play_prime(loopback_play_handle, silence, period, LOOP_PRIME_PERIODS);
             goto try_again_loop_play;
         }
     }
@@ -1147,7 +1208,7 @@ void *control_thread(void *device_ptr)
 
     // as we are hardcoding block sizes... this gets false
 #if 0
-    if (hw_period_size != (loopback_period_size * 2))
+    if (hw_period_size != (LOOPBACK_PERIOD * 2))
     {
         fprintf(stderr, "Hardware 96 kHz sound period size != (Loopback 48 kHz period size * 2)\n");
         block_size = hw_period_size;
@@ -1332,6 +1393,10 @@ void sound_system_init(radio *radio_h, pthread_t *control_tid, pthread_t *radio_
         return;
 
     initialize_buffers();
+
+    pthread_mutex_lock(&loop_ready_lock);
+    loop_ready_expected = 2;            /* loop capture + loop playback */
+    pthread_mutex_unlock(&loop_ready_lock);
 
     pthread_create(radio_playback, NULL, radio_playback_thread, (void*)radio_playback_dev);
     pthread_create(loop_playback, NULL, loop_playback_thread, (void*)loop_playback_dev);

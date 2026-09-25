@@ -6,7 +6,10 @@ After=network.target
 Conflicts=sbitx.service
 
 [Service]
-Type=exec
+# notify: radiod reports READY once it is up and, on the sBitx, once its
+# loopback cables are configured, so units ordered after it (the modem) open
+# the cables second and inherit radiod's period.
+Type=notify
 User=root
 Group=root
 SupplementaryGroups=ssl-cert

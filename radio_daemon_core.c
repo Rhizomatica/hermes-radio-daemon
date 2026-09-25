@@ -15,6 +15,10 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <stddef.h>
+#include <errno.h>
 #include "cfg_utils.h"
 #include "radio_backend.h"
 #include "radio_daemon_core.h"
@@ -27,6 +31,30 @@
 #include "loop_audio.h"
 #include "rtp_audio.h"
 #include "voice_crypto.h"
+#include "sbitx/sbitx_alsa.h"
+
+/* systemd's sd_notify("READY=1") without libsystemd: one datagram to
+ * $NOTIFY_SOCKET (a leading '@' is an abstract socket). No-op when not
+ * started by systemd with Type=notify. */
+static void notify_systemd_ready(void)
+{
+    const char *path = getenv("NOTIFY_SOCKET");
+    struct sockaddr_un sa = { .sun_family = AF_UNIX };
+    size_t len;
+    int fd;
+
+    if (!path || (path[0] != '/' && path[0] != '@') || (len = strlen(path)) >= sizeof(sa.sun_path))
+        return;
+    memcpy(sa.sun_path, path, len);
+    if (sa.sun_path[0] == '@')
+        sa.sun_path[0] = '\0';
+    if ((fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0)) < 0)
+        return;
+    if (sendto(fd, "READY=1", 7, 0, (struct sockaddr *) &sa,
+               (socklen_t) (offsetof(struct sockaddr_un, sun_path) + len)) < 0)
+        fprintf(stderr, "radio_daemon: sd_notify READY failed: %s\n", strerror(errno));
+    close(fd);
+}
 
 extern _Atomic bool shutdown_;
 
@@ -175,6 +203,16 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     /* Optional local-headset path. No-op when devices aren't configured. */
     if (audio_headset_init(&radio_h))
         headset_started = true;
+
+    /* Tell systemd we are up (Type=notify). On the sBitx, wait until the
+     * loopback threads have configured the snd-aloop cables first: the
+     * modem must open them after radiod, which sets the period the codec
+     * timer needs (see loop_check_period). Bounded, so a missing loopback
+     * cannot hold the unit in "activating". */
+    if (radio_h.backend_kind == RADIO_BACKEND_HFSIGNALS && !sound_system_wait_ready(5000))
+        fprintf(stderr, "radio_daemon: loopback devices not configured after 5 s; "
+                        "reporting ready anyway\n");
+    notify_systemd_ready();
 
     pthread_join(io_tid, NULL);
     io_started = false;
