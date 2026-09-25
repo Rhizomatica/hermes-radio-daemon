@@ -16,6 +16,9 @@ bool sbitx_ft8_init(void);
 void sbitx_ft8_shutdown(void);
 
 int  sbitx_ft8_encode(const char *message, float *signal, int max_samples, float tone_freq);
+/* The text is a valid FT8 message (standard, or free text of at most 13
+ * characters of A-Z 0-9 space + - . / ?). */
+bool sbitx_ft8_can_encode(const char *message);
 int  sbitx_ft8_decode(float *audio_12k, int nsamples, char *decoded, int max_decoded_len);
 
 int  sbitx_ft8_spool_count(void);

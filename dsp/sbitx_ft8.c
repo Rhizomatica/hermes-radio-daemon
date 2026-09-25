@@ -98,6 +98,12 @@ bool sbitx_ft8_init(void)
 
 void sbitx_ft8_shutdown(void) {}
 
+bool sbitx_ft8_can_encode(const char *message)
+{
+    ftx_message_t msg;
+    return message && ftx_message_encode(&msg, NULL, message) == FTX_MESSAGE_RC_OK;
+}
+
 int sbitx_ft8_encode(const char *message, float *signal, int max_samples,
                      float tone_freq)
 {
