@@ -383,6 +383,8 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     radio_h->dstar_af_gain = (float) iniparser_getdouble(ini, "main:dstar_af_gain", 1.0);
     i = iniparser_getint(ini, "main:dstar_clock_ppm", 0);
     radio_h->dstar_clock_ppm = (int32_t) i;
+    i = iniparser_getint(ini, "main:mic_highpass_hz", 200);
+    radio_h->mic_highpass_hz = (uint32_t) (i < 0 ? 0 : i);
     i = iniparser_getint(ini, "main:dstar_verbose", 0);
     radio_h->dstar_verbose = (uint16_t) i;
     i = iniparser_getint(ini, "main:dstar_denoise", 1);

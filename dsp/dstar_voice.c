@@ -30,10 +30,32 @@ static const uint8_t NULL_AMBE[9] = {0x9EU, 0x8DU, 0x32U, 0x88U, 0x26U, 0x1AU, 0
 /* A synced receiver that sees no sync-block unit at all for this many
  * superframes is hearing a clear over (a missed EOT): drop the sync. */
 #define RX_MAX_MISS 8
-/* Sync blocks failing the key check before the status reads "bad key", and,
- * in a row, before a locked receiver unlocks (the key no longer matches). */
-#define RX_BAD_KEY_AFTER 3
-#define RX_UNLOCK_AFTER  3
+/* Robust lock: the last DSTAR_VC_DIST_HIST (5) checks within this many
+ * bits of the expected ones in total. A wrong key gives each 8-bit check 4
+ * wrong bits on average, so 40 bits within 3 happens once in ~10^8 (the
+ * clean fast lock: once in 65536); the right key passes ~92% of the time
+ * at 4% bit errors, ~99% at 2%. */
+#define RX_LOCK_MAX_BITS 3
+/* Unlock: CUSUM of ln(P_wrong(d) / P_right(d)) for each check distance d,
+ * P_wrong = Binomial(8, 0.5), P_right = Binomial(8, 0.04), in tenths of a
+ * nat, floored at 0. A wrong key adds ~7 nats a block (unlocks in ~1.4),
+ * the right key at 4% bit errors drifts down and crosses 10 nats about
+ * once in 2e4 blocks (~2.6 h of continuous talk), after which the next
+ * two exact sync blocks relock it (~0.8 s). */
+static const int16_t RX_LLR[9] = { -52, -20, 11, 43, 75, 107, 130, 140, 150 };
+#define RX_CUSUM_UNLOCK  100
+/* A check this many bits off counts against the key. The right key at 3%
+ * bit errors misses by 3+ bits in ~0.13% of blocks, a wrong key in ~85%.
+ * Two such blocks among the last three unlock a locked receiver (right
+ * key: once in ~2e5 superframes, ~55 h; wrong key: ~94% per window), and
+ * half or more of the recent ones make an unlocked receiver read "bad
+ * key". */
+#define RX_BAD_BITS      3
+/* Votes kept per bit of R before halving, so a new R can win quickly. */
+#define RX_VOTE_CAP      16
+/* The sync-block type byte, allowing one flipped bit (0x55, the header
+ * type, is three bits away). */
+#define RX_TYPE_MAX_BITS 1
 
 static bool keystream_xor(const uint8_t r[VOICE_NONCE_RAND_BYTES], uint32_t frame_idx,
                           char ambe_d[DSTAR_VOICE_AMBE_BITS])
@@ -54,6 +76,29 @@ static bool sync_check(const uint8_t r[VOICE_NONCE_RAND_BYTES], uint16_t sf, uin
         return false;
     *check = blk[0];
     return true;
+}
+
+/* The header carries R in bytes 3..8 and a keyed 64-bit check in 9..16
+ * (both repeater fields; HF simplex does not use them). 64 bits, so a wrong
+ * key never passes (a 16-bit check let one through once in 65536 overs). */
+#define HDR_R_OFF     3
+#define HDR_CHK_OFF   9
+#define HDR_CHK_BYTES 8
+
+static bool hdr_check(const uint8_t r[VOICE_NONCE_RAND_BYTES], uint8_t chk[HDR_CHK_BYTES])
+{
+    uint8_t blk[VOICE_BLOCK_BYTES];
+    if (!voice_crypto_block(VOICE_DOMAIN_HDRCHECK, r, 0, blk))
+        return false;
+    memcpy(chk, blk, HDR_CHK_BYTES);
+    return true;
+}
+
+static bool hdr_crc_ok(const uint8_t h[SBITX_DSTAR_HEADER_BYTES])
+{
+    uint16_t crc = sbitx_dstar_crc16(h, SBITX_DSTAR_HEADER_BYTES - 2U);
+    return h[SBITX_DSTAR_HEADER_BYTES - 2U] == (uint8_t) (crc & 0xFFU) &&
+           h[SBITX_DSTAR_HEADER_BYTES - 1U] == (uint8_t) (crc >> 8);
 }
 
 /* ── TX ─────────────────────────────────────────────────────────── */
@@ -89,6 +134,13 @@ void dstar_voice_tx_begin(dstar_voice_tx *t, const char *mycall8, const char *ur
     memcpy(t->header + 19, urcall8, 8);
     memcpy(t->header + 27, mycall8, 8);
     t->header[35] = 'A';
+    if (t->encrypt) {
+        /* R and its keyed check in the first repeater field, under the
+         * header's FEC and CRC. */
+        memcpy(t->header + HDR_R_OFF, t->r, VOICE_NONCE_RAND_BYTES);
+        if (!hdr_check(t->r, t->header + HDR_CHK_OFF))
+            t->fail_closed = true;
+    }
     sbitx_dstar_header_finalize(t->header);
 
     if (t->encrypt)
@@ -179,6 +231,22 @@ void dstar_voice_tx_frame(dstar_voice_tx *t, const char ambe_d[DSTAR_VOICE_AMBE_
 
 /* ── RX ─────────────────────────────────────────────────────────── */
 
+static int popc8(uint8_t x)
+{
+    return __builtin_popcount(x);
+}
+
+static void rx_forget_votes(dstar_voice_rx *r)
+{
+    memset(r->vote_one, 0, sizeof(r->vote_one));
+    r->vote_n = 0;
+    r->off_n = 0;
+    r->dist_n = 0;
+    r->last_exact = false;
+    r->bad_key = false;
+    r->blk_n = 0;
+}
+
 void dstar_voice_rx_reset(dstar_voice_rx *r)
 {
     memset(r, 0, sizeof(*r));
@@ -195,8 +263,67 @@ void dstar_voice_rx_header(dstar_voice_rx *r, const uint8_t header[SBITX_DSTAR_H
     if (!r->hdr_enc) {
         r->synced = false;
         r->enc_seen = false;
-        r->cand = false;
+        r->hdr_bad = false;
+        r->hdr_r_valid = false;
+        rx_forget_votes(r);
+        return;
     }
+
+    /* An encrypted header whose CRC checks gives R with certainty. */
+    uint8_t want[HDR_CHK_BYTES];
+    if (!hdr_crc_ok(header) || !hdr_check(header + HDR_R_OFF, want))
+        return;                          /* corrupt, or no key: the status says so */
+    if (memcmp(header + HDR_CHK_OFF, want, HDR_CHK_BYTES) != 0) {
+        /* Not corruption (the CRC checked): the key is wrong. */
+        r->hdr_bad = true;
+        r->bad_key = true;
+        r->synced = false;
+        r->hdr_r_valid = false;
+        return;
+    }
+    r->hdr_bad = false;
+    r->bad_key = false;
+    if (r->synced && memcmp(r->r, header + HDR_R_OFF, VOICE_NONCE_RAND_BYTES) == 0)
+        return;                          /* the header repeating our own over */
+    if (r->frames == 0) {
+        /* The start of the over: decrypt from the first voice frame. The
+         * counter is bumped to 0 when that frame (fc 0) arrives. */
+        memcpy(r->r, header + HDR_R_OFF, VOICE_NONCE_RAND_BYTES);
+        r->sf = UINT32_MAX;
+        r->synced = true;
+        r->cusum = 0;
+        r->dist_n = 0;
+        r->enc_seen = true;
+    } else {
+        /* Mid-over (the slow-data repetition): R is known and the key is
+         * right; the next sync block gives the counter. */
+        memcpy(r->hdr_r, header + HDR_R_OFF, VOICE_NONCE_RAND_BYTES);
+        r->hdr_r_valid = true;
+        r->synced = false;
+    }
+}
+
+/* Of the last `last` blocks (fewer if fewer were seen), how many had a
+ * check RX_BAD_BITS or more off; *n receives how many were looked at. */
+static int rx_bad_blocks(const dstar_voice_rx *r, int last, int *n)
+{
+    int have = r->dist_n < DSTAR_VC_DIST_HIST ? r->dist_n : DSTAR_VC_DIST_HIST;
+    if (last > have)
+        last = have;
+    int bad = 0;
+    for (int k = 1; k <= last; k++)
+        bad += r->dist_hist[(r->dist_n - k) % DSTAR_VC_DIST_HIST] >= RX_BAD_BITS;
+    *n = last;
+    return bad;
+}
+
+/* Once seen, the verdict holds for the rest of the over (until a lock). */
+static bool bad_key_evidence(dstar_voice_rx *r)
+{
+    int n, bad = rx_bad_blocks(r, DSTAR_VC_DIST_HIST, &n);
+    if (n >= DSTAR_VC_DIST_HIST && bad >= DSTAR_VC_DIST_HIST - 1)   /* a lock that went bad */
+        r->bad_key = true;
+    return r->bad_key;
 }
 
 static void rx_status_unsynced(dstar_voice_rx *r)
@@ -205,10 +332,68 @@ static void rx_status_unsynced(dstar_voice_rx *r)
         r->status = DSTAR_VC_CLEAR;
     else if (!voice_crypto_have_key())
         r->status = DSTAR_VC_NO_KEY;
-    else if (r->bad >= RX_BAD_KEY_AFTER)
+    else if (bad_key_evidence(r))
         r->status = DSTAR_VC_BAD_KEY;
     else
         r->status = DSTAR_VC_ACQUIRING;
+}
+
+/* Add a block's R to the vote and write the current majority to out. A tie
+ * takes the block's own bit. */
+static void rx_vote_r(dstar_voice_rx *r, const uint8_t *rb, uint8_t out[VOICE_NONCE_RAND_BYTES])
+{
+    if (r->vote_n >= RX_VOTE_CAP) {
+        for (int i = 0; i < VOICE_NONCE_RAND_BYTES * 8; i++)
+            r->vote_one[i] = (uint8_t) ((r->vote_one[i] + 1) / 2);
+        r->vote_n = RX_VOTE_CAP / 2;
+    }
+    r->vote_n++;
+    memset(out, 0, VOICE_NONCE_RAND_BYTES);
+    for (int i = 0; i < VOICE_NONCE_RAND_BYTES * 8; i++) {
+        int bit = (rb[i >> 3] >> (7 - (i & 7))) & 1;
+        r->vote_one[i] = (uint8_t) (r->vote_one[i] + bit);
+        int two = 2 * r->vote_one[i];
+        int maj = two > r->vote_n ? 1 : two < r->vote_n ? 0 : bit;
+        out[i >> 3] |= (uint8_t) (maj << (7 - (i & 7)));
+    }
+}
+
+/* Add a block's counter offset and return the most common recent offset
+ * (the block's own when none repeats yet). */
+static uint16_t rx_vote_off(dstar_voice_rx *r, uint16_t off)
+{
+    r->off_hist[r->off_n % DSTAR_VC_OFF_HIST] = off;
+    r->off_n++;
+    int n = r->off_n < DSTAR_VC_OFF_HIST ? r->off_n : DSTAR_VC_OFF_HIST;
+    uint16_t best = off;
+    int best_c = 1;
+    for (int i = 0; i < n; i++) {
+        int c = 0;
+        for (int j = 0; j < n; j++)
+            c += r->off_hist[j] == r->off_hist[i];
+        if (c > best_c) {
+            best_c = c;
+            best = r->off_hist[i];
+        }
+    }
+    return best;
+}
+
+static void rx_push_dist(dstar_voice_rx *r, int d)
+{
+    r->dist_hist[r->dist_n % DSTAR_VC_DIST_HIST] = (uint8_t) d;
+    if (r->dist_n < 0xFFU)
+        r->dist_n++;
+}
+
+static void rx_lock(dstar_voice_rx *r, const uint8_t rr[VOICE_NONCE_RAND_BYTES], uint16_t sf)
+{
+    memcpy(r->r, rr, VOICE_NONCE_RAND_BYTES);
+    r->sf = sf;
+    r->synced = true;
+    r->bad_key = false;
+    r->cusum = 0;
+    r->dist_n = 0;           /* judge the lock from here on */
 }
 
 /* Slots 17..20 of the current superframe are in: look for a sync block. */
@@ -218,7 +403,7 @@ static void rx_try_sync(dstar_voice_rx *r)
     memcpy(ua, r->slow[0], 3); memcpy(ua + 3, r->slow[1], 3);
     memcpy(ub, r->slow[2], 3); memcpy(ub + 3, r->slow[3], 3);
 
-    if (ub[0] != DSTAR_VC_SLOW_TYPE)
+    if (popc8((uint8_t) (ub[0] ^ DSTAR_VC_SLOW_TYPE)) > RX_TYPE_MAX_BITS)
         return;
 
     r->enc_seen = true;
@@ -226,51 +411,99 @@ static void rx_try_sync(dstar_voice_rx *r)
     memcpy(sync, ua + 2, 4);
     memcpy(sync + 4, ub + 1, 5);
 
-    const uint16_t sf = (uint16_t) ((sync[6] << 8) | sync[7]);
+    const uint16_t sf_blk = (uint16_t) ((sync[6] << 8) | sync[7]);
     uint8_t check;
-    if (!sync_check(sync, sf, &check) || check != sync[8]) {
-        /* A failure breaks a pending confirmation, and a run of them means
-         * the key does not match (wrong key, key changed mid-over, or the
-         * rare two-block false lock): stop decrypting, mute. */
-        r->cand = false;
-        r->last_ok = false;
-        if (r->bad < 0xFFU)
-            r->bad++;
-        if (r->synced && r->bad >= RX_UNLOCK_AFTER)
-            r->synced = false;
+    if (!sync_check(sync, sf_blk, &check))
+        return;                              /* no key: status says so */
+    const bool exact = check == sync[8];
+
+    /* Two consecutive exact blocks, same R, counters one superframe apart
+     * per our own count: the clean-link fast lock. */
+    const bool fast = exact && r->last_exact &&
+                      memcmp(r->last_r, sync, VOICE_NONCE_RAND_BYTES) == 0 &&
+                      (uint16_t) (sf_blk - r->last_sf) == (uint16_t) (r->local_sf - r->last_local);
+    r->last_exact = exact;
+    memcpy(r->last_r, sync, VOICE_NONCE_RAND_BYTES);
+    r->last_sf = sf_blk;
+    r->last_local = r->local_sf;
+
+    if (!r->synced && r->hdr_bad)
+        return;                          /* the header proved the key wrong */
+
+    if (!r->synced && r->hdr_r_valid) {
+        /* R and the key are known from the header: the block only has to
+         * give the counter. An exact check on the block's own counter
+         * (with R certain, a corrupt counter passes once in 256) locks. */
+        uint8_t c;
+        if (sync_check(r->hdr_r, sf_blk, &c) && c == sync[8]) {
+            rx_forget_votes(r);
+            rx_lock(r, r->hdr_r, sf_blk);
+        }
         return;
     }
-
-    /* A lone pass after failures is what a wrong key produces once in 256
-     * blocks, so it does not clear the failure count; two in a row, or a
-     * confirmed lock, do. */
-    const bool run = r->last_ok;
-    r->last_ok = true;
 
     if (r->synced) {
-        if (memcmp(r->r, sync, VOICE_NONCE_RAND_BYTES) == 0) {
-            r->sf = sf;          /* same over: keep the frame count honest */
-            if (run)
-                r->bad = 0;
+        /* Judge the lock against its own R and counter. */
+        uint8_t want;
+        if (!sync_check(r->r, (uint16_t) r->sf, &want))
+            return;
+        /* Re-align the counter only on two consecutive exact blocks that
+         * agree: with bit errors, one block whose counter field is corrupt
+         * still passes the check once in 256 times, and following it
+         * decrypted the next superframes with the wrong keystream. */
+        if (fast && memcmp(r->r, sync, VOICE_NONCE_RAND_BYTES) == 0)
+            r->sf = sf_blk;
+        if (fast && memcmp(r->r, sync, VOICE_NONCE_RAND_BYTES) != 0) {
+            rx_forget_votes(r);              /* a new over, confirmed twice */
+            rx_lock(r, sync, sf_blk);
             return;
         }
-        r->synced = false;       /* another over: confirm it before playing */
-    }
-
-    /* One byte of check lets a wrong key through once in 256 blocks: lock
-     * only when the next superframe's block confirms this one. */
-    if (r->cand && memcmp(r->cand_r, sync, VOICE_NONCE_RAND_BYTES) == 0 && r->cand_sf == sf) {
-        memcpy(r->r, sync, VOICE_NONCE_RAND_BYTES);
-        r->sf = sf;
-        r->synced = true;
-        r->cand = false;
-        r->bad = 0;
+        const int d = popc8((uint8_t) (want ^ sync[8]));
+        rx_push_dist(r, d);
+        int s = r->cusum + RX_LLR[d];
+        r->cusum = (int16_t) (s < 0 ? 0 : s);
+        if (r->cusum >= RX_CUSUM_UNLOCK) {
+            /* The key does not match (changed mid-over, or a false lock).
+             * The status reads "bad key" right away; R has not changed, so
+             * the votes stay valid. */
+            r->synced = false;
+            r->bad_key = true;
+        }
         return;
     }
-    r->cand = true;
-    r->cand_age = 0;
-    memcpy(r->cand_r, sync, VOICE_NONCE_RAND_BYTES);
-    r->cand_sf = sf;
+
+    if (fast) {
+        rx_lock(r, sync, sf_blk);
+        return;
+    }
+
+    /* Robust path: majority R and the most common counter offset, then
+     * re-score every kept block's check against both -- blocks scored
+     * before the vote converged would otherwise hold the lock back. */
+    uint8_t vr[VOICE_NONCE_RAND_BYTES];
+    rx_vote_r(r, sync, vr);
+    const uint16_t off = rx_vote_off(r, (uint16_t) (sf_blk - (uint16_t) r->local_sf));
+    r->blk_chk[r->blk_n % DSTAR_VC_DIST_HIST] = sync[8];
+    r->blk_local[r->blk_n % DSTAR_VC_DIST_HIST] = r->local_sf;
+    if (r->blk_n < 0xFFU)
+        r->blk_n++;
+
+    const int n = r->blk_n < DSTAR_VC_DIST_HIST ? r->blk_n : DSTAR_VC_DIST_HIST;
+    int bits = 0, bad = 0;
+    for (int i = 0; i < n; i++) {
+        uint8_t want;
+        if (!sync_check(vr, (uint16_t) (r->blk_local[i] + off), &want))
+            return;
+        int d = popc8((uint8_t) (want ^ r->blk_chk[i]));
+        bits += d;
+        bad += d >= RX_BAD_BITS;
+    }
+    /* Only a full window: before the R vote settles, bit errors alone
+     * make blocks look bad (the right key read "bad key" on air). */
+    if (n >= DSTAR_VC_DIST_HIST && bad >= DSTAR_VC_DIST_HIST - 1)
+        r->bad_key = true;               /* the status reads "bad key" */
+    if (n >= DSTAR_VC_DIST_HIST && bits <= RX_LOCK_MAX_BITS)
+        rx_lock(r, vr, (uint16_t) (r->local_sf + off));
 }
 
 bool dstar_voice_rx_frame(dstar_voice_rx *r, const uint8_t frame[SBITX_DSTAR_FRAME_BYTES],
@@ -283,22 +516,20 @@ bool dstar_voice_rx_frame(dstar_voice_rx *r, const uint8_t frame[SBITX_DSTAR_FRA
         /* A new superframe. A missed data sync lets fc run past 20, so
          * advance by however many superframes actually went by. */
         const uint32_t elapsed = (uint32_t) (r->last_fc / DSTAR_VOICE_SF_FRAMES) + 1U;
+        r->local_sf += elapsed;
         if (r->synced) {
             r->sf += elapsed;
             if (++r->miss > RX_MAX_MISS) {
                 r->synced = false;
                 r->enc_seen = false;
+                rx_forget_votes(r);
             }
-        }
-        /* A candidate must be confirmed by the very next superframe. */
-        if (r->cand) {
-            r->cand_sf += elapsed;
-            if (++r->cand_age > 1)
-                r->cand = false;
         }
         r->slow_mask = 0;
     }
     r->last_fc = fc;
+    if (r->frames < UINT32_MAX)
+        r->frames++;
 
     if (fc >= SYNC_FIRST_SLOT && fc <= SYNC_LAST_SLOT) {
         for (int i = 0; i < 3; i++)

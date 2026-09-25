@@ -36,6 +36,7 @@
 #include "../radio_media.h"
 #include "../audio_bridge.h"
 #include "../rtp_audio.h"
+#include "../dsp/mic_filter.h"
 
 char *radio_capture_dev = "hw:0,0";
 char *radio_playback_dev = "hw:0,0";
@@ -45,6 +46,8 @@ char *loop_playback_dev = "hw:1,0";
 #define MIC_INJECT_PATH "/tmp/sbitx_mic_inject.s32"
 #define RX_SPEAKER_DUMP_TRIGGER "/tmp/sbitx_rx_speaker_dump"
 #define RX_SPEAKER_DUMP_PATH "/tmp/sbitx_rx_speaker_dump.s32"
+#define MIC_DUMP_TRIGGER "/tmp/sbitx_mic_dump"
+#define MIC_DUMP_PATH "/tmp/sbitx_mic_dump.s32"
 
 // mixer device
 char *radio_ctl = "hw:0";
@@ -57,6 +60,7 @@ snd_pcm_t *loopback_play_handle;
 static int mic_inject_fd = -1;
 static bool mic_inject_missing_logged = false;
 static FILE *rx_speaker_dump_fp = NULL;
+static FILE *mic_dump_fp = NULL;
 
 unsigned int hw_rate = 96000; /* Sample rate */
 snd_pcm_uframes_t hw_period_size = 512; // in frames
@@ -98,6 +102,9 @@ static void close_rx_speaker_dump(void)
         fclose(rx_speaker_dump_fp);
 
     rx_speaker_dump_fp = NULL;
+    if (mic_dump_fp)
+        fclose(mic_dump_fp);
+    mic_dump_fp = NULL;
 }
 
 // Optional test hook: if /tmp/sbitx_mic_inject.s32 exists, use it as the TX
@@ -105,6 +112,21 @@ static void close_rx_speaker_dump(void)
 static bool read_mic_inject(uint8_t *buffer, uint32_t size)
 {
     size_t offset = 0;
+
+    /* Follow the path, not the open file: deleting or replacing the file
+     * must end or change the injection. Holding the descriptor kept a
+     * deleted file looping, so every later transmission sent it in place
+     * of the real mic -- silence, from a test that had injected zeros. */
+    if (mic_inject_fd >= 0)
+    {
+        struct stat path_st, fd_st;
+        if (stat(MIC_INJECT_PATH, &path_st) != 0 || fstat(mic_inject_fd, &fd_st) != 0 ||
+            path_st.st_ino != fd_st.st_ino || path_st.st_dev != fd_st.st_dev)
+        {
+            fprintf(stderr, "Mic inject ended: %s removed or replaced\n", MIC_INJECT_PATH);
+            close_mic_inject();
+        }
+    }
 
     while (offset < size)
     {
@@ -159,26 +181,52 @@ static bool read_mic_inject(uint8_t *buffer, uint32_t size)
     return true;
 }
 
-// Optional test hook: if /tmp/sbitx_rx_speaker_dump exists, dump the exact
-// 96 kHz mono S32_LE speaker buffer sent to the audio output.
+/* Optional test hooks. While the trigger file exists, the matching 96 kHz
+ * mono S32_LE buffer is appended to the dump file; removing the trigger
+ * closes it. Each hook checks its trigger about every 250 ms (24 of its
+ * own blocks: one counter per hook -- a shared one advanced twice a block,
+ * so only one of the two hooks ever reached a check).
+ *   /tmp/sbitx_rx_speaker_dump -> the speaker buffer, receiving only
+ *   /tmp/sbitx_mic_dump        -> the raw mic buffer, always (the mic is
+ *                                 read while receiving too, so no need to
+ *                                 key to record an idle mic) */
+static void dump_hook(FILE **fp, unsigned *tick, const char *trigger, const char *path,
+                      const char *name, const uint8_t *buffer, uint32_t size)
+{
+    if (((*tick)++ % 24) == 0)
+    {
+        bool on = access(trigger, F_OK) == 0;
+        if (on && !*fp)
+        {
+            *fp = fopen(path, "wb");
+            if (!*fp)
+                fprintf(stderr, "Could not open %s dump file %s (%s)\n", name, path, strerror(errno));
+            else
+                fprintf(stderr, "%s dump active: %s\n", name, path);
+        }
+        else if (!on && *fp)
+        {
+            fclose(*fp);
+            *fp = NULL;
+            fprintf(stderr, "%s dump closed: %s\n", name, path);
+        }
+    }
+    if (*fp && buffer && size)
+        fwrite(buffer, 1, size, *fp);
+}
+
 static void maybe_dump_rx_speaker(const uint8_t *buffer, uint32_t size, bool active_rx)
 {
-    if (!active_rx || !buffer || size == 0)
-        return;
+    static unsigned tick;
+    if (active_rx)
+        dump_hook(&rx_speaker_dump_fp, &tick, RX_SPEAKER_DUMP_TRIGGER, RX_SPEAKER_DUMP_PATH,
+                  "RX speaker", buffer, size);
+}
 
-    if (!rx_speaker_dump_fp && access(RX_SPEAKER_DUMP_TRIGGER, F_OK) == 0)
-    {
-        rx_speaker_dump_fp = fopen(RX_SPEAKER_DUMP_PATH, "wb");
-        if (!rx_speaker_dump_fp)
-            fprintf(stderr, "Could not open RX speaker dump file %s (%s)\n", RX_SPEAKER_DUMP_PATH, strerror(errno));
-        else
-            fprintf(stderr, "RX speaker dump active: %s\n", RX_SPEAKER_DUMP_PATH);
-    }
-
-    if (!rx_speaker_dump_fp)
-        return;
-
-    fwrite(buffer, 1, size, rx_speaker_dump_fp);
+static void maybe_dump_mic(const uint8_t *buffer, uint32_t size)
+{
+    static unsigned tick;
+    dump_hook(&mic_dump_fp, &tick, MIC_DUMP_TRIGGER, MIC_DUMP_PATH, "Mic", buffer, size);
 }
 
 void show_alsa(snd_pcm_t *handle, snd_pcm_hw_params_t *params)
@@ -1242,6 +1290,26 @@ void *control_thread(void *device_ptr)
 
         read_buffer(radio_to_dsp, buffer_radio_to_dsp, buffer_size); // mono
         read_buffer(mic_to_dsp, buffer_mic_to_dsp, buffer_size); // mono
+        maybe_dump_mic(buffer_mic_to_dsp, buffer_size);
+
+        /* High-pass the mic before any TX voice path sees it (DC, mains
+         * hum). Runs on every block so the filter state stays continuous;
+         * the cutoff follows core.ini mic_highpass_hz (0 = off). */
+        {
+            static mic_hpf mic_filter;
+            static bool mic_filter_ready;
+            unsigned hz = radio_h_snd->mic_highpass_hz;
+            if (!mic_filter_ready || hz != mic_filter.cutoff_hz)
+            {
+                mic_hpf_setup(&mic_filter, hz, 96000);
+                mic_filter_ready = true;
+                if (mic_filter.cutoff_hz)
+                    fprintf(stderr, "mic high-pass: %u Hz, 4th-order Butterworth\n", mic_filter.cutoff_hz);
+                else
+                    fprintf(stderr, "mic high-pass: off\n");
+            }
+            mic_hpf_run_s32(&mic_filter, (int32_t *) buffer_mic_to_dsp, block_size);
+        }
 
         static int16_t rtp_tx[2048];
         size_t rtp_n = block_size / 2;          /* stereo 48 kHz frames per block */

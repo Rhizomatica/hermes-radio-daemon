@@ -179,6 +179,24 @@ static float tx_float_out[1024];
 static upsample2 loop_up;
 static bool loop_up_ready = false;
 
+/* Test dump hooks: the dump runs while the trigger file exists and closes
+ * as soon as it is removed. Returns the (possibly new or closed) file.
+ * Hooks that only ever opened wrote until radiod restarted. */
+static FILE *dump_follow_trigger(FILE *fp, const char *trigger, const char *path, const char *name)
+{
+    bool want = access(trigger, F_OK) == 0;
+    if (fp == NULL && want) {
+        fp = fopen(path, "wb");
+        if (fp)
+            fprintf(stderr, "%s dump: writing %s\n", name, path);
+    } else if (fp != NULL && !want) {
+        fclose(fp);
+        fp = NULL;
+        fprintf(stderr, "%s dump closed\n", name);
+    }
+    return fp;
+}
+
 static void maybe_dump_tx_modem_iq(const float *iq_samples, int n_complex_samples)
 {
     static FILE *dump_fp = NULL;
@@ -186,12 +204,8 @@ static void maybe_dump_tx_modem_iq(const float *iq_samples, int n_complex_sample
     if (!iq_samples || n_complex_samples <= 0)
         return;
 
-    if (!dump_fp && access("/tmp/radae_tx_dump", F_OK) == 0) {
-        dump_fp = fopen("/tmp/tx_clip.cf32", "wb");
-        if (dump_fp)
-            fprintf(stderr, "RADAE TX dump: writing /tmp/tx_clip.cf32 (complex)\n");
-    }
-
+    dump_fp = dump_follow_trigger(dump_fp, "/tmp/radae_tx_dump", "/tmp/tx_clip.cf32",
+                                  "RADAE TX (complex)");
     if (!dump_fp)
         return;
 
@@ -300,17 +314,14 @@ static void dsp_process_digital_voice_rx(double *rx_baseband_i, double *rx_baseb
     }
 
     // Optional raw 8 kHz complex float32 dump (interleaved I,Q) that feeds the
-    // RADAE RX. Enabled by touching /tmp/radae_rx_dump (file's presence is
-    // checked once per call). Lets us capture a live over-the-air signal
+    // RADAE RX. Runs while /tmp/radae_rx_dump exists (checked once per
+    // call; removing it closes the dump). Lets us capture a live over-the-air signal
     // and offline-decode it with radae_rxe2.py to separate a pipeline
     // issue from a sync/SNR issue.
     {
         static FILE *dump_fp = NULL;
-        if (!dump_fp && access("/tmp/radae_rx_dump", F_OK) == 0) {
-            dump_fp = fopen("/tmp/radae_rx_dump.cf32", "wb");
-            if (dump_fp)
-                fprintf(stderr, "RADAE RX dump: writing /tmp/radae_rx_dump.cf32 (complex)\n");
-        }
+        dump_fp = dump_follow_trigger(dump_fp, "/tmp/radae_rx_dump", "/tmp/radae_rx_dump.cf32",
+                                      "RADAE RX (complex)");
         if (dump_fp) {
             // Write interleaved complex samples for offline analysis
             for (int i = 0; i < modem_len; i++) {
@@ -583,7 +594,24 @@ static inline int dstar_pcm_count(void)
 
 static float dstar_mic8k[160];
 static int   dstar_mic8k_n;
+
+/* D-STAR TX upsampler state (24 kHz GMSK -> 96 kHz). It must start every
+ * over fresh: left over from the previous over, the FIFO still holds its
+ * tail and the fractional position is mid-stream, and the next over came
+ * out ~50 ppm off in symbol timing at the far end (0 ppm on the first
+ * over after a restart, -41..-57 ppm on every later one), which broke up
+ * sBitx-to-sBitx D-STAR. */
+static float  gmsk_fifo[4096];
+static int    gmsk_fifo_n;
+static double tx_up_pos;
 static bool  dstar_tx_keyed;
+/* Set when the EOT is queued, cleared by dsp_dstar_tx_end_over(). While
+ * set, no further mic frame may start an over: the DSP thread runs one
+ * more TX block after PTT-off, and that block used to queue a fresh
+ * header, leaving dstar_tx_keyed true across the end of the over. Every
+ * later over then went out with no preamble and no header (no callsigns,
+ * no encrypted flag), and the far end had to lock on data sync alone. */
+static bool dstar_tx_eot_latched;
 /* The over being transmitted (header, superframe position, encryption) and
  * the one being received (is it encrypted, and its keystream position). */
 static dstar_voice_tx dstar_vtx;
@@ -614,6 +642,23 @@ static void dstar_pcm_fifo_put(const float *pcm, int n)
 
 static long dstar_rx_frame_count;
 
+/* A lock is only trusted -- and played -- once it is confirmed: by a
+ * header whose CRC checks, or by a second data sync one superframe after
+ * the first. The demodulator accepts a 24-bit data sync with 2 bit errors,
+ * which noise matches every ~10 s; unconfirmed, such a lock played up to
+ * 150 frames (3 s) of noise as speech before it was dropped -- the
+ * artifacts heard between overs -- and an over whose header was missed
+ * played its first frames before it could be classified, which for an
+ * encrypted over is ciphertext. */
+static bool dstar_rx_confirmed;
+static int  dstar_rx_syncs;
+
+static void dstar_rx_unconfirm(void)
+{
+    dstar_rx_confirmed = false;
+    dstar_rx_syncs = 0;
+}
+
 static void dstar_rx_data_cb(void *user, const uint8_t *frame)
 {
     (void)user;
@@ -624,8 +669,12 @@ static void dstar_rx_data_cb(void *user, const uint8_t *frame)
 
     /* FEC decode, then decrypt if the over is encrypted; an encrypted over
      * this station cannot decrypt is muted rather than played as noise. */
-    bool play = dstar_voice_rx_frame(&dstar_vrx, frame, sbitx_dstar_rx_frame_index(dstar_rx),
-                                     ambe_d, &res);
+    const uint16_t fc = sbitx_dstar_rx_frame_index(dstar_rx);
+    bool play = dstar_voice_rx_frame(&dstar_vrx, frame, fc, ambe_d, &res);
+    if (fc == 0 && dstar_rx_syncs < 2 && ++dstar_rx_syncs == 2)
+        dstar_rx_confirmed = true;       /* second data sync, in place */
+    if (!dstar_rx_confirmed)
+        play = false;
     radio_h_dsp->dstar_rx_crypto = (uint16_t) dstar_vrx.status;
     if (play)
         mbe_processAmbe2400Data(pcm, &res, ambe_d, &dstar_rx_cur, &dstar_rx_prev, &dstar_rx_enh);
@@ -693,6 +742,12 @@ static void dstar_rx_header_cb(void *user, const uint8_t *header)
     dstar_publish_callsign(radio_h_dsp->dstar_rx_suffix, sizeof(radio_h_dsp->dstar_rx_suffix), suffix);
     radio_h_dsp->dstar_rx_heard++;
     dstar_voice_rx_header(&dstar_vrx, header);
+    {
+        uint16_t crc = sbitx_dstar_crc16(header, SBITX_DSTAR_HEADER_BYTES - 2U);
+        if (header[SBITX_DSTAR_HEADER_BYTES - 2U] == (uint8_t) (crc & 0xFFU) &&
+            header[SBITX_DSTAR_HEADER_BYTES - 1U] == (uint8_t) (crc >> 8))
+            dstar_rx_confirmed = true;
+    }
 
     if (radio_h_dsp->dstar_verbose) {
         fprintf(stderr, "DSTAR header: flags=0x%02x%02x%02x rpt1=%s rpt2=%s ur=%s my=%s suf=%s\n",
@@ -714,11 +769,64 @@ static void dstar_rx_header_cb(void *user, const uint8_t *header)
     }
 }
 
+/* Every header burst the modem collected, decoded or not. The fields that
+ * are the same in every over from one station (flags, calls, suffix) show
+ * how many bits a failed decode got wrong. */
+static uint8_t dstar_hdr_ref[SBITX_DSTAR_HEADER_BYTES];
+static bool    dstar_hdr_ref_valid;
+
+static void dstar_rx_burst_debug_cb(void *user, const uint8_t *h, bool crc_ok, bool soft,
+                                    int32_t corr)
+{
+    (void)user;
+    if (!radio_h_dsp->dstar_verbose)
+        return;
+    char fixed[24] = "?";
+    if (dstar_hdr_ref_valid) {
+        int errs = 0;
+        for (int i = 0; i < SBITX_DSTAR_HEADER_BYTES - 2; i++)
+            if (i < 3 || i >= 19)
+                errs += __builtin_popcount((unsigned) (h[i] ^ dstar_hdr_ref[i]));
+        snprintf(fixed, sizeof(fixed), "%d", errs);
+    }
+    char hex[2 * SBITX_DSTAR_HEADER_BYTES + 1];
+    for (int i = 0; i < SBITX_DSTAR_HEADER_BYTES; i++)
+        snprintf(hex + 2 * i, 3, "%02x", h[i]);
+    fprintf(stderr, "DSTAR header burst: crc=%s via=%s frame_corr=%d fixed_field_bit_errs=%s bytes=%s\n",
+            crc_ok ? "ok" : "BAD", crc_ok ? (soft ? "soft" : "hard") : "-", (int) corr, fixed, hex);
+    if (crc_ok) {
+        memcpy(dstar_hdr_ref, h, sizeof(dstar_hdr_ref));
+        dstar_hdr_ref_valid = true;
+    }
+}
+
+/* What the header machinery did during the over that just ended. */
+static sbitx_dstar_rx_stats dstar_stats_prev;
+
+static void dstar_log_over_stats(void)
+{
+    sbitx_dstar_rx_stats st;
+    sbitx_dstar_rx_get_stats(dstar_rx, &st);
+    if (radio_h_dsp->dstar_verbose)
+        fprintf(stderr, "DSTAR over headers: bursts=%u ok=%u (soft %u) bad=%u, "
+                "locked via data sync=%u, slow-data headers=%u\n",
+                st.frame_sync - dstar_stats_prev.frame_sync,
+                st.header_ok - dstar_stats_prev.header_ok,
+                st.header_soft_ok - dstar_stats_prev.header_soft_ok,
+                st.header_bad - dstar_stats_prev.header_bad,
+                st.data_sync - dstar_stats_prev.data_sync,
+                st.header_slow - dstar_stats_prev.header_slow);
+    dstar_stats_prev = st;
+}
+
 static void dstar_rx_lost_cb(void *user)
 {
     (void)user;
     if (radio_h_dsp->dstar_verbose)
-        fprintf(stderr, "DSTAR: lost sync (got %ld frames)\n", dstar_rx_frame_count);
+        fprintf(stderr, "DSTAR: lost sync (got %ld frames)%s\n", dstar_rx_frame_count,
+                dstar_rx_confirmed ? "" : " -- never confirmed, muted (false sync on noise)");
+    dstar_log_over_stats();
+    dstar_rx_unconfirm();
     if (dstar_pcm_rb_ready)
         ring_buffer_clear(&dstar_pcm_rb);   /* drop stale audio on loss of lock */
     dstar_playing = false;                  /* and re-prebuffer before speaking */
@@ -731,6 +839,8 @@ static void dstar_rx_eot_cb(void *user)
     (void)user;
     if (radio_h_dsp->dstar_verbose)
         fprintf(stderr, "DSTAR: end of transmission (rx'd %ld frames)\n", dstar_rx_frame_count);
+    dstar_log_over_stats();
+    dstar_rx_unconfirm();
     dstar_voice_rx_reset(&dstar_vrx);
     radio_h_dsp->dstar_rx_crypto = DSTAR_VC_CLEAR;
 }
@@ -775,6 +885,7 @@ static void dsp_dstar_init(void)
         sbitx_dstar_rx_set_cbs(dstar_rx, dstar_rx_header_cb, dstar_rx_data_cb,
                                dstar_rx_lost_cb, dstar_rx_eot_cb, NULL);
         sbitx_dstar_rx_set_polarity(dstar_rx, radio_h_dsp->dstar_rx_polarity);
+        sbitx_dstar_rx_set_burst_debug(dstar_rx, dstar_rx_burst_debug_cb);
         mbe_initMbeParms(&dstar_rx_cur, &dstar_rx_prev, &dstar_rx_enh);
         memset(&dstar_rx_prevsyn, 0, sizeof(dstar_rx_prevsyn));
         dstar_rx_prevsyn.L = 15;
@@ -874,9 +985,29 @@ bool dsp_dstar_tx_emit_eot_if_active(void)
 
     sbitx_dstar_tx_eot(dstar_tx);
     dstar_tx_keyed = false;
+    dstar_tx_eot_latched = true;
     if (radio_h_dsp->dstar_verbose)
         fprintf(stderr, "DSTAR tx: EOT queued (%ld frames sent)\n", dstar_tx_frame_count);
     return true;
+}
+
+/* The EOT is queued behind whatever the modem still holds -- at the start
+ * of an over the preamble and header delay the voice frames, and at
+ * exactly real time that backlog never drains -- so it reaches the air
+ * only once the modem queue and the GMSK FIFO are empty. A fixed 150 ms
+ * cut it off most of the time, and the receiver went on decoding noise
+ * until it lost sync. Returns the ms waited. */
+unsigned dsp_dstar_tx_wait_drained(unsigned max_ms)
+{
+    unsigned waited = 0;
+    while (waited < max_ms && dstar_tx != NULL &&
+           (sbitx_dstar_tx_pending(dstar_tx) || gmsk_fifo_n > 1)) {
+        /* > 1, not > 0: the interpolator needs two samples to advance, so
+         * the very last one stays in the FIFO (already rendered) for good. */
+        usleep(5000);
+        waited += 5;
+    }
+    return waited;
 }
 
 void dsp_dstar_tx_end_over(void)
@@ -884,6 +1015,10 @@ void dsp_dstar_tx_end_over(void)
     if (dstar_tx != NULL)
         sbitx_dstar_tx_reset(dstar_tx);
     dstar_mic8k_n = 0;
+    gmsk_fifo_n = 0;
+    tx_up_pos = 0.0;
+    dstar_tx_keyed = false;          /* the next over starts with a header */
+    dstar_tx_eot_latched = false;
 }
 
 static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, int freq_khz)
@@ -1247,10 +1382,7 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
 
         {
             static FILE *iqdbgf = NULL;
-            if (iqdbgf == NULL && access("/tmp/dstar_iq_dump", F_OK) == 0) {
-                iqdbgf = fopen("/tmp/dstar_iq.s16", "wb");
-                fprintf(stderr, "DSTAR IQ dump active\n");
-            }
+            iqdbgf = dump_follow_trigger(iqdbgf, "/tmp/dstar_iq_dump", "/tmp/dstar_iq.s16", "DSTAR IQ");
             if (iqdbgf != NULL) {
                 for (int k = 0; k < MAX_BINS / 2; k++) {
                     short sv;
@@ -1291,10 +1423,7 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
 
         {
             static FILE *dbgf = NULL;
-            if (dbgf == NULL && access("/tmp/dstar_fm_dump", F_OK) == 0) {
-                dbgf = fopen("/tmp/dstar_fm.s16", "wb");
-                fprintf(stderr, "DSTAR fm demod dump active\n");
-            }
+            dbgf = dump_follow_trigger(dbgf, "/tmp/dstar_fm_dump", "/tmp/dstar_fm.s16", "DSTAR fm demod");
             if (dbgf != NULL) {
                 for (int k = 0; k < MAX_BINS / 2; k++) {
                     float v = fm_audio_buf[k] * 10.0f;
@@ -2146,6 +2275,8 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
         }
         for (int k = 0; k < n8; k++)
         {
+            if (dstar_tx_eot_latched)
+                break;                  /* over ended: nothing more until end_over */
             dstar_mic8k[dstar_mic8k_n++] = mic8k_buf[k];
             if (dstar_mic8k_n == 160)
             {
@@ -2171,8 +2302,6 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
          *
          * So generate into a FIFO in the modulator's own 40-sample units and
          * drain exactly what the block needs. */
-        static float gmsk_fifo[4096];
-        static int   gmsk_fifo_n;
         static float gmsk24[1024];
         const int need24 = (int) block_size / 4;
 
@@ -2220,7 +2349,6 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
          * 20*(1+ppm) DAC samples, i.e. exactly 4800 baud once the fast clock
          * has had its way. Linear interpolation also retires the old
          * zero-order-hold staircase. */
-        static double tx_up_pos;
         const double tx_up_step = 1.0 / (4.0 * (1.0 + dstar_clock_track * 1e-6));
 
         for (i = 0; i < block_size; i++)

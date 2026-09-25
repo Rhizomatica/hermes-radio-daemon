@@ -148,12 +148,11 @@ static void test_encrypted(void)
     double frac = (double) diff / (NFRAMES * (DSTAR_VOICE_AMBE_BITS - 1));
     CHECK(frac > 0.45 && frac < 0.55, "ciphertext differs in %.1f%% of bits, want ~50%%", 100 * frac);
 
-    /* From the start of the over: the header mutes until superframe 1's
-     * sync block (slot 20) confirms superframe 0's, then every frame
-     * decrypts exactly. */
+    /* From the start of the over: the header carries R under its FEC and
+     * CRC, so every frame decrypts from the first one. */
     rx_result r = receive(0, true, -1);
-    CHECK(r.first_match == 41, "decrypt starts at frame %d, want 41", r.first_match);
-    CHECK(r.muted == 41 && r.played == NFRAMES - 41 && r.match == r.played,
+    CHECK(r.first_match == 0, "decrypt starts at frame %d, want 0", r.first_match);
+    CHECK(r.muted == 0 && r.played == NFRAMES && r.match == NFRAMES,
           "start of over: muted %d played %d match %d", r.muted, r.played, r.match);
     CHECK(r.status == DSTAR_VC_DECRYPTING, "status %d, want decrypting", r.status);
 
@@ -167,8 +166,18 @@ static void test_encrypted(void)
 
     /* A missed data sync (fc runs to 41) keeps the frame count right. */
     r = receive(0, true, 4);
-    CHECK(r.match == r.played && r.played == NFRAMES - 41,
+    CHECK(r.match == r.played && r.played == NFRAMES,
           "missed data sync: played %d match %d", r.played, r.match);
+
+    /* A header that fails its CRC is not trusted: the sync blocks lock as
+     * before (superframe 1's block confirms superframe 0's). */
+    uint8_t saved = wire_hdr[20];
+    wire_hdr[20] ^= 0x10;                      /* a callsign bit: CRC fails */
+    r = receive(0, true, -1);
+    wire_hdr[20] = saved;
+    CHECK(r.first_match == 41 && r.match == r.played,
+          "corrupt header: decrypt starts at %d (want 41), played %d match %d",
+          r.first_match, r.played, r.match);
 
     /* A second over draws a new nonce: same speech, different ciphertext. */
     uint8_t first[SBITX_DSTAR_FRAME_BYTES];
@@ -257,11 +266,11 @@ static void test_key_lost_mid_over(void)
             voice_crypto_set_key(KEY_B);
         char ambe_d[DSTAR_VOICE_AMBE_BITS];
         bool play = dstar_voice_rx_frame(&rx, wire[f], fc, ambe_d, NULL);
-        if (play && f >= 9 * DSTAR_VOICE_SF_FRAMES)
+        if (play && f >= 10 * DSTAR_VOICE_SF_FRAMES)
             played_after++;
         fc++;
     }
-    CHECK(played_after == 0, "key lost mid-over: still playing %d frames 5 superframes later",
+    CHECK(played_after == 0, "key lost mid-over: still playing %d frames 6 superframes later",
           played_after);
     CHECK(rx.status == DSTAR_VC_BAD_KEY, "key lost mid-over: status %d, want key mismatch",
           rx.status);
@@ -272,9 +281,90 @@ static void test_corrupt_sync(void)
     voice_crypto_set_key(KEY_A);
     transmit(true);
     wire[19][10] ^= 0x04;   /* one bit of superframe 0's sync block */
+    /* With the header, the sync blocks do not matter at the start. */
     rx_result r = receive(0, true, -1);
-    CHECK(r.first_match == 2 * 21 + 20, "corrupt sync: decrypt starts at %d, want 62", r.first_match);
-    CHECK(r.match == r.played, "corrupt sync: played %d match %d", r.played, r.match);
+    CHECK(r.first_match == 0 && r.match == NFRAMES, "corrupt sync, header: starts at %d match %d",
+          r.first_match, r.match);
+    /* Joined mid-over (superframe 0 is before the join, so its corrupt
+     * block is not seen): superframes 1 and 2 confirm each other. */
+}
+
+/* Slow data has no FEC. At a few percent bit errors most 72-bit sync
+ * blocks carry a flipped bit, and a receiver that needed clean blocks
+ * never locked, while the voice itself (AMBE FEC) was still fine. It must
+ * lock on the vote instead, and a wrong key must still play nothing. */
+static void test_bit_errors(void)
+{
+    static const double ber[] = { 0.02, 0.04 };
+    for (unsigned k = 0; k < sizeof(ber) / sizeof(ber[0]); k++) {
+        int locked = 0, runs = 10, worst = 0;
+        for (int run = 0; run < runs; run++) {
+            voice_crypto_set_key(KEY_A);
+            transmit(true);
+            srand(1000 * k + run);
+            for (int f = 0; f < NFRAMES; f++)
+                for (int b = 9; b < 12; b++)
+                    for (int bit = 0; bit < 8; bit++)
+                        if (rand() < ber[k] * RAND_MAX)
+                            wire[f][b] ^= (uint8_t) (1U << bit);
+            rx_result r = receive(0, true, -1);
+            CHECK(r.match == r.played, "BER %.0f%%: played %d but only %d exact",
+                  100 * ber[k], r.played, r.match);
+            if (r.status == DSTAR_VC_DECRYPTING && r.first_match >= 0) {
+                locked++;
+                if (r.first_match > worst)
+                    worst = r.first_match;
+            }
+
+            voice_crypto_set_key(KEY_B);
+            r = receive(0, true, -1);
+            CHECK(r.played == 0, "BER %.0f%%, wrong key: played %d frames", 100 * ber[k], r.played);
+        }
+        printf("slow-data BER %.0f%%: locked in %d of %d overs, latest at frame %d (superframe %d)\n",
+               100 * ber[k], locked, runs, worst, worst / DSTAR_VOICE_SF_FRAMES);
+        CHECK(locked == runs, "BER %.0f%%: locked in only %d of %d overs", 100 * ber[k], locked, runs);
+        if (ber[k] <= 0.02)
+            CHECK(worst <= 6 * DSTAR_VOICE_SF_FRAMES, "BER %.0f%%: locked as late as frame %d",
+                  100 * ber[k], worst);
+    }
+}
+
+/* Joining mid-over: the slow-data repetition of the header (bit-voted and
+ * CRC-checked by the modem) gives R and proves the key; the next sync block
+ * whose check passes on its own counter gives the counter. */
+static void test_late_header(void)
+{
+    voice_crypto_set_key(KEY_A);
+    transmit(true);
+    dstar_voice_rx rx;
+    dstar_voice_rx_reset(&rx);
+    int first = -1, played = 0, match = 0;
+    uint16_t fc = 0;
+    for (int f = 3 * 21; f < NFRAMES; f++) {
+        if (f % 21 == 0 && f != 3 * 21)
+            fc = 0;
+        if (f == 3 * 21 + 10)
+            dstar_voice_rx_header(&rx, wire_hdr);     /* the slow-data copy arrives */
+        char ambe_d[DSTAR_VOICE_AMBE_BITS];
+        if (dstar_voice_rx_frame(&rx, wire[f], fc, ambe_d, NULL) && f > 3 * 21 + 10) {
+            played++;
+            if (same_voice(ambe_d, plain[f])) {
+                match++;
+                if (first < 0)
+                    first = f;
+            }
+        }
+        fc++;
+    }
+    CHECK(first == 3 * 21 + 20, "late header: decrypt starts at %d, want %d", first, 3 * 21 + 20);
+    CHECK(match == played && rx.status == DSTAR_VC_DECRYPTING,
+          "late header: played %d match %d status %d", played, match, rx.status);
+
+    /* ...and with the wrong key the header proves it at once: nothing plays. */
+    voice_crypto_set_key(KEY_B);
+    rx_result r = receive(0, true, -1);
+    CHECK(r.played == 0 && r.status == DSTAR_VC_BAD_KEY, "wrong key, header: played %d status %d",
+          r.played, r.status);
 }
 
 static void test_fail_closed(void)
@@ -370,10 +460,118 @@ static void test_modem_e2e(void)
     printf("modem e2e: %d frames delivered, %d played, %d exact, status %d\n",
            e2e_frames, e2e_played, e2e_match, e2e_rx.status);
     CHECK(e2e_frames == NFRAMES, "modem delivered %d of %d frames", e2e_frames, NFRAMES);
-    CHECK(e2e_match == NFRAMES - 41 && e2e_played == e2e_match,
-          "modem e2e: played %d exact %d, want %d", e2e_played, e2e_match, NFRAMES - 41);
+    /* The header comes through the real modulator and demodulator (FEC,
+     * CRC), so decryption starts with the first voice frame. */
+    CHECK(e2e_match == NFRAMES && e2e_played == e2e_match,
+          "modem e2e: played %d exact %d, want %d", e2e_played, e2e_match, NFRAMES);
     sbitx_dstar_tx_free(mod);
     sbitx_dstar_rx_free(e2e_demod);
+}
+
+/* On air the modem kept missing the header: the 0101 preamble matches the
+ * frame sync but for 5 bits, so 3 channel errors make it a 2-error match
+ * ~80 bits early, and the receiver used to decode preamble as the header
+ * and miss the real sync. Plant exactly that and check that the real
+ * header still decodes and the over decrypts from its first frame. */
+static void test_header_after_false_sync(void)
+{
+    voice_crypto_set_key(KEY_A);
+    transmit(true);
+
+    sbitx_dstar_tx *mod = sbitx_dstar_tx_new();
+    size_t cap = (size_t) (60 + 85 + 12 * NFRAMES + 18) * 40 + 8192, len = 0;
+    float *sig = malloc(cap * sizeof(float));
+    CHECK(mod != NULL && sig != NULL, "allocation");
+    if (!mod || !sig)
+        return;
+    sbitx_dstar_tx_header(mod, wire_hdr);
+    for (int f = 0; f <= NFRAMES; f++) {
+        if (f < NFRAMES)
+            sbitx_dstar_tx_frame(mod, wire[f]);
+        else
+            sbitx_dstar_tx_eot(mod);
+        int n;
+        while (len + 4096 <= cap && (n = sbitx_dstar_tx_generate(mod, sig + len, 4096)) > 0)
+            len += (size_t) n;
+    }
+    sbitx_dstar_tx_free(mod);
+
+    /* Slice the bits (5 samples each; polarity -1: positive = 1), find the
+     * real frame sync, then a preamble window whose only differences from
+     * it are the 5 bits where 0101.. and the sync disagree. */
+    const uint32_t FS = 0x557650, DIFF = 0x002305;
+    const int nbits = (int) (len / 5);
+    uint32_t w = 0;
+    int real = -1, trap = -1;
+    for (int b = 0; b < nbits && real < 0; b++) {
+        w = ((w << 1) | (sig[5 * b + 2] > 0.0f)) & 0xFFFFFF;
+        if (b >= 23 && w == FS)
+            real = b;
+    }
+    w = 0;
+    for (int b = 0; real > 0 && b < real - 60; b++) {
+        w = ((w << 1) | (sig[5 * b + 2] > 0.0f)) & 0xFFFFFF;
+        if (b >= 23 && (w ^ FS) == DIFF)
+            trap = b;
+    }
+    CHECK(real > 0 && trap > 0, "no frame sync (%d) or preamble window (%d)", real, trap);
+    if (real > 0 && trap > 0) {
+        /* Flip window bits 10, 14, 15 (0 = oldest): 2 errors remain. */
+        static const int flip[3] = {10, 14, 15};
+        for (int k = 0; k < 3; k++) {
+            int b = trap - 23 + flip[k];
+            for (int j = 0; j < 5; j++)
+                sig[5 * b + j] = -sig[5 * b + j];
+        }
+
+        e2e_demod = sbitx_dstar_rx_new();
+        e2e_frames = e2e_played = e2e_match = 0;
+        dstar_voice_rx_reset(&e2e_rx);
+        sbitx_dstar_rx_set_cbs(e2e_demod, e2e_header, e2e_data, e2e_nop, e2e_nop, NULL);
+        sbitx_dstar_rx_set_polarity(e2e_demod, -1.0f);
+        sbitx_dstar_rx_process(e2e_demod, sig, (int) len);
+        float tail[4096] = {0};
+        sbitx_dstar_rx_process(e2e_demod, tail, 4096);
+
+        sbitx_dstar_rx_stats st;
+        sbitx_dstar_rx_get_stats(e2e_demod, &st);
+        printf("false preamble sync %d bits early: %u candidates, header ok %u bad %u, "
+               "%d frames, %d exact\n", real - trap, st.frame_sync, st.header_ok,
+               st.header_bad, e2e_frames, e2e_match);
+        CHECK(st.header_bad >= 1, "the planted preamble match was not taken as a candidate");
+        CHECK(st.header_ok == 1, "the real header was not decoded");
+        CHECK(e2e_frames == NFRAMES && e2e_match == NFRAMES,
+              "after a false preamble sync: %d frames, %d exact, want %d", e2e_frames,
+              e2e_match, NFRAMES);
+        sbitx_dstar_rx_free(e2e_demod);
+    }
+    free(sig);
+}
+
+/* After an EOT the modem must drain completely: tr_switch waits for it
+ * before unkeying, and 18 end-sync bytes left behind in the queue kept it
+ * "pending" forever, so every unkey waited out the full timeout. */
+static void test_tx_eot_drains(void)
+{
+    sbitx_dstar_tx *tx = sbitx_dstar_tx_new();
+    uint8_t frame[SBITX_DSTAR_FRAME_BYTES] = {0};
+    float buf[4096];
+    CHECK(tx != NULL, "sbitx_dstar_tx_new");
+    if (!tx)
+        return;
+    sbitx_dstar_tx_header(tx, wire_hdr);
+    for (int f = 0; f < 5; f++)
+        sbitx_dstar_tx_frame(tx, frame);
+    sbitx_dstar_tx_eot(tx);
+    long samples = 0;
+    int got;
+    while ((got = sbitx_dstar_tx_generate(tx, buf, 4096)) > 0)
+        samples += got;
+    CHECK(!sbitx_dstar_tx_pending(tx), "modem still pending after the EOT went out");
+    /* preamble 60 + header 85 + 5 x 12 data + 18 EOT bytes, 40 samples each */
+    CHECK(samples == (60 + 85 + 5 * 12 + 18) * 40L, "generated %ld samples, want %ld",
+          samples, (60 + 85 + 5 * 12 + 18) * 40L);
+    sbitx_dstar_tx_free(tx);
 }
 
 int main(void)
@@ -383,11 +581,15 @@ int main(void)
     test_encrypted();
     test_wrong_and_no_key();
     test_wrong_key_false_check();
+    test_bit_errors();
+    test_tx_eot_drains();
+    test_late_header();
     test_key_lost_mid_over();
     test_corrupt_sync();
     test_fail_closed();
     test_key_files();
     test_modem_e2e();
+    test_header_after_false_sync();
 
     if (failures) {
         fprintf(stderr, "dstar_voice_test: %d failure(s)\n", failures);

@@ -97,6 +97,9 @@ void dsp_radae_tx_end_over(void);
 // sees a clean EOT (returns true iff D-STAR TX was active);
 // dsp_dstar_tx_end_over resets the D-STAR TX state afterwards.
 bool dsp_dstar_tx_emit_eot_if_active(void);
+// Wait (up to max_ms) until the queued EOT and everything ahead of it has
+// left the D-STAR modem for the DAC path; returns the ms waited.
+unsigned dsp_dstar_tx_wait_drained(unsigned max_ms);
 void dsp_dstar_tx_end_over(void);
 
 // by Ashhar Farhan, from https://github.com/afarhan/sbitx/blob/main/fft_filter.c

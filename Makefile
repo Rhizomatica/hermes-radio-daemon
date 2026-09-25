@@ -48,7 +48,7 @@ TEST_CFLAGS = -O0 -Wall -Wextra -std=gnu11 -fstack-protector \
 TEST_BINS = tests/backend_selection_test tests/compat_surface_test tests/controls_test \
             tests/dstar_voice_test tests/upsample2_test tests/rig_server_test \
             tests/hamlib_ptt_test tests/radae_vocoder_test tests/sbitx_buffer_test \
-            tests/rtp_audio_test tests/audio_bridge_test
+            tests/rtp_audio_test tests/audio_bridge_test tests/mic_filter_test
 
 # ── daemon-level objects ────────────────────────────────────────
 DAEMON_TOP_OBJS = radio_daemon.o \
@@ -98,6 +98,7 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              dsp/sbitx_dstar.o \
              dsp/dstar_voice.o \
              dsp/voice_crypto.o \
+             dsp/mic_filter.o \
              sbitx/sbitx_si5351.o \
              sbitx/ring_buffer.o \
              $(SBITX_GPIOLIB_OBJS) \
@@ -152,6 +153,7 @@ compat-tests: $(TEST_BINS)
 	./tests/sbitx_buffer_test
 	./tests/rtp_audio_test
 	./tests/audio_bridge_test
+	./tests/mic_filter_test
 
 tests/backend_selection_test: tests/backend_selection_test.c cfg_utils.c cfg_utils.h \
                               radio_backend.c radio_backend.h radio_daemon_core.h \
@@ -192,6 +194,9 @@ tests/rtp_audio_test: tests/rtp_audio_test.c rtp_audio.c rtp_audio.h radio.h
 
 tests/audio_bridge_test: tests/audio_bridge_test.c audio_bridge.c audio_bridge.h radio.h
 	$(CC) $(TEST_CFLAGS) -I/usr/include/csdr tests/audio_bridge_test.c audio_bridge.c -o $@ -lcsdr -lfftw3f -lm
+
+tests/mic_filter_test: tests/mic_filter_test.c dsp/mic_filter.c dsp/mic_filter.h
+	$(CC) $(TEST_CFLAGS) -Idsp tests/mic_filter_test.c dsp/mic_filter.c -o $@ -lm
 
 tests/upsample2_test: tests/upsample2_test.c dsp/upsample2.c dsp/upsample2.h
 	$(CC) $(TEST_CFLAGS) -I/usr/include/csdr tests/upsample2_test.c dsp/upsample2.c -o $@ -lcsdr -lfftw3f -lm

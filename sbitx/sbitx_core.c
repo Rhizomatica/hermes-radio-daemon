@@ -601,8 +601,9 @@ static void tr_switch(radio *radio_h, bool txrx_state)
 
         /* D-STAR: queue the end-of-transmission pattern the same way. */
         bool dstar_eot_sent = dsp_dstar_tx_emit_eot_if_active();
+        unsigned eot_drain_ms = 0;
         if (dstar_eot_sent)
-            usleep(150000);
+            eot_drain_ms = dsp_dstar_tx_wait_drained(1000);
 
         /* Let the audio already on its way play out before the transmitter
          * is muted. Mercury drops PTT once its own buffer is empty, and the
@@ -620,7 +621,8 @@ static void tr_switch(radio *radio_h, bool txrx_state)
          * made it miss the end of over. So after one, wait the codec
          * pipeline out in full, plus a margin, rather than the 100 ms cap
          * that bounds data latency. */
-        if (dv_eoo_sent) {
+        if (dv_eoo_sent || dstar_eot_sent) {
+            /* likewise the D-STAR end-of-transmission pattern */
             tail_ms = sound_tx_pipeline_ms() + 40;
             if (tail_ms > 300)
                 tail_ms = 300;
@@ -630,6 +632,9 @@ static void tr_switch(radio *radio_h, bool txrx_state)
         if (dv_eoo_sent)
             fprintf(stderr, "RADAE TX: end of over sent (buffer drained in %u ms, then %u ms codec tail)\n",
                     eoo_drain_ms, tail_ms);
+        if (dstar_eot_sent)
+            fprintf(stderr, "DSTAR TX: end of transmission sent (modem drained in %u ms, then %u ms codec tail)\n",
+                    eot_drain_ms, tail_ms);
         usleep(tail_ms * 1000);
 
         set_speaker_level(radio_h->profiles[radio_h->profile_active_idx].speaker_level);
