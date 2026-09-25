@@ -107,6 +107,21 @@ static bool read_mic_inject(uint8_t *buffer, uint32_t size)
 {
     size_t offset = 0;
 
+    /* Follow the path, not the open file: deleting or replacing the file
+     * must end or change the injection. Holding the descriptor kept a
+     * deleted file looping, so every later transmission sent it in place
+     * of the real mic -- silence, from a test that had injected zeros. */
+    if (mic_inject_fd >= 0)
+    {
+        struct stat path_st, fd_st;
+        if (stat(MIC_INJECT_PATH, &path_st) != 0 || fstat(mic_inject_fd, &fd_st) != 0 ||
+            path_st.st_ino != fd_st.st_ino || path_st.st_dev != fd_st.st_dev)
+        {
+            fprintf(stderr, "Mic inject ended: %s removed or replaced\n", MIC_INJECT_PATH);
+            close_mic_inject();
+        }
+    }
+
     while (offset < size)
     {
         if (mic_inject_fd < 0)
