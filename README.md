@@ -67,9 +67,13 @@ backend = one new file with a vtable.
 
 ```bash
 apt-get install libhamlib-dev libiniparser-dev libasound2-dev libfftw3-dev \
-                libfftw3f-dev libssl-dev libi2c-dev libcsdr-dev libspecbleach-dev \
+                libssl-dev libi2c-dev csdr libspecbleach-dev \
                 libsndfile1-dev libcw-dev meson ninja-build pkg-config
 ```
+
+`libfftw3-dev` includes the single-precision `fftw3f` library. `csdr` (the
+library and its headers in `/usr/include/csdr/`) comes from the HERMES
+package repository.
 
 **libspecbleach** provides adaptive spectral noise reduction on RX.
 
