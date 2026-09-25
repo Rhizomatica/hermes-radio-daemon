@@ -221,13 +221,14 @@ install: radio_daemon radio_client
 	  $(DESTDIR)$(sysconfdir)/hermes/avahi/hermes-radio.service
 	# One radio controller per station: on a real install (not a package
 	# staging DESTDIR, and only under systemd), hand the radio over from
-	# hermes-net's sbitx controller to radiod. hermes-net's
+	# hermes-net's sbitx controller to radiod (restart: a reinstall runs the
+	# new binary; ExecStopPost --ptt-off unkeys on the way down). hermes-net's
 	# take_over_radio.sh does the mirror image.
 	if [ -z "$(DESTDIR)" ] && [ -d /run/systemd/system ]; then \
 	  systemctl daemon-reload || true; \
 	  systemctl disable --now sbitx.service || true; \
 	  systemctl enable radiod.service || true; \
-	  systemctl start radiod.service || true; \
+	  systemctl restart radiod.service || true; \
 	fi
 
 # ── clean ───────────────────────────────────────────────────────
