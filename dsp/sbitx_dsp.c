@@ -631,6 +631,23 @@ static void dstar_pcm_fifo_put(const float *pcm, int n)
 
 static long dstar_rx_frame_count;
 
+/* A lock is only trusted -- and played -- once it is confirmed: by a
+ * header whose CRC checks, or by a second data sync one superframe after
+ * the first. The demodulator accepts a 24-bit data sync with 2 bit errors,
+ * which noise matches every ~10 s; unconfirmed, such a lock played up to
+ * 150 frames (3 s) of noise as speech before it was dropped -- the
+ * artifacts heard between overs -- and an over whose header was missed
+ * played its first frames before it could be classified, which for an
+ * encrypted over is ciphertext. */
+static bool dstar_rx_confirmed;
+static int  dstar_rx_syncs;
+
+static void dstar_rx_unconfirm(void)
+{
+    dstar_rx_confirmed = false;
+    dstar_rx_syncs = 0;
+}
+
 static void dstar_rx_data_cb(void *user, const uint8_t *frame)
 {
     (void)user;
@@ -641,8 +658,12 @@ static void dstar_rx_data_cb(void *user, const uint8_t *frame)
 
     /* FEC decode, then decrypt if the over is encrypted; an encrypted over
      * this station cannot decrypt is muted rather than played as noise. */
-    bool play = dstar_voice_rx_frame(&dstar_vrx, frame, sbitx_dstar_rx_frame_index(dstar_rx),
-                                     ambe_d, &res);
+    const uint16_t fc = sbitx_dstar_rx_frame_index(dstar_rx);
+    bool play = dstar_voice_rx_frame(&dstar_vrx, frame, fc, ambe_d, &res);
+    if (fc == 0 && dstar_rx_syncs < 2 && ++dstar_rx_syncs == 2)
+        dstar_rx_confirmed = true;       /* second data sync, in place */
+    if (!dstar_rx_confirmed)
+        play = false;
     radio_h_dsp->dstar_rx_crypto = (uint16_t) dstar_vrx.status;
     if (play)
         mbe_processAmbe2400Data(pcm, &res, ambe_d, &dstar_rx_cur, &dstar_rx_prev, &dstar_rx_enh);
@@ -710,6 +731,12 @@ static void dstar_rx_header_cb(void *user, const uint8_t *header)
     dstar_publish_callsign(radio_h_dsp->dstar_rx_suffix, sizeof(radio_h_dsp->dstar_rx_suffix), suffix);
     radio_h_dsp->dstar_rx_heard++;
     dstar_voice_rx_header(&dstar_vrx, header);
+    {
+        uint16_t crc = sbitx_dstar_crc16(header, SBITX_DSTAR_HEADER_BYTES - 2U);
+        if (header[SBITX_DSTAR_HEADER_BYTES - 2U] == (uint8_t) (crc & 0xFFU) &&
+            header[SBITX_DSTAR_HEADER_BYTES - 1U] == (uint8_t) (crc >> 8))
+            dstar_rx_confirmed = true;
+    }
 
     if (radio_h_dsp->dstar_verbose) {
         fprintf(stderr, "DSTAR header: flags=0x%02x%02x%02x rpt1=%s rpt2=%s ur=%s my=%s suf=%s\n",
@@ -735,7 +762,9 @@ static void dstar_rx_lost_cb(void *user)
 {
     (void)user;
     if (radio_h_dsp->dstar_verbose)
-        fprintf(stderr, "DSTAR: lost sync (got %ld frames)\n", dstar_rx_frame_count);
+        fprintf(stderr, "DSTAR: lost sync (got %ld frames)%s\n", dstar_rx_frame_count,
+                dstar_rx_confirmed ? "" : " -- never confirmed, muted (false sync on noise)");
+    dstar_rx_unconfirm();
     if (dstar_pcm_rb_ready)
         ring_buffer_clear(&dstar_pcm_rb);   /* drop stale audio on loss of lock */
     dstar_playing = false;                  /* and re-prebuffer before speaking */
@@ -748,6 +777,7 @@ static void dstar_rx_eot_cb(void *user)
     (void)user;
     if (radio_h_dsp->dstar_verbose)
         fprintf(stderr, "DSTAR: end of transmission (rx'd %ld frames)\n", dstar_rx_frame_count);
+    dstar_rx_unconfirm();
     dstar_voice_rx_reset(&dstar_vrx);
     radio_h_dsp->dstar_rx_crypto = DSTAR_VC_CLEAR;
 }
