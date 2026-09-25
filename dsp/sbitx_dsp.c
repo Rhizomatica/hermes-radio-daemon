@@ -583,7 +583,24 @@ static inline int dstar_pcm_count(void)
 
 static float dstar_mic8k[160];
 static int   dstar_mic8k_n;
+
+/* D-STAR TX upsampler state (24 kHz GMSK -> 96 kHz). It must start every
+ * over fresh: left over from the previous over, the FIFO still holds its
+ * tail and the fractional position is mid-stream, and the next over came
+ * out ~50 ppm off in symbol timing at the far end (0 ppm on the first
+ * over after a restart, -41..-57 ppm on every later one), which broke up
+ * sBitx-to-sBitx D-STAR. */
+static float  gmsk_fifo[4096];
+static int    gmsk_fifo_n;
+static double tx_up_pos;
 static bool  dstar_tx_keyed;
+/* Set when the EOT is queued, cleared by dsp_dstar_tx_end_over(). While
+ * set, no further mic frame may start an over: the DSP thread runs one
+ * more TX block after PTT-off, and that block used to queue a fresh
+ * header, leaving dstar_tx_keyed true across the end of the over. Every
+ * later over then went out with no preamble and no header (no callsigns,
+ * no encrypted flag), and the far end had to lock on data sync alone. */
+static bool dstar_tx_eot_latched;
 /* The over being transmitted (header, superframe position, encryption) and
  * the one being received (is it encrypted, and its keystream position). */
 static dstar_voice_tx dstar_vtx;
@@ -874,6 +891,7 @@ bool dsp_dstar_tx_emit_eot_if_active(void)
 
     sbitx_dstar_tx_eot(dstar_tx);
     dstar_tx_keyed = false;
+    dstar_tx_eot_latched = true;
     if (radio_h_dsp->dstar_verbose)
         fprintf(stderr, "DSTAR tx: EOT queued (%ld frames sent)\n", dstar_tx_frame_count);
     return true;
@@ -884,6 +902,10 @@ void dsp_dstar_tx_end_over(void)
     if (dstar_tx != NULL)
         sbitx_dstar_tx_reset(dstar_tx);
     dstar_mic8k_n = 0;
+    gmsk_fifo_n = 0;
+    tx_up_pos = 0.0;
+    dstar_tx_keyed = false;          /* the next over starts with a header */
+    dstar_tx_eot_latched = false;
 }
 
 static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, int freq_khz)
@@ -2146,6 +2168,8 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
         }
         for (int k = 0; k < n8; k++)
         {
+            if (dstar_tx_eot_latched)
+                break;                  /* over ended: nothing more until end_over */
             dstar_mic8k[dstar_mic8k_n++] = mic8k_buf[k];
             if (dstar_mic8k_n == 160)
             {
@@ -2171,8 +2195,6 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
          *
          * So generate into a FIFO in the modulator's own 40-sample units and
          * drain exactly what the block needs. */
-        static float gmsk_fifo[4096];
-        static int   gmsk_fifo_n;
         static float gmsk24[1024];
         const int need24 = (int) block_size / 4;
 
@@ -2220,7 +2242,6 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
          * 20*(1+ppm) DAC samples, i.e. exactly 4800 baud once the fast clock
          * has had its way. Linear interpolation also retires the old
          * zero-order-hold staircase. */
-        static double tx_up_pos;
         const double tx_up_step = 1.0 / (4.0 * (1.0 + dstar_clock_track * 1e-6));
 
         for (i = 0; i < block_size; i++)
