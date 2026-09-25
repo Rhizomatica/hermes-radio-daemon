@@ -468,6 +468,86 @@ static void test_modem_e2e(void)
     sbitx_dstar_rx_free(e2e_demod);
 }
 
+/* On air the modem kept missing the header: the 0101 preamble matches the
+ * frame sync but for 5 bits, so 3 channel errors make it a 2-error match
+ * ~80 bits early, and the receiver used to decode preamble as the header
+ * and miss the real sync. Plant exactly that and check that the real
+ * header still decodes and the over decrypts from its first frame. */
+static void test_header_after_false_sync(void)
+{
+    voice_crypto_set_key(KEY_A);
+    transmit(true);
+
+    sbitx_dstar_tx *mod = sbitx_dstar_tx_new();
+    size_t cap = (size_t) (60 + 85 + 12 * NFRAMES + 18) * 40 + 8192, len = 0;
+    float *sig = malloc(cap * sizeof(float));
+    CHECK(mod != NULL && sig != NULL, "allocation");
+    if (!mod || !sig)
+        return;
+    sbitx_dstar_tx_header(mod, wire_hdr);
+    for (int f = 0; f <= NFRAMES; f++) {
+        if (f < NFRAMES)
+            sbitx_dstar_tx_frame(mod, wire[f]);
+        else
+            sbitx_dstar_tx_eot(mod);
+        int n;
+        while (len + 4096 <= cap && (n = sbitx_dstar_tx_generate(mod, sig + len, 4096)) > 0)
+            len += (size_t) n;
+    }
+    sbitx_dstar_tx_free(mod);
+
+    /* Slice the bits (5 samples each; polarity -1: positive = 1), find the
+     * real frame sync, then a preamble window whose only differences from
+     * it are the 5 bits where 0101.. and the sync disagree. */
+    const uint32_t FS = 0x557650, DIFF = 0x002305;
+    const int nbits = (int) (len / 5);
+    uint32_t w = 0;
+    int real = -1, trap = -1;
+    for (int b = 0; b < nbits && real < 0; b++) {
+        w = ((w << 1) | (sig[5 * b + 2] > 0.0f)) & 0xFFFFFF;
+        if (b >= 23 && w == FS)
+            real = b;
+    }
+    w = 0;
+    for (int b = 0; real > 0 && b < real - 60; b++) {
+        w = ((w << 1) | (sig[5 * b + 2] > 0.0f)) & 0xFFFFFF;
+        if (b >= 23 && (w ^ FS) == DIFF)
+            trap = b;
+    }
+    CHECK(real > 0 && trap > 0, "no frame sync (%d) or preamble window (%d)", real, trap);
+    if (real > 0 && trap > 0) {
+        /* Flip window bits 10, 14, 15 (0 = oldest): 2 errors remain. */
+        static const int flip[3] = {10, 14, 15};
+        for (int k = 0; k < 3; k++) {
+            int b = trap - 23 + flip[k];
+            for (int j = 0; j < 5; j++)
+                sig[5 * b + j] = -sig[5 * b + j];
+        }
+
+        e2e_demod = sbitx_dstar_rx_new();
+        e2e_frames = e2e_played = e2e_match = 0;
+        dstar_voice_rx_reset(&e2e_rx);
+        sbitx_dstar_rx_set_cbs(e2e_demod, e2e_header, e2e_data, e2e_nop, e2e_nop, NULL);
+        sbitx_dstar_rx_set_polarity(e2e_demod, -1.0f);
+        sbitx_dstar_rx_process(e2e_demod, sig, (int) len);
+        float tail[4096] = {0};
+        sbitx_dstar_rx_process(e2e_demod, tail, 4096);
+
+        sbitx_dstar_rx_stats st;
+        sbitx_dstar_rx_get_stats(e2e_demod, &st);
+        printf("false preamble sync %d bits early: %u candidates, header ok %u bad %u, "
+               "%d frames, %d exact\n", real - trap, st.frame_sync, st.header_ok,
+               st.header_bad, e2e_frames, e2e_match);
+        CHECK(st.header_bad >= 1, "the planted preamble match was not taken as a candidate");
+        CHECK(st.header_ok == 1, "the real header was not decoded");
+        CHECK(e2e_frames == NFRAMES && e2e_match == NFRAMES,
+              "after a false preamble sync: %d frames, %d exact, want %d", e2e_frames,
+              e2e_match, NFRAMES);
+        sbitx_dstar_rx_free(e2e_demod);
+    }
+    free(sig);
+}
+
 /* After an EOT the modem must drain completely: tr_switch waits for it
  * before unkeying, and 18 end-sync bytes left behind in the queue kept it
  * "pending" forever, so every unkey waited out the full timeout. */
@@ -509,6 +589,7 @@ int main(void)
     test_fail_closed();
     test_key_files();
     test_modem_e2e();
+    test_header_after_false_sync();
 
     if (failures) {
         fprintf(stderr, "dstar_voice_test: %d failure(s)\n", failures);

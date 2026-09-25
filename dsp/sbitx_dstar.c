@@ -392,6 +392,13 @@ countBits64(uint64_t value)
 
 /* ── RX state machine ───────────────────────────────────────────── */
 
+#define DSTAR_HDR_RING  4096U           /* > one header burst in samples */
+#define DSTAR_HDR_CANDS 4
+/* From the sample that completes the frame sync: the header's samples,
+ * and where the first data frame starts. */
+#define DSTAR_HDR_DECODE_AT (DSTAR_FEC_SECTION_LENGTH_SAMPLES + DSTAR_RADIO_SYMBOL_LENGTH - 1U)
+#define DSTAR_HDR_DATA_AT   (DSTAR_FEC_SECTION_LENGTH_SAMPLES + 2U * DSTAR_RADIO_SYMBOL_LENGTH - 1U)
+
 struct sbitx_dstar_rx {
     int state;                          /* 0 none, 1 header, 2 data */
     uint64_t bit_buffer[DSTAR_RADIO_SYMBOL_LENGTH];
@@ -447,16 +454,29 @@ struct sbitx_dstar_rx {
     bool     last_sync_valid;
     int64_t  drift_samples;   /* accumulated surplus samples */
     uint64_t drift_span;      /* samples the accumulation covers */
-    uint16_t header_ptr;
+    /* Header acquisition. The 24-bit frame sync differs from the 0101
+     * preamble ahead of it in only 5 bits, so a few channel errors make
+     * the preamble match with 2 errors -- often ~80 ms before the real
+     * sync. Committing to the first match then decoded preamble as the
+     * header and missed the real one (7 of 8 overs on a ~1% BER link).
+     * Instead every match starts a candidate, all of them are decoded
+     * from a sample history, and the header CRC picks the real one. */
+    float    hdr_ring[DSTAR_HDR_RING];
+    uint32_t hdr_clock;                 /* samples seen, indexes hdr_ring */
+    struct {
+        uint32_t trig;                  /* sample of the sync's last bit */
+        int32_t  corr;
+        bool     used;
+    } hdr_cand[DSTAR_HDR_CANDS];
+    bool     hdr_lock_pending;          /* a header decoded; data starts at */
+    uint32_t hdr_lock_at;               /* this sample */
     uint16_t data_ptr;
     uint16_t start_ptr;
     uint16_t sync_ptr;
     uint16_t min_sync_ptr;
     uint16_t max_sync_ptr;
-    int32_t  max_frame_corr;
     int32_t  max_data_corr;
     uint16_t frame_count;
-    uint8_t  countdown;
     unsigned int mar;
     int     path_metric[4];
     uint32_t path_memory0[42];
@@ -492,36 +512,81 @@ dstar_samples_to_bits(const float *in, uint16_t start, uint16_t count, uint8_t *
     }
 }
 
+/* Does the bit history end in the frame sync (within FRAME_SYNC_ERRS)?
+ * *corr receives the soft correlation, to pick the best sample phase. */
 static bool
-dstar_correlate_frame_sync(sbitx_dstar_rx *rx)
+dstar_frame_sync_match(sbitx_dstar_rx *rx, int32_t *corr_out)
 {
-    if (countBits64((rx->bit_buffer[rx->bit_ptr] & FRAME_SYNC_MASK) ^ FRAME_SYNC_DATA) <= FRAME_SYNC_ERRS) {
-        uint16_t ptr = rx->data_ptr + DSTAR_DATA_LENGTH_SAMPLES - DSTAR_FRAME_SYNC_LENGTH_SAMPLES
-                       + DSTAR_RADIO_SYMBOL_LENGTH;
+    if (countBits64((rx->bit_buffer[rx->bit_ptr] & FRAME_SYNC_MASK) ^ FRAME_SYNC_DATA) > FRAME_SYNC_ERRS)
+        return false;
+
+    uint16_t ptr = rx->data_ptr + DSTAR_DATA_LENGTH_SAMPLES - DSTAR_FRAME_SYNC_LENGTH_SAMPLES
+                   + DSTAR_RADIO_SYMBOL_LENGTH;
+    if (ptr >= DSTAR_DATA_LENGTH_SAMPLES)
+        ptr -= DSTAR_DATA_LENGTH_SAMPLES;
+
+    int32_t corr = 0;
+    for (uint8_t i = 0; i < DSTAR_FRAME_SYNC_LENGTH_SYMBOLS; i++) {
+        float val = rx->data_buffer[ptr];
+        if (DSTAR_FRAME_SYNC_SYMBOLS[i])
+            corr -= (int32_t)(val * 32768.0f);
+        else
+            corr += (int32_t)(val * 32768.0f);
+        ptr += DSTAR_RADIO_SYMBOL_LENGTH;
         if (ptr >= DSTAR_DATA_LENGTH_SAMPLES)
             ptr -= DSTAR_DATA_LENGTH_SAMPLES;
-
-        int32_t corr = 0;
-        for (uint8_t i = 0; i < DSTAR_FRAME_SYNC_LENGTH_SYMBOLS; i++) {
-            float val = rx->data_buffer[ptr];
-            if (DSTAR_FRAME_SYNC_SYMBOLS[i])
-                corr -= (int32_t)(val * 32768.0f);
-            else
-                corr += (int32_t)(val * 32768.0f);
-            ptr += DSTAR_RADIO_SYMBOL_LENGTH;
-            if (ptr >= DSTAR_DATA_LENGTH_SAMPLES)
-                ptr -= DSTAR_DATA_LENGTH_SAMPLES;
-        }
-
-        if (corr > rx->max_frame_corr) {
-            rx->max_frame_corr = corr;
-            rx->header_ptr = 0U;
-            rx->stat_frame_sync++;
-            return true;
-        }
     }
+    *corr_out = corr;
+    return true;
+}
 
-    return false;
+/* A frame sync here starts a header candidate. Within a symbol of the
+ * newest candidate it is the same sync at another sample phase: keep the
+ * better correlation. With every slot taken the oldest goes -- the real
+ * sync ends the preamble, so it is the newest. Returns whether any
+ * candidate is pending. */
+static bool
+dstar_header_candidates(sbitx_dstar_rx *rx)
+{
+    int32_t corr;
+    bool any = false;
+    int newest = -1, oldest = -1, freeslot = -1;
+    for (int c = 0; c < DSTAR_HDR_CANDS; c++) {
+        if (!rx->hdr_cand[c].used) {
+            freeslot = c;
+            continue;
+        }
+        any = true;
+        uint32_t age = rx->hdr_clock - rx->hdr_cand[c].trig;
+        if (newest < 0 || age < rx->hdr_clock - rx->hdr_cand[newest].trig)
+            newest = c;
+        if (oldest < 0 || age > rx->hdr_clock - rx->hdr_cand[oldest].trig)
+            oldest = c;
+    }
+    if (!dstar_frame_sync_match(rx, &corr))
+        return any;
+
+    if (newest >= 0 && rx->hdr_clock - rx->hdr_cand[newest].trig < DSTAR_RADIO_SYMBOL_LENGTH) {
+        if (corr > rx->hdr_cand[newest].corr) {
+            rx->hdr_cand[newest].trig = rx->hdr_clock;
+            rx->hdr_cand[newest].corr = corr;
+        }
+        return true;
+    }
+    int c = freeslot >= 0 ? freeslot : oldest;
+    rx->hdr_cand[c].trig = rx->hdr_clock;
+    rx->hdr_cand[c].corr = corr;
+    rx->hdr_cand[c].used = true;
+    rx->stat_frame_sync++;
+    return true;
+}
+
+static void
+dstar_header_candidates_clear(sbitx_dstar_rx *rx)
+{
+    for (int c = 0; c < DSTAR_HDR_CANDS; c++)
+        rx->hdr_cand[c].used = false;
+    rx->hdr_lock_pending = false;
 }
 
 static bool
@@ -907,12 +972,7 @@ dstar_process_none(sbitx_dstar_rx *rx, float sample)
 {
     (void)sample;
 
-    if (dstar_correlate_frame_sync(rx)) {
-        rx->countdown = 5U;
-
-        rx->header_buffer[rx->header_ptr] = sample;
-        rx->header_ptr++;
-
+    if (dstar_header_candidates(rx)) {
         rx->state = 1;
         return;
     }
@@ -925,18 +985,40 @@ dstar_process_none(sbitx_dstar_rx *rx, float sample)
 static void
 dstar_process_header(sbitx_dstar_rx *rx, float sample)
 {
-    if (rx->countdown > 0U) {
-        dstar_correlate_frame_sync(rx);
-        rx->countdown--;
+    (void)sample;
+
+    if (rx->hdr_lock_pending) {
+        if (rx->hdr_clock != rx->hdr_lock_at)
+            return;
+        dstar_header_candidates_clear(rx);
+        rx->frame_count = 0U;
+        rx->data_ptr = 0U;
+
+        rx->start_ptr = 476U;
+        rx->sync_ptr = 471U;
+        rx->max_sync_ptr = 472U;
+        rx->min_sync_ptr = 470U;
+
+        rx->state = 2;
+        return;
     }
 
-    rx->header_buffer[rx->header_ptr] = sample;
-    rx->header_ptr++;
+    dstar_header_candidates(rx);
 
-    if (rx->header_ptr == (DSTAR_FEC_SECTION_LENGTH_SAMPLES + DSTAR_RADIO_SYMBOL_LENGTH)) {
+    for (int c = 0; c < DSTAR_HDR_CANDS; c++) {
+        if (!rx->hdr_cand[c].used || rx->hdr_clock - rx->hdr_cand[c].trig != DSTAR_HDR_DECODE_AT)
+            continue;
+        rx->hdr_cand[c].used = false;
+
+        /* header_buffer[0] is the sync's last sample; symbols from [5]. */
+        const uint32_t trig = rx->hdr_cand[c].trig;
+        for (uint32_t k = 0; k <= DSTAR_HDR_DECODE_AT; k++)
+            rx->header_buffer[k] = rx->hdr_ring[(trig + k) & (DSTAR_HDR_RING - 1U)];
+
         uint8_t buffer[DSTAR_FEC_SECTION_LENGTH_BYTES];
+        memset(buffer, 0, sizeof(buffer));
         dstar_samples_to_bits(rx->header_buffer, DSTAR_RADIO_SYMBOL_LENGTH, DSTAR_FEC_SECTION_LENGTH_SYMBOLS,
-                              buffer, DSTAR_FEC_SECTION_LENGTH_SAMPLES);
+                              buffer, DSTAR_FEC_SECTION_LENGTH_SAMPLES + 2U * DSTAR_RADIO_SYMBOL_LENGTH);
 
         uint8_t header[41];
         const uint32_t soft_before = rx->stat_header_soft_ok;
@@ -954,27 +1036,22 @@ dstar_process_header(sbitx_dstar_rx *rx, float sample)
         }
         if (rx->burst_debug_cb != NULL)
             rx->burst_debug_cb(rx->user, header, ok, rx->stat_header_soft_ok != soft_before,
-                               rx->max_frame_corr);
-        if (!ok) {
-            rx->state = 0;
-            rx->max_frame_corr = 0;
-            rx->max_data_corr = 0;
-        } else if (rx->header_cb != NULL) {
-            rx->header_cb(rx->user, header);
+                               rx->hdr_cand[c].corr);
+        if (ok) {
+            dstar_header_candidates_clear(rx);
+            rx->hdr_lock_pending = true;
+            rx->hdr_lock_at = trig + DSTAR_HDR_DATA_AT;
+            if (rx->header_cb != NULL)
+                rx->header_cb(rx->user, header);
+            return;
         }
     }
 
-    if (rx->header_ptr == (DSTAR_FEC_SECTION_LENGTH_SAMPLES + 2U * DSTAR_RADIO_SYMBOL_LENGTH)) {
-        rx->frame_count = 0U;
-        rx->data_ptr = 0U;
-
-        rx->start_ptr = 476U;
-        rx->sync_ptr = 471U;
-        rx->max_sync_ptr = 472U;
-        rx->min_sync_ptr = 470U;
-
-        rx->state = 2;
-    }
+    for (int c = 0; c < DSTAR_HDR_CANDS; c++)
+        if (rx->hdr_cand[c].used)
+            return;
+    rx->state = 0;
+    rx->max_data_corr = 0;
 }
 
 /* The fixed pattern D-STAR scrambles every frame's slow-data bytes with. */
@@ -1102,7 +1179,6 @@ dstar_process_data(sbitx_dstar_rx *rx)
         if (rx->eot_cb != NULL)
             rx->eot_cb(rx->user);
 
-        rx->max_frame_corr = 0;
         rx->max_data_corr = 0;
 
         rx->state = 0;
@@ -1121,7 +1197,6 @@ dstar_process_data(sbitx_dstar_rx *rx)
         if (rx->lost_cb != NULL)
             rx->lost_cb(rx->user);
 
-        rx->max_frame_corr = 0;
         rx->max_data_corr = 0;
 
         rx->state = 0;
@@ -1146,7 +1221,6 @@ dstar_process_data(sbitx_dstar_rx *rx)
 
         rx->frame_count++;
 
-        rx->max_frame_corr = 0;
         rx->max_data_corr = 0;
     }
 }
@@ -1202,17 +1276,15 @@ sbitx_dstar_rx_reset(sbitx_dstar_rx *rx)
     if (rx == NULL)
         return;
     rx->state = 0;
-    rx->header_ptr = 0U;
     rx->data_ptr = 0U;
     rx->bit_ptr = 0U;
-    rx->max_frame_corr = 0;
     rx->max_data_corr = 0;
     rx->start_ptr = NOENDPTR;
     rx->sync_ptr = NOENDPTR;
     rx->min_sync_ptr = NOENDPTR;
     rx->max_sync_ptr = NOENDPTR;
     rx->frame_count = 0U;
-    rx->countdown = 0U;
+    dstar_header_candidates_clear(rx);
     rx->last_sync_valid = false;
     rx->drift_samples = 0;
     rx->drift_span = 0;
@@ -1300,6 +1372,7 @@ sbitx_dstar_rx_process(sbitx_dstar_rx *rx, const float *audio, int n)
             rx->bit_buffer[rx->bit_ptr] |= 0x01U;
 
         rx->data_buffer[rx->data_ptr] = sample;
+        rx->hdr_ring[rx->hdr_clock & (DSTAR_HDR_RING - 1U)] = sample;
 
         switch (rx->state) {
         case 1:
@@ -1320,6 +1393,7 @@ sbitx_dstar_rx_process(sbitx_dstar_rx *rx, const float *audio, int n)
         rx->bit_ptr++;
         if (rx->bit_ptr >= DSTAR_RADIO_SYMBOL_LENGTH)
             rx->bit_ptr = 0U;
+        rx->hdr_clock++;
     }
 }
 
