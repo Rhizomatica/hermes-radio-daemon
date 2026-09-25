@@ -1,6 +1,9 @@
 [Unit]
 Description=HERMES radio controller daemon (hermes-radio-daemon)
 After=network.target
+# One radio controller per station: starting radiod stops hermes-net's
+# sbitx controller (whose unit has Conflicts=radiod.service).
+Conflicts=sbitx.service
 
 [Service]
 Type=exec
