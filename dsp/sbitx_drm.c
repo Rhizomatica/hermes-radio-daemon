@@ -23,22 +23,22 @@
 #include <libcsdr_gpl.h>
 
 #include "sbitx_drm.h"
+#include "stream_resampler.h"
 
 static pid_t dream_pid = -1;
 static FILE *dream_in = NULL;
 static FILE *dream_out = NULL;
 
-static rational_resampler_ff_t rs_i_state = {0, 0, 0};
-static rational_resampler_ff_t rs_q_state = {0, 0, 0};
-static rational_resampler_ff_t rs_up_state = {0, 0, 0};
-static float *rs_dn_taps = NULL;
-static float *rs_up_taps = NULL;
-static int rs_dn_taps_len = 0;
-static int rs_up_taps_len = 0;
+/* Rate conversion with the state kept across blocks. csdr's
+ * rational_resampler_ff() called per block with only that block dropped its
+ * look-ahead tail every block, and the audio path read up to a whole block
+ * of 8 kHz audio, upsampled it 12x and kept one block of it (11/12 lost). */
+static stream_resampler rs_i, rs_q;          /* 96k -> 48k signal */
+static stream_resampler rs_up;               /* 8k -> 96k audio */
 static bool rs_ready = false;
+static float audio_fifo[4096];
+static int audio_fifo_n = 0;
 
-static float i_48k[2048];
-static float q_48k[2048];
 static float audio_8k[2048];
 
 static int dmode_audio_available = 0;
@@ -47,17 +47,10 @@ static void init_resamplers(void)
 {
     if (rs_ready)
         return;
-
-    float tbw = 0.05f;
-    rs_dn_taps_len = firdes_filter_len(tbw);
-    rs_dn_taps = malloc(rs_dn_taps_len * sizeof(float));
-    rational_resampler_get_lowpass_f(rs_dn_taps, rs_dn_taps_len, 1, 2, WINDOW_BLACKMAN);
-
-    rs_up_taps_len = firdes_filter_len(tbw);
-    rs_up_taps = malloc(rs_up_taps_len * sizeof(float));
-    rational_resampler_get_lowpass_f(rs_up_taps, rs_up_taps_len, 12, 1, WINDOW_BLACKMAN);
-
-    rs_ready = true;
+    rs_ready = stream_resampler_init(&rs_i, 1, 2, 0.05f) &&
+               stream_resampler_init(&rs_q, 1, 2, 0.05f) &&
+               stream_resampler_init(&rs_up, 12, 1, 0.01f);
+    audio_fifo_n = 0;
 }
 
 bool sbitx_drm_init(const char *dream_path, uint32_t sigsrate, uint32_t audsrate)
@@ -154,9 +147,11 @@ void sbitx_drm_shutdown(void)
     if (dream_in) { fclose(dream_in); dream_in = NULL; }
     if (dream_out) { fclose(dream_out); dream_out = NULL; }
 
-    free(rs_dn_taps); rs_dn_taps = NULL;
-    free(rs_up_taps); rs_up_taps = NULL;
+    stream_resampler_free(&rs_i);
+    stream_resampler_free(&rs_q);
+    stream_resampler_free(&rs_up);
     rs_ready = false;
+    audio_fifo_n = 0;
 
     fprintf(stderr, "DRM: shutdown complete\n");
 }
@@ -168,28 +163,16 @@ void sbitx_drm_process(const float *iq_i, const float *iq_q, int n,
     if (!dream_in || !dream_out || !rs_ready)
         return;
 
-    float i_96k[n];
-    float q_96k[n];
-    for (int k = 0; k < n; k++)
-    {
-        i_96k[k] = iq_i[k];
-        q_96k[k] = iq_q[k];
-    }
-
-    rs_i_state = rational_resampler_ff(i_96k, i_48k, n, 1, 2,
-                                       rs_dn_taps, rs_dn_taps_len,
-                                       rs_i_state.last_taps_delay);
-    rs_q_state = rational_resampler_ff(q_96k, q_48k, n, 1, 2,
-                                       rs_dn_taps, rs_dn_taps_len,
-                                       rs_q_state.last_taps_delay);
-
-    int m = rs_i_state.output_size;
-    if (rs_q_state.output_size < m)
-        m = rs_q_state.output_size;
+    size_t ni = stream_resampler_run(&rs_i, iq_i, (size_t) n);
+    size_t nq = stream_resampler_run(&rs_q, iq_q, (size_t) n);
+    int m = (int) (ni < nq ? ni : nq);
+    const float *i_48k = rs_i.out, *q_48k = rs_q.out;
 
     if (m > 0)
     {
         static int16_t s16_buf[4096];
+        if (m > (int) (sizeof(s16_buf) / sizeof(s16_buf[0]) / 2))
+            m = (int) (sizeof(s16_buf) / sizeof(s16_buf[0]) / 2);
         for (int k = 0; k < m; k++)
         {
             float iv = i_48k[k] * 32767.0f;
@@ -205,28 +188,38 @@ void sbitx_drm_process(const float *iq_i, const float *iq_q, int n,
         fwrite(s16_buf, sizeof(int16_t), (size_t)m * 2, dream_in);
     }
 
+    /* Read only the 8 kHz audio this block needs (~n/12), upsample it into
+     * the FIFO, and hand out up to n samples. */
     clearerr(dream_out);
-    size_t audiobytes = fread(audio_8k, sizeof(float), (size_t) n, dream_out);
-
-    if (audiobytes > 0)
+    while (audio_fifo_n < n)
     {
-        int audiosamples = (int) audiobytes;
-
-        static int16_t s16_8k[2048];
-        int s16_count = 0;
-        for (int k = 0; k < audiosamples && k < 2048; k++)
+        int want = (n - audio_fifo_n) / 12 + 2;
+        if (want > (int) (sizeof(audio_8k) / sizeof(audio_8k[0])))
+            want = (int) (sizeof(audio_8k) / sizeof(audio_8k[0]));
+        size_t got = fread(audio_8k, sizeof(float), (size_t) want, dream_out);
+        if (got == 0)
+            break;
+        for (size_t k = 0; k < got; k++)
         {
             float v = audio_8k[k];
             if (v > 1.0f) v = 1.0f;
             if (v < -1.0f) v = -1.0f;
             audio_8k[k] = v;
         }
+        size_t up = stream_resampler_run(&rs_up, audio_8k, got);
+        if (up > sizeof(audio_fifo) / sizeof(audio_fifo[0]) - (size_t) audio_fifo_n)
+            up = sizeof(audio_fifo) / sizeof(audio_fifo[0]) - (size_t) audio_fifo_n;
+        memcpy(audio_fifo + audio_fifo_n, rs_up.out, up * sizeof(float));
+        audio_fifo_n += (int) up;
+    }
 
-        rs_up_state = rational_resampler_ff(audio_8k, audio_out, audiosamples,
-                                            12, 1, rs_up_taps, rs_up_taps_len,
-                                            rs_up_state.last_taps_delay);
-        *out_n = rs_up_state.output_size;
-        if (*out_n > n) *out_n = n;
+    if (audio_fifo_n > 0)
+    {
+        *out_n = audio_fifo_n < n ? audio_fifo_n : n;
+        memcpy(audio_out, audio_fifo, (size_t) *out_n * sizeof(float));
+        audio_fifo_n -= *out_n;
+        if (audio_fifo_n > 0)
+            memmove(audio_fifo, audio_fifo + *out_n, (size_t) audio_fifo_n * sizeof(float));
 
         float max_amp = 0.01f;
         for (int k = 0; k < *out_n; k++)

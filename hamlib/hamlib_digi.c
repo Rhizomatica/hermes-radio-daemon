@@ -29,6 +29,7 @@
 #include <libcsdr.h>
 
 #include "hamlib_digi.h"
+#include "../dsp/stream_resampler.h"
 #include "../dsp/sbitx_cw.h"
 #include "../dsp/sbitx_ft8.h"
 #include "../dsp/sbitx_rtty.h"
@@ -57,77 +58,56 @@ extern _Atomic bool shutdown_;
 #define RADAE_SPEECH_RATE  16000
 #define RADAE_CARRIER_HZ   1500.0f   /* centre in SSB audio passband */
 
-/* Small wrapper around csdr's rational_resampler_ff for one direction. */
+/* One direction of rate conversion. Wraps stream_resampler, which carries
+ * the input csdr's rational_resampler_ff() leaves unconsumed. Calling that
+ * per block with only the new block, as this did, dropped the look-ahead
+ * tail every block: 48 -> 12 kHz FT8/CW/RTTY lost samples and timing on
+ * every block, and RADE / D-STAR here the same. taps_len stays 0 until a
+ * rate change is set up (callers test it); out holds the last results. */
 typedef struct {
-    int      interp;
-    int      decim;
-    float   *taps;
     int      taps_len;
-    rational_resampler_ff_t state;
-    float   *out;          /* scratch */
+    stream_resampler rs;
+    float   *out;
     size_t   out_cap;
 } resamp_state;
-
-static unsigned gcd_u32(unsigned a, unsigned b)
-{
-    while (b) { unsigned t = b; b = a % b; a = t; }
-    return a ? a : 1;
-}
 
 static bool resamp_init(resamp_state *r, uint32_t from_rate, uint32_t to_rate)
 {
     memset(r, 0, sizeof(*r));
     if (from_rate == to_rate)
         return true;
-
-    unsigned g = gcd_u32(from_rate, to_rate);
-    r->interp = (int)(to_rate   / g);
-    r->decim  = (int)(from_rate / g);
-
-    float transition_bw = 0.05f;
-    r->taps_len = firdes_filter_len(transition_bw);
-    r->taps = malloc(r->taps_len * sizeof(float));
-    if (!r->taps)
+    /* 0.02 of the higher rate: at 48 kHz a 960 Hz transition, sharp
+     * enough for 8 kHz RADE/D-STAR (0.05 folded 5-7 kHz into the band). */
+    if (!stream_resampler_init(&r->rs, (int) to_rate, (int) from_rate, 0.02f))
         return false;
-    rational_resampler_get_lowpass_f(r->taps, r->taps_len,
-                                     r->interp, r->decim, WINDOW_BLACKMAN);
+    r->taps_len = r->rs.taps_len;
     return true;
 }
 
 static void resamp_free(resamp_state *r)
 {
-    free(r->taps);
+    stream_resampler_free(&r->rs);
     free(r->out);
     memset(r, 0, sizeof(*r));
 }
 
 static size_t resamp_apply(resamp_state *r, const float *in, size_t n_in)
 {
-    if (!r->taps) {
-        /* Pass-through: caller may use `in` directly; we still copy to
-         * keep the same out-pointer contract. */
-        if (n_in > r->out_cap) {
-            float *p = realloc(r->out, n_in * sizeof(float));
-            if (!p) return 0;
-            r->out = p;
-            r->out_cap = n_in;
-        }
-        memcpy(r->out, in, n_in * sizeof(float));
-        return n_in;
+    const float *src = in;
+    size_t n = n_in;
+    if (r->taps_len) {
+        n = stream_resampler_run(&r->rs, in, n_in);
+        src = r->rs.out;
     }
-    size_t cap = (size_t)((double) n_in * (double) r->interp / (double) r->decim) + 32;
-    if (cap > r->out_cap) {
-        float *p = realloc(r->out, cap * sizeof(float));
+    if (n > r->out_cap) {
+        float *p = realloc(r->out, n * sizeof(float));
         if (!p) return 0;
         r->out = p;
-        r->out_cap = cap;
+        r->out_cap = n;
     }
-    r->state = rational_resampler_ff((float *) in, r->out,
-                                     (int) n_in,
-                                     r->interp, r->decim,
-                                     r->taps, r->taps_len,
-                                     r->state.last_taps_delay);
-    return (size_t) r->state.output_size;
+    if (n)
+        memcpy(r->out, src, n * sizeof(float));
+    return n;
 }
 
 /* ─── ring helpers ────────────────────────────────────────────── */
@@ -426,7 +406,7 @@ static void cw_rx_char_cb(char c)
     if (c == ' ' || c == '\n') {
         if (pos > 0) {
             line[pos] = '\0';
-            digi_spool_log("CW", "rx", 0, line);
+            digi_spool_log("CW", "rx", (uint32_t) g_rtty_freq_hz_cache, line);
             pos = 0;
         }
         return;
@@ -435,8 +415,10 @@ static void cw_rx_char_cb(char c)
         line[pos++] = c;
 }
 
-static void do_cw_rx(hamlib_digi_state *s, uint32_t ring_rate, int wpm, int pitch)
+static void do_cw_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz,
+                     int wpm, int pitch)
 {
+    g_rtty_freq_hz_cache = (int) freq_hz;       /* for the CW spool line too */
     if (s->cw_rx_buf_block == 0)
         s->cw_rx_buf_block = sbitx_cw_rx_samples_per_block();
 
@@ -488,11 +470,23 @@ static void do_ft8_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz
     if (s->ft8_rx_buf_n >= slot_samples) {
         char decoded[1024] = {0};
         sbitx_ft8_decode(s->ft8_rx_buf, slot_samples, decoded, sizeof(decoded));
-        if (decoded[0])
+        /* Windows overlap by 13 s, so one transmission can decode in two
+         * of them: log the same text once per 15 s. */
+        static char     last_decoded[1024];
+        static uint64_t last_decoded_at = 0;          /* in 2 s steps */
+        static uint64_t window_no = 0;
+        window_no++;
+        if (decoded[0] && (strcmp(decoded, last_decoded) != 0 ||
+                           window_no - last_decoded_at > FT8_SLOT_SECONDS / 2)) {
             digi_spool_log("FT8", "rx", freq_hz, decoded);
-        /* Slide forward by half a slot so successive decodes overlap and
-         * catch off-boundary transmissions. */
-        int shift = slot_samples / 2;
+            snprintf(last_decoded, sizeof(last_decoded), "%s", decoded);
+            last_decoded_at = window_no;
+        }
+        /* Slide by 2 s. Transmissions here are not UTC-slot aligned, and a
+         * 12.64 s burst fits a 15 s window only if it starts within its
+         * first 2.36 s; the old half-slot (7.5 s) step missed most of
+         * them. Same as the sBitx path. */
+        int shift = DIGI_DECODE_RATE * 2;
         memmove(s->ft8_rx_buf, s->ft8_rx_buf + shift,
                 (s->ft8_rx_buf_n - shift) * sizeof(float));
         s->ft8_rx_buf_n -= shift;
@@ -1099,7 +1093,7 @@ static void *hamlib_digi_thread(void *radio_h_v)
         } else {
             switch (mode) {
             case MODE_CW:
-                do_cw_rx(s, ring_rate, radio_h->cw_wpm, radio_h->cw_pitch);
+                do_cw_rx(s, ring_rate, freq_hz, radio_h->cw_wpm, radio_h->cw_pitch);
                 break;
             case MODE_FT8:
                 do_ft8_rx(s, ring_rate, freq_hz);
