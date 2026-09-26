@@ -402,16 +402,19 @@ static rmode_t mode_to_hamlib(uint16_t mode, bool data_path)
     }
 }
 
-/* Passband to ask for with a rig mode. Data modes (PKTUSB & co) get the
- * profile's filter_width, or 3 kHz: RIG_PASSBAND_NORMAL gave the IC-7100
- * a 250 Hz filter centred on 1500 Hz in USB-D, so the data modem (and CW
- * at 700 Hz) heard next to nothing. Voice and the rig's own CW/RTTY keep
- * the rig's normal passband. */
+/* Passband to ask for with a rig mode. SSB data modes (PKTUSB/PKTLSB) get
+ * the profile's filter_width, or 3 kHz: RIG_PASSBAND_NORMAL gave the
+ * IC-7100 a 250 Hz filter centred on 1500 Hz in USB-D, so the data modem
+ * (and CW at 700 Hz) heard next to nothing. FM/AM data use filter_width
+ * when set and otherwise the rig's normal passband: a 3 kHz default would
+ * cut an FM or AM channel. Voice, the rig's own CW/RTTY and D-STAR (rig
+ * DV) keep the rig's normal passband. */
 static pbwidth_t mode_passband(rmode_t hmode, const radio_profile *p)
 {
-    if (hmode == RIG_MODE_PKTUSB || hmode == RIG_MODE_PKTLSB ||
-        hmode == RIG_MODE_PKTFM || hmode == RIG_MODE_PKTAM)
+    if (hmode == RIG_MODE_PKTUSB || hmode == RIG_MODE_PKTLSB)
         return p->filter_width ? (pbwidth_t) p->filter_width : 3000;
+    if ((hmode == RIG_MODE_PKTFM || hmode == RIG_MODE_PKTAM) && p->filter_width)
+        return (pbwidth_t) p->filter_width;
     return RIG_PASSBAND_NORMAL;
 }
 
