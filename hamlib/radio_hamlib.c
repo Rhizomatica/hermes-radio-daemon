@@ -1729,12 +1729,13 @@ static int hl_get_width(radio *radio_h, uint32_t *hz)
     if (ret != RIG_OK)
         return hl_rc(ret);
 
+    /* Report only. This used to copy the read-back into the profile's
+     * filter_width, which is the width radiod asks for on the next mode
+     * change: every rigctld "m" poll (WSJT-X, fldigi) or CAT SH/SL query
+     * then decided the next data-mode filter from whatever mode the rig
+     * was in. filter_width changes only when a width is set (set_width,
+     * rigctld "M <mode> <width>"). */
     *hz = (uint32_t) (pb > 0 ? pb : 0);
-
-    uint32_t p = radio_h->profile_active_idx;
-    if (p < radio_h->profiles_count)
-        radio_h->profiles[p].filter_width = *hz;
-
     return RADIO_CTRL_OK;
 }
 
