@@ -274,44 +274,63 @@ void radio_backend_set_power_level(radio *radio_h, uint16_t power_level, uint32_
 }
 
 /* D-STAR digital voice is the profile's mode: ON switches the profile to
- * MODE_DSTAR, remembering the mode it leaves, and OFF switches back. */
+ * MODE_DSTAR, remembering the mode it leaves in profileN:dv_restore_mode,
+ * and OFF switches back and empties the key. A non-empty key therefore
+ * means "in D-STAR because digital voice is on". */
 static void set_dstar_digital_voice(radio *radio_h, bool digital_voice, uint32_t profile)
 {
     const radio_backend_ops *ops = radio_backend_ops_from_radio(radio_h);
     radio_profile *p = &radio_h->profiles[profile];
+    char key[64];
 
     /* a RADEv2 flag still set would run both codecs */
     if (p->digital_voice && ops && ops->set_digital_voice)
         ops->set_digital_voice(radio_h, false, profile);
 
+    snprintf(key, sizeof(key), "profile%u:dv_restore_mode", profile);
     if (digital_voice && p->mode != MODE_DSTAR)
     {
-        char key[64];
         p->dv_restore_mode = p->mode;
-        snprintf(key, sizeof(key), "profile%u:dv_restore_mode", profile);
         cfg_set(radio_h, radio_h->cfg_user, key, cfg_mode_name(p->mode));
         radio_h->cfg_user_dirty = true;
         radio_backend_set_mode(radio_h, MODE_DSTAR, profile);
     }
     else if (!digital_voice && p->mode == MODE_DSTAR)
+    {
         radio_backend_set_mode(radio_h, p->dv_restore_mode, profile);
+        cfg_set(radio_h, radio_h->cfg_user, key, "");
+        radio_h->cfg_user_dirty = true;
+    }
 }
 
-void radio_backend_set_digital_voice(radio *radio_h, bool digital_voice, uint32_t profile)
+bool radio_backend_set_digital_voice(radio *radio_h, bool digital_voice, uint32_t profile)
 {
     const radio_backend_ops *ops = radio_backend_ops_from_radio(radio_h);
 
     if (!radio_h || profile >= radio_h->profiles_count)
-        return;
+        return false;
+
+    if (radio_backend_get_digital_voice(radio_h, profile) == digital_voice)
+        return true;
+
+    /* Switching codec mid-over would cut it without its end: a D-STAR over
+     * left without its EOT starts the next one with stale TX state (no
+     * preamble or header), and RADEv2 would start mid-transmission. */
+    if (radio_h->txrx_state == IN_TX)
+    {
+        fprintf(stderr, "set_digital_voice: refused while transmitting\n");
+        return false;
+    }
 
     if (radio_h->digital_voice_codec == DV_CODEC_DSTAR)
     {
         set_dstar_digital_voice(radio_h, digital_voice, profile);
-        return;
+        return true;
     }
 
     if (ops && ops->set_digital_voice)
         ops->set_digital_voice(radio_h, digital_voice, profile);
+    return true;
 }
 
 bool radio_backend_get_digital_voice(const radio *radio_h, uint32_t profile)
@@ -327,13 +346,29 @@ bool radio_backend_get_digital_voice(const radio *radio_h, uint32_t profile)
     return p->digital_voice;
 }
 
-void radio_backend_set_digital_voice_codec(radio *radio_h, uint16_t codec)
+bool radio_backend_dv_codec_supported(const radio *radio_h, uint16_t codec)
+{
+    /* The hamlib backend's D-STAR is not a digital voice path yet: a rig
+     * without native DV cannot carry 4800 baud GMSK through its SSB audio,
+     * and a rig with native DV (IC-7100) wants speech, not the daemon's
+     * GMSK. MODE_DSTAR stays selectable there, as a mode. */
+    return codec != DV_CODEC_DSTAR || radio_h->backend_kind != RADIO_BACKEND_HAMLIB;
+}
+
+bool radio_backend_set_digital_voice_codec(radio *radio_h, uint16_t codec)
 {
     bool on[MAX_RADIO_PROFILES];
     uint32_t k;
 
-    if (!radio_h || radio_h->digital_voice_codec == codec)
-        return;
+    if (!radio_h || !radio_backend_dv_codec_supported(radio_h, codec))
+        return false;
+    if (radio_h->digital_voice_codec == codec)
+        return true;
+    if (radio_h->txrx_state == IN_TX)
+    {
+        fprintf(stderr, "digital_voice_codec: refused while transmitting\n");
+        return false;
+    }
 
     /* every profile keeps its digital voice ON or OFF, in the new codec */
     for (k = 0; k < radio_h->profiles_count && k < MAX_RADIO_PROFILES; k++)
@@ -351,6 +386,7 @@ void radio_backend_set_digital_voice_codec(radio *radio_h, uint16_t codec)
     for (k = 0; k < radio_h->profiles_count && k < MAX_RADIO_PROFILES; k++)
         if (on[k])
             radio_backend_set_digital_voice(radio_h, true, k);
+    return true;
 }
 
 void radio_backend_set_step_size(radio *radio_h, uint32_t step_size)

@@ -190,6 +190,52 @@ bool cfg_detect_backend(const char *cfg_radio, radio_backend_kind *backend_kind)
     return true;
 }
 
+/* Digital voice survives a change of main:digital_voice_codec made in the
+ * file: under DSTAR, a profile saved with digital_voice = 1 comes up in
+ * D-STAR; under RADEV2, a profile in D-STAR because of digital voice
+ * (dv_restore_mode set) comes up in its old mode with digital_voice = 1. */
+static void cfg_carry_digital_voice(radio *radio_h)
+{
+    for (uint32_t k = 0; k < radio_h->profiles_count; k++)
+    {
+        radio_profile *p = &radio_h->profiles[k];
+        char key[64];
+        char restore_key[64];
+        const char *restore;
+
+        snprintf(restore_key, sizeof(restore_key), "profile%u:dv_restore_mode", k);
+        restore = iniparser_getstring(radio_h->cfg_user, restore_key, "");
+
+        if (radio_h->digital_voice_codec == DV_CODEC_DSTAR && p->digital_voice)
+        {
+            p->digital_voice = false;
+            snprintf(key, sizeof(key), "profile%u:digital_voice", k);
+            cfg_set(radio_h, radio_h->cfg_user, key, "0");
+            if (p->mode != MODE_DSTAR)
+            {
+                p->dv_restore_mode = p->mode;
+                cfg_set(radio_h, radio_h->cfg_user, restore_key, cfg_mode_name(p->mode));
+                p->mode = MODE_DSTAR;
+                snprintf(key, sizeof(key), "profile%u:mode", k);
+                cfg_set(radio_h, radio_h->cfg_user, key, "DSTAR");
+            }
+            radio_h->cfg_user_dirty = true;
+        }
+        else if (radio_h->digital_voice_codec == DV_CODEC_RADEV2 &&
+                 p->mode == MODE_DSTAR && restore[0] != '\0')
+        {
+            p->mode = p->dv_restore_mode;
+            snprintf(key, sizeof(key), "profile%u:mode", k);
+            cfg_set(radio_h, radio_h->cfg_user, key, cfg_mode_name(p->mode));
+            cfg_set(radio_h, radio_h->cfg_user, restore_key, "");
+            p->digital_voice = true;
+            snprintf(key, sizeof(key), "profile%u:digital_voice", k);
+            cfg_set(radio_h, radio_h->cfg_user, key, "1");
+            radio_h->cfg_user_dirty = true;
+        }
+    }
+}
+
 bool cfg_init(radio *radio_h, const char *cfg_radio, const char *cfg_user,
               pthread_t *config_tid)
 {
@@ -210,32 +256,7 @@ bool cfg_init(radio *radio_h, const char *cfg_radio, const char *cfg_user,
     radio_h->cfg_radio_dirty = false;
     radio_h->cfg_user_dirty  = false;
 
-    /* A profile saved with digital voice on under RADEv2 comes up in D-STAR
-     * when the station now uses D-STAR for digital voice. */
-    if (radio_h->digital_voice_codec == DV_CODEC_DSTAR)
-    {
-        for (uint32_t k = 0; k < radio_h->profiles_count; k++)
-        {
-            radio_profile *p = &radio_h->profiles[k];
-            char key[64];
-
-            if (!p->digital_voice)
-                continue;
-            p->digital_voice = false;
-            snprintf(key, sizeof(key), "profile%u:digital_voice", k);
-            cfg_set(radio_h, radio_h->cfg_user, key, "0");
-            if (p->mode != MODE_DSTAR)
-            {
-                p->dv_restore_mode = p->mode;
-                snprintf(key, sizeof(key), "profile%u:dv_restore_mode", k);
-                cfg_set(radio_h, radio_h->cfg_user, key, cfg_mode_name(p->mode));
-                p->mode = MODE_DSTAR;
-                snprintf(key, sizeof(key), "profile%u:mode", k);
-                cfg_set(radio_h, radio_h->cfg_user, key, "DSTAR");
-            }
-            radio_h->cfg_user_dirty = true;
-        }
-    }
+    cfg_carry_digital_voice(radio_h);
 
     if (pthread_create(config_tid, NULL, config_thread, (void *) radio_h) != 0)
     {
@@ -475,7 +496,12 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     s = iniparser_getstring(ini, "main:digital_voice_codec", "RADEV2");
     codec = DV_CODEC_RADEV2;
     if (!cfg_dv_codec_from_name(s, &codec))
-        fprintf(stderr, "cfg: unknown digital_voice_codec \"%s\", using RADEV2\n", s);
+        fprintf(stderr, "cfg: unknown digital_voice_codec \"%s\", using RADEV2\n", s ? s : "");
+    if (codec == DV_CODEC_DSTAR && radio_h->backend_kind == RADIO_BACKEND_HAMLIB)
+    {
+        fprintf(stderr, "cfg: DSTAR digital voice needs the sbitx backend, using RADEV2\n");
+        codec = DV_CODEC_RADEV2;
+    }
     radio_h->digital_voice_codec = codec;
     s = iniparser_getstring(ini, "main:voice_key_file", "");
     snprintf(radio_h->voice_key_file, sizeof(radio_h->voice_key_file), "%s", s);
@@ -606,10 +632,10 @@ bool init_config_user(radio *radio_h, const char *ini_name)
         int b2 = iniparser_getboolean(ini, key, 0);
         radio_h->profiles[k].digital_voice = (bool) b2;
 
-        /* The mode D-STAR digital voice goes back to; without one, the
-         * sideband amateur voice uses on the profile's band. */
+        /* The mode D-STAR digital voice goes back to; USB, as HERMES uses on
+         * every band, when there is none. */
         snprintf(key, sizeof(key), "profile%d:dv_restore_mode", k);
-        mode_v = radio_h->profiles[k].freq < 10000000 ? MODE_LSB : MODE_USB;
+        mode_v = MODE_USB;
         cfg_mode_from_name(iniparser_getstring(ini, key, ""), &mode_v);
         radio_h->profiles[k].dv_restore_mode = mode_v;
 

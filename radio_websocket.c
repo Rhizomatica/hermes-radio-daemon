@@ -486,7 +486,8 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
     if (!strcmp(cmd, "get_digital_voice")) { send_value_string(c, cmd, radio_backend_get_digital_voice(radio_h, (uint32_t) profile) ? "ON" : "OFF"); return; }
     if (!strcmp(cmd, "set_digital_voice") && extract_json_int_any(payload, "enabled", "value", &value))
     {
-        radio_backend_set_digital_voice(radio_h, value != 0, (uint32_t) profile);
+        if (!radio_backend_set_digital_voice(radio_h, value != 0, (uint32_t) profile))
+        { send_cmd_error(c, cmd, "refused while transmitting"); return; }
         send_cmd_result(c, cmd, true, "OK"); return;
     }
 
@@ -697,7 +698,10 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
             if (!extract_json_string(payload, "value", name, sizeof(name)) ||
                 !cfg_dv_codec_from_name(name, &codec))
             { send_cmd_error(c, cmd, "digital_voice_codec is RADEV2 or DSTAR"); return; }
-            radio_backend_set_digital_voice_codec(radio_h, codec);
+            if (!radio_backend_dv_codec_supported(radio_h, codec))
+            { send_cmd_error(c, cmd, "DSTAR digital voice needs the sbitx backend"); return; }
+            if (!radio_backend_set_digital_voice_codec(radio_h, codec))
+            { send_cmd_error(c, cmd, "refused while transmitting"); return; }
             send_cmd_result(c, cmd, true, "OK"); return;
         }
         if (!extract_json_int(payload, "value", &v))

@@ -162,12 +162,15 @@ void radio_backend_set_profile_timeout(radio *radio_h, int32_t timeout);
 void radio_backend_set_power_level(radio *radio_h, uint16_t power_level, uint32_t profile);
 /* Digital voice ON/OFF, in the codec main:digital_voice_codec selects:
  * RADEv2 (the profile's digital_voice flag) or D-STAR (the profile in
- * MODE_DSTAR). Read it back with radio_backend_get_digital_voice, never
- * from the flag. */
-void radio_backend_set_digital_voice(radio *radio_h, bool digital_voice, uint32_t profile);
+ * MODE_DSTAR). Refused (false) while transmitting. Read it back with
+ * radio_backend_get_digital_voice, never from the flag. */
+bool radio_backend_set_digital_voice(radio *radio_h, bool digital_voice, uint32_t profile);
 bool radio_backend_get_digital_voice(const radio *radio_h, uint32_t profile);
-/* Switch codec (DV_CODEC_*); profiles with digital voice ON stay ON. */
-void radio_backend_set_digital_voice_codec(radio *radio_h, uint16_t codec);
+/* Whether this backend can run the codec (DV_CODEC_*) as digital voice. */
+bool radio_backend_dv_codec_supported(const radio *radio_h, uint16_t codec);
+/* Switch codec; profiles with digital voice ON stay ON. False when the
+ * backend can't run it, or while transmitting. */
+bool radio_backend_set_digital_voice_codec(radio *radio_h, uint16_t codec);
 void radio_backend_set_step_size(radio *radio_h, uint32_t step_size);
 void radio_backend_set_tone_generation(radio *radio_h, bool tone_generation);
 void radio_backend_set_profile(radio *radio_h, uint32_t profile);
