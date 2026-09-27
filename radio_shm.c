@@ -305,7 +305,7 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
         profile = cmd[4] >> 6;
         if (profile < radio_h->profiles_count)
         {
-            response[0] = radio_h->profiles[profile].digital_voice
+            response[0] = radio_backend_get_digital_voice(radio_h, profile)
                           ? CMD_RESP_GET_DIGITAL_VOICE_ON
                           : CMD_RESP_GET_DIGITAL_VOICE_OFF;
         }

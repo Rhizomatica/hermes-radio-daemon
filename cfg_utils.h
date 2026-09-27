@@ -38,6 +38,15 @@ bool cfg_init(radio *radio_h, const char *cfg_radio, const char *cfg_user,
 bool cfg_detect_backend(const char *cfg_radio, radio_backend_kind *backend_kind);
 radio_backend_kind cfg_backend_kind_from_string(const char *backend_name);
 
+/* MODE_* <-> the names the config files use ("LSB", "DSTAR", ...). An
+ * unknown name leaves *mode alone and returns false. */
+bool cfg_mode_from_name(const char *name, uint16_t *mode);
+const char *cfg_mode_name(uint16_t mode);
+
+/* DV_CODEC_* <-> main:digital_voice_codec ("RADEV2" or "DSTAR"). */
+bool cfg_dv_codec_from_name(const char *name, uint16_t *codec);
+const char *cfg_dv_codec_name(uint16_t codec);
+
 /* Signal the writer thread to exit and wait */
 bool cfg_shutdown(radio *radio_h, pthread_t *config_tid);
 

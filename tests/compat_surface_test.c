@@ -105,6 +105,12 @@ void radio_backend_set_digital_voice(radio *radio_h, bool dv, uint32_t p)
   if (p < radio_h->profiles_count) radio_h->profiles[p].digital_voice = dv;
   radio_pipeline_refresh(radio_h); }
 
+bool radio_backend_get_digital_voice(const radio *radio_h, uint32_t p)
+{ if (p >= radio_h->profiles_count) return false;
+  if (radio_h->digital_voice_codec == DV_CODEC_DSTAR)
+      return radio_h->profiles[p].mode == MODE_DSTAR;
+  return radio_h->profiles[p].digital_voice; }
+
 void radio_backend_set_step_size(radio *radio_h, uint32_t s)
 { backend_call.step_size = s; radio_h->step_size = s; }
 

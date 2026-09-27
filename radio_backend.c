@@ -273,11 +273,84 @@ void radio_backend_set_power_level(radio *radio_h, uint16_t power_level, uint32_
         ops->set_power_level(radio_h, power_level, profile);
 }
 
+/* D-STAR digital voice is the profile's mode: ON switches the profile to
+ * MODE_DSTAR, remembering the mode it leaves, and OFF switches back. */
+static void set_dstar_digital_voice(radio *radio_h, bool digital_voice, uint32_t profile)
+{
+    const radio_backend_ops *ops = radio_backend_ops_from_radio(radio_h);
+    radio_profile *p = &radio_h->profiles[profile];
+
+    /* a RADEv2 flag still set would run both codecs */
+    if (p->digital_voice && ops && ops->set_digital_voice)
+        ops->set_digital_voice(radio_h, false, profile);
+
+    if (digital_voice && p->mode != MODE_DSTAR)
+    {
+        char key[64];
+        p->dv_restore_mode = p->mode;
+        snprintf(key, sizeof(key), "profile%u:dv_restore_mode", profile);
+        cfg_set(radio_h, radio_h->cfg_user, key, cfg_mode_name(p->mode));
+        radio_h->cfg_user_dirty = true;
+        radio_backend_set_mode(radio_h, MODE_DSTAR, profile);
+    }
+    else if (!digital_voice && p->mode == MODE_DSTAR)
+        radio_backend_set_mode(radio_h, p->dv_restore_mode, profile);
+}
+
 void radio_backend_set_digital_voice(radio *radio_h, bool digital_voice, uint32_t profile)
 {
     const radio_backend_ops *ops = radio_backend_ops_from_radio(radio_h);
+
+    if (!radio_h || profile >= radio_h->profiles_count)
+        return;
+
+    if (radio_h->digital_voice_codec == DV_CODEC_DSTAR)
+    {
+        set_dstar_digital_voice(radio_h, digital_voice, profile);
+        return;
+    }
+
     if (ops && ops->set_digital_voice)
         ops->set_digital_voice(radio_h, digital_voice, profile);
+}
+
+bool radio_backend_get_digital_voice(const radio *radio_h, uint32_t profile)
+{
+    const radio_profile *p;
+
+    if (!radio_h || profile >= radio_h->profiles_count)
+        return false;
+
+    p = &radio_h->profiles[profile];
+    if (radio_h->digital_voice_codec == DV_CODEC_DSTAR)
+        return p->mode == MODE_DSTAR;
+    return p->digital_voice;
+}
+
+void radio_backend_set_digital_voice_codec(radio *radio_h, uint16_t codec)
+{
+    bool on[MAX_RADIO_PROFILES];
+    uint32_t k;
+
+    if (!radio_h || radio_h->digital_voice_codec == codec)
+        return;
+
+    /* every profile keeps its digital voice ON or OFF, in the new codec */
+    for (k = 0; k < radio_h->profiles_count && k < MAX_RADIO_PROFILES; k++)
+    {
+        on[k] = radio_backend_get_digital_voice(radio_h, k);
+        if (on[k])
+            radio_backend_set_digital_voice(radio_h, false, k);
+    }
+
+    radio_h->digital_voice_codec = codec;
+    cfg_set(radio_h, radio_h->cfg_radio, "main:digital_voice_codec",
+            cfg_dv_codec_name(codec));
+    radio_h->cfg_radio_dirty = true;
+
+    for (k = 0; k < radio_h->profiles_count && k < MAX_RADIO_PROFILES; k++)
+        if (on[k])
+            radio_backend_set_digital_voice(radio_h, true, k);
 }
 
 void radio_backend_set_step_size(radio *radio_h, uint32_t step_size)
