@@ -49,7 +49,7 @@ TEST_BINS = tests/backend_selection_test tests/compat_surface_test tests/control
             tests/dstar_voice_test tests/upsample2_test tests/rig_server_test \
             tests/hamlib_ptt_test tests/radae_vocoder_test tests/sbitx_buffer_test \
             tests/rtp_audio_test tests/audio_bridge_test tests/mic_filter_test \
-            tests/stream_resampler_test tests/digi_modes_test
+            tests/stream_resampler_test tests/digi_modes_test tests/dv_codec_test
 
 # ── daemon-level objects ────────────────────────────────────────
 DAEMON_TOP_OBJS = radio_daemon.o \
@@ -158,6 +158,7 @@ compat-tests: $(TEST_BINS)
 	./tests/mic_filter_test
 	./tests/stream_resampler_test
 	./tests/digi_modes_test
+	./tests/dv_codec_test
 
 tests/backend_selection_test: tests/backend_selection_test.c cfg_utils.c cfg_utils.h \
                               radio_backend.c radio_backend.h radio_daemon_core.h \
@@ -165,6 +166,10 @@ tests/backend_selection_test: tests/backend_selection_test.c cfg_utils.c cfg_uti
                               tests/fixtures/backend-default.ini \
                               tests/fixtures/backend-zbitx.ini
 	$(CC) $(TEST_CFLAGS) tests/backend_selection_test.c hamlib/rig_server.c radio_controls.c cat_server.c -o $@ -liniparser -lpthread -lm
+
+tests/dv_codec_test: tests/dv_codec_test.c cfg_utils.c cfg_utils.h \
+                     radio_backend.c radio_backend.h radio.h
+	$(CC) $(TEST_CFLAGS) tests/dv_codec_test.c hamlib/rig_server.c radio_controls.c cat_server.c -o $@ -liniparser -lpthread -lm
 
 tests/rig_server_test: tests/rig_server_test.c hamlib/rig_server.c hamlib/rig_server.h \
                       radio_controls.c radio_backend.c cfg_utils.c radio.h

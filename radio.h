@@ -48,6 +48,13 @@
 #define MODE_RTTY 7
 #define MODE_DSTAR 8
 
+/* What a profile's digital voice runs (main:digital_voice_codec). RADEv2
+ * rides on the profile's SSB mode; D-STAR is a mode of its own, so with
+ * DV_CODEC_DSTAR, digital voice ON puts the profile in MODE_DSTAR and OFF
+ * puts it back in the mode it had (radio_profile.dv_restore_mode). */
+#define DV_CODEC_RADEV2 0
+#define DV_CODEC_DSTAR  1
+
 /* Per-profile "operating mode". For the hfsignals backend it selects the
  * ALSA/DSP signal path. For the hamlib backend it picks voice vs data SSB on
  * the rig: FULL_VOICE → USB/LSB; anything else → PKTUSB/PKTLSB (DATA-U/L). */
@@ -234,6 +241,8 @@ typedef struct {
     _Atomic uint16_t noise_reduction;        /* NOISE_REDUCTION_* */
 
     _Atomic bool digital_voice;
+    /* The mode D-STAR digital voice returns to when switched off. */
+    _Atomic uint16_t dv_restore_mode;
 } radio_profile;
 
 /* Main radio handle. One instance per process; passed to every backend
@@ -436,6 +445,8 @@ typedef struct {
     /* Path of the 256-bit voice key (32 raw bytes or 64 hex digits). The key
      * itself is held in dsp/voice_crypto.c, never in this struct. */
     char voice_key_file[256];
+    /* Run-time tunable: DV_CODEC_* that digital_voice selects. */
+    _Atomic uint16_t digital_voice_codec;
 
     /* Outbound text queue for FT8/CW/RTTY (filled by digi_send) */
     digi_tx_queue digi_tx;

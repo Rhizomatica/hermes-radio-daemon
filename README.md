@@ -335,7 +335,8 @@ enable_ptt = 1
 | `compressor` | `OFF`, `ON` | TX wideband speech compressor |
 | `tx_preemphasis` | `OFF`, `ON` | +6 dB/octave treble boost above 2 kHz |
 | `noise_reduction` | `OFF`, `ON` | libspecbleach adaptive spectral denoiser |
-| `digital_voice` | `0`, `1` | RADEv2 digital voice mode |
+| `digital_voice` | `0`, `1` | Digital voice, in the codec `main:digital_voice_codec` selects |
+| `dv_restore_mode` | a `mode` | Mode D-STAR digital voice returns to when switched off (kept by the daemon) |
 | `power_level_percentage` | 0–100 | TX RF power level |
 | `mic_level`, `rx_level`, `speaker_level`, `tx_level` | 0–100 | ALSA mixer levels |
 
@@ -426,6 +427,8 @@ Uses vendored `minimodem` FSK core (FFT-based FSK detector + Baudot codec):
 ### Digital Voice (RADEv2)
 
 Neural-network-based digital voice codec. Activated per-profile with `digital_voice = 1`. Runs entirely inside the daemon, in C: speech ↔ features with the LPCNet feature extractor and FARGAN vocoder from the vendored Opus subset at `vendor/opus_dnn/`, and features ↔ modem signal with the rade_c RADE V2 encoder/decoder at `vendor/rade_c/` (from https://github.com/freedv/rade_c). No external programs (such as `lpcnet_demo` or `/opt/radae`) are needed. The full voice DSP chain (compressor, pre-emphasis, noise reduction) is automatically bypassed when `digital_voice = 1`.
+
+`main:digital_voice_codec` in `core.ini` picks what digital voice runs: `RADEV2` (the default) or `DSTAR`. The HERMES web interface's Digital voice switch (`set_digital_voice`) follows it; switching is refused while transmitting. `DSTAR` needs the sbitx backend (on hamlib rigs D-STAR remains a mode, not digital voice). With `DSTAR`, switching digital voice on puts the profile in `DSTAR` mode and switching it off puts it back in the mode it had; `get_digital_voice` reports whether the profile is in `DSTAR`. A change of codec in the file carries each profile's digital voice over at the next start. Change it at run time over the websocket with `{"cmd": "digi_config", "key": "digital_voice_codec", "value": "DSTAR"}`: profiles with digital voice on stay on, in the new codec.
 
 ### Unified Digital Mode WebSocket API
 

@@ -100,10 +100,17 @@ void radio_backend_set_power_level(radio *radio_h, uint16_t pwr, uint32_t p)
 { backend_call.power_level = pwr; backend_call.profile = p;
   if (p < radio_h->profiles_count) radio_h->profiles[p].power_level_percentage = pwr; }
 
-void radio_backend_set_digital_voice(radio *radio_h, bool dv, uint32_t p)
+bool radio_backend_set_digital_voice(radio *radio_h, bool dv, uint32_t p)
 { backend_call.digital_voice = dv; backend_call.profile = p;
-  if (p < radio_h->profiles_count) radio_h->profiles[p].digital_voice = dv;
-  radio_pipeline_refresh(radio_h); }
+  if (p >= radio_h->profiles_count) return false;
+  radio_h->profiles[p].digital_voice = dv;
+  radio_pipeline_refresh(radio_h); return true; }
+
+bool radio_backend_get_digital_voice(const radio *radio_h, uint32_t p)
+{ if (p >= radio_h->profiles_count) return false;
+  if (radio_h->digital_voice_codec == DV_CODEC_DSTAR)
+      return radio_h->profiles[p].mode == MODE_DSTAR;
+  return radio_h->profiles[p].digital_voice; }
 
 void radio_backend_set_step_size(radio *radio_h, uint32_t s)
 { backend_call.step_size = s; radio_h->step_size = s; }

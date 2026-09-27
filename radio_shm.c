@@ -305,7 +305,7 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
         profile = cmd[4] >> 6;
         if (profile < radio_h->profiles_count)
         {
-            response[0] = radio_h->profiles[profile].digital_voice
+            response[0] = radio_backend_get_digital_voice(radio_h, profile)
                           ? CMD_RESP_GET_DIGITAL_VOICE_ON
                           : CMD_RESP_GET_DIGITAL_VOICE_OFF;
         }
@@ -316,10 +316,9 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
         break;
 
     case CMD_SET_DIGITAL_VOICE:
-        response[0] = CMD_RESP_ACK;
         profile = cmd[4] >> 6;
-        if (profile < radio_h->profiles_count)
-            radio_backend_set_digital_voice(radio_h, cmd[0], profile);
+        response[0] = radio_backend_set_digital_voice(radio_h, cmd[0], profile)
+                      ? CMD_RESP_ACK : CMD_RESP_WRONG_COMMAND;
         break;
 
     case CMD_GET_SERIAL:

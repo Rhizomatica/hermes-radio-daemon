@@ -367,7 +367,7 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
          message_esc,
          radio_h->message_available ? "true" : "false",
          backend_to_string(radio_h->backend_kind),
-         radio_h->profiles[active].digital_voice ? "true" : "false",
+         radio_backend_get_digital_voice(radio_h, active) ? "true" : "false",
          radio_h->swr_protection_enabled ? "true" : "false",
          radio_pipeline_name(radio_h),
          radio_pipeline_domain_name(radio_h),
@@ -483,10 +483,11 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
         send_cmd_result(c, cmd, true, "OK"); return;
     }
 
-    if (!strcmp(cmd, "get_digital_voice")) { send_value_string(c, cmd, radio_h->profiles[profile].digital_voice ? "ON" : "OFF"); return; }
+    if (!strcmp(cmd, "get_digital_voice")) { send_value_string(c, cmd, radio_backend_get_digital_voice(radio_h, (uint32_t) profile) ? "ON" : "OFF"); return; }
     if (!strcmp(cmd, "set_digital_voice") && extract_json_int_any(payload, "enabled", "value", &value))
     {
-        radio_backend_set_digital_voice(radio_h, value != 0, (uint32_t) profile);
+        if (!radio_backend_set_digital_voice(radio_h, value != 0, (uint32_t) profile))
+        { send_cmd_error(c, cmd, "refused while transmitting"); return; }
         send_cmd_result(c, cmd, true, "OK"); return;
     }
 
@@ -645,17 +646,19 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
 
     if (!strcmp(cmd, "digi_get_config"))
     {
-        char json[384], fp[17];
+        char json[448], fp[17];
         voice_crypto_fingerprint(fp);
         snprintf(json, sizeof(json),
             "{\"ok\":true,\"cmd\":\"digi_get_config\","
             "\"cw_wpm\":%d,\"cw_pitch\":%d,"
             "\"rtty_baud\":%d,\"rtty_mark\":%d,\"rtty_shift\":%d,"
             "\"dstar_verbose\":%d,\"dstar_denoise\":%d,\"dstar_encrypt\":%d,"
+            "\"digital_voice_codec\":\"%s\","
             "\"voice_key_loaded\":%s,\"voice_key_fingerprint\":\"%s\"}",
             radio_h->cw_wpm, radio_h->cw_pitch,
             radio_h->rtty_baud, radio_h->rtty_mark, radio_h->rtty_shift,
             radio_h->dstar_verbose, radio_h->dstar_denoise, radio_h->dstar_encrypt,
+            cfg_dv_codec_name(radio_h->digital_voice_codec),
             voice_crypto_have_key() ? "true" : "false", fp);
         ws_send_text(c, json); return;
     }
@@ -685,8 +688,23 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
     {
         char key[32];
         long v = 0;
-        if (!extract_json_string(payload, "key", key, sizeof(key)) ||
-            !extract_json_int(payload, "value", &v))
+        if (!extract_json_string(payload, "key", key, sizeof(key)))
+        { send_cmd_error(c, cmd, "missing key or value"); return; }
+        /* the one tunable whose value is a name: "RADEV2" or "DSTAR" */
+        if (!strcmp(key, "digital_voice_codec"))
+        {
+            char name[16];
+            uint16_t codec;
+            if (!extract_json_string(payload, "value", name, sizeof(name)) ||
+                !cfg_dv_codec_from_name(name, &codec))
+            { send_cmd_error(c, cmd, "digital_voice_codec is RADEV2 or DSTAR"); return; }
+            if (!radio_backend_dv_codec_supported(radio_h, codec))
+            { send_cmd_error(c, cmd, "DSTAR digital voice needs the sbitx backend"); return; }
+            if (!radio_backend_set_digital_voice_codec(radio_h, codec))
+            { send_cmd_error(c, cmd, "refused while transmitting"); return; }
+            send_cmd_result(c, cmd, true, "OK"); return;
+        }
+        if (!extract_json_int(payload, "value", &v))
         { send_cmd_error(c, cmd, "missing key or value"); return; }
         if      (!strcmp(key, "cw_wpm"))       radio_h->cw_wpm       = (uint16_t) v;
         else if (!strcmp(key, "cw_pitch"))     radio_h->cw_pitch     = (uint16_t) v;
