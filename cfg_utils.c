@@ -350,6 +350,11 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     s = cfg_getstring_alias(ini, "main:ptt_pathname", "main:ptt_path", "");
     cfg_copy_string(radio_h->ptt_pathname, sizeof(radio_h->ptt_pathname), s);
 
+    /* Extra Hamlib settings, "key=value[,key=value...]" as rigctl --set-conf
+     * takes them (hamlib/hamlib_conf.h). */
+    s = iniparser_getstring(ini, "main:hamlib_conf", "");
+    cfg_copy_string(radio_h->hamlib_conf, sizeof(radio_h->hamlib_conf), s);
+
     /* Serial number (informational) */
     i = iniparser_getint(ini, "main:serial_number", 0);
     radio_h->serial_number = (uint32_t) i;

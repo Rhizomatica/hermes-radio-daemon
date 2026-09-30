@@ -260,6 +260,7 @@ typedef struct {
     int  serial_rate;
     int  ptt_type;
     char ptt_pathname[256];
+    char hamlib_conf[256];            /* extra Hamlib settings, "key=value,..." (rigctl --set-conf) */
     void *rig;                        /* hamlib RIG* (opaque) */
 
     /* ── sbitx hardware backend ──────────────────────────────────── */
