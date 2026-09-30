@@ -49,7 +49,8 @@ TEST_BINS = tests/backend_selection_test tests/compat_surface_test tests/control
             tests/dstar_voice_test tests/upsample2_test tests/rig_server_test \
             tests/hamlib_ptt_test tests/radae_vocoder_test tests/sbitx_buffer_test \
             tests/rtp_audio_test tests/audio_bridge_test tests/mic_filter_test \
-            tests/stream_resampler_test tests/digi_modes_test tests/dv_codec_test
+            tests/stream_resampler_test tests/digi_modes_test tests/dv_codec_test \
+            tests/hamlib_conf_test
 
 # ── daemon-level objects ────────────────────────────────────────
 DAEMON_TOP_OBJS = radio_daemon.o \
@@ -159,6 +160,7 @@ compat-tests: $(TEST_BINS)
 	./tests/stream_resampler_test
 	./tests/digi_modes_test
 	./tests/dv_codec_test
+	./tests/hamlib_conf_test
 
 tests/backend_selection_test: tests/backend_selection_test.c cfg_utils.c cfg_utils.h \
                               radio_backend.c radio_backend.h radio_daemon_core.h \
@@ -212,6 +214,9 @@ tests/digi_modes_test: tests/digi_modes_test.c dsp/stream_resampler.c dsp/sbitx_
 	$(CC) $(TEST_CFLAGS) -w -I/usr/include/csdr -Idsp $(FT8_LIB_CPPFLAGS) $(MM_FSK_CPPFLAGS) \
 	      tests/digi_modes_test.c dsp/stream_resampler.c dsp/sbitx_cw.c dsp/sbitx_rtty.c \
 	      dsp/sbitx_ft8.c $(FT8_LIB_SRCS) $(MM_FSK_SRCS) -o $@ -lcsdr -lfftw3f -lfftw3 -lcw -lm
+
+tests/hamlib_conf_test: tests/hamlib_conf_test.c hamlib/hamlib_conf.h
+	$(CC) $(TEST_CFLAGS) tests/hamlib_conf_test.c -o $@
 
 tests/mic_filter_test: tests/mic_filter_test.c dsp/mic_filter.c dsp/mic_filter.h
 	$(CC) $(TEST_CFLAGS) -Idsp tests/mic_filter_test.c dsp/mic_filter.c -o $@ -lm

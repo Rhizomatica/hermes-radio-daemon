@@ -38,6 +38,7 @@
 
 #include "radio.h"
 #include "radio_hamlib.h"
+#include "hamlib_conf.h"
 #include "radio_pipeline.h"
 #include "cfg_utils.h"
 #include "radio_backend.h"
@@ -118,9 +119,39 @@ static void hamlib_set_conf(RIG *rig, const char *name, const char *val)
  * version-stable path (present in 4.6.x and 4.7.x) and is exactly what
  * rigctl's -r/-p/-P options use. Must be called after rig_init, before
  * rig_open. */
-static void hamlib_configure_ports(RIG *rig, const radio *radio_h)
+static void hamlib_conf_apply_cb(const char *key, const char *value, void *ctx)
+{
+    RIG *rig = (RIG *) ctx;
+    long tok = rig_token_lookup(rig, key);
+
+    if (tok == RIG_CONF_END)
+    {
+        fprintf(stderr, "hamlib_conf: '%s' is not a Hamlib setting for this rig\n", key);
+        return;
+    }
+    int ret = rig_set_conf(rig, tok, value);
+    if (ret != RIG_OK)
+        fprintf(stderr, "hamlib_conf: %s=%s refused: %s\n", key, value, rigerror(ret));
+    else
+        fprintf(stderr, "hamlib_conf: %s=%s\n", key, value);
+}
+
+/* The current value of a Hamlib setting, or "" if it cannot be read. */
+static const char *hamlib_get_conf(RIG *rig, const char *key, char *buf)
+{
+    long tok = rig_token_lookup(rig, key);
+
+    buf[0] = '\0';
+    if (tok == RIG_CONF_END || rig_get_conf(rig, tok, buf) != RIG_OK)
+        buf[0] = '\0';
+    return buf;
+}
+
+/* Returns which of RTS (1) and DTR (2) it held low by default. */
+static int hamlib_configure_ports(RIG *rig, const radio *radio_h)
 {
     const char *ptt_path = radio_h->ptt_pathname;
+    int defaulted = 0;
 
     if (radio_h->rig_pathname[0])
         hamlib_set_conf(rig, "rig_pathname", radio_h->rig_pathname);
@@ -141,6 +172,75 @@ static void hamlib_configure_ports(RIG *rig, const radio *radio_h)
     if (ptt_path[0] && radio_h->ptt_type != PTT_NONE &&
         radio_h->ptt_type != PTT_RIG && radio_h->ptt_type != PTT_RIG_MICDATA)
         hamlib_set_conf(rig, "ptt_pathname", ptt_path);
+
+    /* main:hamlib_conf, as rigctl --set-conf takes it (dtr_state=ON,
+     * civaddr=0x94, ...), after the settings above so it can override them.
+     * A malformed string applies nothing. */
+    if (radio_h->hamlib_conf[0] &&
+        hamlib_conf_pairs(radio_h->hamlib_conf, hamlib_conf_apply_cb, rig) < 0)
+        fprintf(stderr, "hamlib_conf \"%s\" ignored: use key=value[,key=value...]\n",
+                radio_h->hamlib_conf);
+
+    if (!rig->caps || rig->caps->port_type != RIG_PORT_SERIAL)
+        return 0;
+
+    /* Hold RTS and DTR low on the CAT port. Linux raises both when a serial
+     * port opens and Hamlib leaves them as it finds them unless told, so a rig
+     * that keys on one of them -- an IC-7300 with USB SEND mapped to RTS or
+     * DTR (mercury#294) -- transmitted for as long as radiod held the port,
+     * without a PTT command ever being sent. Not a line hamlib_conf sets, and
+     * not one Hamlib would then refuse to open with: PTT by that line on this
+     * same port, or RTS under hardware handshake (rig_open's -RIG_ECONF
+     * checks). The same rule as Mercury's radio_io (mercury#334). */
+    char ptt[128], hs[128], pttpath[256];
+    hamlib_get_conf(rig, "ptt_type", ptt);
+    hamlib_get_conf(rig, "serial_handshake", hs);
+    hamlib_get_conf(rig, "ptt_pathname", pttpath);
+    bool ptt_here = !pttpath[0] || !radio_h->rig_pathname[0] ||
+                    !strcmp(pttpath, radio_h->rig_pathname);
+    static const struct { const char *key, *ptt; bool hw_conflict; } lines[] = {
+        { "rts_state", "RTS", true  },
+        { "dtr_state", "DTR", false },
+    };
+    for (size_t i = 0; i < sizeof(lines) / sizeof(lines[0]); i++)
+    {
+        if (hamlib_conf_sets(radio_h->hamlib_conf, lines[i].key))
+            continue;
+        if (ptt_here && !strcmp(ptt, lines[i].ptt))
+            continue;
+        if (lines[i].hw_conflict && !strcmp(hs, "Hardware"))
+            continue;
+        int ret = rig_set_conf(rig, rig_token_lookup(rig, lines[i].key), "OFF");
+        if (ret != RIG_OK)
+            fprintf(stderr, "hamlib_configure_ports: %s=OFF failed: %s\n",
+                    lines[i].key, rigerror(ret));
+        else
+            defaulted |= 1 << i;
+    }
+    if (defaulted)
+        fprintf(stderr, "hamlib: CAT port RTS and DTR held low unless PTT or hamlib_conf uses them\n");
+    return defaulted;
+}
+
+/* rig_open, and once more with the lines left as the port has them if it
+ * failed while holding RTS/DTR low: a port without modem-control lines (a
+ * pty from socat or ser2net, some USB and Bluetooth serial links) refuses
+ * the ioctl, and Hamlib then fails the whole open. */
+static int hamlib_open(RIG *rig, int defaulted)
+{
+    int ret = rig_open(rig);
+
+    if (ret != RIG_OK && defaulted)
+    {
+        fprintf(stderr, "hamlib: rig_open failed (%s) holding RTS/DTR low; "
+                        "retrying with the lines as the port leaves them\n", rigerror(ret));
+        if (defaulted & 1)
+            rig_set_conf(rig, rig_token_lookup(rig, "rts_state"), "Unset");
+        if (defaulted & 2)
+            rig_set_conf(rig, rig_token_lookup(rig, "dtr_state"), "Unset");
+        ret = rig_open(rig);
+    }
+    return ret;
 }
 
 static bool hamlib_read_level_float(RIG *rig, setting_t level, float *out)
@@ -473,7 +573,7 @@ static bool radio_hamlib_init(radio *radio_h)
         return false;
     }
 
-    hamlib_configure_ports(rig, radio_h);
+    int defaulted = hamlib_configure_ports(rig, radio_h);
 
     hl_serial_lock_init();
 
@@ -481,7 +581,7 @@ static bool radio_hamlib_init(radio *radio_h)
      * open/close against CAT on a shared USB hub (see radio.h cat_bus_lock). */
     radio_h->cat_bus_lock = &hl_serial_lock;
 
-    int ret = rig_open(rig);
+    int ret = hamlib_open(rig, defaulted);
     if (ret != RIG_OK)
     {
         fprintf(stderr, "radio_hamlib_init: rig_open failed: %s\n",
@@ -542,9 +642,9 @@ static bool radio_hamlib_force_ptt_off(radio *radio_h)
     if (!rig)
         return false;
 
-    hamlib_configure_ports(rig, radio_h);
+    int defaulted = hamlib_configure_ports(rig, radio_h);
 
-    int ret = rig_open(rig);
+    int ret = hamlib_open(rig, defaulted);
     if (ret != RIG_OK)
     {
         fprintf(stderr, "radio_hamlib_force_ptt_off: rig_open failed: %s\n",

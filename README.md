@@ -187,6 +187,13 @@ serial_rate = 9600
 ptt_type = RIG
 capture_device = default
 playback_device = default
+; On a serial CAT port radiod holds RTS and DTR low (a rig that keys on them,
+; e.g. an IC-7300 with USB SEND on RTS/DTR, would otherwise transmit for as
+; long as the port is open), except a line used for PTT on that port.
+; Extra Hamlib settings, as rigctl --set-conf takes them, override that and
+; anything above, e.g. for an interface powered from DTR or a non-default
+; CI-V address:
+; hamlib_conf = dtr_state=ON,civaddr=0x94
 
 ; Per-band TX power calibration (scale = multiplier):
 ; [tx_band0]
