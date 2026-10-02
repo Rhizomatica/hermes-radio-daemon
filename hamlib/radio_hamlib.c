@@ -35,6 +35,17 @@
 #include <strings.h>
 
 #include <hamlib/rig.h>
+/* Hamlib 4.7 on (and 5) define struct hamlib_port and HAMLIB_RIGPORT in
+ * port.h, which rig.h does not include; 4.6 has both in rig.h, and 4.5 has
+ * no accessor, only the port inside rig->state. */
+#if defined(__has_include)
+#if __has_include(<hamlib/port.h>)
+#include <hamlib/port.h>
+#endif
+#endif
+#ifndef HAMLIB_RIGPORT
+#define HAMLIB_RIGPORT(r) (&(r)->state.rigport)
+#endif
 
 #include "radio.h"
 #include "radio_hamlib.h"
@@ -136,13 +147,15 @@ static void hamlib_conf_apply_cb(const char *key, const char *value, void *ctx)
         fprintf(stderr, "hamlib_conf: %s=%s\n", key, value);
 }
 
-/* The current value of a Hamlib setting, or "" if it cannot be read. */
-static const char *hamlib_get_conf(RIG *rig, const char *key, char *buf)
+/* The current value of a Hamlib setting, or "" if it cannot be read.
+ * rig_get_conf2 (Hamlib 4.5 on) is told the buffer size; rig_get_conf, which
+ * assumed 128 bytes, is deprecated from 4.7. */
+static const char *hamlib_get_conf(RIG *rig, const char *key, char *buf, int len)
 {
     long tok = rig_token_lookup(rig, key);
 
     buf[0] = '\0';
-    if (tok == RIG_CONF_END || rig_get_conf(rig, tok, buf) != RIG_OK)
+    if (tok == RIG_CONF_END || rig_get_conf2(rig, tok, buf, len) != RIG_OK)
         buf[0] = '\0';
     return buf;
 }
@@ -193,9 +206,9 @@ static int hamlib_configure_ports(RIG *rig, const radio *radio_h)
      * same port, or RTS under hardware handshake (rig_open's -RIG_ECONF
      * checks). The same rule as Mercury's radio_io (mercury#334). */
     char ptt[128], hs[128], pttpath[256];
-    hamlib_get_conf(rig, "ptt_type", ptt);
-    hamlib_get_conf(rig, "serial_handshake", hs);
-    hamlib_get_conf(rig, "ptt_pathname", pttpath);
+    hamlib_get_conf(rig, "ptt_type", ptt, sizeof(ptt));
+    hamlib_get_conf(rig, "serial_handshake", hs, sizeof(hs));
+    hamlib_get_conf(rig, "ptt_pathname", pttpath, sizeof(pttpath));
     bool ptt_here = !pttpath[0] || !radio_h->rig_pathname[0] ||
                     !strcmp(pttpath, radio_h->rig_pathname);
     static const struct { const char *key, *ptt; bool hw_conflict; } lines[] = {
