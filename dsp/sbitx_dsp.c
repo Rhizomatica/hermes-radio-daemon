@@ -59,6 +59,8 @@
 #include "sbitx_rtty.h"
 #include "sbitx_dstar.h"
 #include "dstar_voice.h"
+#include "digi_log.h"
+#include <sys/time.h>
 #include <mbelib-neo/mbelib.h>
 
 // set 0 for production
@@ -482,14 +484,30 @@ static void dsp_process_digital_voice_rx(double *rx_baseband_i, double *rx_baseb
  * here (csdr polyphase) and feed the active mode's decoder, logging
  * decodes to the digi spool the same way the TX path does. Decoders
  * live in dsp/sbitx_{ft8,cw,rtty}.c. */
+static double digi_wall_now(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (double) tv.tv_sec + tv.tv_usec / 1e6;
+}
+
 static void digi_rx_spool(const char *mode, int freq_khz, const char *text)
 {
-    FILE *f = fopen("/var/spool/hermes-digi/spool.log", "a");
-    if (!f) return;
-    fprintf(f, "%s rx %d.%03d: %s%s",
-            mode, freq_khz / 1000, freq_khz % 1000, text,
-            (text[0] && text[strlen(text)-1] == '\n') ? "" : "\n");
-    fclose(f);
+    digi_log_entry e = { .mode = mode, .dir = "rx", .freq_hz = (uint64_t) freq_khz * 1000, .text = text };
+    if (!strcmp(mode, "RTTY")) { e.has_offset = true; e.offset_hz = radio_h_dsp->rtty_mark; }
+    else if (!strcmp(mode, "CW")) { e.has_offset = true; e.offset_hz = radio_h_dsp->cw_pitch; }
+    digi_log_add(&e);
+}
+
+/* A transmitted digital-mode message, at the active profile's frequency. */
+static void digi_tx_log(const char *mode, const char *text, int offset_hz)
+{
+    digi_log_entry e = {
+        .mode = mode, .dir = "tx",
+        .freq_hz = radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].freq,
+        .text = text, .has_offset = offset_hz > 0, .offset_hz = offset_hz,
+    };
+    digi_log_add(&e);
 }
 
 static char     g_rtty_rx_line[256];
@@ -529,6 +547,7 @@ static void digi_cw_char_cb(char c)
 #define DIGI_RX_DECIM   8           /* 96 kHz -> 12 kHz */
 #define DIGI_RX_RATE    12000
 #define FT8_RX_SLOT_S   15
+#define FT8_TX_TONE_HZ  1500    /* audio offset our FT8 transmissions use */
 
 /* ── D-STAR DV state ──────────────────────────────────────────────
  * RX: FM discriminator at 96 kHz -> 24 kHz -> modem -> AMBE decode ->
@@ -847,10 +866,12 @@ static void dstar_rx_header_cb(void *user, const uint8_t *header)
     dstar_publish_callsign(radio_h_dsp->dstar_rx_suffix, sizeof(radio_h_dsp->dstar_rx_suffix), suffix);
     radio_h_dsp->dstar_rx_heard++;
     dstar_voice_rx_header(&dstar_vrx, header);
+    bool crc_ok;
     {
         uint16_t crc = sbitx_dstar_crc16(header, SBITX_DSTAR_HEADER_BYTES - 2U);
-        if (header[SBITX_DSTAR_HEADER_BYTES - 2U] == (uint8_t) (crc & 0xFFU) &&
-            header[SBITX_DSTAR_HEADER_BYTES - 1U] == (uint8_t) (crc >> 8))
+        crc_ok = header[SBITX_DSTAR_HEADER_BYTES - 2U] == (uint8_t) (crc & 0xFFU) &&
+                 header[SBITX_DSTAR_HEADER_BYTES - 1U] == (uint8_t) (crc >> 8);
+        if (crc_ok)
             dstar_rx_confirmed = true;
     }
 
@@ -864,14 +885,19 @@ static void dstar_rx_header_cb(void *user, const uint8_t *header)
     dstar_rx_frame_count = 0;
 
 
-    FILE *f = fopen("/var/spool/hermes-digi/spool.log", "a");
-    if (f) {
-        /* Sanitised copies: a failed-CRC header carries arbitrary bytes, and
-         * writing them raw turned this log into a binary file. */
-        fprintf(f, "DSTAR rx header: ur=%s my=%s\n",
-                radio_h_dsp->dstar_rx_urcall, radio_h_dsp->dstar_rx_mycall);
-        fclose(f);
-    }
+    /* The sanitised copies: a failed-CRC header carries arbitrary bytes. */
+    digi_log_dstar hdr = {
+        .mycall = radio_h_dsp->dstar_rx_mycall, .suffix = radio_h_dsp->dstar_rx_suffix,
+        .urcall = radio_h_dsp->dstar_rx_urcall, .rpt1 = radio_h_dsp->dstar_rx_rpt1,
+        .rpt2 = radio_h_dsp->dstar_rx_rpt2, .encrypted = dstar_vrx.hdr_enc, .crc_ok = crc_ok,
+    };
+    digi_log_entry e = {
+        .mode = "DSTAR", .dir = "rx",
+        .freq_hz = radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].freq,
+        .text = "", .from = crc_ok ? radio_h_dsp->dstar_rx_mycall : NULL,
+        .to = crc_ok ? radio_h_dsp->dstar_rx_urcall : NULL, .dstar = &hdr,
+    };
+    digi_log_add(&e);
 }
 
 /* Every header burst the modem collected, decoded or not. The fields that
@@ -1216,20 +1242,14 @@ static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, in
             slot[slotn++] = out12[i];
         int slot_samples = DIGI_RX_RATE * FT8_RX_SLOT_S;
         if (slotn >= slot_samples) {
-            char decoded[1024] = {0};
-            sbitx_ft8_decode(slot, slot_samples, decoded, sizeof(decoded));
-            /* Windows overlap by 13 s, so one transmission can decode in
-             * two of them: log the same text once per 15 s. */
-            static char     last_decoded[1024];
-            static uint64_t last_decoded_at = 0;          /* in 2 s steps */
-            static uint64_t window_no = 0;
-            window_no++;
-            if (decoded[0] && (strcmp(decoded, last_decoded) != 0 ||
-                               window_no - last_decoded_at > FT8_RX_SLOT_S / 2)) {
-                digi_rx_spool("FT8", freq_khz, decoded);
-                snprintf(last_decoded, sizeof(last_decoded), "%s", decoded);
-                last_decoded_at = window_no;
-            }
+            /* The window's last sample has just arrived, so it started
+             * FT8_RX_SLOT_S ago. Overlapping windows decode the same
+             * transmission more than once; sbitx_ft8_log_decodes() keeps
+             * one entry per transmission. */
+            sbitx_ft8_decode_result res[50];
+            int nres = sbitx_ft8_decode_ex(slot, slot_samples, res, 50);
+            sbitx_ft8_log_decodes(res, nres, digi_wall_now() - FT8_RX_SLOT_S,
+                                  (uint64_t) freq_khz * 1000);
             /* Slide by only 2 s. FT8 here isn't UTC-slot-aligned, so the
              * ~12.6 s burst sits at an arbitrary offset in the 15 s window;
              * a small step guarantees some window contains the full burst
@@ -2193,13 +2213,7 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
                     radio_h_dsp->cw_wpm, radio_h_dsp->cw_pitch);
                 cw_audio_pos = 0;
 
-                FILE *f = fopen("/var/spool/hermes-digi/spool.log", "a");
-                if (f) {
-                    uint32_t freq_khz = radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].freq / 1000;
-                    fprintf(f, "CW tx %u.%03u: %s\n",
-                            freq_khz / 1000, freq_khz % 1000, text);
-                    fclose(f);
-                }
+                digi_tx_log("CW", text, radio_h_dsp->cw_pitch);
             }
             else
             {
@@ -2253,7 +2267,7 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
                 int n12 = sbitx_ft8_encode(
                     text, ft8_audio_12k,
                     (int) (sizeof(ft8_audio_12k) / sizeof(ft8_audio_12k[0])),
-                    1500.0f);
+                    (float) FT8_TX_TONE_HZ);
                 if (n12 < 0) {
                     /* Not encodable (free text is at most 13 characters
                      * of A-Z 0-9 space + - . / ?): send and log nothing
@@ -2311,13 +2325,8 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
                 ft8_audio_96k_len = n96;
                 ft8_audio_96k_pos = 0;
 
-                FILE *f = n96 > 0 ? fopen("/var/spool/hermes-digi/spool.log", "a") : NULL;
-                if (f) {
-                    uint32_t freq_khz = radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].freq / 1000;
-                    fprintf(f, "FT8 tx %u.%03u: %s\n",
-                            freq_khz / 1000, freq_khz % 1000, text);
-                    fclose(f);
-                }
+                if (n96 > 0)
+                    digi_tx_log("FT8", text, FT8_TX_TONE_HZ);
             }
             else
             {
@@ -2382,15 +2391,9 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
                     radio_h_dsp->rtty_shift);
                 rtty_audio_pos = 0;
 
-                /* Also log the outbound message into the digi spool so
-                 * `digi_messages` shows what we transmitted. */
-                FILE *f = fopen("/var/spool/hermes-digi/spool.log", "a");
-                if (f) {
-                    uint32_t freq_khz = radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].freq / 1000;
-                    fprintf(f, "RTTY tx %u.%03u: %s\n",
-                            freq_khz / 1000, freq_khz % 1000, text);
-                    fclose(f);
-                }
+                /* Also log the outbound message, so `digi_messages` shows what
+                 * we transmitted. */
+                digi_tx_log("RTTY", text, radio_h_dsp->rtty_mark);
             }
             else
             {

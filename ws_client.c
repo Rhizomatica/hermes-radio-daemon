@@ -122,7 +122,7 @@ static char *build_payload(void)
         char key[64], value[64];
         if (!g_arg || sscanf(g_arg, "%63[^=]=%63s", key, value) != 2)
             return NULL;
-        snprintf(json, 512, "{\"cmd\":\"digi_set_config\",\"key\":\"%s\",\"value\":\"%s\"%s}",
+        snprintf(json, 512, "{\"cmd\":\"digi_config\",\"key\":\"%s\",\"value\":\"%s\"%s}",
                  key, value, profile);
         return json;
     }

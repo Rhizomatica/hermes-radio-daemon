@@ -32,6 +32,8 @@
 #include "../dsp/stream_resampler.h"
 #include "../dsp/sbitx_cw.h"
 #include "../dsp/sbitx_ft8.h"
+#include "../dsp/digi_log.h"
+#include <sys/time.h>
 #include "../dsp/sbitx_rtty.h"
 #include "../dsp/sbitx_radae.h"
 #include "../dsp/sbitx_dstar.h"
@@ -240,17 +242,18 @@ typedef struct {
 static hamlib_digi_state g_state;
 
 static void digi_spool_log(const char *mode, const char *dir,
-                           uint32_t freq_hz, const char *text)
+                           uint32_t freq_hz, const char *text, int offset_hz)
 {
-    /* Mirror the format used elsewhere (radio_websocket digi_messages reads
-     * /var/spool/hermes-digi/spool.log). */
-    FILE *f = fopen("/var/spool/hermes-digi/spool.log", "a");
-    if (!f) return;
-    uint32_t khz = freq_hz / 1000;
-    fprintf(f, "%s %s %u.%03u: %s%s",
-            mode, dir, khz / 1000, khz % 1000, text,
-            (text[0] && text[strlen(text)-1] == '\n') ? "" : "\n");
-    fclose(f);
+    digi_log_entry e = { .mode = mode, .dir = dir, .freq_hz = freq_hz, .text = text,
+                         .has_offset = offset_hz > 0, .offset_hz = offset_hz };
+    digi_log_add(&e);
+}
+
+static double digi_wall_now(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (double) tv.tv_sec + tv.tv_usec / 1e6;
 }
 
 /* ─── TX paths ───────────────────────────────────────────────── */
@@ -339,7 +342,7 @@ static void do_cw_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz,
                               wpm, pitch);
     if (n96 <= 0 || !tx_pend_set(s, &s->cw_to_ring, cw_audio, (size_t) n96, 96000, ring_rate))
         return;
-    digi_spool_log("CW", "tx", freq_hz, text);
+    digi_spool_log("CW", "tx", freq_hz, text, pitch);
 }
 
 static void do_ft8_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz)
@@ -359,7 +362,7 @@ static void do_ft8_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz
     }
     if (!tx_pend_set(s, &s->ft8_to_ring, ft8_audio, (size_t) n12, 12000, ring_rate))
         return;
-    digi_spool_log("FT8", "tx", freq_hz, text);
+    digi_spool_log("FT8", "tx", freq_hz, text, 1500);
 }
 
 static void do_rtty_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz,
@@ -376,7 +379,7 @@ static void do_rtty_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_h
                                 baud, mark, shift);
     if (n96 <= 0 || !tx_pend_set(s, &s->rtty_to_ring, rtty_audio, (size_t) n96, 96000, ring_rate))
         return;
-    digi_spool_log("RTTY", "tx", freq_hz, text);
+    digi_spool_log("RTTY", "tx", freq_hz, text, mark);
 }
 
 /* ─── RX paths ───────────────────────────────────────────────── */
@@ -422,7 +425,7 @@ static void rtty_rx_char_cb(char c)
     if (c == '\r' || c == '\n') {
         if (pos > 0) {
             line[pos] = '\0';
-            digi_spool_log("RTTY", "rx", (uint32_t) g_rtty_freq_hz_cache, line);
+            digi_spool_log("RTTY", "rx", (uint32_t) g_rtty_freq_hz_cache, line, 0);
             pos = 0;
         }
         return;
@@ -438,7 +441,7 @@ static void cw_rx_char_cb(char c)
     if (c == ' ' || c == '\n') {
         if (pos > 0) {
             line[pos] = '\0';
-            digi_spool_log("CW", "rx", (uint32_t) g_rtty_freq_hz_cache, line);
+            digi_spool_log("CW", "rx", (uint32_t) g_rtty_freq_hz_cache, line, 0);
             pos = 0;
         }
         return;
@@ -500,20 +503,11 @@ static void do_ft8_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz
     /* When we've accumulated >= 15 s of audio, run a decode pass and slide. */
     int slot_samples = DIGI_DECODE_RATE * FT8_SLOT_SECONDS;
     if (s->ft8_rx_buf_n >= slot_samples) {
-        char decoded[1024] = {0};
-        sbitx_ft8_decode(s->ft8_rx_buf, slot_samples, decoded, sizeof(decoded));
-        /* Windows overlap by 13 s, so one transmission can decode in two
-         * of them: log the same text once per 15 s. */
-        static char     last_decoded[1024];
-        static uint64_t last_decoded_at = 0;          /* in 2 s steps */
-        static uint64_t window_no = 0;
-        window_no++;
-        if (decoded[0] && (strcmp(decoded, last_decoded) != 0 ||
-                           window_no - last_decoded_at > FT8_SLOT_SECONDS / 2)) {
-            digi_spool_log("FT8", "rx", freq_hz, decoded);
-            snprintf(last_decoded, sizeof(last_decoded), "%s", decoded);
-            last_decoded_at = window_no;
-        }
+        /* The window ends now; overlapping windows decode a transmission
+         * more than once, and sbitx_ft8_log_decodes() keeps one entry. */
+        sbitx_ft8_decode_result res[50];
+        int nres = sbitx_ft8_decode_ex(s->ft8_rx_buf, slot_samples, res, 50);
+        sbitx_ft8_log_decodes(res, nres, digi_wall_now() - FT8_SLOT_SECONDS, freq_hz);
         /* Slide by 2 s. Transmissions here are not UTC-slot aligned, and a
          * 12.64 s burst fits a 15 s window only if it starts within its
          * first 2.36 s; the old half-slot (7.5 s) step missed most of
