@@ -143,7 +143,7 @@ typedef enum {
     PTT_SRC_SHM,        /* hermes_shm controller, id = client pid       */
     PTT_SRC_RIGCTLD,    /* rigctld server, id = connection fd           */
     PTT_SRC_CAT,        /* CAT server (emulate), id = connection fd     */
-    PTT_SRC_WEBSOCKET,  /* websocket, id = mongoose connection id       */
+    PTT_SRC_WEBSOCKET,  /* websocket, id = connection id (ws_conn_id)   */
     PTT_SRC_RTP,        /* RTP TX stream (rtp_audio), id = SSRC         */
 } ptt_source;
 

@@ -16,8 +16,9 @@ CFLAGS  = -Ofast -Wall -std=gnu11 -fstack-protector -MMD -MP \
 LDFLAGS = -liniparser -lhamlib -lasound -lcrypto -lssl -lfftw3f -lfftw3 \
           -lpthread -lm -li2c -lcsdr -lspecbleach -lcw -lrt -lmbe-neo
 
-# Mongoose now serves as the websocket transport in radio_websocket.c.
-CFLAGS += -DMG_ENABLE_OPENSSL=1 -DMG_TLS=MG_TLS_OPENSSL
+# The in-tree websocket/ module serves as the transport in radio_websocket.c;
+# wss:// is provided by OpenSSL.
+CFLAGS += -DWS_HAVE_OPENSSL=1
 
 include vendor/rade_c/sources.mk
 include vendor/opus_dnn/sources.mk
@@ -76,7 +77,10 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   vendor/hermes_shm/shm_posix.o \
                   cfg_utils.o \
                   shm_utils.o \
-                  mongoose.o
+                  websocket/ws_server.o \
+                  websocket/ws_frame.o \
+                  websocket/ws_crypto.o \
+                  websocket/ws_tls.o
 
 # ── embedded sBitx HW/DSP/ALSA objects (now plain .o, no objcopy) ──
 SBITX_GPIOLIB_OBJS = sbitx/gpiolib/gpiolib.o \
@@ -139,8 +143,11 @@ radio_client: sbitx_client.c sbitx_io.c shm_utils.c help.h \
 	      -o radio_client -lpthread
 
 # ── websocket control CLI, a testing aid (not built by "all") ──
-ws_client: ws_client.c mongoose.c mongoose.h
-	$(CC) $(CFLAGS) ws_client.c mongoose.c -o ws_client -lssl -lcrypto
+# Uses the same in-tree frame codec as the server (ws_frame/ws_crypto) plus
+# OpenSSL directly for the wss:// client handshake.
+WS_CLIENT_SRCS = ws_client.c websocket/ws_frame.c websocket/ws_crypto.c
+ws_client: $(WS_CLIENT_SRCS) websocket/ws_frame.h websocket/ws_crypto.h
+	$(CC) $(CFLAGS) $(WS_CLIENT_SRCS) -o ws_client -lssl -lcrypto
 
 # ── regression tests ───────────────────────────────────────────────
 test: compat-tests
