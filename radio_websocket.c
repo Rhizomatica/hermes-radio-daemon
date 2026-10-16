@@ -1429,22 +1429,25 @@ bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid)
     int rc = ws_server_start(&ws_ctx.server, &opts);
     if (rc == WS_SERVER_ERR_TLS)
     {
-        /* A missing or expired certificate must not take the radio down
-         * with it: shm control, audio and the rest keep running.  No
-         * fallback to plain ws:// either, which would serve in the clear
-         * what was configured to be encrypted. */
-        fprintf(stderr, "radio_websocket: WEBSOCKET DISABLED: cannot set up "
-                "TLS for %s with %s / %s; the daemon runs without it\n",
+        /* A missing or expired certificate must not take the radio, or its
+         * web control, down with it: serve plain ws:// on the same address
+         * and port instead, and say so loudly. */
+        fprintf(stderr, "radio_websocket: WARNING: cannot set up TLS for %s "
+                "with %s / %s; falling back to UNENCRYPTED ws://\n",
                 url, CFG_SSL_CERT, CFG_SSL_KEY);
-        return true;
+        tls = false;
+        opts.tls_enabled = false;
+        rc = ws_server_start(&ws_ctx.server, &opts);
     }
     if (rc != 0)
     {
         fprintf(stderr, "radio_websocket: cannot listen on %s\n", url);
         return false;
     }
-    fprintf(stderr, "radio_websocket: listening on %s%s\n",
-            url, tls ? " (TLS)" : "");
+    fprintf(stderr, "radio_websocket: listening on %s%s\n", url,
+            tls ? " (TLS)"
+                : opts.tls_enabled != (strncmp(url, "wss://", 6) == 0)
+                  ? " (UNENCRYPTED: TLS setup failed)" : "");
 
     if (pthread_create(websocket_tid, NULL, websocket_thread, &ws_ctx) != 0)
     {
