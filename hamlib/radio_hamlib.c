@@ -93,7 +93,13 @@ static void hl_serial_lock_init(void)
  * mode used to lag one switch behind). The io thread ticks it back down. */
 static _Atomic int vfo_poll_suppress = 0;
 
-#define RIG_LOCK()   pthread_mutex_lock(&hl_serial_lock)
+/* Clearing errno works around a hamlib bug: read_string_generic()
+ * (src/iofunc.c) tests errno == EAGAIN after every successful one-byte
+ * read without resetting it, and sleeps 5 ms each time. A thread that did
+ * non-blocking socket I/O just before calling in (the websocket server
+ * thread does) arrives with a stale EAGAIN and pays 5 ms per reply byte,
+ * ~110 ms per CAT transaction on an IC-7100. */
+#define RIG_LOCK()   do { pthread_mutex_lock(&hl_serial_lock); errno = 0; } while (0)
 #define RIG_UNLOCK() pthread_mutex_unlock(&hl_serial_lock)
 
 /* PTT type as the string token rig_set_conf("ptt_type", ...) expects
