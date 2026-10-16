@@ -1435,7 +1435,6 @@ bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid)
         fprintf(stderr, "radio_websocket: WARNING: cannot set up TLS for %s "
                 "with %s / %s; falling back to UNENCRYPTED ws://\n",
                 url, CFG_SSL_CERT, CFG_SSL_KEY);
-        tls = false;
         opts.tls_enabled = false;
         rc = ws_server_start(&ws_ctx.server, &opts);
     }
@@ -1444,10 +1443,6 @@ bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid)
         fprintf(stderr, "radio_websocket: cannot listen on %s\n", url);
         return false;
     }
-    fprintf(stderr, "radio_websocket: listening on %s%s\n", url,
-            tls ? " (TLS)"
-                : opts.tls_enabled != (strncmp(url, "wss://", 6) == 0)
-                  ? " (UNENCRYPTED: TLS setup failed)" : "");
 
     if (pthread_create(websocket_tid, NULL, websocket_thread, &ws_ctx) != 0)
     {

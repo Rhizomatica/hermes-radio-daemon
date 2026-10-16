@@ -868,7 +868,7 @@ static void server_accept(ws_server_t *s)
 {
     for (;;)
     {
-        struct sockaddr_in addr;
+        struct sockaddr_storage addr;   /* the listener may be IPv6 */
         socklen_t alen = sizeof(addr);
         ws_conn_t *c;
         int fd = (int) accept(s->listen_fd, (struct sockaddr *) &addr, &alen);
