@@ -103,6 +103,36 @@ static int cfg_ptt_type_from_string(const char *value, int default_value)
     return default_value;
 }
 
+const char cfg_digi_param_ranges[] =
+    "cw_wpm 5-60, cw_pitch 300-1200, rtty_baud 45/50/75, rtty_mark 300-3000, rtty_shift 170/425/850";
+
+bool cfg_digi_param_valid(const char *key, long v)
+{
+    if (!key)                       return true;
+    if (!strcmp(key, "cw_wpm"))     return v >= 5 && v <= 60;
+    if (!strcmp(key, "cw_pitch"))   return v >= 300 && v <= 1200;
+    if (!strcmp(key, "rtty_baud"))  return v == 45 || v == 50 || v == 75;
+    if (!strcmp(key, "rtty_mark"))  return v >= 300 && v <= 3000;
+    if (!strcmp(key, "rtty_shift")) return v == 170 || v == 425 || v == 850;
+    return true;
+}
+
+/* One digi parameter from [main], checked like digi_config checks it. An
+ * out-of-range value (rtty_shift = 0, cw_wpm = 0...) would stall or garble
+ * the encoder, so it is replaced by the default, loudly. */
+static uint16_t cfg_digi_param(dictionary *ini, const char *key, int def)
+{
+    char entry[64];
+    snprintf(entry, sizeof(entry), "main:%s", key);
+    int v = iniparser_getint(ini, entry, def);
+    if (!cfg_digi_param_valid(key, v)) {
+        fprintf(stderr, "config: %s = %d is out of range (%s); using %d\n",
+                entry, v, cfg_digi_param_ranges, def);
+        v = def;
+    }
+    return (uint16_t) v;
+}
+
 bool cfg_mode_from_name(const char *name, uint16_t *mode)
 {
     if (!name || !mode)
@@ -467,16 +497,11 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     if (radio_h->digi_tx_gain <= 0.0f)
         radio_h->digi_tx_gain = 1.0f;
 
-    i = iniparser_getint(ini, "main:cw_wpm", 20);
-    radio_h->cw_wpm = (uint16_t) i;
-    i = iniparser_getint(ini, "main:cw_pitch", 700);
-    radio_h->cw_pitch = (uint16_t) i;
-    i = iniparser_getint(ini, "main:rtty_baud", 45);
-    radio_h->rtty_baud = (uint16_t) i;
-    i = iniparser_getint(ini, "main:rtty_mark", 1585);
-    radio_h->rtty_mark = (uint16_t) i;
-    i = iniparser_getint(ini, "main:rtty_shift", 170);
-    radio_h->rtty_shift = (uint16_t) i;
+    radio_h->cw_wpm     = cfg_digi_param(ini, "cw_wpm", 20);
+    radio_h->cw_pitch   = cfg_digi_param(ini, "cw_pitch", 700);
+    radio_h->rtty_baud  = cfg_digi_param(ini, "rtty_baud", 45);
+    radio_h->rtty_mark  = cfg_digi_param(ini, "rtty_mark", 1585);
+    radio_h->rtty_shift = cfg_digi_param(ini, "rtty_shift", 170);
 
     i = iniparser_getint(ini, "main:dstar_deviation", 1200);
     radio_h->dstar_deviation = (uint16_t) i;

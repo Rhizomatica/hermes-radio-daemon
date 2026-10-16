@@ -41,6 +41,14 @@ radio_backend_kind cfg_backend_kind_from_string(const char *backend_name);
 /* MODE_* <-> the names the config files use ("LSB", "DSTAR", ...). An
  * unknown name leaves *mode alone and returns false. */
 bool cfg_mode_from_name(const char *name, uint16_t *mode);
+
+/* The ranges the digital-mode modems handle, for cw_wpm, cw_pitch,
+ * rtty_baud, rtty_mark and rtty_shift. The one definition: the config file
+ * loader and the WebSocket digi_config command both check against it, so a
+ * value the API refuses cannot get in through the config file instead.
+ * Keys other than these are always valid here. */
+bool cfg_digi_param_valid(const char *key, long value);
+extern const char cfg_digi_param_ranges[];
 const char *cfg_mode_name(uint16_t mode);
 
 /* DV_CODEC_* <-> main:digital_voice_codec ("RADEV2" or "DSTAR"). */

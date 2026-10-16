@@ -50,7 +50,7 @@ TEST_BINS = tests/backend_selection_test tests/compat_surface_test tests/control
             tests/hamlib_ptt_test tests/radae_vocoder_test tests/sbitx_buffer_test \
             tests/rtp_audio_test tests/audio_bridge_test tests/mic_filter_test \
             tests/stream_resampler_test tests/digi_modes_test tests/dv_codec_test \
-            tests/hamlib_conf_test
+            tests/hamlib_conf_test tests/digi_log_test
 
 # ── daemon-level objects ────────────────────────────────────────
 DAEMON_TOP_OBJS = radio_daemon.o \
@@ -67,6 +67,7 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   radio_websocket.o \
                   audio_bridge.o \
                   dsp/stream_resampler.o \
+                  dsp/digi_log.o \
                   audio_headset.o \
                   shm_audio.o \
                   loop_audio.o \
@@ -159,6 +160,7 @@ compat-tests: $(TEST_BINS)
 	./tests/mic_filter_test
 	./tests/stream_resampler_test
 	./tests/digi_modes_test
+	./tests/digi_log_test
 	./tests/dv_codec_test
 	./tests/hamlib_conf_test
 
@@ -210,10 +212,13 @@ tests/stream_resampler_test: tests/stream_resampler_test.c dsp/stream_resampler.
 	$(CC) $(TEST_CFLAGS) -I/usr/include/csdr tests/stream_resampler_test.c dsp/stream_resampler.c -o $@ -lcsdr -lfftw3f -lm
 
 tests/digi_modes_test: tests/digi_modes_test.c dsp/stream_resampler.c dsp/sbitx_cw.c dsp/sbitx_rtty.c \
-                       dsp/sbitx_ft8.c $(FT8_LIB_SRCS) $(MM_FSK_SRCS)
+                       dsp/sbitx_ft8.c dsp/sbitx_ft8.h dsp/digi_log.c dsp/digi_log.h $(FT8_LIB_SRCS) $(MM_FSK_SRCS)
 	$(CC) $(TEST_CFLAGS) -w -I/usr/include/csdr -Idsp $(FT8_LIB_CPPFLAGS) $(MM_FSK_CPPFLAGS) \
 	      tests/digi_modes_test.c dsp/stream_resampler.c dsp/sbitx_cw.c dsp/sbitx_rtty.c \
-	      dsp/sbitx_ft8.c $(FT8_LIB_SRCS) $(MM_FSK_SRCS) -o $@ -lcsdr -lfftw3f -lfftw3 -lcw -lm
+	      dsp/sbitx_ft8.c dsp/digi_log.c $(FT8_LIB_SRCS) $(MM_FSK_SRCS) -o $@ -lcsdr -lfftw3f -lfftw3 -lcw -lpthread -lm
+
+tests/digi_log_test: tests/digi_log_test.c dsp/digi_log.c dsp/digi_log.h
+	$(CC) $(TEST_CFLAGS) -Idsp tests/digi_log_test.c dsp/digi_log.c -o $@ -lpthread -lm
 
 tests/hamlib_conf_test: tests/hamlib_conf_test.c hamlib/hamlib_conf.h
 	$(CC) $(TEST_CFLAGS) tests/hamlib_conf_test.c -o $@

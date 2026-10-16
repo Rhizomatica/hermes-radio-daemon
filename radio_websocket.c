@@ -39,6 +39,7 @@
 #include "voice_crypto.h"
 #include "radio_media.h"
 #include "radio_pipeline.h"
+#include "dsp/digi_log.h"
 
 extern _Atomic bool shutdown_;
 
@@ -615,33 +616,25 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
 
     if (!strcmp(cmd, "digi_messages"))
     {
+        /* The newest `count` entries of the digi log, newest first, as
+         * objects (dsp/digi_log.h). Every string in them was sanitised and
+         * escaped when it was logged, so the reply is valid JSON whatever
+         * came over the air. */
         long count = 20;
         extract_json_int(payload, "count", &count);
         if (count < 1) count = 1;
         if (count > 100) count = 100;
 
-        char buf[8192];
-        int pos = snprintf(buf, sizeof(buf),
-            "{\"ok\":true,\"cmd\":\"digi_messages\",\"messages\":[");
-        int added = 0;
-
-        FILE *f = fopen("/var/spool/hermes-digi/spool.log", "r");
-        if (f) {
-            char line[512];
-            while (fgets(line, sizeof(line), f)) {
-                int len = (int) strlen(line);
-                while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r'))
-                    line[--len] = '\0';
-                if (len > 0 && pos + len + 8 < (int) sizeof(buf)) {
-                    if (added > 0) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
-                    pos += snprintf(buf + pos, sizeof(buf) - pos, "\"%s\"", line);
-                    added++;
-                }
-            }
-            fclose(f);
-        }
-        pos += snprintf(buf + pos, sizeof(buf) - pos, "]}");
-        ws_send_text(c, buf); return;
+        char *arr = digi_log_last_json((int) count);
+        if (!arr) { send_cmd_error(c, cmd, "out of memory"); return; }
+        size_t n = strlen(arr) + 64;
+        char *reply = malloc(n);
+        if (!reply) { free(arr); send_cmd_error(c, cmd, "out of memory"); return; }
+        snprintf(reply, n, "{\"ok\":true,\"cmd\":\"digi_messages\",\"messages\":%s}", arr);
+        ws_send_text(c, reply);
+        free(reply);
+        free(arr);
+        return;
     }
 
     if (!strcmp(cmd, "digi_get_config"))
@@ -706,6 +699,15 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
         }
         if (!extract_json_int(payload, "value", &v))
         { send_cmd_error(c, cmd, "missing key or value"); return; }
+        /* The ranges the modems handle; anything else could stall or garble
+         * the encoder. Shared with the config loader (cfg_utils.c), so the
+         * file cannot bypass what this command refuses. */
+        if (!cfg_digi_param_valid(key, (long) v)) {
+            char why[192];
+            snprintf(why, sizeof(why), "out of range (%s)", cfg_digi_param_ranges);
+            send_cmd_error(c, cmd, why);
+            return;
+        }
         if      (!strcmp(key, "cw_wpm"))       radio_h->cw_wpm       = (uint16_t) v;
         else if (!strcmp(key, "cw_pitch"))     radio_h->cw_pitch     = (uint16_t) v;
         else if (!strcmp(key, "rtty_baud"))    radio_h->rtty_baud    = (uint16_t) v;
@@ -1056,6 +1058,32 @@ static void broadcast_status(websocket_ctx *ctx)
     }
 }
 
+/* New digi-log entries to every client, as {"type":"digi","entry":{...}},
+ * so a UI shows decodes as they arrive instead of polling digi_messages.
+ * Clients that don't know the type ignore it. */
+static void broadcast_digi(websocket_ctx *ctx)
+{
+    static uint64_t last_id;
+    static bool started;
+    char lines[8][DIGI_LOG_LINE_MAX];
+    uint64_t ids[8];
+    char frame[DIGI_LOG_LINE_MAX + 32];
+
+    if (!started) {
+        last_id = digi_log_latest_id();   /* only what arrives from now on */
+        started = true;
+    }
+    int n = digi_log_since(last_id, lines, ids, 8);
+    for (int i = 0; i < n; i++) {
+        int len = snprintf(frame, sizeof(frame), "{\"type\":\"digi\",\"entry\":%s}", lines[i]);
+        if (len > 0 && (size_t) len < sizeof(frame))
+            for (struct mg_connection *c = ctx->mgr.conns; c != NULL; c = c->next)
+                if (c->is_websocket && c->is_accepted && !c->is_draining)
+                    mg_ws_send(c, frame, (size_t) len, WEBSOCKET_OP_TEXT);
+        last_id = ids[i];
+    }
+}
+
 static void broadcast_rx_audio(websocket_ctx *ctx)
 {
     if (!radio_pipeline_supports_websocket_rx_audio(ctx->radio_h)) return;
@@ -1249,6 +1277,7 @@ static void *websocket_thread(void *ctx_v)
     {
         mg_mgr_poll(&ctx->mgr, 50);
         broadcast_status(ctx);
+        broadcast_digi(ctx);
         broadcast_rx_audio(ctx);
         broadcast_spectrum(ctx, false);
         broadcast_spectrum(ctx, true);
