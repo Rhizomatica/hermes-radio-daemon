@@ -13,7 +13,9 @@
  * it is stored, and every line written is valid JSON.
  *
  * Thread-safe: decoders run on the DSP threads, readers on the WebSocket
- * thread.
+ * thread. A reader never holds a lock across file I/O, so serving
+ * digi_messages cannot stall a decoder; a writer does its one small append
+ * on its own thread, serialised only against other writers.
  *
  * Copyright (C) 2026 Rhizomatica
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -62,8 +64,23 @@ void digi_log_set_dir(const char *dir);
 void digi_log_set_max_bytes(long max_bytes);
 
 /* Record one entry: digi.jsonl, the in-memory ring and the legacy
- * spool.log. Never blocks for long; a write error drops the entry. */
+ * spool.log. Costs one short append on the caller's thread and waits at
+ * most for another writer's append, never for a reader. A write error
+ * drops the entry. An entry whose mode or dir is not one of the values
+ * above is refused with a warning rather than logged under a wrong label. */
 void digi_log_add(const digi_log_entry *e);
+
+/* Log a D-STAR header, received or sent, from its raw bytes (at least
+ * DIGI_LOG_DSTAR_HEADER_MIN of them: flags, rpt1, rpt2, urcall, mycall,
+ * suffix). Both backends call this for both directions, so the entry is
+ * built the same way everywhere. `from`/`to` are filled only when
+ * `crc_ok`, since a failed header's callsigns are not trustworthy. */
+#define DIGI_LOG_DSTAR_HEADER_MIN 39
+void digi_log_dstar_header(const uint8_t *header, size_t header_len, const char *dir,
+                           uint64_t freq_hz, bool encrypted, bool crc_ok);
+
+/* The wall clock in unix seconds, as every digi_log time is. */
+double digi_log_now(void);
 
 /* The last `count` entries (1..1000), newest first, as a JSON array of
  * objects. Returns a malloc'd string the caller frees; "[]" when empty;

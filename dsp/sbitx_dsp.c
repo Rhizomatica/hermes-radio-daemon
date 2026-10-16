@@ -484,13 +484,6 @@ static void dsp_process_digital_voice_rx(double *rx_baseband_i, double *rx_baseb
  * here (csdr polyphase) and feed the active mode's decoder, logging
  * decodes to the digi spool the same way the TX path does. Decoders
  * live in dsp/sbitx_{ft8,cw,rtty}.c. */
-static double digi_wall_now(void)
-{
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (double) tv.tv_sec + tv.tv_usec / 1e6;
-}
-
 static void digi_rx_spool(const char *mode, int freq_khz, const char *text)
 {
     digi_log_entry e = { .mode = mode, .dir = "rx", .freq_hz = (uint64_t) freq_khz * 1000, .text = text };
@@ -547,7 +540,6 @@ static void digi_cw_char_cb(char c)
 #define DIGI_RX_DECIM   8           /* 96 kHz -> 12 kHz */
 #define DIGI_RX_RATE    12000
 #define FT8_RX_SLOT_S   15
-#define FT8_TX_TONE_HZ  1500    /* audio offset our FT8 transmissions use */
 
 /* ── D-STAR DV state ──────────────────────────────────────────────
  * RX: FM discriminator at 96 kHz -> 24 kHz -> modem -> AMBE decode ->
@@ -885,19 +877,11 @@ static void dstar_rx_header_cb(void *user, const uint8_t *header)
     dstar_rx_frame_count = 0;
 
 
-    /* The sanitised copies: a failed-CRC header carries arbitrary bytes. */
-    digi_log_dstar hdr = {
-        .mycall = radio_h_dsp->dstar_rx_mycall, .suffix = radio_h_dsp->dstar_rx_suffix,
-        .urcall = radio_h_dsp->dstar_rx_urcall, .rpt1 = radio_h_dsp->dstar_rx_rpt1,
-        .rpt2 = radio_h_dsp->dstar_rx_rpt2, .encrypted = dstar_vrx.hdr_enc, .crc_ok = crc_ok,
-    };
-    digi_log_entry e = {
-        .mode = "DSTAR", .dir = "rx",
-        .freq_hz = radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].freq,
-        .text = "", .from = crc_ok ? radio_h_dsp->dstar_rx_mycall : NULL,
-        .to = crc_ok ? radio_h_dsp->dstar_rx_urcall : NULL, .dstar = &hdr,
-    };
-    digi_log_add(&e);
+    /* Same helper as the Hamlib backend and both TX paths, so a header is
+     * logged identically everywhere. It sanitises the raw bytes itself. */
+    digi_log_dstar_header(header, SBITX_DSTAR_HEADER_BYTES, "rx",
+                          radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].freq,
+                          dstar_vrx.hdr_enc, crc_ok);
 }
 
 /* Every header burst the modem collected, decoded or not. The fields that
@@ -1052,6 +1036,10 @@ static void dsp_dstar_tx_send_header(void)
     dstar_voice_tx_begin(&dstar_vtx, radio_h_dsp->dstar_mycall, radio_h_dsp->dstar_urcall,
                          radio_h_dsp->dstar_encrypt != 0);
     sbitx_dstar_tx_header(dstar_tx, dstar_vtx.header);
+    /* Our own header, so its CRC is good by construction. */
+    digi_log_dstar_header(dstar_vtx.header, SBITX_DSTAR_HEADER_BYTES, "tx",
+                          radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].freq,
+                          dstar_vtx.encrypt, true);
     dstar_tx_frame_count = 0;
     if (radio_h_dsp->dstar_verbose)
         fprintf(stderr, "DSTAR tx: header queued (my=%.8s ur=%.8s encrypted=%d)\n",
@@ -1242,14 +1230,18 @@ static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, in
             slot[slotn++] = out12[i];
         int slot_samples = DIGI_RX_RATE * FT8_RX_SLOT_S;
         if (slotn >= slot_samples) {
-            /* The window's last sample has just arrived, so it started
-             * FT8_RX_SLOT_S ago. Overlapping windows decode the same
-             * transmission more than once; sbitx_ft8_log_decodes() keeps
-             * one entry per transmission. */
+            /* The newest sample has just arrived, so the window's first
+             * sample is slotn samples old. Read the clock HERE, before the
+             * decode: reading it afterwards made every entry late by the
+             * decode time (a few hundred ms on a Pi 4), and because that
+             * varies with load, two overlapping windows of one transmission
+             * could land more than the 1.5 s dedup tolerance apart and log
+             * it twice. Overlapping windows decode the same transmission
+             * more than once; sbitx_ft8_log_decodes() keeps one entry. */
+            const double window_start = digi_log_now() - (double) slotn / DIGI_RX_RATE;
             sbitx_ft8_decode_result res[50];
             int nres = sbitx_ft8_decode_ex(slot, slot_samples, res, 50);
-            sbitx_ft8_log_decodes(res, nres, digi_wall_now() - FT8_RX_SLOT_S,
-                                  (uint64_t) freq_khz * 1000);
+            sbitx_ft8_log_decodes(res, nres, window_start, (uint64_t) freq_khz * 1000);
             /* Slide by only 2 s. FT8 here isn't UTC-slot-aligned, so the
              * ~12.6 s burst sits at an arbitrary offset in the 15 s window;
              * a small step guarantees some window contains the full burst

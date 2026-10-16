@@ -21,10 +21,24 @@
 
 #define DIGI_LOG_DEFAULT_DIR "/var/spool/hermes-digi"
 
+/* Two locks, always taken in this order (g_file_lock, then g_lock):
+ *
+ *   g_file_lock  serialises writers' appends and the rotation, and covers
+ *                a reader only while it opens the two files. Never held
+ *                across a read.
+ *   g_lock       the ring, the ids and the settings; held only for memory
+ *                work, never across any I/O.
+ *
+ * digi_messages used to read up to ~2 MiB of log from the SD card while
+ * holding the one lock every decoder needs to log, so a single request
+ * could stall the DSP thread for tens of milliseconds -- longer than the
+ * codec's ~21 ms of headroom. */
+static pthread_mutex_t g_file_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static char     g_dir[256] = DIGI_LOG_DEFAULT_DIR;
 static long     g_max_bytes = 1024 * 1024;
 static bool     g_dir_made;
+static bool     g_id_seeded;
 static uint64_t g_last_id;
 
 static struct {
@@ -36,10 +50,13 @@ static int g_ring_count;
 
 void digi_log_set_dir(const char *dir)
 {
+    pthread_mutex_lock(&g_file_lock);   /* file paths are read under it */
     pthread_mutex_lock(&g_lock);
     snprintf(g_dir, sizeof(g_dir), "%s", dir && dir[0] ? dir : DIGI_LOG_DEFAULT_DIR);
     g_dir_made = false;
+    g_id_seeded = false;
     pthread_mutex_unlock(&g_lock);
+    pthread_mutex_unlock(&g_file_lock);
 }
 
 void digi_log_set_max_bytes(long max_bytes)
@@ -127,19 +144,32 @@ static void jw_opt_str(jw *w, const char *key, const char *value, size_t max_cha
         jw_raw(w, ",\"%s\":null", key);
 }
 
-static const char *known(const char *s, const char *const *allowed, const char *fallback)
+static const char *const g_modes[] = { "FT8", "CW", "RTTY", "DSTAR", NULL };
+static const char *const g_dirs[]  = { "rx", "tx", NULL };
+
+/* The matching entry of `allowed`, or NULL. Returning the table's own
+ * string means nothing from the caller reaches the output unescaped. */
+static const char *known(const char *s, const char *const *allowed)
 {
     for (int i = 0; s && allowed[i]; i++)
         if (!strcmp(s, allowed[i]))
             return allowed[i];
-    return fallback;
+    return NULL;
 }
 
 size_t digi_log_format(const digi_log_entry *e, uint64_t id, double at, char *out, size_t out_size)
 {
-    static const char *const modes[] = { "FT8", "CW", "RTTY", "DSTAR", NULL };
-    static const char *const dirs[]  = { "rx", "tx", NULL };
     jw w = { out, out_size, 0, false };
+
+    /* An unknown mode or direction is refused, not relabelled: falling back
+     * to "FT8"/"rx" would log a future mode (RADE, PSK...) or a typo as
+     * FT8 traffic with no error anywhere. */
+    const char *mode = known(e->mode, g_modes);
+    const char *dir  = known(e->dir, g_dirs);
+    if (!mode || !dir) {
+        if (out_size) out[0] = '\0';
+        return 0;
+    }
 
     time_t secs = (time_t) floor(at);
     int ms = (int) ((at - floor(at)) * 1000.0);
@@ -147,11 +177,10 @@ size_t digi_log_format(const digi_log_entry *e, uint64_t id, double at, char *ou
     struct tm tm;
     gmtime_r(&secs, &tm);
 
-    const char *mode = known(e->mode, modes, "FT8");
     jw_raw(&w, "{\"id\":%llu,\"at\":\"%04d-%02d-%02dT%02d:%02d:%02d.%03dZ\",\"mode\":\"%s\",\"dir\":\"%s\","
                "\"frequency_hz\":%llu",
            (unsigned long long) id, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-           tm.tm_hour, tm.tm_min, tm.tm_sec, ms, mode, known(e->dir, dirs, "rx"),
+           tm.tm_hour, tm.tm_min, tm.tm_sec, ms, mode, dir,
            (unsigned long long) e->freq_hz);
     if (e->has_offset) jw_raw(&w, ",\"offset_hz\":%d", e->offset_hz);
     else               jw_raw(&w, ",\"offset_hz\":null");
@@ -184,7 +213,7 @@ size_t digi_log_format(const digi_log_entry *e, uint64_t id, double at, char *ou
     return w.len;
 }
 
-static double now_s(void)
+double digi_log_now(void)
 {
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -242,21 +271,102 @@ static void rotate_if_needed(void)
     rename(path, old);              /* keeps two files: current and .1 */
 }
 
+/* The id of the last complete entry in `fd`'s file, 0 if none. Only the
+ * tail is read: an entry is at most DIGI_LOG_LINE_MAX bytes. */
+static uint64_t last_id_in(int fd)
+{
+    struct stat st;
+    if (fd < 0 || fstat(fd, &st) != 0 || st.st_size <= 0)
+        return 0;
+    size_t win = 4 * DIGI_LOG_LINE_MAX;
+    if ((off_t) win > st.st_size)
+        win = (size_t) st.st_size;
+    char buf[4 * DIGI_LOG_LINE_MAX + 1];
+    ssize_t got = pread(fd, buf, win, st.st_size - (off_t) win);
+    if (got <= 0)
+        return 0;
+    buf[got] = '\0';
+    /* Walk complete lines from the end; the first one may be a fragment
+     * when the window does not start at the top of the file, and parsing
+     * it would need it to start with the key, which a fragment won't. */
+    for (char *end = buf + got; end > buf; ) {
+        while (end > buf && (end[-1] == '\n' || end[-1] == '\r'))
+            end--;
+        char *start = end;
+        while (start > buf && start[-1] != '\n')
+            start--;
+        static const char key[] = "{\"id\":";
+        if ((size_t) (end - start) > sizeof(key) && !strncmp(start, key, sizeof(key) - 1)) {
+            uint64_t id = strtoull(start + sizeof(key) - 1, NULL, 10);
+            if (id > 0)
+                return id;
+        }
+        end = start;
+    }
+    return 0;
+}
+
+/* Continue the id sequence from what is already on disk. Without this,
+ * g_last_id restarted at 0 every run and ids came from the wall clock
+ * alone, so a Pi with no RTC booting behind its previous run (before NTP,
+ * or after NTP stepped the clock back) wrote ids lower than ones already
+ * in the file, and a "since id" reader skipped or misordered them. Called
+ * with g_file_lock held. */
+static void seed_last_id(void)
+{
+    char path[320];
+    uint64_t on_disk = 0;
+    static const char *const names[] = { "digi.jsonl", "digi.jsonl.1" };
+    for (size_t i = 0; i < 2 && on_disk == 0; i++) {
+        path_of(path, sizeof(path), names[i]);
+        int fd = open(path, O_RDONLY | O_CLOEXEC);
+        if (fd >= 0) {
+            on_disk = last_id_in(fd);
+            close(fd);
+        }
+    }
+    pthread_mutex_lock(&g_lock);
+    if (on_disk > g_last_id)
+        g_last_id = on_disk;
+    g_id_seeded = true;
+    pthread_mutex_unlock(&g_lock);
+}
+
 void digi_log_add(const digi_log_entry *e)
 {
     if (!e)
         return;
-    double at = e->at > 0 ? e->at : now_s();
+    if (!known(e->mode, g_modes) || !known(e->dir, g_dirs)) {
+        static bool warned;
+        if (!warned) {
+            fprintf(stderr, "digi_log: refusing an entry with mode \"%s\" dir \"%s\" "
+                    "(not one the log schema defines)\n",
+                    e->mode ? e->mode : "(null)", e->dir ? e->dir : "(null)");
+            warned = true;
+        }
+        return;
+    }
+    double at = e->at > 0 ? e->at : digi_log_now();
     char line[DIGI_LOG_LINE_MAX + 1];
 
-    pthread_mutex_lock(&g_lock);
+    /* The file lock is taken first and held across this writer's append,
+     * so entries reach the file in id order. Only other writers wait on it;
+     * readers take it just long enough to open the files. */
+    pthread_mutex_lock(&g_file_lock);
     if (!g_dir_made) {
         mkdir(g_dir, 0755);
         g_dir_made = true;
     }
-    /* Ids are microseconds since the epoch, strictly increasing, so they
-     * stay unique and ordered across restarts. */
-    uint64_t id = (uint64_t) (now_s() * 1e6);
+    if (!g_id_seeded)
+        seed_last_id();
+
+    pthread_mutex_lock(&g_lock);
+    /* Ids are the wall clock at log time, in microseconds, forced strictly
+     * increasing and continued from the file (seed_last_id), so they stay
+     * unique and ordered across restarts. For FT8 RX `at` is the
+     * transmission's start, up to ~13 s before the id's time: ids order the
+     * log, `at` says when the message was on the air. */
+    uint64_t id = (uint64_t) (digi_log_now() * 1e6);
     if (id <= g_last_id)
         id = g_last_id + 1;
 
@@ -270,13 +380,41 @@ void digi_log_add(const digi_log_entry *e)
         g_ring_next = (g_ring_next + 1) % DIGI_LOG_RING;
         if (g_ring_count < DIGI_LOG_RING)
             g_ring_count++;
+    }
+    pthread_mutex_unlock(&g_lock);
 
+    if (len > 0) {
         line[len] = '\n';
         rotate_if_needed();
         append_line("digi.jsonl", line, len + 1);
     }
     append_legacy(e);
-    pthread_mutex_unlock(&g_lock);
+    pthread_mutex_unlock(&g_file_lock);
+}
+
+void digi_log_dstar_header(const uint8_t *header, size_t header_len, const char *dir,
+                           uint64_t freq_hz, bool encrypted, bool crc_ok)
+{
+    if (!header || header_len < DIGI_LOG_DSTAR_HEADER_MIN)
+        return;
+    /* Raw callsign bytes; digi_log_format sanitises them like any text from
+     * the air, so a failed header cannot inject anything. */
+    char rpt1[9], rpt2[9], urcall[9], mycall[9], suffix[5];
+    memcpy(rpt1,   header + 3,  8); rpt1[8]   = '\0';
+    memcpy(rpt2,   header + 11, 8); rpt2[8]   = '\0';
+    memcpy(urcall, header + 19, 8); urcall[8] = '\0';
+    memcpy(mycall, header + 27, 8); mycall[8] = '\0';
+    memcpy(suffix, header + 35, 4); suffix[4] = '\0';
+
+    digi_log_dstar hdr = {
+        .mycall = mycall, .suffix = suffix, .urcall = urcall,
+        .rpt1 = rpt1, .rpt2 = rpt2, .encrypted = encrypted, .crc_ok = crc_ok,
+    };
+    digi_log_entry e = {
+        .mode = "DSTAR", .dir = dir, .freq_hz = freq_hz, .text = "",
+        .from = crc_ok ? mycall : NULL, .to = crc_ok ? urcall : NULL, .dstar = &hdr,
+    };
+    digi_log_add(&e);
 }
 
 uint64_t digi_log_latest_id(void)
@@ -303,33 +441,6 @@ int digi_log_since(uint64_t after, char lines[][DIGI_LOG_LINE_MAX], uint64_t *id
     }
     pthread_mutex_unlock(&g_lock);
     return n;
-}
-
-/* Read a whole file (the log is capped, so this is at most about 1 MiB). */
-static char *slurp(const char *path, size_t *len)
-{
-    FILE *f = fopen(path, "rb");
-    *len = 0;
-    if (!f)
-        return NULL;
-    char *buf = NULL;
-    size_t cap = 0;
-    for (;;) {
-        if (cap - *len < 65536) {
-            size_t ncap = cap ? cap * 2 : 65536;
-            char *p = realloc(buf, ncap + 1);
-            if (!p) { free(buf); fclose(f); *len = 0; return NULL; }
-            buf = p;
-            cap = ncap;
-        }
-        size_t r = fread(buf + *len, 1, cap - *len, f);
-        *len += r;
-        if (r == 0)
-            break;
-    }
-    fclose(f);
-    buf[*len] = '\0';
-    return buf;
 }
 
 /* Walk `buf` from its end, appending complete JSON-object lines to `out`
@@ -368,6 +479,65 @@ static int take_from_end(char *buf, size_t len, int want, char **out, size_t *ou
     return taken;
 }
 
+/* pread until `n` bytes or end of file. */
+static ssize_t pread_full(int fd, char *buf, size_t n, off_t off)
+{
+    size_t got = 0;
+    while (got < n) {
+        ssize_t r = pread(fd, buf + got, n - got, off + (off_t) got);
+        if (r < 0 && errno == EINTR)
+            continue;
+        if (r <= 0)
+            break;
+        got += (size_t) r;
+    }
+    return (ssize_t) got;
+}
+
+/* Take up to `want` entries from the end of `fd`'s file into `out`, reading
+ * only as much of the tail as that needs: a 64 KiB window first, doubled
+ * while it holds too few complete entries. digi_messages used to read the
+ * whole of both files (up to ~2 MiB, and ~3 MiB of buffers after doubling)
+ * to return at most 100 entries. */
+static int take_tail(int fd, int want, char **out, size_t *out_len, size_t *out_cap)
+{
+    struct stat st;
+    if (fd < 0 || want <= 0 || fstat(fd, &st) != 0 || st.st_size <= 0)
+        return 0;
+
+    const size_t base_len = *out_len;
+    size_t win = 65536;
+    for (;;) {
+        if ((off_t) win > st.st_size)
+            win = (size_t) st.st_size;
+        const off_t off = st.st_size - (off_t) win;
+        char *buf = malloc(win + 1);
+        if (!buf)
+            return 0;
+        ssize_t got = pread_full(fd, buf, win, off);
+        if (got < 0) {
+            free(buf);
+            return 0;
+        }
+        size_t blen = (size_t) got;
+        char *p = buf;
+        /* A window that does not start at the top of the file begins with
+         * the tail of some line. Drop it: it can end in '}' and even start
+         * with '{' (the nested dstar object), so it would pass for an entry. */
+        if (off > 0) {
+            char *nl = memchr(buf, '\n', blen);
+            blen = nl ? blen - (size_t) (nl + 1 - buf) : 0;
+            p = nl ? nl + 1 : buf;
+        }
+        *out_len = base_len;            /* a retry starts the copy over */
+        int taken = take_from_end(p, blen, want, out, out_len, out_cap);
+        free(buf);
+        if (taken >= want || off == 0)
+            return taken;
+        win *= 2;                       /* too few complete entries yet */
+    }
+}
+
 char *digi_log_last_json(int count)
 {
     if (count < 1) count = 1;
@@ -379,21 +549,23 @@ char *digi_log_last_json(int count)
         return NULL;
     out[0] = '[';
 
+    /* Open both files together, under the file lock, so a rotation cannot
+     * land between the two opens and the pair is consistent. The reads then
+     * run with no lock at all: appends are single write() calls and a
+     * rotation is a rename, so an open descriptor stays valid either way. */
     char path[320];
-    pthread_mutex_lock(&g_lock);
+    pthread_mutex_lock(&g_file_lock);
     path_of(path, sizeof(path), "digi.jsonl");
-    size_t blen;
-    char *buf = slurp(path, &blen);
-    int taken = buf ? take_from_end(buf, blen, count, &out, &len, &cap) : 0;
-    free(buf);
-    if (taken < count) {
-        path_of(path, sizeof(path), "digi.jsonl.1");
-        buf = slurp(path, &blen);
-        if (buf)
-            take_from_end(buf, blen, count - taken, &out, &len, &cap);
-        free(buf);
-    }
-    pthread_mutex_unlock(&g_lock);
+    int cur = open(path, O_RDONLY | O_CLOEXEC);
+    path_of(path, sizeof(path), "digi.jsonl.1");
+    int prev = open(path, O_RDONLY | O_CLOEXEC);
+    pthread_mutex_unlock(&g_file_lock);
+
+    int taken = take_tail(cur, count, &out, &len, &cap);
+    if (taken < count)
+        take_tail(prev, count - taken, &out, &len, &cap);
+    if (cur >= 0) close(cur);
+    if (prev >= 0) close(prev);
 
     if (len + 2 > cap) {
         char *p = realloc(out, len + 2);

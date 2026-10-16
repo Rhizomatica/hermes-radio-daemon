@@ -699,15 +699,15 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
         }
         if (!extract_json_int(payload, "value", &v))
         { send_cmd_error(c, cmd, "missing key or value"); return; }
-        /* The ranges the modems handle; anything else was accepted before
-         * and could stall or garble the encoder. */
-        if ((!strcmp(key, "cw_wpm")     && (v < 5 || v > 60)) ||
-            (!strcmp(key, "cw_pitch")   && (v < 300 || v > 1200)) ||
-            (!strcmp(key, "rtty_baud")  && v != 45 && v != 50 && v != 75) ||
-            (!strcmp(key, "rtty_mark")  && (v < 300 || v > 3000)) ||
-            (!strcmp(key, "rtty_shift") && v != 170 && v != 425 && v != 850))
-        { send_cmd_error(c, cmd, "out of range (cw_wpm 5-60, cw_pitch 300-1200, rtty_baud 45/50/75, "
-                                 "rtty_mark 300-3000, rtty_shift 170/425/850)"); return; }
+        /* The ranges the modems handle; anything else could stall or garble
+         * the encoder. Shared with the config loader (cfg_utils.c), so the
+         * file cannot bypass what this command refuses. */
+        if (!cfg_digi_param_valid(key, (long) v)) {
+            char why[192];
+            snprintf(why, sizeof(why), "out of range (%s)", cfg_digi_param_ranges);
+            send_cmd_error(c, cmd, why);
+            return;
+        }
         if      (!strcmp(key, "cw_wpm"))       radio_h->cw_wpm       = (uint16_t) v;
         else if (!strcmp(key, "cw_pitch"))     radio_h->cw_pitch     = (uint16_t) v;
         else if (!strcmp(key, "rtty_baud"))    radio_h->rtty_baud    = (uint16_t) v;

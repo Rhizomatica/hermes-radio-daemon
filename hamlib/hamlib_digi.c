@@ -249,13 +249,6 @@ static void digi_spool_log(const char *mode, const char *dir,
     digi_log_add(&e);
 }
 
-static double digi_wall_now(void)
-{
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (double) tv.tv_sec + tv.tv_usec / 1e6;
-}
-
 /* ─── TX paths ───────────────────────────────────────────────── */
 
 /* Convert one whole message to the ring rate into tx_pend. The resampler
@@ -355,14 +348,14 @@ static void do_ft8_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz
     static float ft8_audio[192000];
     int n12 = sbitx_ft8_encode(text, ft8_audio,
                                (int)(sizeof(ft8_audio) / sizeof(ft8_audio[0])),
-                               1500.0f);
+                               (float) FT8_TX_TONE_HZ);
     if (n12 <= 0) {
         fprintf(stderr, "FT8 tx: cannot encode \"%s\"\n", text);
         return;
     }
     if (!tx_pend_set(s, &s->ft8_to_ring, ft8_audio, (size_t) n12, 12000, ring_rate))
         return;
-    digi_spool_log("FT8", "tx", freq_hz, text, 1500);
+    digi_spool_log("FT8", "tx", freq_hz, text, FT8_TX_TONE_HZ);
 }
 
 static void do_rtty_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz,
@@ -417,7 +410,14 @@ static size_t pull_rx_12k(hamlib_digi_state *s, uint32_t ring_rate,
     return n;
 }
 
+/* The decoders' character callbacks take no state, so the values each
+ * entry needs are cached here by do_rtty_rx / do_cw_rx just before they run
+ * the decoder. The mark and pitch go into offset_hz exactly as the sbitx
+ * backend logs them; passing 0 made offset_hz null for the same decode on
+ * this backend. */
 static int g_rtty_freq_hz_cache;
+static int g_rtty_mark_cache;
+static int g_cw_pitch_cache;
 static void rtty_rx_char_cb(char c)
 {
     static char line[256];
@@ -425,7 +425,7 @@ static void rtty_rx_char_cb(char c)
     if (c == '\r' || c == '\n') {
         if (pos > 0) {
             line[pos] = '\0';
-            digi_spool_log("RTTY", "rx", (uint32_t) g_rtty_freq_hz_cache, line, 0);
+            digi_spool_log("RTTY", "rx", (uint32_t) g_rtty_freq_hz_cache, line, g_rtty_mark_cache);
             pos = 0;
         }
         return;
@@ -441,7 +441,7 @@ static void cw_rx_char_cb(char c)
     if (c == ' ' || c == '\n') {
         if (pos > 0) {
             line[pos] = '\0';
-            digi_spool_log("CW", "rx", (uint32_t) g_rtty_freq_hz_cache, line, 0);
+            digi_spool_log("CW", "rx", (uint32_t) g_rtty_freq_hz_cache, line, g_cw_pitch_cache);
             pos = 0;
         }
         return;
@@ -454,6 +454,7 @@ static void do_cw_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz,
                      int wpm, int pitch)
 {
     g_rtty_freq_hz_cache = (int) freq_hz;       /* for the CW spool line too */
+    g_cw_pitch_cache = pitch;
     if (s->cw_rx_buf_block == 0)
         s->cw_rx_buf_block = sbitx_cw_rx_samples_per_block();
 
@@ -498,16 +499,26 @@ static void do_ft8_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz
                            s->ft8_rx_buf_cap - s->ft8_rx_buf_n);
     if (!n)
         return;
+    /* The newest sample just arrived: note when, before any decode runs. */
+    const double newest_at = digi_log_now();
     s->ft8_rx_buf_n += (int) n;
 
     /* When we've accumulated >= 15 s of audio, run a decode pass and slide. */
     int slot_samples = DIGI_DECODE_RATE * FT8_SLOT_SECONDS;
     if (s->ft8_rx_buf_n >= slot_samples) {
-        /* The window ends now; overlapping windows decode a transmission
-         * more than once, and sbitx_ft8_log_decodes() keeps one entry. */
+        /* The decoded window is buf[0..slot_samples), and its first sample
+         * is ft8_rx_buf_n samples older than the newest -- not
+         * FT8_SLOT_SECONDS: each pull adds ~100 ms, so the buffer can hold
+         * up to ~1200 samples beyond the window. The clock was read before
+         * the decode (newest_at); reading it after made entries late by the
+         * decode time and could split one transmission past the 1.5 s
+         * dedup tolerance. What remains is any backlog the ring reader had
+         * built up, which this path cannot see. Overlapping windows decode
+         * a transmission more than once; sbitx_ft8_log_decodes() keeps one. */
+        const double window_start = newest_at - (double) s->ft8_rx_buf_n / DIGI_DECODE_RATE;
         sbitx_ft8_decode_result res[50];
         int nres = sbitx_ft8_decode_ex(s->ft8_rx_buf, slot_samples, res, 50);
-        sbitx_ft8_log_decodes(res, nres, digi_wall_now() - FT8_SLOT_SECONDS, freq_hz);
+        sbitx_ft8_log_decodes(res, nres, window_start, freq_hz);
         /* Slide by 2 s. Transmissions here are not UTC-slot aligned, and a
          * 12.64 s burst fits a 15 s window only if it starts within its
          * first 2.36 s; the old half-slot (7.5 s) step missed most of
@@ -538,6 +549,7 @@ static void do_rtty_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_h
 
     while (s->rtty_rx_buf_n >= s->rtty_rx_buf_block) {
         g_rtty_freq_hz_cache = (int) freq_hz;
+        g_rtty_mark_cache = mark;
         sbitx_rtty_rx_process(s->rtty_rx_buf, s->rtty_rx_buf_block,
                               baud, mark, shift, rtty_rx_char_cb);
         memmove(s->rtty_rx_buf, s->rtty_rx_buf + s->rtty_rx_buf_block,
@@ -562,6 +574,15 @@ static void dstar_hamlib_header_cb(void *user, const uint8_t *header)
 {
     hamlib_digi_state *s = (hamlib_digi_state *) user;
     dstar_voice_rx_header(&s->dstar_vrx, header);
+
+    /* Log it, as the sbitx backend does: received D-STAR headers never
+     * reached the digi log on this backend. */
+    uint16_t crc = sbitx_dstar_crc16(header, SBITX_DSTAR_HEADER_BYTES - 2U);
+    bool crc_ok = header[SBITX_DSTAR_HEADER_BYTES - 2U] == (uint8_t) (crc & 0xFFU) &&
+                  header[SBITX_DSTAR_HEADER_BYTES - 1U] == (uint8_t) (crc >> 8);
+    digi_log_dstar_header(header, SBITX_DSTAR_HEADER_BYTES, "rx",
+                          s->radio_h->profiles[s->radio_h->profile_active_idx].freq,
+                          s->dstar_vrx.hdr_enc, crc_ok);
 }
 
 /* EOT or loss of lock: the over is gone. */
@@ -692,6 +713,10 @@ static void do_dstar_tx(hamlib_digi_state *s, uint32_t ring_rate)
                                          s->radio_h->dstar_urcall,
                                          s->radio_h->dstar_encrypt != 0);
                     sbitx_dstar_tx_header(s->dstar_tx, s->dstar_vtx.header);
+                    /* Our own header, so its CRC is good by construction. */
+                    digi_log_dstar_header(s->dstar_vtx.header, SBITX_DSTAR_HEADER_BYTES, "tx",
+                                          s->radio_h->profiles[s->radio_h->profile_active_idx].freq,
+                                          s->dstar_vtx.encrypt, true);
                     s->dstar_tx_keyed = true;
                 }
 

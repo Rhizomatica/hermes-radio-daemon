@@ -15,6 +15,9 @@
 bool sbitx_ft8_init(void);
 void sbitx_ft8_shutdown(void);
 
+/* The audio offset both backends transmit FT8 at, and log for it. */
+#define FT8_TX_TONE_HZ 1500
+
 int  sbitx_ft8_encode(const char *message, float *signal, int max_samples, float tone_freq);
 /* The text is a valid FT8 message (standard, or free text of at most 13
  * characters of A-Z 0-9 space + - . / ?). */
@@ -43,10 +46,5 @@ int  sbitx_ft8_decode_ex(float *audio_12k, int nsamples, sbitx_ft8_decode_result
 void sbitx_ft8_log_decodes(const sbitx_ft8_decode_result *res, int n,
                            double window_start, uint64_t dial_hz);
 
-int  sbitx_ft8_spool_count(void);
-int  sbitx_ft8_spool_read(int index, char *text, int max_len);
-void sbitx_ft8_spool_add(const char *mode, const char *dir, int freq_khz, const char *text);
-
-extern const char *digi_spool_dir;
 
 #endif /* SBITX_FT8_H_ */

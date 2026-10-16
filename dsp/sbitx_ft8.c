@@ -6,7 +6,6 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-#include <dirent.h>
 #include <errno.h>
 #include <math.h>
 #include <pthread.h>
@@ -15,7 +14,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 #include "ft8/constants.h"
@@ -29,8 +27,6 @@
 #include "sbitx_ft8.h"
 #include "digi_log.h"
 
-const char *digi_spool_dir = "/var/spool/hermes-digi";
-
 #define FT8_SYMBOL_PERIOD 0.160f
 
 /* ft8_lib's candidate time runs late by a constant: its monitor's FFT
@@ -39,8 +35,6 @@ const char *digi_spool_dir = "/var/spool/hermes-digi";
 #define FT8_LIB_TIME_BIAS_S 0.22f
 #define FT8_SYMBOL_BT 2.0f
 #define GFSK_CONST_K 5.336446f
-
-static int spool_index = 0;
 
 static void synth_gfsk(const uint8_t *symbols, int n_sym, float f0,
                        int signal_rate, float *signal, int *num_samples)
@@ -99,7 +93,8 @@ static void synth_gfsk(const uint8_t *symbols, int n_sym, float f0,
 
 bool sbitx_ft8_init(void)
 {
-    mkdir(digi_spool_dir, 0755);
+    /* Nothing to set up: the log directory belongs to digi_log, which
+     * creates it on the first entry. */
     return true;
 }
 
@@ -344,30 +339,39 @@ int sbitx_ft8_decode(float *audio_12k, int nsamples, char *decoded,
     return len;
 }
 
-void spool_log_line(const char *mode, const char *dir, int freq_khz, const char *text)
-{
-    digi_log_entry e = { .mode = mode, .dir = dir, .freq_hz = (uint64_t) freq_khz * 1000, .text = text };
-    digi_log_add(&e);
-}
-
 /* The windows slide by 2 s and overlap by 13 s, so one transmission
  * decodes in several of them. It is the same transmission when the text
- * matches and the computed start times agree to within 1.5 s; that holds
- * whether or not the sender is aligned to the UTC slots (HERMES stations
- * transmit when a message is queued, other FT8 stations on the slot). */
-#define FT8_RECENT 64
+ * matches, the computed start times agree to within 1.5 s, AND the audio
+ * offsets agree to within FT8_SAME_OFFSET_HZ; that holds whether or not
+ * the sender is aligned to the UTC slots (HERMES stations transmit when a
+ * message is queued, other FT8 stations on the slot).
+ *
+ * The offset is what tells apart two DIFFERENT stations sending the same
+ * text at once -- repeated "73"/"RR73", a beacon, free text. Keying on
+ * text and time alone merged them into one entry. Adding the sender
+ * callsign would not have helped: `from` is parsed out of the text, so
+ * identical text always means an identical `from`. Two simultaneous
+ * transmissions must sit at different audio offsets (an FT8 signal is
+ * 50 Hz wide), while one transmission decoded in overlapping windows keeps
+ * its offset to within a sub-bin (3.125 Hz here). */
+#define FT8_RECENT          64
+#define FT8_SAME_START_S    1.5
+#define FT8_SAME_OFFSET_HZ  10.0f
 static pthread_mutex_t ft8_recent_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct { char text[48]; double start; } ft8_recent[FT8_RECENT];
+static struct { char text[48]; double start; float offset_hz; } ft8_recent[FT8_RECENT];
 static int ft8_recent_next;
 
-static bool ft8_seen_recently(const char *text, double start)
+static bool ft8_seen_recently(const char *text, double start, float offset_hz)
 {
     for (int i = 0; i < FT8_RECENT; i++)
-        if (ft8_recent[i].text[0] && fabs(ft8_recent[i].start - start) < 1.5 &&
+        if (ft8_recent[i].text[0] &&
+            fabs(ft8_recent[i].start - start) < FT8_SAME_START_S &&
+            fabsf(ft8_recent[i].offset_hz - offset_hz) < FT8_SAME_OFFSET_HZ &&
             !strcmp(ft8_recent[i].text, text))
             return true;
     snprintf(ft8_recent[ft8_recent_next].text, sizeof(ft8_recent[0].text), "%s", text);
     ft8_recent[ft8_recent_next].start = start;
+    ft8_recent[ft8_recent_next].offset_hz = offset_hz;
     ft8_recent_next = (ft8_recent_next + 1) % FT8_RECENT;
     return false;
 }
@@ -379,12 +383,18 @@ void sbitx_ft8_log_decodes(const sbitx_ft8_decode_result *res, int n,
     for (int i = 0; i < n; i++) {
         const sbitx_ft8_decode_result *r = &res[i];
         double start = window_start + r->time_s;
-        if (!r->text[0] || ft8_seen_recently(r->text, start))
+        if (!r->text[0] || ft8_seen_recently(r->text, start, r->freq_hz))
             continue;
-        /* dt as WSJT-X reports it: against 0.5 s into the UTC 15 s slot. */
+        /* dt as WSJT-X reports it: against 0.5 s into the UTC 15 s slot,
+         * folded symmetrically into [-7.5, 7.5) as WSJT-X does. The old
+         * fold at +7 left an odd boundary (6.9 stayed, 7.1 became -7.9).
+         * HERMES stations are not slot-aligned, so for them this is only an
+         * approximation of "how far off the slot". */
         double dt = start - floor(start / 15.0) * 15.0 - 0.5;
-        if (dt > 7.0)
+        if (dt >= 7.5)
             dt -= 15.0;
+        else if (dt < -7.5)
+            dt += 15.0;
         digi_log_entry e = {
             .mode = "FT8", .dir = "rx", .freq_hz = dial_hz, .at = start,
             .has_offset = true, .offset_hz = (int) lroundf(r->freq_hz),
@@ -398,51 +408,4 @@ void sbitx_ft8_log_decodes(const sbitx_ft8_decode_result *res, int n,
         digi_log_add(&e);
     }
     pthread_mutex_unlock(&ft8_recent_lock);
-}
-
-int sbitx_ft8_spool_count(void)
-{
-    DIR *d = opendir(digi_spool_dir);
-    if (!d) return 0;
-
-    int count = 0;
-    struct dirent *e;
-    while ((e = readdir(d)))
-    {
-        if (e->d_name[0] == '.')
-            continue;
-        count++;
-    }
-    closedir(d);
-    return count;
-}
-
-int sbitx_ft8_spool_read(int index, char *text, int max_len)
-{
-    char path[512];
-    snprintf(path, sizeof(path), "%s/spool.log", digi_spool_dir);
-
-    FILE *f = fopen(path, "r");
-    if (!f) return -1;
-
-    int current = 0;
-    while (fgets(text, max_len, f))
-    {
-        if (current == index)
-        {
-            int len = strlen(text);
-            if (len > 0 && text[len - 1] == '\n')
-                text[len - 1] = '\0';
-            fclose(f);
-            return len;
-        }
-        current++;
-    }
-    fclose(f);
-    return -1;
-}
-
-void sbitx_ft8_spool_add(const char *mode, const char *dir, int freq_khz, const char *text)
-{
-    spool_log_line(mode, dir, freq_khz, text);
 }

@@ -284,6 +284,59 @@ static void test_voice_key_refresh(void)
     unlink(path);
 }
 
+/* The digi parameter ranges are defined once and enforced on BOTH paths.
+ * digi_config refused rtty_shift = 0 or cw_wpm = 0 over the WebSocket, but
+ * the same values in the config file went straight to the encoder. */
+static void test_digi_param_ranges(void)
+{
+    /* the shared predicate, at and around every boundary */
+    assert( cfg_digi_param_valid("cw_wpm", 5)    &&  cfg_digi_param_valid("cw_wpm", 60));
+    assert(!cfg_digi_param_valid("cw_wpm", 4)    && !cfg_digi_param_valid("cw_wpm", 61));
+    assert(!cfg_digi_param_valid("cw_wpm", 0));
+    assert( cfg_digi_param_valid("cw_pitch", 300) && cfg_digi_param_valid("cw_pitch", 1200));
+    assert(!cfg_digi_param_valid("cw_pitch", 299) && !cfg_digi_param_valid("cw_pitch", 1201));
+    assert( cfg_digi_param_valid("rtty_baud", 45) && cfg_digi_param_valid("rtty_baud", 50) &&
+            cfg_digi_param_valid("rtty_baud", 75));
+    assert(!cfg_digi_param_valid("rtty_baud", 46) && !cfg_digi_param_valid("rtty_baud", 0));
+    assert( cfg_digi_param_valid("rtty_mark", 300) && cfg_digi_param_valid("rtty_mark", 3000));
+    assert(!cfg_digi_param_valid("rtty_mark", 299) && !cfg_digi_param_valid("rtty_mark", 3001));
+    assert( cfg_digi_param_valid("rtty_shift", 170) && cfg_digi_param_valid("rtty_shift", 425) &&
+            cfg_digi_param_valid("rtty_shift", 850));
+    assert(!cfg_digi_param_valid("rtty_shift", 0) && !cfg_digi_param_valid("rtty_shift", 171));
+    assert( cfg_digi_param_valid("some_other_key", -1));     /* not ours to judge */
+
+    /* and the config file can no longer bypass it: bad values fall back */
+    char path[] = "/tmp/controls_test_digiXXXXXX";
+    int fd = mkstemp(path);
+    assert(fd >= 0);
+    close(fd);
+    FILE *f = fopen(path, "w");
+    fputs("[main]\ncw_wpm = 0\ncw_pitch = 5000\nrtty_baud = 46\nrtty_mark = 10\nrtty_shift = 0\n\n"
+          "[tx_band0]\nscale = 1.0\n", f);
+    fclose(f);
+    radio *r = calloc(1, sizeof(*r));
+    pthread_mutex_init(&r->cfg_mutex, NULL);
+    snprintf(r->cfg_radio_path, sizeof(r->cfg_radio_path), "%s", path);
+    assert(init_config_radio(r, path));
+    assert(r->cw_wpm == 20 && r->cw_pitch == 700);
+    assert(r->rtty_baud == 45 && r->rtty_mark == 1585 && r->rtty_shift == 170);
+    close_config_radio(r);
+
+    /* valid values from the file are kept as given */
+    f = fopen(path, "w");
+    fputs("[main]\ncw_wpm = 35\ncw_pitch = 600\nrtty_baud = 75\nrtty_mark = 2125\nrtty_shift = 850\n\n"
+          "[tx_band0]\nscale = 1.0\n", f);
+    fclose(f);
+    assert(init_config_radio(r, path));
+    assert(r->cw_wpm == 35 && r->cw_pitch == 600);
+    assert(r->rtty_baud == 75 && r->rtty_mark == 2125 && r->rtty_shift == 850);
+    close_config_radio(r);
+
+    pthread_mutex_destroy(&r->cfg_mutex);
+    free(r);
+    unlink(path);
+}
+
 int main(void)
 {
     radio *r = make_radio();
@@ -295,6 +348,7 @@ int main(void)
     test_value_ok();
     test_rprt();
     test_voice_key_refresh();
+    test_digi_param_ranges();
 
     free(r);
     printf("controls_test: all assertions passed\n");
