@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -64,6 +65,11 @@ typedef struct {
     uint32_t last_rx_spectrum_seq;
     uint32_t last_tx_spectrum_seq;
     int64_t  last_status_ms;      /* monotonic ms at last status broadcast */
+    /* Commands run on the server thread and publishing on websocket_thread;
+     * under Mongoose both ran in one loop.  This lock keeps them serialised
+     * as they were, so a command never interleaves with a status build. */
+    pthread_mutex_t lock;
+    bool     thread_started;
 } websocket_ctx;
 
 static websocket_ctx ws_ctx;
@@ -1082,10 +1088,10 @@ static void broadcast_digi(websocket_ctx *ctx)
     }
 }
 
-static void broadcast_rx_audio(websocket_ctx *ctx)
+/* Send one frame of at most WS_RX_CHUNK_SAMPLES; returns how many samples
+ * it took, 0 when the ring is empty. */
+static size_t broadcast_rx_audio_chunk(websocket_ctx *ctx)
 {
-    if (!radio_pipeline_supports_websocket_rx_audio(ctx->radio_h)) return;
-
     int16_t samples[WS_RX_CHUNK_SAMPLES];
     size_t  n;
 
@@ -1123,7 +1129,7 @@ static void broadcast_rx_audio(websocket_ctx *ctx)
     } else {
         n = radio_media_pop_rx_audio(ctx->radio_h, samples, WS_RX_CHUNK_SAMPLES);
     }
-    if (n == 0) return;
+    if (n == 0) return 0;
 
     uint8_t frame[1 + sizeof(samples)];
     frame[0] = WS_STREAM_AUDIO;
@@ -1131,6 +1137,22 @@ static void broadcast_rx_audio(websocket_ctx *ctx)
     size_t flen = 1 + n * sizeof(int16_t);
 
     ws_server_broadcast(ctx->server, frame, flen, false);
+    return n;
+}
+
+/* Everything that arrived since the last pass.  One chunk per 50 ms pass
+ * would cap the stream at ~5 k samples/s, below any audio rate, so drain
+ * the ring; the bound only stops a ring that refills as fast as it is read
+ * from holding the publisher forever. */
+#define WS_RX_MAX_CHUNKS_PER_PASS 64
+
+static void broadcast_rx_audio(websocket_ctx *ctx)
+{
+    if (!radio_pipeline_supports_websocket_rx_audio(ctx->radio_h)) return;
+
+    for (int i = 0; i < WS_RX_MAX_CHUNKS_PER_PASS; i++)
+        if (broadcast_rx_audio_chunk(ctx) < WS_RX_CHUNK_SAMPLES)
+            break;
 }
 
 static void broadcast_spectrum(websocket_ctx *ctx, bool tx)
@@ -1182,6 +1204,13 @@ static const void *asset_lookup(const char *path, size_t *size)
     if ((size_t) snprintf(full, sizeof(full), "%s%s", ws_ctx.web_root, path) >= sizeof(full))
         return NULL;
 
+    /* Regular files only, checked before opening: a FIFO would block the
+     * server thread inside fopen, a device would never end, a directory
+     * has no meaningful size. */
+    struct stat st;
+    if (stat(full, &st) != 0 || !S_ISREG(st.st_mode))
+        return NULL;
+
     f = fopen(full, "rb");
     if (f == NULL)
         return NULL;
@@ -1218,7 +1247,9 @@ static void on_ws_connect(ws_conn_t *c, void *user_data)
              "\"tx_spectrum_binary_type\":3}");
     ws_conn_send(c, hello, strlen(hello), true);
 
+    pthread_mutex_lock(&ctx->lock);
     build_status_json(ctx->radio_h, status, sizeof(status));
+    pthread_mutex_unlock(&ctx->lock);
     ws_conn_send(c, status, strlen(status), true);
 }
 
@@ -1236,7 +1267,9 @@ static void on_ws_message(ws_conn_t *c, const void *data, size_t len,
         size_t n = len < sizeof(buf) - 1 ? len : sizeof(buf) - 1;
         memcpy(buf, p, n);
         buf[n] = '\0';
+        pthread_mutex_lock(&ctx->lock);
         handle_ws_command(ctx->radio_h, c, buf);
+        pthread_mutex_unlock(&ctx->lock);
     }
     else if (len > 1 && p[0] == WS_STREAM_AUDIO)
     {
@@ -1254,8 +1287,10 @@ static void on_ws_close(ws_conn_t *c, void *user_data)
 
     /* A push-to-talk client (browser tab, hermes-voice-key) that drops its
      * connection while keyed would otherwise leave the radio in TX. */
+    pthread_mutex_lock(&ctx->lock);
     radio_backend_release_ptt(ctx->radio_h, PTT_SRC_WEBSOCKET, ws_conn_id(c),
                               "disconnected");
+    pthread_mutex_unlock(&ctx->lock);
 }
 
 /* Parse a ws:// or wss:// URL into the pieces the server wants.  Only the
@@ -1282,24 +1317,44 @@ static bool parse_ws_url(const char *url, bool *tls, char *host,
     slash = strchr(p, '/');
     hostpart = slash ? (size_t) (slash - p) : strlen(p);
 
-    colon = memchr(p, ':', hostpart);
+    /* An IPv6 literal is bracketed, "[::]:8080", so its colons are not
+     * the port separator. */
+    const char *hstart = p;
+    size_t hlen;
+    if (hostpart > 0 && p[0] == '[')
+    {
+        const char *close = memchr(p, ']', hostpart);
+        if (close == NULL)
+            return false;
+        hstart = p + 1;
+        hlen = (size_t) (close - hstart);
+        colon = (close + 1 < p + hostpart) ? close + 1 : NULL;
+        if (colon != NULL && *colon != ':')
+            return false;
+    }
+    else
+    {
+        colon = memchr(p, ':', hostpart);
+        hlen = colon ? (size_t) (colon - p) : hostpart;
+    }
+
     if (colon != NULL)
     {
-        long prt = strtol(colon + 1, NULL, 10);
+        char *end;
+        long prt = strtol(colon + 1, &end, 10);
 
-        if (prt <= 0 || prt > 65535)
+        if (end == colon + 1 || end != p + hostpart || prt <= 0 || prt > 65535)
             return false;
         *port = (uint16_t) prt;
-        hostpart = (size_t) (colon - p);
     }
     else
         *port = 8080;
 
-    if (hostpart == 0 || hostpart >= host_len)
+    if (hlen == 0 || hlen >= host_len)
         return false;
 
-    memcpy(host, p, hostpart);
-    host[hostpart] = '\0';
+    memcpy(host, hstart, hlen);
+    host[hlen] = '\0';
     return true;
 }
 
@@ -1317,6 +1372,7 @@ static void *websocket_thread(void *ctx_v)
     {
         int64_t now = now_ms();
 
+        pthread_mutex_lock(&ctx->lock);
         if (now - ctx->last_status_ms >= STATUS_MIN_INTERVAL_MS)
         {
             ctx->last_status_ms = now;
@@ -1326,6 +1382,7 @@ static void *websocket_thread(void *ctx_v)
         broadcast_rx_audio(ctx);
         broadcast_spectrum(ctx, false);
         broadcast_spectrum(ctx, true);
+        pthread_mutex_unlock(&ctx->lock);
         usleep(WS_PUBLISH_INTERVAL_US);
     }
 
@@ -1341,6 +1398,7 @@ bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid)
     const char *url;
 
     memset(&ws_ctx, 0, sizeof(ws_ctx));
+    pthread_mutex_init(&ws_ctx.lock, NULL);
     ws_ctx.radio_h = radio_h;
     snprintf(ws_ctx.web_root, sizeof(ws_ctx.web_root), "%s", CFG_WEBSOCKET_PATH);
 
@@ -1368,7 +1426,19 @@ bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid)
     opts.on_close = on_ws_close;
     opts.user_data = &ws_ctx;
 
-    if (ws_server_start(&ws_ctx.server, &opts) != 0)
+    int rc = ws_server_start(&ws_ctx.server, &opts);
+    if (rc == WS_SERVER_ERR_TLS)
+    {
+        /* A missing or expired certificate must not take the radio down
+         * with it: shm control, audio and the rest keep running.  No
+         * fallback to plain ws:// either, which would serve in the clear
+         * what was configured to be encrypted. */
+        fprintf(stderr, "radio_websocket: WEBSOCKET DISABLED: cannot set up "
+                "TLS for %s with %s / %s; the daemon runs without it\n",
+                url, CFG_SSL_CERT, CFG_SSL_KEY);
+        return true;
+    }
+    if (rc != 0)
     {
         fprintf(stderr, "radio_websocket: cannot listen on %s\n", url);
         return false;
@@ -1382,13 +1452,15 @@ bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid)
         ws_ctx.server = NULL;
         return false;
     }
+    ws_ctx.thread_started = true;
     return true;
 }
 
 void radio_websocket_shutdown(pthread_t *websocket_tid)
 {
-    if (!ws_ctx.radio_h || !ws_ctx.radio_h->enable_websocket) return;
+    if (!ws_ctx.thread_started) return;
     pthread_join(*websocket_tid, NULL);
+    ws_ctx.thread_started = false;
     if (ws_ctx.server) {
         ws_server_stop(ws_ctx.server);
         ws_ctx.server = NULL;

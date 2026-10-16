@@ -31,6 +31,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <openssl/rand.h>
@@ -314,19 +315,33 @@ static int parse_url(const char *url, int *tls, char *host, size_t host_len,
 
     slash = strchr(p, '/');
     hostpart = slash ? (size_t) (slash - p) : strlen(p);
-    colon = memchr(p, ':', hostpart);
+
+    /* An IPv6 literal is bracketed, "[::1]:8080". */
+    const char *hstart = p;
+    size_t hlen;
+    if (hostpart > 0 && p[0] == '[') {
+        const char *close = memchr(p, ']', hostpart);
+        if (close == NULL) return -1;
+        hstart = p + 1;
+        hlen = (size_t) (close - hstart);
+        colon = (close + 1 < p + hostpart) ? close + 1 : NULL;
+        if (colon != NULL && *colon != ':') return -1;
+    } else {
+        colon = memchr(p, ':', hostpart);
+        hlen = colon ? (size_t) (colon - p) : hostpart;
+    }
+
     if (colon != NULL) {
         size_t plen = hostpart - (size_t) (colon - p) - 1;
-        if (plen >= port_len) return -1;
+        if (plen == 0 || plen >= port_len) return -1;
         memcpy(port, colon + 1, plen);
         port[plen] = '\0';
-        hostpart = (size_t) (colon - p);
     } else {
         snprintf(port, port_len, "8080");
     }
-    if (hostpart == 0 || hostpart >= host_len) return -1;
-    memcpy(host, p, hostpart);
-    host[hostpart] = '\0';
+    if (hlen == 0 || hlen >= host_len) return -1;
+    memcpy(host, hstart, hlen);
+    host[hlen] = '\0';
 
     snprintf(path, path_len, "%s", (slash && slash[1]) ? slash : "/");
     return 0;
@@ -401,7 +416,19 @@ static int link_send_frame(link_t *l, int opcode, const void *data, size_t len)
     return rc;
 }
 
-/* Perform the HTTP upgrade and read frames until the reply arrives. */
+/* How long to wait for the reply to our command, in total. */
+#define WS_REPLY_TIMEOUT_S 5
+
+static double mono_now(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double) ts.tv_sec + ts.tv_nsec / 1e9;
+}
+
+/* Perform the HTTP upgrade and read frames until the reply arrives.
+ * Returns 0 on a reply, -1 on a failed or closed connection, and -2 after
+ * WS_REPLY_TIMEOUT_S without a reply (already reported). */
 static int run_session(link_t *l, const char *host, const char *port,
                        const char *path)
 {
@@ -420,25 +447,37 @@ static int run_session(link_t *l, const char *host, const char *port,
 
     snprintf(req, sizeof(req),
              "GET %s HTTP/1.1\r\n"
-             "Host: %s:%s\r\n"
+             "Host: %s%s%s:%s\r\n"
              "Upgrade: websocket\r\n"
              "Connection: Upgrade\r\n"
              "Sec-WebSocket-Key: %s\r\n"
              "Sec-WebSocket-Version: 13\r\n"
              "\r\n",
-             path, host, port, key_b64);
+             path, strchr(host, ':') ? "[" : "", host,
+             strchr(host, ':') ? "]" : "", port, key_b64);
     if (link_write(l, req, strlen(req)) != (int) strlen(req))
         return -1;
 
-    /* Read the HTTP response headers, then any bytes that follow. */
+    /* Read the HTTP response headers, then any bytes that follow. The
+     * daemon sends the 101, its hello and the full status JSON (well over
+     * 1 KiB) back to back, so the first read can fill `resp` -- that is only
+     * an error if the header block itself has not ended by then. Failing
+     * whenever the buffer filled rejected every real handshake. Bytes past
+     * the header stay in `resp` and are handed to the frame parser below;
+     * anything that did not fit is still in the socket and is read there. */
     while (!got_hdr) {
         int n = link_read(l, resp + rlen, sizeof(resp) - 1 - rlen);
+        if (n == -2) {
+            fprintf(stderr, "timed out waiting for the websocket handshake\n");
+            return -2;
+        }
         if (n <= 0) return -1;
         rlen += (size_t) n;
         resp[rlen] = '\0';
         if (strstr(resp, "\r\n\r\n") != NULL)
             got_hdr = 1;
-        if (rlen >= sizeof(resp) - 1) return -1;
+        else if (rlen >= sizeof(resp) - 1)
+            return -1;                 /* headers alone overflow the buffer */
     }
 
     if (strncmp(resp, "HTTP/1.1 101", 12) != 0 && strncmp(resp, "HTTP/1.0 101", 12) != 0) {
@@ -471,7 +510,17 @@ static int run_session(link_t *l, const char *host, const char *port,
             have = body_len;
         }
 
+        /* The deadline is checked on every pass, not only when a read times
+         * out: the daemon broadcasts status and audio continuously, so reads
+         * keep succeeding and a missing reply would never produce a timeout
+         * tick. Retrying ticks with no deadline at all hung forever. */
+        const double deadline = mono_now() + WS_REPLY_TIMEOUT_S;
         while (!g_done) {
+            if (mono_now() >= deadline) {
+                fprintf(stderr, "timed out waiting for response\n");
+                g_ok = 0;
+                return -2;
+            }
             ws_frame_t f;
             int rc = ws_frame_parse(rbuf, have, false, &f);
 
@@ -581,8 +630,11 @@ int main(int argc, char **argv)
         }
     }
 
-    if (run_session(&link, host, port, path) != 0) {
+    int rc = run_session(&link, host, port, path);
+    if (rc != 0) {
         link_close(&link);
+        if (rc == -2)
+            return 1;                  /* timeout, already reported */
         if (!g_done) {
             fprintf(stderr, "connection closed before a response\n");
             return 1;

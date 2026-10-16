@@ -34,7 +34,7 @@ typedef const void *(*ws_asset_lookup_fn)(const char *path, size_t *size);
 
 typedef struct {
     uint16_t port;
-    const char *bind_addr;        /* NULL or "" means 0.0.0.0 */
+    const char *bind_addr;        /* host, IPv4 or IPv6 literal; NULL or "" = any */
     const char *ws_path;          /* informational; upgrade is header-driven */
     size_t max_message_size;      /* inbound cap; 0 means the built-in default */
 
@@ -52,8 +52,11 @@ typedef struct {
     void *user_data;
 } ws_server_opts_t;
 
-/* Start the listener and its thread.  Returns 0 on success.  On failure
- * nothing is left running and *out is untouched. */
+/* Start the listener and its thread.  Returns 0 on success,
+ * WS_SERVER_ERR_TLS when wss:// was asked for and TLS could not be set up
+ * (no TLS in this build, unreadable or bad cert/key), -1 on any other
+ * failure.  On failure nothing is left running and *out is untouched. */
+#define WS_SERVER_ERR_TLS (-2)
 int ws_server_start(ws_server_t **out, const ws_server_opts_t *opts);
 
 /* Stop the thread, drop every connection and free the server. */

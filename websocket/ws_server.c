@@ -33,6 +33,7 @@
 #include <unistd.h>
 
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
@@ -1169,50 +1170,62 @@ static void *ws_server_thread(void *arg)
 
 /* ---- public API ---- */
 
+/* Bind the first address the host resolves to that works, so a hostname or
+ * an IPv6 literal ("::", "::1") is accepted as well as an IPv4 one.  An
+ * empty address means the wildcard: IPv6 "::" first, which on Linux also
+ * accepts IPv4 unless bindv6only is set, then IPv4 "0.0.0.0". */
 static int open_listener(const char *bind_addr, uint16_t port)
 {
-    struct sockaddr_in addr;
-    int fd;
+    struct addrinfo hints, *res = NULL, *ai;
+    char service[8];
+    int fd = -1;
     int one = 1;
+    int rc;
 
-    fd = (int) socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0)
-        return -1;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
+    snprintf(service, sizeof(service), "%u", (unsigned) port);
 
-    (void) setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char *) &one,
-                      sizeof(one));
+    if (bind_addr != NULL && bind_addr[0] == '\0')
+        bind_addr = NULL;
 
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-
-    if (bind_addr == NULL || bind_addr[0] == '\0')
-        addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    else if (inet_pton(AF_INET, bind_addr, &addr.sin_addr) != 1)
+    rc = getaddrinfo(bind_addr, service, &hints, &res);
+    if (rc != 0)
     {
-        WS_LOG("bad bind address \"%s\"", bind_addr);
-        close(fd);
+        WS_LOG("bad bind address \"%s\": %s",
+               bind_addr ? bind_addr : "", gai_strerror(rc));
         return -1;
     }
 
-    if (bind(fd, (struct sockaddr *) &addr, sizeof(addr)) != 0)
+    /* For the wildcard glibc lists 0.0.0.0 before ::, so take the IPv6
+     * entries first to get the dual-stack socket.  A named host keeps the
+     * resolver's order. */
+    for (int pass = (bind_addr == NULL) ? 0 : 1; pass < 2 && fd < 0; pass++)
     {
-        close(fd);
-        return -1;
+        for (ai = res; ai != NULL; ai = ai->ai_next)
+        {
+            if (pass == 0 && ai->ai_family != AF_INET6)
+                continue;
+
+            fd = (int) socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+            if (fd < 0)
+                continue;
+
+            (void) setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char *) &one,
+                              sizeof(one));
+
+            if (bind(fd, ai->ai_addr, ai->ai_addrlen) == 0 &&
+                listen(fd, 8) == 0 && sock_set_nonblocking(fd) == 0)
+                break;
+
+            close(fd);
+            fd = -1;
+        }
     }
 
-    if (listen(fd, 8) != 0)
-    {
-        close(fd);
-        return -1;
-    }
-
-    if (sock_set_nonblocking(fd) != 0)
-    {
-        close(fd);
-        return -1;
-    }
-
+    freeaddrinfo(res);
     return fd;
 }
 
@@ -1245,7 +1258,7 @@ int ws_server_start(ws_server_t **out, const ws_server_opts_t *opts)
                    "rebuild with OpenSSL or use a ws:// URL");
             pthread_mutex_destroy(&s->qlock);
             free(s);
-            return -1;
+            return WS_SERVER_ERR_TLS;
         }
 
         s->tls_ctx = ws_tls_ctx_new(opts->tls_cert_path, opts->tls_key_path);
@@ -1254,7 +1267,7 @@ int ws_server_start(ws_server_t **out, const ws_server_opts_t *opts)
             WS_LOG("cannot enable TLS: %s", ws_tls_last_error());
             pthread_mutex_destroy(&s->qlock);
             free(s);
-            return -1;
+            return WS_SERVER_ERR_TLS;
         }
     }
 
@@ -1281,10 +1294,15 @@ int ws_server_start(ws_server_t **out, const ws_server_opts_t *opts)
     }
     s->thread_started = true;
 
-    WS_LOG("listening on %s://%s:%u",
-           opts->tls_enabled ? "wss" : "ws",
-           (opts->bind_addr && opts->bind_addr[0]) ? opts->bind_addr : "0.0.0.0",
-           (unsigned) opts->port);
+    {
+        const char *host = (opts->bind_addr && opts->bind_addr[0])
+                         ? opts->bind_addr : "*";
+        bool v6 = strchr(host, ':') != NULL;
+
+        WS_LOG("listening on %s://%s%s%s:%u",
+               opts->tls_enabled ? "wss" : "ws",
+               v6 ? "[" : "", host, v6 ? "]" : "", (unsigned) opts->port);
+    }
 
     *out = s;
     return 0;
