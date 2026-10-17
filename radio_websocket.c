@@ -19,6 +19,8 @@
 
 #define _GNU_SOURCE
 
+#include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -65,10 +67,12 @@ typedef struct {
     uint32_t last_rx_spectrum_seq;
     uint32_t last_tx_spectrum_seq;
     int64_t  last_status_ms;      /* monotonic ms at last status broadcast */
-    /* Commands run on the server thread and publishing on websocket_thread;
-     * under Mongoose both ran in one loop.  This lock keeps them serialised
-     * as they were, so a command never interleaves with a status build. */
-    pthread_mutex_t lock;
+    /* Commands run on the server thread and publishing on websocket_thread,
+     * unserialised: a slow CAT command must not stall status, audio or
+     * spectrum.  The publisher fields above are its own; the radio state
+     * both sides touch is shared with rigctld, CAT and SHM control anyway,
+     * and the parts that need it are locked where they live (ptt_lock,
+     * message_mutex, the audio rings, spectrum_mutex). */
     bool     thread_started;
 } websocket_ctx;
 
@@ -1195,8 +1199,9 @@ static const void *asset_lookup(const char *path, size_t *size)
     static uint8_t *buf = NULL;
     static size_t   cap = 0;
     char full[512];
-    FILE *f;
-    long n;
+    struct stat st;
+    size_t n, got = 0;
+    int fd;
 
     if (size) *size = 0;
     if (path == NULL || path[0] != '/')
@@ -1204,29 +1209,39 @@ static const void *asset_lookup(const char *path, size_t *size)
     if ((size_t) snprintf(full, sizeof(full), "%s%s", ws_ctx.web_root, path) >= sizeof(full))
         return NULL;
 
-    /* Regular files only, checked before opening: a FIFO would block the
-     * server thread inside fopen, a device would never end, a directory
-     * has no meaningful size. */
-    struct stat st;
-    if (stat(full, &st) != 0 || !S_ISREG(st.st_mode))
+    /* Regular files only, checked on the descriptor actually read, so the
+     * path cannot be swapped between the check and the open.  O_NONBLOCK
+     * keeps open() itself from blocking the server thread on a FIFO; a
+     * device would never end and a directory has no meaningful size. */
+    fd = open(full, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0)
         return NULL;
-
-    f = fopen(full, "rb");
-    if (f == NULL)
-        return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    n = ftell(f);
-    if (n < 0 || fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
-
-    if ((size_t) n + 1 > cap)
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode))
     {
-        uint8_t *nb = realloc(buf, (size_t) n + 1);
-        if (nb == NULL) { fclose(f); return NULL; }
-        buf = nb;
-        cap = (size_t) n + 1;
+        close(fd);
+        return NULL;
     }
-    if (n > 0 && fread(buf, 1, (size_t) n, f) != (size_t) n) { fclose(f); return NULL; }
-    fclose(f);
+    n = (size_t) st.st_size;
+
+    if (n + 1 > cap)
+    {
+        uint8_t *nb = realloc(buf, n + 1);
+        if (nb == NULL) { close(fd); return NULL; }
+        buf = nb;
+        cap = n + 1;
+    }
+    while (got < n)
+    {
+        ssize_t r = read(fd, buf + got, n - got);
+        if (r < 0 && errno == EINTR)
+            continue;
+        if (r <= 0)
+            break;
+        got += (size_t) r;
+    }
+    close(fd);
+    if (got != n)
+        return NULL;
 
     if (size) *size = (size_t) n;
     return buf;
@@ -1247,9 +1262,7 @@ static void on_ws_connect(ws_conn_t *c, void *user_data)
              "\"tx_spectrum_binary_type\":3}");
     ws_conn_send(c, hello, strlen(hello), true);
 
-    pthread_mutex_lock(&ctx->lock);
     build_status_json(ctx->radio_h, status, sizeof(status));
-    pthread_mutex_unlock(&ctx->lock);
     ws_conn_send(c, status, strlen(status), true);
 }
 
@@ -1267,9 +1280,7 @@ static void on_ws_message(ws_conn_t *c, const void *data, size_t len,
         size_t n = len < sizeof(buf) - 1 ? len : sizeof(buf) - 1;
         memcpy(buf, p, n);
         buf[n] = '\0';
-        pthread_mutex_lock(&ctx->lock);
         handle_ws_command(ctx->radio_h, c, buf);
-        pthread_mutex_unlock(&ctx->lock);
     }
     else if (len > 1 && p[0] == WS_STREAM_AUDIO)
     {
@@ -1287,10 +1298,8 @@ static void on_ws_close(ws_conn_t *c, void *user_data)
 
     /* A push-to-talk client (browser tab, hermes-voice-key) that drops its
      * connection while keyed would otherwise leave the radio in TX. */
-    pthread_mutex_lock(&ctx->lock);
     radio_backend_release_ptt(ctx->radio_h, PTT_SRC_WEBSOCKET, ws_conn_id(c),
                               "disconnected");
-    pthread_mutex_unlock(&ctx->lock);
 }
 
 /* Parse a ws:// or wss:// URL into the pieces the server wants.  Only the
@@ -1372,7 +1381,6 @@ static void *websocket_thread(void *ctx_v)
     {
         int64_t now = now_ms();
 
-        pthread_mutex_lock(&ctx->lock);
         if (now - ctx->last_status_ms >= STATUS_MIN_INTERVAL_MS)
         {
             ctx->last_status_ms = now;
@@ -1382,7 +1390,6 @@ static void *websocket_thread(void *ctx_v)
         broadcast_rx_audio(ctx);
         broadcast_spectrum(ctx, false);
         broadcast_spectrum(ctx, true);
-        pthread_mutex_unlock(&ctx->lock);
         usleep(WS_PUBLISH_INTERVAL_US);
     }
 
@@ -1398,7 +1405,6 @@ bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid)
     const char *url;
 
     memset(&ws_ctx, 0, sizeof(ws_ctx));
-    pthread_mutex_init(&ws_ctx.lock, NULL);
     ws_ctx.radio_h = radio_h;
     snprintf(ws_ctx.web_root, sizeof(ws_ctx.web_root), "%s", CFG_WEBSOCKET_PATH);
 
