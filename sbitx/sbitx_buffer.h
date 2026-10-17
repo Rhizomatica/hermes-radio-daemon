@@ -35,13 +35,13 @@ typedef struct
     struct ring_buffer buf;
 } buffer;
 
-extern unsigned long free_size_buffer(buffer *buffer);
-extern unsigned long size_buffer(buffer *buffer);
-extern void read_buffer(buffer *buf_in, uint8_t *buffer_out, int size);
-extern void write_buffer(buffer *buf_out, uint8_t *buffer_in, int size);
-void initialize_buffer(buffer *buf, int mag);
-void initialize_buffers();
-void clear_buffer (buffer *buffer);
+extern unsigned long sbitx_buf_free_size(buffer *buffer);
+extern unsigned long sbitx_buf_size(buffer *buffer);
+extern void sbitx_buf_read(buffer *buf_in, uint8_t *buffer_out, int size);
+extern void sbitx_buf_write(buffer *buf_out, uint8_t *buffer_in, int size);
+void sbitx_buf_init(buffer *buf, int mag);
+void sbitx_buf_init_all();
+void sbitx_buf_clear (buffer *buffer);
 
 
 extern buffer *radio_to_dsp;

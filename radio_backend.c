@@ -160,7 +160,7 @@ static const char *ptt_source_name(ptt_source src)
     case PTT_SRC_RIGCTLD:   return "rigctld fd";
     case PTT_SRC_CAT:       return "cat fd";
     case PTT_SRC_WEBSOCKET: return "websocket conn";
-    case PTT_SRC_RTP:       return "rtp ssrc";
+    case PTT_SRC_MODEM:     return "modem";
     default:                return "none";
     }
 }

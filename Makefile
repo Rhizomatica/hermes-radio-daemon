@@ -40,7 +40,7 @@ OPUS_DNN_OBJS     = $(OPUS_DNN_SRCS:.c=.o)
 FT8_LIB_OBJS      = $(FT8_LIB_SRCS:.c=.o)
 MM_FSK_OBJS       = $(MM_FSK_SRCS:.c=.o)
 
-.PHONY: all clean install test compat-tests
+.PHONY: all clean install test compat-tests check-symbols
 
 all: radio_daemon radio_client
 
@@ -49,7 +49,7 @@ TEST_CFLAGS = -O0 -Wall -Wextra -std=gnu11 -fstack-protector \
 TEST_BINS = tests/backend_selection_test tests/compat_surface_test tests/controls_test \
             tests/dstar_voice_test tests/upsample2_test tests/rig_server_test \
             tests/hamlib_ptt_test tests/radae_vocoder_test tests/sbitx_buffer_test \
-            tests/rtp_audio_test tests/audio_bridge_test tests/mic_filter_test \
+            tests/rtp_audio_test tests/modem_audio_test tests/audio_bridge_test tests/mic_filter_test \
             tests/stream_resampler_test tests/digi_modes_test tests/dv_codec_test \
             tests/hamlib_conf_test tests/digi_log_test
 
@@ -73,6 +73,7 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   shm_audio.o \
                   loop_audio.o \
                   rtp_audio.o \
+                  modem_audio.o \
                   vendor/hermes_shm/ring_buffer_posix.o \
                   vendor/hermes_shm/shm_posix.o \
                   cfg_utils.o \
@@ -120,6 +121,13 @@ DAEMON_OBJS = $(DAEMON_TOP_OBJS) $(SBITX_OBJS)
 radio_daemon: $(DAEMON_OBJS)
 	$(CC) -o radio_daemon $(DAEMON_OBJS) $(LDFLAGS)
 
+# A library linked into the daemon must not define a global the daemon also
+# defines, nor one of the shared-library symbols it uses: neither is a link
+# error, one side just silently runs the other's code.  MERCURY_LIBS names
+# the archives to check (tools/check_symbols.sh).
+check-symbols: $(DAEMON_OBJS)
+	tools/check_symbols.sh "$(DAEMON_OBJS)" $(MERCURY_LIBS)
+
 # RADE: rade_c and the Opus DNN subset it runs on (LPCNet features, FARGAN)
 # see their own include paths and config.h only, not ft8_lib's or
 # minimodem's: some Opus header names (kiss_fft.h, common.h) exist in ft8_lib
@@ -163,6 +171,7 @@ compat-tests: $(TEST_BINS)
 	./tests/hamlib_ptt_test
 	./tests/sbitx_buffer_test
 	./tests/rtp_audio_test
+	./tests/modem_audio_test
 	./tests/audio_bridge_test
 	./tests/mic_filter_test
 	./tests/stream_resampler_test
@@ -209,8 +218,11 @@ tests/dstar_voice_test: tests/dstar_voice_test.c dsp/dstar_voice.c dsp/dstar_voi
 	$(CC) $(TEST_CFLAGS) -Idsp tests/dstar_voice_test.c dsp/dstar_voice.c dsp/voice_crypto.c \
 	      dsp/sbitx_dstar.c -o $@ -lmbe-neo -lcrypto -lm
 
-tests/rtp_audio_test: tests/rtp_audio_test.c rtp_audio.c rtp_audio.h radio.h
-	$(CC) $(TEST_CFLAGS) tests/rtp_audio_test.c rtp_audio.c -o $@ -lpthread -lm
+tests/rtp_audio_test: tests/rtp_audio_test.c rtp_audio.c rtp_audio.h modem_audio.c modem_audio.h radio.h
+	$(CC) $(TEST_CFLAGS) tests/rtp_audio_test.c rtp_audio.c modem_audio.c -o $@ -lpthread -lm
+
+tests/modem_audio_test: tests/modem_audio_test.c modem_audio.c modem_audio.h radio.h
+	$(CC) $(TEST_CFLAGS) tests/modem_audio_test.c modem_audio.c -o $@ -lpthread -lm
 
 tests/audio_bridge_test: tests/audio_bridge_test.c audio_bridge.c audio_bridge.h radio.h
 	$(CC) $(TEST_CFLAGS) -I/usr/include/csdr tests/audio_bridge_test.c audio_bridge.c -o $@ -lcsdr -lfftw3f -lm

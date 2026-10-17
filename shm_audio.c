@@ -36,7 +36,7 @@ static void *tx_thread(void *arg)
     {
         /* Blocking read of one chunk — this is the intended ring-buffer use:
          * a dedicated thread parking on the cond until data arrives. */
-        if (hsr_read_buffer(s_tx_ring, (uint8_t *) in32, sizeof(in32)) != 0)
+        if (read_buffer(s_tx_ring, (uint8_t *) in32, sizeof(in32)) != 0)
             continue;
 
         for (int i = 0; i < TX_CHUNK_SAMPLES; i++)
@@ -61,8 +61,8 @@ bool shm_audio_init(radio *radio_h)
         fprintf(stderr, "shm_audio: failed to create SHM rings\n");
         return false;
     }
-    hsr_clear_buffer(s_rx_ring);
-    hsr_clear_buffer(s_tx_ring);
+    clear_buffer(s_rx_ring);
+    clear_buffer(s_tx_ring);
 
     s_run = true;
     if (pthread_create(&s_tx_tid, NULL, tx_thread, NULL) != 0)
@@ -95,7 +95,7 @@ void shm_audio_push_rx(const int16_t *samples, size_t nsamples)
         {
             for (size_t i = 0; i < chunk; i++)
                 buf[i] = ((int32_t) samples[i]) << 16;
-            hsr_write_buffer(s_rx_ring, (uint8_t *) buf, bytes);  /* room checked => no block */
+            write_buffer(s_rx_ring, (uint8_t *) buf, bytes);  /* room checked => no block */
         }
         /* else: mercury isn't draining — drop this chunk rather than stall RX */
         samples   += chunk;

@@ -35,7 +35,7 @@
 #include "sbitx_buffer.h"
 #include "../radio_media.h"
 #include "../audio_bridge.h"
-#include "../rtp_audio.h"
+#include "../modem_audio.h"
 #include "../dsp/mic_filter.h"
 
 char *radio_capture_dev = "hw:0,0";
@@ -600,7 +600,7 @@ static snd_pcm_sframes_t play_catch_up(snd_pcm_t *pcm, snd_pcm_uframes_t buffer_
     return late;
 }
 
-void *radio_capture_thread(void *device_ptr)
+static void *radio_capture_thread(void *device_ptr)
 {
     char *device = (char *) device_ptr;
     uint32_t exact_rate;
@@ -721,8 +721,8 @@ void *radio_capture_thread(void *device_ptr)
             memcpy(&mic[j*sample_size], &buffer[j * sample_size * channels + sample_size], sample_size);
         }
 
-        write_buffer(radio_to_dsp, radio, buffer_size/2);
-        write_buffer(mic_to_dsp, mic, buffer_size/2);
+        sbitx_buf_write(radio_to_dsp, radio, buffer_size/2);
+        sbitx_buf_write(mic_to_dsp, mic, buffer_size/2);
     }
 
     snd_pcm_hw_params_free(hwparams);
@@ -742,13 +742,13 @@ uint32_t sound_tx_pipeline_ms(void)
 {
     unsigned long bytes = 0;
     if (loopback_to_dsp)
-        bytes += size_buffer(loopback_to_dsp);
+        bytes += sbitx_buf_size(loopback_to_dsp);
     if (dsp_to_radio)
-        bytes += size_buffer(dsp_to_radio);
+        bytes += sbitx_buf_size(dsp_to_radio);
     return (uint32_t) (bytes / 384 + 11 + play_queued_frames / 96);
 }
 
-void *radio_playback_thread(void *device_ptr)
+static void *radio_playback_thread(void *device_ptr)
 {
     char *device = (char *) device_ptr;
     uint32_t exact_rate;
@@ -861,8 +861,8 @@ void *radio_playback_thread(void *device_ptr)
     while (!shutdown_)
     {
 
-        read_buffer(dsp_to_radio, radio, buffer_size/2);
-        read_buffer(dsp_to_speaker, speaker, buffer_size/2);
+        sbitx_buf_read(dsp_to_radio, radio, buffer_size/2);
+        sbitx_buf_read(dsp_to_speaker, speaker, buffer_size/2);
 
         for (int j = 0; j < hw_period_size; j++)
         {
@@ -1079,7 +1079,7 @@ void *loop_capture_thread(void *device_ptr)
             continue;
         }
 
-        write_buffer(loopback_to_dsp, buffer, buffer_size);
+        sbitx_buf_write(loopback_to_dsp, buffer, buffer_size);
     }
 
     snd_pcm_hw_params_free(hloop_params);
@@ -1201,7 +1201,7 @@ void *loop_playback_thread(void *device_ptr)
 
     while (!shutdown_)
     {
-        read_buffer(dsp_to_loopback, buffer, buffer_size);
+        sbitx_buf_read(dsp_to_loopback, buffer, buffer_size);
 
         play_catch_up(loopback_play_handle, period * loopback_n_periods,
                       LOOP_PRIME_PERIODS * period, loopback_rate,
@@ -1288,8 +1288,8 @@ void *control_thread(void *device_ptr)
 
         _Atomic bool use_loopback = (radio_h_snd->profiles[radio_h_snd->profile_active_idx].operating_mode == OPERATING_MODE_FULL_LOOPBACK) ? true : false;
 
-        read_buffer(radio_to_dsp, buffer_radio_to_dsp, buffer_size); // mono
-        read_buffer(mic_to_dsp, buffer_mic_to_dsp, buffer_size); // mono
+        sbitx_buf_read(radio_to_dsp, buffer_radio_to_dsp, buffer_size); // mono
+        sbitx_buf_read(mic_to_dsp, buffer_mic_to_dsp, buffer_size); // mono
         maybe_dump_mic(buffer_mic_to_dsp, buffer_size);
 
         /* High-pass the mic before any TX voice path sees it (DC, mains
@@ -1311,28 +1311,28 @@ void *control_thread(void *device_ptr)
             mic_hpf_run_s32(&mic_filter, (int32_t *) buffer_mic_to_dsp, block_size);
         }
 
-        static int16_t rtp_tx[2048];
-        size_t rtp_n = block_size / 2;          /* stereo 48 kHz frames per block */
-        if (rtp_n > sizeof(rtp_tx) / sizeof(rtp_tx[0]))
-            rtp_n = sizeof(rtp_tx) / sizeof(rtp_tx[0]);
+        static int16_t modem_tx[2048];
+        size_t modem_n = block_size / 2;        /* stereo 48 kHz frames per block */
+        if (modem_n > sizeof(modem_tx) / sizeof(modem_tx[0]))
+            modem_n = sizeof(modem_tx) / sizeof(modem_tx[0]);
 
-        if (use_loopback && radio_h_snd->enable_rtp_audio &&
-            rtp_audio_pop_tx(rtp_tx, rtp_n) == rtp_n)
+        if (use_loopback && modem_audio_running() &&
+            modem_audio_pop_tx(modem_tx, modem_n) == modem_n)
         {
-            /* The modem's RTP TX stream holds PTT: its audio replaces the
+            /* A modem holds PTT (modem_audio): its audio replaces the
              * loopback capture, in the same stereo S32 layout. */
             int32_t *lb = (int32_t *) buffer_loop_to_dsp;
-            for (size_t k = 0; k < rtp_n; k++)
-                lb[2 * k] = lb[2 * k + 1] = (int32_t) ((uint32_t) (uint16_t) rtp_tx[k] << 16);
-            clear_buffer(loopback_to_dsp);
+            for (size_t k = 0; k < modem_n; k++)
+                lb[2 * k] = lb[2 * k + 1] = (int32_t) ((uint32_t) (uint16_t) modem_tx[k] << 16);
+            sbitx_buf_clear(loopback_to_dsp);
             signal_to_tx = buffer_loop_to_dsp;
         }
-        else if (use_loopback)      /* no RTP transmission: the loopback, as before */
+        else if (use_loopback)      /* no modem transmission: the loopback, as before */
         {
             // in case the alsa loopback device is not started, it will block in the read()
-            if (size_buffer(loopback_to_dsp) >= buffer_size)
+            if (sbitx_buf_size(loopback_to_dsp) >= buffer_size)
             {
-                read_buffer(loopback_to_dsp, buffer_loop_to_dsp, buffer_size); // stereo interleaved
+                sbitx_buf_read(loopback_to_dsp, buffer_loop_to_dsp, buffer_size); // stereo interleaved
                 signal_to_tx = buffer_loop_to_dsp;
             }
             else
@@ -1343,7 +1343,7 @@ void *control_thread(void *device_ptr)
         }
         else
         {
-            clear_buffer(loopback_to_dsp);
+            sbitx_buf_clear(loopback_to_dsp);
             if (radio_h_snd->txrx_state == IN_TX && read_mic_inject(buffer_mic_inject, buffer_size))
                 signal_to_tx = buffer_mic_inject;
             else
@@ -1392,36 +1392,36 @@ void *control_thread(void *device_ptr)
         /* The modem feed (output_loopback: 48 kHz stereo S32, both channels
          * equal, at fm * 2^27) also goes out as the RTP RX stream, scaled so
          * the demodulator's full scale is int16 full scale. */
-        if (radio_h_snd->enable_rtp_audio)
+        if (modem_audio_running())
         {
-            static int16_t rtp_rx[2048];
+            static int16_t modem_rx[2048];
             const int32_t *lb = (const int32_t *) output_loopback;
             size_t n = block_size / 2;
-            if (n > sizeof(rtp_rx) / sizeof(rtp_rx[0]))
-                n = sizeof(rtp_rx) / sizeof(rtp_rx[0]);
+            if (n > sizeof(modem_rx) / sizeof(modem_rx[0]))
+                n = sizeof(modem_rx) / sizeof(modem_rx[0]);
             for (size_t k = 0; k < n; k++)
             {
                 int32_t v = lb[2 * k] >> 12;
-                rtp_rx[k] = (int16_t) (v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+                modem_rx[k] = (int16_t) (v > 32767 ? 32767 : v < -32768 ? -32768 : v);
             }
-            rtp_audio_push_rx(rtp_rx, n, 48000);
+            modem_audio_push_rx(modem_rx, n, 48000);
         }
 
-        if (free_size_buffer(dsp_to_loopback) >= buffer_size)
-            write_buffer(dsp_to_loopback, output_loopback, buffer_size); // stereo 48 kHz interleaved
+        if (sbitx_buf_free_size(dsp_to_loopback) >= buffer_size)
+            sbitx_buf_write(dsp_to_loopback, output_loopback, buffer_size); // stereo 48 kHz interleaved
         else
         {
             printf("Buffer full dsp_to_loopback! Cleaning buffer\n");
-            clear_buffer(dsp_to_loopback);
+            sbitx_buf_clear(dsp_to_loopback);
         }
 
-        if (free_size_buffer(dsp_to_radio) >= buffer_size)
-            write_buffer(dsp_to_radio, output_tx, buffer_size); // mono 96 kHz
+        if (sbitx_buf_free_size(dsp_to_radio) >= buffer_size)
+            sbitx_buf_write(dsp_to_radio, output_tx, buffer_size); // mono 96 kHz
         else
             printf("Buffer full dsp_to_radio!\n");
 
-        if (free_size_buffer(dsp_to_speaker) >= buffer_size)
-            write_buffer(dsp_to_speaker, output_speaker, buffer_size); // mono 96 kHz
+        if (sbitx_buf_free_size(dsp_to_speaker) >= buffer_size)
+            sbitx_buf_write(dsp_to_speaker, output_speaker, buffer_size); // mono 96 kHz
         else
             printf("Buffer full dsp_to_speaker!\n");
     }
@@ -1441,12 +1441,12 @@ void *control_thread(void *device_ptr)
 
 void clear_buffers()
 {
-    clear_buffer(radio_to_dsp);
-    clear_buffer(dsp_to_radio);
-    clear_buffer(mic_to_dsp);
-    clear_buffer(dsp_to_speaker);
-    clear_buffer(dsp_to_loopback);
-    clear_buffer(loopback_to_dsp);
+    sbitx_buf_clear(radio_to_dsp);
+    sbitx_buf_clear(dsp_to_radio);
+    sbitx_buf_clear(mic_to_dsp);
+    sbitx_buf_clear(dsp_to_speaker);
+    sbitx_buf_clear(dsp_to_loopback);
+    sbitx_buf_clear(loopback_to_dsp);
 }
 
 // initialize the ALSA sound system
@@ -1460,7 +1460,7 @@ void sound_system_init(radio *radio_h, pthread_t *control_tid, pthread_t *radio_
     if (radio_h->profiles[radio_h->profile_active_idx].operating_mode == OPERATING_MODE_CONTROLS_ONLY)
         return;
 
-    initialize_buffers();
+    sbitx_buf_init_all();
 
     pthread_mutex_lock(&loop_ready_lock);
     loop_ready_expected = 2;            /* loop capture + loop playback */
