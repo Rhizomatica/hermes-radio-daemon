@@ -61,21 +61,21 @@ void circular_buf_destroy_shm(cbuf_handle_t cbuf, size_t size, char *base_name);
 void circular_buf_free_shm(cbuf_handle_t cbuf);
 
 // returns 0 on success, -1 on error (blocking version)
-int hsr_read_buffer(cbuf_handle_t cbuf, uint8_t *data, size_t len);
+int read_buffer(cbuf_handle_t cbuf, uint8_t *data, size_t len);
 
 // returns the number of bytes read on success, -1 on error (blocking version)
 size_t read_buffer_all(cbuf_handle_t cbuf, uint8_t *data);
 
 // returns 0 on success, -1 on error (blocking version)
-int hsr_write_buffer(cbuf_handle_t cbuf, uint8_t * data, size_t len);
+int write_buffer(cbuf_handle_t cbuf, uint8_t * data, size_t len);
 
 /// Returns the number of elements stored in the buffer
 /// Requires: cbuf is valid and created by circular_buf_init
 /// Returns the current number of elements in the buffer
-size_t hsr_size_buffer(cbuf_handle_t cbuf);
+size_t size_buffer(cbuf_handle_t cbuf);
 
 // clear the buffer
-void hsr_clear_buffer(cbuf_handle_t cbuf);
+void clear_buffer(cbuf_handle_t cbuf);
 
 /// Reset the circular buffer to empty, head == tail. Data not cleared
 /// Requires: cbuf is valid and created by circular_buf_init

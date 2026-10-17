@@ -54,7 +54,7 @@ buffer *dsp_to_speaker;
 buffer *dsp_to_loopback;
 buffer *loopback_to_dsp;
 
-inline unsigned long free_size_buffer(buffer *buffer)
+inline unsigned long sbitx_buf_free_size(buffer *buffer)
 {
 	unsigned long ret = 0;
 
@@ -68,7 +68,7 @@ inline unsigned long free_size_buffer(buffer *buffer)
 }
 
 
-inline unsigned long size_buffer(buffer *buffer)
+inline unsigned long sbitx_buf_size(buffer *buffer)
 {
 	unsigned long ret = 0;
 
@@ -81,7 +81,7 @@ inline unsigned long size_buffer(buffer *buffer)
 	return ret;
 }
 
-inline void read_buffer(buffer *buf_in, uint8_t *buffer_out, int size) {
+inline void sbitx_buf_read(buffer *buf_in, uint8_t *buffer_out, int size) {
     void *addr;
 
 try_again_read:
@@ -112,7 +112,7 @@ try_again_read:
 
 }
 
-inline void write_buffer(buffer *buf_out, uint8_t *buffer_in, int size) {
+inline void sbitx_buf_write(buffer *buf_out, uint8_t *buffer_in, int size) {
     void *addr;
 
 try_again_write:
@@ -139,14 +139,14 @@ try_again_write:
     }
 }
 
-void initialize_buffer(buffer *buf, int mag) // size is 2^mag
+void sbitx_buf_init(buffer *buf, int mag) // size is 2^mag
 {
     pthread_mutex_init( &buf->mutex, NULL );
     pthread_cond_init( &buf->cond, NULL );
     ring_buffer_create( &buf->buf, mag );
 }
 
-void clear_buffer (buffer *buffer)
+void sbitx_buf_clear (buffer *buffer)
 {
     pthread_mutex_lock( &buffer->mutex );
     ring_buffer_clear(&buffer->buf);
@@ -154,7 +154,7 @@ void clear_buffer (buffer *buffer)
 
 }
 
-void initialize_buffers()
+void sbitx_buf_init_all()
 {
     /* Idempotent. Called from both dsp_init (any backend) and
      * sound_system_init (hfsignals only) — the second caller is a no-op. */
@@ -176,12 +176,12 @@ void initialize_buffers()
     static buffer loopback_to_dsp_int;
     loopback_to_dsp = &loopback_to_dsp_int;
 
-    initialize_buffer(radio_to_dsp, 18);
-    initialize_buffer(dsp_to_radio, 18);
+    sbitx_buf_init(radio_to_dsp, 18);
+    sbitx_buf_init(dsp_to_radio, 18);
 
-    initialize_buffer(mic_to_dsp, 18);
-    initialize_buffer(dsp_to_speaker, 18);
+    sbitx_buf_init(mic_to_dsp, 18);
+    sbitx_buf_init(dsp_to_speaker, 18);
 
-    initialize_buffer(dsp_to_loopback, 18);
-    initialize_buffer(loopback_to_dsp, 18);
+    sbitx_buf_init(dsp_to_loopback, 18);
+    sbitx_buf_init(loopback_to_dsp, 18);
 }

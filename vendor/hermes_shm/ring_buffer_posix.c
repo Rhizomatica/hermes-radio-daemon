@@ -20,7 +20,22 @@
 #include <string.h>
 
 #include <time.h>
+#if defined(__APPLE__)
+/* macOS has no <malloc.h>, memalign(3), or SHMLBA.  The shared-memory path
+ * below (the -x shm backend) is Linux-only at runtime, but still has to
+ * compile.  posix_memalign(3) from <stdlib.h> is the portable equivalent. */
+#include <unistd.h>
+#ifndef SHMLBA
+#define SHMLBA sysconf(_SC_PAGESIZE)
+#endif
+static inline void *memalign(size_t alignment, size_t size)
+{
+    void *p = NULL;
+    return posix_memalign(&p, alignment, size) == 0 ? p : NULL;
+}
+#else
 #include <malloc.h>
+#endif
 
 #include "os_interop.h"
 
@@ -303,7 +318,7 @@ void circular_buf_reset(cbuf_handle_t cbuf)
     MUTEX_UNLOCK( &cbuf->internal->mutex );
 }
 
-size_t hsr_size_buffer(cbuf_handle_t cbuf)
+size_t size_buffer(cbuf_handle_t cbuf)
 {
     assert(cbuf && cbuf->internal);
 
@@ -330,7 +345,7 @@ size_t hsr_size_buffer(cbuf_handle_t cbuf)
     return size;
 }
 
-void hsr_clear_buffer(cbuf_handle_t cbuf)
+void clear_buffer(cbuf_handle_t cbuf)
 {
     assert(cbuf->internal);
 
@@ -340,6 +355,7 @@ void hsr_clear_buffer(cbuf_handle_t cbuf)
     cbuf->internal->head = 0;
     cbuf->internal->tail = 0;
 
+    COND_SIGNAL( &cbuf->internal->cond );
     MUTEX_UNLOCK( &cbuf->internal->mutex );
 }
 
@@ -560,9 +576,11 @@ int read_buffer_no_retreat_and_lock(cbuf_handle_t cbuf, uint8_t *data, size_t le
 }
 #endif
 
-int hsr_read_buffer(cbuf_handle_t cbuf, uint8_t *data, size_t len)
+int read_buffer(cbuf_handle_t cbuf, uint8_t *data, size_t len)
 {
     assert(cbuf && data && cbuf->internal && cbuf->buffer);
+
+    if (len == 0) return 0;
 
     int r = -1;
 
@@ -598,9 +616,11 @@ int hsr_read_buffer(cbuf_handle_t cbuf, uint8_t *data, size_t len)
     return r;
 }
 
-int hsr_write_buffer(cbuf_handle_t cbuf, uint8_t * data, size_t len)
+int write_buffer(cbuf_handle_t cbuf, uint8_t * data, size_t len)
 {
     assert(cbuf && cbuf->internal && cbuf->buffer);
+
+    if (len == 0) return 0;
 
     int r = -1;
 

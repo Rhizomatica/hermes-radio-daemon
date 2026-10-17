@@ -91,8 +91,8 @@ fftw_complex *buffer_filter;  // holds filter fft
 fftw_plan plan_fwd, plan_tx, plan_rev;
 fftw_plan fwd_filter_plan, rev_filter_plan;
 
-struct filter *rx_filter;	// rx convolution filter
-struct filter *tx_filter;	// tx convolution filter
+static struct filter *rx_filter;	// rx convolution filter
+static struct filter *tx_filter;	// tx convolution filter
 
 struct vfo tone; // vfo
 
@@ -2790,7 +2790,7 @@ void dsp_init(radio *radio_h)
     /* Ring buffers the DSP needs even when no hfsignals ALSA threads are
      * running (e.g. hamlib backend). Idempotent — sound_system_init also
      * calls it on hfsignals. */
-    initialize_buffers();
+    sbitx_buf_init_all();
 
     fft_m = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * MAX_BINS/2);
     fft_in = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * MAX_BINS);
