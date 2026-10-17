@@ -539,7 +539,7 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     s = iniparser_getstring(ini, "main:recording_dir", "/var/lib/hermes-radio-daemon");
     snprintf(radio_h->recording_dir, sizeof(radio_h->recording_dir), "%s", s);
 
-    /* websocket_url: full mongoose listener URL. Default = plaintext WS on
+    /* websocket_url: full listener URL. Default = plaintext WS on
      * 0.0.0.0:8080. Use wss://host:port to terminate TLS using
      * CFG_SSL_CERT / CFG_SSL_KEY. */
     s = iniparser_getstring(ini, "main:websocket_url", "ws://0.0.0.0:8080");

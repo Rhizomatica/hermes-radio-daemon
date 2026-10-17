@@ -1,10 +1,10 @@
 /* Regression test for the SHM command dispatch surface.
  *
  * After the websocket consolidation, the websocket transport tests that used
- * to live here are obsolete (they exercised the old raw-socket implementation
- * which has been replaced by mongoose). State-JSON content is now covered
- * end-to-end by the Pi smoke test described in the plan; this file keeps
- * coverage of the SHM protocol semantics, which has not changed.
+ * to live here are obsolete (they exercised the old raw-socket implementation,
+ * now replaced by the in-tree websocket/ module). State-JSON content is now
+ * covered end-to-end by the Pi smoke test described in the plan; this file
+ * keeps coverage of the SHM protocol semantics, which has not changed.
  */
 
 #include <assert.h>

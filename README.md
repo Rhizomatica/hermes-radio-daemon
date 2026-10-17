@@ -15,7 +15,7 @@ Radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-net)
 - **Remote operation from Windows** — a native-CAT gateway (byte-transparent to the real rig, or a Kenwood TS-2000 emulation for radios without a CAT port) lets N1MM+ and other COM-port loggers drive the station over the network; see [Remote Operation from Windows](#remote-operation-from-windows)
 - **Complete rig control surface** — every level, function and parameter the connected rig exposes (RF/mic gain, squelch, NB/NR/notch, preamp/attenuator, VOX, break-in, monitor, keyer speed, …) plus split, RIT/XIT, filter width, antenna, memory channels and tuner control. Discovered from the rig's own Hamlib capabilities, not hardcoded per model, and served identically over the websocket API, the network `rigctld` server and the web panel. See [Radio Controls](#radio-controls).
 - **Up to 9 profiles** with frequency, mode, power, timeout, and digital-voice state
-- **Single mongoose-based websocket server** speaking one JSON dialect for both backends, with `ws://` and `wss://` (TLS) support out of the box
+- **Single in-tree websocket server** speaking one JSON dialect for both backends, with `ws://` and `wss://` (TLS) support out of the box (no Mongoose dependency)
 - WAV recording with remote start/stop on both backends
 - INI configuration at `/etc/hermes/core.ini` and `/etc/hermes/user.ini`
 - Optional CPU affinity pinning
@@ -37,14 +37,14 @@ hermes-radio-daemon/
 ├── radio_backend.{c,h}      Backend vtable dispatch
 ├── radio_daemon.c           main(): arg parse, backend detect, dispatch
 ├── radio_daemon_core.c      Backend-neutral run loop (signal handler, init, join)
-├── radio_websocket.c        Mongoose-based ws/wss server (one for both backends)
+├── radio_websocket.c        ws/wss server (one for both backends), built on websocket/
 ├── radio_media.c            Audio rings, WAV recording, spectrum FFT
 ├── audio_bridge.{c,h}       Rate-converting bridge between backend ALSA rate and ring rate (csdr polyphase)
 ├── audio_headset.{c,h}      Optional operator-side hardware headset (second ALSA device pair)
 ├── radio_pipeline.c         Per-backend capability descriptor
 ├── radio_shm.c              SHM command dispatcher (sbitx_client wire protocol)
 ├── cfg_utils.c              INI parser, dirty-flag writer thread, digi_tx_queue
-├── mongoose.c               Mongoose 7.20 (HTTP/WS/TLS transport)
+├── websocket/               In-tree RFC 6455 server + frame codec + TLS (OpenSSL)
 ├── hamlib/                  Hamlib backend (radio_hamlib.{c,h}) — only this is hamlib-specific
 ├── sbitx/                   HF Signals hardware backend (GPIO, I2C, Si5351, ALSA, encoders)
 ├── dsp/                     SSB DSP + FM/AM demodulators + DRM (Dream subprocess) + digi encoders
@@ -147,7 +147,7 @@ reflected_threshold = 25        ; vswr * 10, 0 = disabled
 enable_websocket = 0
 enable_shm_control = 1
 
-; Mongoose listener URL. ws://host:port for plaintext, wss://host:port
+; WebSocket listener URL. ws://host:port for plaintext, wss://host:port
 ; to terminate TLS using the cert/key paths defined in radio.h
 ; (CFG_SSL_CERT and CFG_SSL_KEY — defaults /etc/ssl/certs/hermes.radio.crt
 ; and /etc/ssl/private/hermes.radio.key).

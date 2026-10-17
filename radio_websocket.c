@@ -5,8 +5,9 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Mongoose-based websocket server. Supports both ws:// and wss:// (TLS)
- * listeners — the listener URL comes from radio_h->websocket_url
+ * Websocket server built on the in-tree websocket/ module (an RFC 6455
+ * server derived from Mercury's, replacing Mongoose). Supports both ws:// and
+ * wss:// (TLS) listeners — the listener URL comes from radio_h->websocket_url
  * (main:websocket_url in core.ini). Implements the JSON command set used
  * by web/index.html and emits binary frames (0x01 audio, 0x02 RX spectrum,
  * 0x03 TX spectrum) for the audio + waterfall UI.
@@ -27,9 +28,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
-#include "mongoose.h"
+#include "websocket/ws_server.h"
 #include "radio.h"
 #include "radio_backend.h"
 #include "radio_controls.h"
@@ -48,23 +51,36 @@ extern _Atomic bool shutdown_;
 #define WS_STREAM_RX_SPECTRUM 0x02
 #define WS_STREAM_TX_SPECTRUM 0x03
 
-typedef struct {
-    radio *radio_h;
-    char    web_root[256];
-    struct  mg_mgr mgr;
-    bool    mgr_inited;
-    /* Per-connection last-broadcast spectrum sequence numbers. Mongoose
-     * connections expose a `data` slot; we store these in fn_data instead. */
-    /* Last status broadcast time (1-Hz throttle, applied per-connection) */
-} websocket_ctx;
+/* Inbound cap.  Commands are tiny, but a TX-audio frame carries packed
+ * int16 samples, so leave generous headroom over an 8 KB status frame. */
+#define WS_MAX_MESSAGE_SIZE   (1 << 20)
 
 typedef struct {
-    int64_t  last_status;     /* mg_millis() at last status send (ms) */
+    radio  *radio_h;
+    char    web_root[256];
+    ws_server_t *server;
+    /* Last broadcast sequence numbers, so a frame is not sent twice.  With a
+     * single publisher and a broadcast-to-all server these are global, not
+     * per-connection as they were under Mongoose. */
     uint32_t last_rx_spectrum_seq;
     uint32_t last_tx_spectrum_seq;
-} ws_conn_state;
+    int64_t  last_status_ms;      /* monotonic ms at last status broadcast */
+    /* Commands run on the server thread and publishing on websocket_thread;
+     * under Mongoose both ran in one loop.  This lock keeps them serialised
+     * as they were, so a command never interleaves with a status build. */
+    pthread_mutex_t lock;
+    bool     thread_started;
+} websocket_ctx;
 
 static websocket_ctx ws_ctx;
+
+static int64_t now_ms(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
 
 /* ───────────────────────── helpers: mode names ───────────────────────── */
 
@@ -192,12 +208,12 @@ static bool extract_json_double_any(const char *json, const char *key,
 
 /* ───────────────────────── helpers: WS sending ───────────────────────── */
 
-static void ws_send_text(struct mg_connection *c, const char *json)
+static void ws_send_text(ws_conn_t *c, const char *json)
 {
-    mg_ws_send(c, json, strlen(json), WEBSOCKET_OP_TEXT);
+    ws_conn_send(c, json, strlen(json), true);
 }
 
-static void send_cmd_result(struct mg_connection *c, const char *cmd,
+static void send_cmd_result(ws_conn_t *c, const char *cmd,
                             bool ok, const char *detail)
 {
     char json[256];
@@ -210,7 +226,7 @@ static void send_cmd_result(struct mg_connection *c, const char *cmd,
     ws_send_text(c, json);
 }
 
-static void send_cmd_error(struct mg_connection *c, const char *cmd,
+static void send_cmd_error(ws_conn_t *c, const char *cmd,
                            const char *err)
 {
     char json[256];
@@ -219,14 +235,14 @@ static void send_cmd_error(struct mg_connection *c, const char *cmd,
     ws_send_text(c, json);
 }
 
-static void send_value_number(struct mg_connection *c, const char *cmd, long long v)
+static void send_value_number(ws_conn_t *c, const char *cmd, long long v)
 {
     char json[256];
     snprintf(json, sizeof(json), "{\"ok\":true,\"cmd\":\"%s\",\"value\":%lld}", cmd, v);
     ws_send_text(c, json);
 }
 
-static void send_value_string(struct mg_connection *c, const char *cmd, const char *v)
+static void send_value_string(ws_conn_t *c, const char *cmd, const char *v)
 {
     char json[256];
     snprintf(json, sizeof(json), "{\"ok\":true,\"cmd\":\"%s\",\"value\":\"%s\"}", cmd, v);
@@ -240,7 +256,7 @@ static void send_value_string(struct mg_connection *c, const char *cmd, const ch
  * to corrupt the whole state frame. */
 /* Control replies carry the control's name alongside the value so a UI
  * updating many widgets can route the answer without tracking requests. */
-static void send_ctrl_value(struct mg_connection *c, const char *cmd,
+static void send_ctrl_value(ws_conn_t *c, const char *cmd,
                             const char *name, double value)
 {
     char json[192];
@@ -266,7 +282,7 @@ static void send_ctrl_value(struct mg_connection *c, const char *cmd,
 /* "not supported" is a normal answer here — it is how a client learns that
  * this rig has no such control — so it is reported distinctly from a rig
  * that failed to answer. */
-static void send_ctrl_error(struct mg_connection *c, const char *cmd,
+static void send_ctrl_error(ws_conn_t *c, const char *cmd,
                             const char *name, int rc)
 {
     const char *detail = rc == RADIO_CTRL_ENOTSUP ? "not supported by this rig"
@@ -398,7 +414,7 @@ static long normalize_profile(radio *radio_h, const char *payload)
     return profile;
 }
 
-static void handle_ws_command(radio *radio_h, struct mg_connection *c,
+static void handle_ws_command(radio *radio_h, ws_conn_t *c,
                               const char *payload)
 {
     char cmd[64];
@@ -425,7 +441,7 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
         else if (radio_h->txrx_state == IN_TX)           send_cmd_result(c, cmd, false, "NOK");
         else
         {
-            radio_backend_set_ptt(radio_h, IN_TX, PTT_SRC_WEBSOCKET, (long) c->id);
+            radio_backend_set_ptt(radio_h, IN_TX, PTT_SRC_WEBSOCKET, ws_conn_id(c));
             send_cmd_result(c, cmd, true, "OK");
         }
         return;
@@ -435,7 +451,7 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
         /* Unkey whatever the cached state says (see radio_shm.c); the
          * replies keep their old meaning. */
         bool was_tx = radio_h->txrx_state == IN_TX;
-        radio_backend_set_ptt(radio_h, IN_RX, PTT_SRC_WEBSOCKET, (long) c->id);
+        radio_backend_set_ptt(radio_h, IN_RX, PTT_SRC_WEBSOCKET, ws_conn_id(c));
         if (radio_h->swr_protection_enabled)             send_cmd_result(c, cmd, false, "SWR");
         else if (!was_tx)                                send_cmd_result(c, cmd, false, "NOK");
         else                                             send_cmd_result(c, cmd, true, "OK");
@@ -1043,19 +1059,9 @@ static void handle_ws_command(radio *radio_h, struct mg_connection *c,
 static void broadcast_status(websocket_ctx *ctx)
 {
     char json[2048];
-    int64_t now = mg_millis();
-    bool built = false;
 
-    for (struct mg_connection *c = ctx->mgr.conns; c != NULL; c = c->next)
-    {
-        if (!c->is_websocket || !c->is_accepted || c->is_draining) continue;
-        ws_conn_state *st = (ws_conn_state *) c->fn_data;
-        if (st && now - st->last_status < STATUS_MIN_INTERVAL_MS) continue;
-
-        if (!built) { build_status_json(ctx->radio_h, json, sizeof(json)); built = true; }
-        mg_ws_send(c, json, strlen(json), WEBSOCKET_OP_TEXT);
-        if (st) st->last_status = now;
-    }
+    build_status_json(ctx->radio_h, json, sizeof(json));
+    ws_server_broadcast(ctx->server, json, strlen(json), true);
 }
 
 /* New digi-log entries to every client, as {"type":"digi","entry":{...}},
@@ -1077,17 +1083,15 @@ static void broadcast_digi(websocket_ctx *ctx)
     for (int i = 0; i < n; i++) {
         int len = snprintf(frame, sizeof(frame), "{\"type\":\"digi\",\"entry\":%s}", lines[i]);
         if (len > 0 && (size_t) len < sizeof(frame))
-            for (struct mg_connection *c = ctx->mgr.conns; c != NULL; c = c->next)
-                if (c->is_websocket && c->is_accepted && !c->is_draining)
-                    mg_ws_send(c, frame, (size_t) len, WEBSOCKET_OP_TEXT);
+            ws_server_broadcast(ctx->server, frame, (size_t) len, true);
         last_id = ids[i];
     }
 }
 
-static void broadcast_rx_audio(websocket_ctx *ctx)
+/* Send one frame of at most WS_RX_CHUNK_SAMPLES; returns how many samples
+ * it took, 0 when the ring is empty. */
+static size_t broadcast_rx_audio_chunk(websocket_ctx *ctx)
 {
-    if (!radio_pipeline_supports_websocket_rx_audio(ctx->radio_h)) return;
-
     int16_t samples[WS_RX_CHUNK_SAMPLES];
     size_t  n;
 
@@ -1125,18 +1129,30 @@ static void broadcast_rx_audio(websocket_ctx *ctx)
     } else {
         n = radio_media_pop_rx_audio(ctx->radio_h, samples, WS_RX_CHUNK_SAMPLES);
     }
-    if (n == 0) return;
+    if (n == 0) return 0;
 
     uint8_t frame[1 + sizeof(samples)];
     frame[0] = WS_STREAM_AUDIO;
     memcpy(frame + 1, samples, n * sizeof(int16_t));
     size_t flen = 1 + n * sizeof(int16_t);
 
-    for (struct mg_connection *c = ctx->mgr.conns; c != NULL; c = c->next)
-    {
-        if (!c->is_websocket || !c->is_accepted || c->is_draining) continue;
-        mg_ws_send(c, frame, flen, WEBSOCKET_OP_BINARY);
-    }
+    ws_server_broadcast(ctx->server, frame, flen, false);
+    return n;
+}
+
+/* Everything that arrived since the last pass.  One chunk per 50 ms pass
+ * would cap the stream at ~5 k samples/s, below any audio rate, so drain
+ * the ring; the bound only stops a ring that refills as fast as it is read
+ * from holding the publisher forever. */
+#define WS_RX_MAX_CHUNKS_PER_PASS 64
+
+static void broadcast_rx_audio(websocket_ctx *ctx)
+{
+    if (!radio_pipeline_supports_websocket_rx_audio(ctx->radio_h)) return;
+
+    for (int i = 0; i < WS_RX_MAX_CHUNKS_PER_PASS; i++)
+        if (broadcast_rx_audio_chunk(ctx) < WS_RX_CHUNK_SAMPLES)
+            break;
 }
 
 static void broadcast_spectrum(websocket_ctx *ctx, bool tx)
@@ -1145,6 +1161,13 @@ static void broadcast_spectrum(websocket_ctx *ctx, bool tx)
     uint32_t seq = 0, sample_rate = 0;
     if (!radio_media_get_spectrum(ctx->radio_h, tx, bins, WATERFALL_BINS, &seq, &sample_rate))
         return;
+
+    /* Skip frames already sent: the read no longer consumes, so skip when the
+     * publisher sequence has not advanced. */
+    uint32_t *last = tx ? &ctx->last_tx_spectrum_seq : &ctx->last_rx_spectrum_seq;
+    if (*last == seq)
+        return;
+    *last = seq;
 
     /* Frame: [op u8][sample_rate u32][nbins u16][bin_hz f32][bins f32...].
      * bin_hz = sample_rate / fft_size lets the UI label a real RF frequency
@@ -1159,115 +1182,187 @@ static void broadcast_spectrum(websocket_ctx *ctx, bool tx)
     memcpy(frame + off, &bin_hz, sizeof(bin_hz)); off += sizeof(bin_hz);
     memcpy(frame + off, bins, sizeof(bins)); off += sizeof(bins);
 
-    for (struct mg_connection *c = ctx->mgr.conns; c != NULL; c = c->next)
+    ws_server_broadcast(ctx->server, frame, sizeof(frame), false);
+}
+
+/* ─────────────────────── static assets (web root) ─────────────────────── */
+
+/* Serve files from CFG_WEBSOCKET_PATH.  The server copies the bytes into the
+ * connection's write buffer synchronously inside the same call, so one
+ * reusable buffer is enough; it is never touched from another thread. */
+static const void *asset_lookup(const char *path, size_t *size)
+{
+    static uint8_t *buf = NULL;
+    static size_t   cap = 0;
+    char full[512];
+    FILE *f;
+    long n;
+
+    if (size) *size = 0;
+    if (path == NULL || path[0] != '/')
+        return NULL;
+    if ((size_t) snprintf(full, sizeof(full), "%s%s", ws_ctx.web_root, path) >= sizeof(full))
+        return NULL;
+
+    /* Regular files only, checked before opening: a FIFO would block the
+     * server thread inside fopen, a device would never end, a directory
+     * has no meaningful size. */
+    struct stat st;
+    if (stat(full, &st) != 0 || !S_ISREG(st.st_mode))
+        return NULL;
+
+    f = fopen(full, "rb");
+    if (f == NULL)
+        return NULL;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    n = ftell(f);
+    if (n < 0 || fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
+
+    if ((size_t) n + 1 > cap)
     {
-        if (!c->is_websocket || !c->is_accepted || c->is_draining) continue;
-        ws_conn_state *st = (ws_conn_state *) c->fn_data;
-        uint32_t *last = st ? (tx ? &st->last_tx_spectrum_seq : &st->last_rx_spectrum_seq) : NULL;
-        if (last && *last == seq) continue;
-        mg_ws_send(c, frame, sizeof(frame), WEBSOCKET_OP_BINARY);
-        if (last) *last = seq;
+        uint8_t *nb = realloc(buf, (size_t) n + 1);
+        if (nb == NULL) { fclose(f); return NULL; }
+        buf = nb;
+        cap = (size_t) n + 1;
+    }
+    if (n > 0 && fread(buf, 1, (size_t) n, f) != (size_t) n) { fclose(f); return NULL; }
+    fclose(f);
+
+    if (size) *size = (size_t) n;
+    return buf;
+}
+
+/* ─────────────────────── server callbacks ─────────────────────── */
+
+static void on_ws_connect(ws_conn_t *c, void *user_data)
+{
+    websocket_ctx *ctx = (websocket_ctx *) user_data;
+    char hello[256];
+    char status[2048];
+
+    snprintf(hello, sizeof(hello),
+             "{\"type\":\"hello\",\"api\":\"hermes_radio_daemon\","
+             "\"audio_binary_type\":1,"
+             "\"rx_spectrum_binary_type\":2,"
+             "\"tx_spectrum_binary_type\":3}");
+    ws_conn_send(c, hello, strlen(hello), true);
+
+    pthread_mutex_lock(&ctx->lock);
+    build_status_json(ctx->radio_h, status, sizeof(status));
+    pthread_mutex_unlock(&ctx->lock);
+    ws_conn_send(c, status, strlen(status), true);
+}
+
+static void on_ws_message(ws_conn_t *c, const void *data, size_t len,
+                          bool is_text, void *user_data)
+{
+    websocket_ctx *ctx = (websocket_ctx *) user_data;
+    const uint8_t *p = (const uint8_t *) data;
+
+    if (is_text)
+    {
+        /* Null-terminate by copying to a stack buffer — the server does not
+         * guarantee the message is terminated. */
+        char buf[4096];
+        size_t n = len < sizeof(buf) - 1 ? len : sizeof(buf) - 1;
+        memcpy(buf, p, n);
+        buf[n] = '\0';
+        pthread_mutex_lock(&ctx->lock);
+        handle_ws_command(ctx->radio_h, c, buf);
+        pthread_mutex_unlock(&ctx->lock);
+    }
+    else if (len > 1 && p[0] == WS_STREAM_AUDIO)
+    {
+        if (!radio_pipeline_supports_websocket_tx_audio(ctx->radio_h))
+            return;
+        size_t nsamples = (len - 1) / sizeof(int16_t);
+        radio_media_push_tx_audio(ctx->radio_h,
+                                  (const int16_t *) (p + 1), nsamples);
     }
 }
 
-/* ─────────────────────── mongoose event handler ─────────────────────── */
-
-static void fn(struct mg_connection *c, int ev, void *ev_data)
+static void on_ws_close(ws_conn_t *c, void *user_data)
 {
-    websocket_ctx *ctx = (websocket_ctx *) c->mgr->userdata;
+    websocket_ctx *ctx = (websocket_ctx *) user_data;
 
-    if (ev == MG_EV_ACCEPT)
-    {
-        /* TLS only when the listener is wss://. Mongoose 7.20+ expects
-         * the cert/key PEM bytes in opts.cert/opts.key, NOT file paths,
-         * so we load them off disk on each connection. (Cached at the
-         * mgr level would be nicer but mg_tls_init copies what it needs
-         * and mg_file_read mallocs new buffers we can free immediately.) */
-        if (strncmp(ctx->radio_h->websocket_url, "wss://", 6) == 0)
-        {
-            struct mg_str cert = mg_file_read(&mg_fs_posix, CFG_SSL_CERT);
-            struct mg_str key  = mg_file_read(&mg_fs_posix, CFG_SSL_KEY);
-            if (cert.buf == NULL || key.buf == NULL)
-            {
-                fprintf(stderr,
-                        "radio_websocket: failed to load %s / %s — wss handshake will fail\n",
-                        CFG_SSL_CERT, CFG_SSL_KEY);
-            }
-            struct mg_tls_opts opts = { .cert = cert, .key = key };
-            mg_tls_init(c, &opts);
-            free((void *) cert.buf);
-            free((void *) key.buf);
-        }
-    }
-    else if (ev == MG_EV_HTTP_MSG)
-    {
-        struct mg_http_message *hm = (struct mg_http_message *) ev_data;
-        /* Upgrade to WebSocket if the client sent a WS handshake.
-         * Otherwise serve static files from the web root. */
-        if (mg_http_get_header(hm, "Sec-WebSocket-Key") != NULL)
-            mg_ws_upgrade(c, hm, NULL);
-        else
-        {
-            struct mg_http_serve_opts opts = { .root_dir = ctx->web_root };
-            mg_http_serve_dir(c, hm, &opts);
-        }
-    }
-    else if (ev == MG_EV_WS_OPEN)
-    {
-        /* Allocate per-connection state. mongoose 7.20 doesn't expose a
-         * generic per-conn user-data slot we can hook into post-accept,
-         * so we malloc and stash on c->fn_data. Freed on MG_EV_CLOSE. */
-        ws_conn_state *st = calloc(1, sizeof(*st));
-        c->fn_data = st;
+    /* A push-to-talk client (browser tab, hermes-voice-key) that drops its
+     * connection while keyed would otherwise leave the radio in TX. */
+    pthread_mutex_lock(&ctx->lock);
+    radio_backend_release_ptt(ctx->radio_h, PTT_SRC_WEBSOCKET, ws_conn_id(c),
+                              "disconnected");
+    pthread_mutex_unlock(&ctx->lock);
+}
 
-        char hello[256];
-        snprintf(hello, sizeof(hello),
-                 "{\"type\":\"hello\",\"api\":\"hermes_radio_daemon\","
-                 "\"audio_binary_type\":1,"
-                 "\"rx_spectrum_binary_type\":2,"
-                 "\"tx_spectrum_binary_type\":3}");
-        mg_ws_send(c, hello, strlen(hello), WEBSOCKET_OP_TEXT);
+/* Parse a ws:// or wss:// URL into the pieces the server wants.  Only the
+ * scheme, host and port matter; any path is ignored (upgrade is header
+ * driven). */
+static bool parse_ws_url(const char *url, bool *tls, char *host,
+                         size_t host_len, uint16_t *port)
+{
+    const char *p = url;
+    const char *slash, *colon;
+    size_t hostpart;
 
-        char status[2048];
-        build_status_json(ctx->radio_h, status, sizeof(status));
-        mg_ws_send(c, status, strlen(status), WEBSOCKET_OP_TEXT);
-    }
-    else if (ev == MG_EV_WS_MSG)
+    *tls = false;
+    if (strncmp(p, "ws://", 5) == 0)
+        p += 5;
+    else if (strncmp(p, "wss://", 6) == 0)
     {
-        struct mg_ws_message *wm = (struct mg_ws_message *) ev_data;
-        int op = wm->flags & 0x0f;
+        *tls = true;
+        p += 6;
+    }
+    else
+        return false;
 
-        if (op == WEBSOCKET_OP_TEXT)
-        {
-            /* Null-terminate by copying to a stack buffer — wm->data.buf
-             * is not guaranteed to be 0-terminated. */
-            size_t n = wm->data.len < 4095 ? wm->data.len : 4095;
-            char buf[4096];
-            memcpy(buf, wm->data.buf, n);
-            buf[n] = '\0';
-            handle_ws_command(ctx->radio_h, c, buf);
-        }
-        else if (op == WEBSOCKET_OP_BINARY && wm->data.len > 1 &&
-                 (uint8_t) wm->data.buf[0] == WS_STREAM_AUDIO)
-        {
-            if (!radio_pipeline_supports_websocket_tx_audio(ctx->radio_h)) return;
-            size_t nsamples = (wm->data.len - 1) / sizeof(int16_t);
-            radio_media_push_tx_audio(ctx->radio_h,
-                                      (const int16_t *) (wm->data.buf + 1),
-                                      nsamples);
-        }
-    }
-    else if (ev == MG_EV_CLOSE)
+    slash = strchr(p, '/');
+    hostpart = slash ? (size_t) (slash - p) : strlen(p);
+
+    /* An IPv6 literal is bracketed, "[::]:8080", so its colons are not
+     * the port separator. */
+    const char *hstart = p;
+    size_t hlen;
+    if (hostpart > 0 && p[0] == '[')
     {
-        /* A push-to-talk client (browser tab, hermes-voice-key) that drops
-         * its connection while keyed would otherwise leave the radio in TX. */
-        radio_backend_release_ptt(ctx->radio_h, PTT_SRC_WEBSOCKET, (long) c->id,
-                                  "disconnected");
-        if (c->fn_data) { free(c->fn_data); c->fn_data = NULL; }
+        const char *close = memchr(p, ']', hostpart);
+        if (close == NULL)
+            return false;
+        hstart = p + 1;
+        hlen = (size_t) (close - hstart);
+        colon = (close + 1 < p + hostpart) ? close + 1 : NULL;
+        if (colon != NULL && *colon != ':')
+            return false;
     }
+    else
+    {
+        colon = memchr(p, ':', hostpart);
+        hlen = colon ? (size_t) (colon - p) : hostpart;
+    }
+
+    if (colon != NULL)
+    {
+        char *end;
+        long prt = strtol(colon + 1, &end, 10);
+
+        if (end == colon + 1 || end != p + hostpart || prt <= 0 || prt > 65535)
+            return false;
+        *port = (uint16_t) prt;
+    }
+    else
+        *port = 8080;
+
+    if (hlen == 0 || hlen >= host_len)
+        return false;
+
+    memcpy(host, hstart, hlen);
+    host[hlen] = '\0';
+    return true;
 }
 
 /* ─────────────────────── worker thread + init ─────────────────────── */
+
+/* Publish cadence.  The server owns the socket thread; this thread only
+ * builds and queues state/streams, mirroring the old single poll loop. */
+#define WS_PUBLISH_INTERVAL_US 50000
 
 static void *websocket_thread(void *ctx_v)
 {
@@ -1275,12 +1370,20 @@ static void *websocket_thread(void *ctx_v)
 
     while (!shutdown_)
     {
-        mg_mgr_poll(&ctx->mgr, 50);
-        broadcast_status(ctx);
+        int64_t now = now_ms();
+
+        pthread_mutex_lock(&ctx->lock);
+        if (now - ctx->last_status_ms >= STATUS_MIN_INTERVAL_MS)
+        {
+            ctx->last_status_ms = now;
+            broadcast_status(ctx);
+        }
         broadcast_digi(ctx);
         broadcast_rx_audio(ctx);
         broadcast_spectrum(ctx, false);
         broadcast_spectrum(ctx, true);
+        pthread_mutex_unlock(&ctx->lock);
+        usleep(WS_PUBLISH_INTERVAL_US);
     }
 
     return NULL;
@@ -1288,44 +1391,76 @@ static void *websocket_thread(void *ctx_v)
 
 bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid)
 {
+    ws_server_opts_t opts;
+    bool tls = false;
+    char host[128];
+    uint16_t port = 8080;
+    const char *url;
+
     memset(&ws_ctx, 0, sizeof(ws_ctx));
+    pthread_mutex_init(&ws_ctx.lock, NULL);
     ws_ctx.radio_h = radio_h;
     snprintf(ws_ctx.web_root, sizeof(ws_ctx.web_root), "%s", CFG_WEBSOCKET_PATH);
 
     if (!radio_h->enable_websocket) return true;
 
-    mg_log_set(MG_LL_ERROR);   /* silence mongoose per-write DEBUG spam */
-    mg_mgr_init(&ws_ctx.mgr);
-    ws_ctx.mgr.userdata = &ws_ctx;
-    ws_ctx.mgr_inited = true;
-
-    const char *url = radio_h->websocket_url[0] ? radio_h->websocket_url
-                                                : "ws://0.0.0.0:8080";
-    if (mg_http_listen(&ws_ctx.mgr, url, fn, NULL) == NULL)
+    url = radio_h->websocket_url[0] ? radio_h->websocket_url
+                                    : "ws://0.0.0.0:8080";
+    if (!parse_ws_url(url, &tls, host, sizeof(host), &port))
     {
-        fprintf(stderr, "radio_websocket: cannot listen on %s\n", url);
-        mg_mgr_free(&ws_ctx.mgr);
-        ws_ctx.mgr_inited = false;
+        fprintf(stderr, "radio_websocket: bad websocket_url \"%s\"\n", url);
         return false;
     }
-    fprintf(stderr, "radio_websocket: listening on %s%s\n",
-            url, strncmp(url, "wss://", 6) == 0 ? " (TLS)" : "");
+
+    memset(&opts, 0, sizeof(opts));
+    opts.port = port;
+    opts.bind_addr = host;
+    opts.ws_path = "/";
+    opts.max_message_size = WS_MAX_MESSAGE_SIZE;
+    opts.tls_enabled = tls;
+    opts.tls_cert_path = CFG_SSL_CERT;
+    opts.tls_key_path = CFG_SSL_KEY;
+    opts.asset_lookup = asset_lookup;
+    opts.on_connect = on_ws_connect;
+    opts.on_message = on_ws_message;
+    opts.on_close = on_ws_close;
+    opts.user_data = &ws_ctx;
+
+    int rc = ws_server_start(&ws_ctx.server, &opts);
+    if (rc == WS_SERVER_ERR_TLS)
+    {
+        /* A missing or expired certificate must not take the radio, or its
+         * web control, down with it: serve plain ws:// on the same address
+         * and port instead, and say so loudly. */
+        fprintf(stderr, "radio_websocket: WARNING: cannot set up TLS for %s "
+                "with %s / %s; falling back to UNENCRYPTED ws://\n",
+                url, CFG_SSL_CERT, CFG_SSL_KEY);
+        opts.tls_enabled = false;
+        rc = ws_server_start(&ws_ctx.server, &opts);
+    }
+    if (rc != 0)
+    {
+        fprintf(stderr, "radio_websocket: cannot listen on %s\n", url);
+        return false;
+    }
 
     if (pthread_create(websocket_tid, NULL, websocket_thread, &ws_ctx) != 0)
     {
-        mg_mgr_free(&ws_ctx.mgr);
-        ws_ctx.mgr_inited = false;
+        ws_server_stop(ws_ctx.server);
+        ws_ctx.server = NULL;
         return false;
     }
+    ws_ctx.thread_started = true;
     return true;
 }
 
 void radio_websocket_shutdown(pthread_t *websocket_tid)
 {
-    if (!ws_ctx.radio_h || !ws_ctx.radio_h->enable_websocket) return;
+    if (!ws_ctx.thread_started) return;
     pthread_join(*websocket_tid, NULL);
-    if (ws_ctx.mgr_inited) {
-        mg_mgr_free(&ws_ctx.mgr);
-        ws_ctx.mgr_inited = false;
+    ws_ctx.thread_started = false;
+    if (ws_ctx.server) {
+        ws_server_stop(ws_ctx.server);
+        ws_ctx.server = NULL;
     }
 }
