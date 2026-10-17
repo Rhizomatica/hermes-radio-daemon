@@ -1172,8 +1172,9 @@ static void *ws_server_thread(void *arg)
 
 /* Bind the first address the host resolves to that works, so a hostname or
  * an IPv6 literal ("::", "::1") is accepted as well as an IPv4 one.  An
- * empty address means the wildcard: IPv6 "::" first, which on Linux also
- * accepts IPv4 unless bindv6only is set, then IPv4 "0.0.0.0". */
+ * empty address means the wildcard: a dual-stack IPv6 "::" socket first
+ * (IPV6_V6ONLY cleared, so bindv6only does not matter), then IPv4
+ * "0.0.0.0" if that fails. */
 static int open_listener(const char *bind_addr, uint16_t port)
 {
     struct addrinfo hints, *res = NULL, *ai;
@@ -1215,6 +1216,16 @@ static int open_listener(const char *bind_addr, uint16_t port)
 
             (void) setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char *) &one,
                               sizeof(one));
+
+            /* The wildcard socket must take IPv4 too, also on hosts with
+             * net.ipv6.bindv6only=1.  If this fails, the bind may still
+             * succeed v6-only; the IPv4 entry is tried when "::" fails. */
+            if (bind_addr == NULL && ai->ai_family == AF_INET6)
+            {
+                int zero = 0;
+                (void) setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY,
+                                  (const char *) &zero, sizeof(zero));
+            }
 
             if (bind(fd, ai->ai_addr, ai->ai_addrlen) == 0 &&
                 listen(fd, 8) == 0 && sock_set_nonblocking(fd) == 0)
