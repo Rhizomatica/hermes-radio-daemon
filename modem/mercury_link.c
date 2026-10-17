@@ -11,14 +11,7 @@
 #include "mercury_link.h"
 #include "modem_audio.h"
 #include "radio_backend.h"
-#include "mercury_host.h"
-
-/* The lifecycle is mercury's bridge (gui_interface/fyne-ui/engine/
- * mercury_bridge.h), whose header pulls in mercury's ARQ headers; these
- * three are all the daemon calls. */
-int  mercury_init(int argc, char **argv, const char *default_config, const char *log_path);
-void mercury_shutdown(void);
-void mercury_request_shutdown(void);
+#include "mercury_host.h"     /* host API and lifecycle (vendor/mercury/host) */
 
 #define MAX_ARGS 32
 
@@ -81,7 +74,10 @@ static void *launcher(void *arg)
     (void) arg;
     int rc = mercury_init(s_argc, s_argv, s_radio->mercury_config, NULL);
     s_init_rc = rc;
-    if (rc != 0)
+    if (rc == MERCURY_INIT_CONFIG_ERROR)
+        fprintf(stderr, "mercury_link: cannot read %s; the radio runs without mercury\n",
+                s_radio->mercury_config);
+    else if (rc != 0)
         fprintf(stderr, "mercury_link: mercury did not start (%d); the radio runs without it\n", rc);
     return NULL;
 }
