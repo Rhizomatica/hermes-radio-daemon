@@ -134,8 +134,8 @@ bool shm_destroy(key_t k, size_t s)    { (void) k; (void) s; return true; }
 void *shm_attach(key_t k, size_t s)
 { static controller_conn connector; (void) k; (void) s; return &connector; }
 
-#include "../radio_pipeline.c"
-#include "../radio_shm.c"
+#include "../radio/radio_pipeline.c"
+#include "../control_interfaces/radio_shm.c"
 
 static void reset_backend_call(void)
 {

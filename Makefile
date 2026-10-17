@@ -6,17 +6,34 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 CC      = gcc
+
+# Sources are grouped by module, one directory each (as in mercury), and
+# every module directory is on the include path, so #include "x.h" finds a
+# header wherever its module lives:
+#   radio/               the radio: core, backend dispatch, controls, pipeline, media
+#   hamlib/  sbitx/      the two radio backends
+#   dsp/                 DSP, digital modes and voice codecs
+#   modem/               radio <-> data modem audio (modem_audio + transports)
+#   audioio/             operator audio: browser bridge, headset
+#   control_interfaces/  CAT (emulated), rigctld, SHM control servers
+#   gui_interface/       websocket UI (radio_websocket + websocket/ server), web/
+#   common/              configuration and shared-memory helpers
+#   include/             public protocol headers (SHM command set)
+#   utils/               radio_client, ws_client, D-STAR/AMBE tools
+MODULE_INCLUDES = -Iradio -Imodem -Iaudioio -Icontrol_interfaces -Igui_interface \
+                  -Icommon -Ihamlib -Iinclude
+
 # -MMD -MP auto-generates per-object header dependencies (*.d), so editing a
-# shared header (e.g. radio.h) rebuilds every object that includes it. Without
+# shared header (e.g. radio/radio.h) rebuilds every object that includes it. Without
 # this, changing a struct layout left stale objects with the old layout — fields
 # read at mismatched offsets, corrupting memory (a very painful class of bug).
 CFLAGS  = -Ofast -Wall -std=gnu11 -fstack-protector -MMD -MP \
-          -I. -Ihamlib -I/usr/include/iniparser -I/usr/include/csdr -Iinclude \
+          -I. $(MODULE_INCLUDES) -I/usr/include/iniparser -I/usr/include/csdr \
           -Wno-deprecated-declarations
 LDFLAGS = -liniparser -lhamlib -lasound -lcrypto -lssl -lfftw3f -lfftw3 \
           -lpthread -lm -li2c -lcsdr -lspecbleach -lcw -lrt -lmbe-neo
 
-# The in-tree websocket/ module serves as the transport in radio_websocket.c;
+# The in-tree gui_interface/websocket/ module serves as the transport in gui_interface/radio_websocket.c;
 # wss:// is provided by OpenSSL.
 CFLAGS += -DWS_HAVE_OPENSSL=1
 
@@ -45,7 +62,7 @@ MM_FSK_OBJS       = $(MM_FSK_SRCS:.c=.o)
 all: radio_daemon radio_client
 
 TEST_CFLAGS = -O0 -Wall -Wextra -std=gnu11 -fstack-protector \
-              -I. -Ihamlib -I/usr/include/iniparser -Iinclude
+              -I. $(MODULE_INCLUDES) -I/usr/include/iniparser
 TEST_BINS = tests/backend_selection_test tests/compat_surface_test tests/controls_test \
             tests/dstar_voice_test tests/upsample2_test tests/rig_server_test \
             tests/hamlib_ptt_test tests/radae_vocoder_test tests/sbitx_buffer_test \
@@ -55,33 +72,33 @@ TEST_BINS = tests/backend_selection_test tests/compat_surface_test tests/control
 
 # ── daemon-level objects ────────────────────────────────────────
 DAEMON_TOP_OBJS = radio_daemon.o \
-                  radio_backend.o \
-                  radio_controls.o \
-                  radio_daemon_core.o \
-                  radio_pipeline.o \
+                  radio/radio_backend.o \
+                  radio/radio_controls.o \
+                  radio/radio_daemon_core.o \
+                  radio/radio_pipeline.o \
                   hamlib/radio_hamlib.o \
                   hamlib/hamlib_digi.o \
-                  hamlib/rig_server.o \
-                  cat_server.o \
-                  radio_media.o \
-                  radio_shm.o \
-                  radio_websocket.o \
-                  audio_bridge.o \
+                  control_interfaces/rig_server.o \
+                  control_interfaces/cat_server.o \
+                  radio/radio_media.o \
+                  control_interfaces/radio_shm.o \
+                  gui_interface/radio_websocket.o \
+                  audioio/audio_bridge.o \
                   dsp/stream_resampler.o \
                   dsp/digi_log.o \
-                  audio_headset.o \
-                  shm_audio.o \
-                  loop_audio.o \
-                  rtp_audio.o \
-                  modem_audio.o \
+                  audioio/audio_headset.o \
+                  modem/shm_audio.o \
+                  modem/loop_audio.o \
+                  modem/rtp_audio.o \
+                  modem/modem_audio.o \
                   vendor/hermes_shm/ring_buffer_posix.o \
                   vendor/hermes_shm/shm_posix.o \
-                  cfg_utils.o \
-                  shm_utils.o \
-                  websocket/ws_server.o \
-                  websocket/ws_frame.o \
-                  websocket/ws_crypto.o \
-                  websocket/ws_tls.o
+                  common/cfg_utils.o \
+                  common/shm_utils.o \
+                  gui_interface/websocket/ws_server.o \
+                  gui_interface/websocket/ws_frame.o \
+                  gui_interface/websocket/ws_crypto.o \
+                  gui_interface/websocket/ws_tls.o
 
 # ── embedded sBitx HW/DSP/ALSA objects (now plain .o, no objcopy) ──
 SBITX_GPIOLIB_OBJS = sbitx/gpiolib/gpiolib.o \
@@ -124,9 +141,9 @@ radio_daemon: $(DAEMON_OBJS)
 # A library linked into the daemon must not define a global the daemon also
 # defines, nor one of the shared-library symbols it uses: neither is a link
 # error, one side just silently runs the other's code.  MERCURY_LIBS names
-# the archives to check (tools/check_symbols.sh).
+# the archives to check (utils/check_symbols.sh).
 check-symbols: $(DAEMON_OBJS)
-	tools/check_symbols.sh "$(DAEMON_OBJS)" $(MERCURY_LIBS)
+	utils/check_symbols.sh "$(DAEMON_OBJS)" $(MERCURY_LIBS)
 
 # RADE: rade_c and the Opus DNN subset it runs on (LPCNet features, FARGAN)
 # see their own include paths and config.h only, not ft8_lib's or
@@ -145,16 +162,16 @@ $(OPUS_DNN_OBJS): CFLAGS := $(filter-out -Ofast,$(CFLAGS)) -O2
 	      $< -o $@
 
 # ── client ──────────────────────────────────────────────────────
-radio_client: sbitx_client.c sbitx_io.c shm_utils.c help.h \
+radio_client: utils/sbitx_client.c utils/sbitx_io.c common/shm_utils.c common/help.h \
               include/sbitx_io.h include/radio_cmds.h
-	$(CC) $(CFLAGS) sbitx_client.c sbitx_io.c shm_utils.c \
+	$(CC) $(CFLAGS) utils/sbitx_client.c utils/sbitx_io.c common/shm_utils.c \
 	      -o radio_client -lpthread
 
 # ── websocket control CLI, a testing aid (not built by "all") ──
 # Uses the same in-tree frame codec as the server (ws_frame/ws_crypto) plus
 # OpenSSL directly for the wss:// client handshake.
-WS_CLIENT_SRCS = ws_client.c websocket/ws_frame.c websocket/ws_crypto.c
-ws_client: $(WS_CLIENT_SRCS) websocket/ws_frame.h websocket/ws_crypto.h
+WS_CLIENT_SRCS = utils/ws_client.c gui_interface/websocket/ws_frame.c gui_interface/websocket/ws_crypto.c
+ws_client: $(WS_CLIENT_SRCS) gui_interface/websocket/ws_frame.h gui_interface/websocket/ws_crypto.h
 	$(CC) $(CFLAGS) $(WS_CLIENT_SRCS) -o ws_client -lssl -lcrypto
 
 # ── regression tests ───────────────────────────────────────────────
@@ -180,52 +197,52 @@ compat-tests: $(TEST_BINS)
 	./tests/dv_codec_test
 	./tests/hamlib_conf_test
 
-tests/backend_selection_test: tests/backend_selection_test.c cfg_utils.c cfg_utils.h \
-                              radio_backend.c radio_backend.h radio_daemon_core.h \
-                              hamlib/radio_hamlib.h radio.h \
+tests/backend_selection_test: tests/backend_selection_test.c common/cfg_utils.c common/cfg_utils.h \
+                              radio/radio_backend.c radio/radio_backend.h radio/radio_daemon_core.h \
+                              hamlib/radio_hamlib.h radio/radio.h \
                               tests/fixtures/backend-default.ini \
                               tests/fixtures/backend-zbitx.ini
-	$(CC) $(TEST_CFLAGS) tests/backend_selection_test.c hamlib/rig_server.c radio_controls.c cat_server.c -o $@ -liniparser -lpthread -lm
+	$(CC) $(TEST_CFLAGS) tests/backend_selection_test.c control_interfaces/rig_server.c radio/radio_controls.c control_interfaces/cat_server.c -o $@ -liniparser -lpthread -lm
 
-tests/dv_codec_test: tests/dv_codec_test.c cfg_utils.c cfg_utils.h \
-                     radio_backend.c radio_backend.h radio.h
-	$(CC) $(TEST_CFLAGS) tests/dv_codec_test.c hamlib/rig_server.c radio_controls.c cat_server.c -o $@ -liniparser -lpthread -lm
+tests/dv_codec_test: tests/dv_codec_test.c common/cfg_utils.c common/cfg_utils.h \
+                     radio/radio_backend.c radio/radio_backend.h radio/radio.h
+	$(CC) $(TEST_CFLAGS) tests/dv_codec_test.c control_interfaces/rig_server.c radio/radio_controls.c control_interfaces/cat_server.c -o $@ -liniparser -lpthread -lm
 
-tests/rig_server_test: tests/rig_server_test.c hamlib/rig_server.c hamlib/rig_server.h \
-                      radio_controls.c radio_backend.c cfg_utils.c radio.h
-	$(CC) $(TEST_CFLAGS) tests/rig_server_test.c hamlib/rig_server.c cat_server.c -o $@ -liniparser -lpthread -lm
+tests/rig_server_test: tests/rig_server_test.c control_interfaces/rig_server.c control_interfaces/rig_server.h \
+                      radio/radio_controls.c radio/radio_backend.c common/cfg_utils.c radio/radio.h
+	$(CC) $(TEST_CFLAGS) tests/rig_server_test.c control_interfaces/rig_server.c control_interfaces/cat_server.c -o $@ -liniparser -lpthread -lm
 
 tests/sbitx_buffer_test: tests/sbitx_buffer_test.c sbitx/sbitx_buffer.c sbitx/sbitx_buffer.h \
                          sbitx/ring_buffer.c sbitx/ring_buffer.h
 	$(CC) $(TEST_CFLAGS) -Isbitx tests/sbitx_buffer_test.c -o $@ -lpthread
 
-tests/hamlib_ptt_test: tests/hamlib_ptt_test.c hamlib/radio_hamlib.c hamlib/rig_server.c \
-                       hamlib/rig_server.h radio_controls.c radio_backend.c radio_backend.h \
-                       cfg_utils.c radio.h
-	$(CC) $(TEST_CFLAGS) tests/hamlib_ptt_test.c hamlib/rig_server.c cat_server.c -o $@ -lhamlib -liniparser -lpthread -lm
+tests/hamlib_ptt_test: tests/hamlib_ptt_test.c hamlib/radio_hamlib.c control_interfaces/rig_server.c \
+                       control_interfaces/rig_server.h radio/radio_controls.c radio/radio_backend.c radio/radio_backend.h \
+                       common/cfg_utils.c radio/radio.h
+	$(CC) $(TEST_CFLAGS) tests/hamlib_ptt_test.c control_interfaces/rig_server.c control_interfaces/cat_server.c -o $@ -lhamlib -liniparser -lpthread -lm
 
 # Links the daemon's own objects: the Opus subset needs its per-object flags.
 tests/radae_vocoder_test: tests/radae_vocoder_test.c dsp/radae_vocoder.h dsp/radae_vocoder.o $(OPUS_DNN_OBJS)
 	$(CC) $(TEST_CFLAGS) tests/radae_vocoder_test.c dsp/radae_vocoder.o $(OPUS_DNN_OBJS) -o $@ -lm
 
-tests/controls_test: tests/controls_test.c radio_controls.c radio_controls.h \
-                     radio_backend.c radio_backend.h cat_server.c cat_server.h \
-                     cfg_utils.c cfg_utils.h radio.h
-	$(CC) $(TEST_CFLAGS) tests/controls_test.c hamlib/rig_server.c cat_server.c -o $@ -liniparser -lpthread -lm
+tests/controls_test: tests/controls_test.c radio/radio_controls.c radio/radio_controls.h \
+                     radio/radio_backend.c radio/radio_backend.h control_interfaces/cat_server.c control_interfaces/cat_server.h \
+                     common/cfg_utils.c common/cfg_utils.h radio/radio.h
+	$(CC) $(TEST_CFLAGS) tests/controls_test.c control_interfaces/rig_server.c control_interfaces/cat_server.c -o $@ -liniparser -lpthread -lm
 
 tests/dstar_voice_test: tests/dstar_voice_test.c dsp/dstar_voice.c dsp/dstar_voice.h \
                         dsp/voice_crypto.c dsp/voice_crypto.h dsp/sbitx_dstar.c dsp/sbitx_dstar.h
 	$(CC) $(TEST_CFLAGS) -Idsp tests/dstar_voice_test.c dsp/dstar_voice.c dsp/voice_crypto.c \
 	      dsp/sbitx_dstar.c -o $@ -lmbe-neo -lcrypto -lm
 
-tests/rtp_audio_test: tests/rtp_audio_test.c rtp_audio.c rtp_audio.h modem_audio.c modem_audio.h radio.h
-	$(CC) $(TEST_CFLAGS) tests/rtp_audio_test.c rtp_audio.c modem_audio.c -o $@ -lpthread -lm
+tests/rtp_audio_test: tests/rtp_audio_test.c modem/rtp_audio.c modem/rtp_audio.h modem/modem_audio.c modem/modem_audio.h radio/radio.h
+	$(CC) $(TEST_CFLAGS) tests/rtp_audio_test.c modem/rtp_audio.c modem/modem_audio.c -o $@ -lpthread -lm
 
-tests/modem_audio_test: tests/modem_audio_test.c modem_audio.c modem_audio.h radio.h
-	$(CC) $(TEST_CFLAGS) tests/modem_audio_test.c modem_audio.c -o $@ -lpthread -lm
+tests/modem_audio_test: tests/modem_audio_test.c modem/modem_audio.c modem/modem_audio.h radio/radio.h
+	$(CC) $(TEST_CFLAGS) tests/modem_audio_test.c modem/modem_audio.c -o $@ -lpthread -lm
 
-tests/audio_bridge_test: tests/audio_bridge_test.c audio_bridge.c audio_bridge.h radio.h
-	$(CC) $(TEST_CFLAGS) -I/usr/include/csdr tests/audio_bridge_test.c audio_bridge.c -o $@ -lcsdr -lfftw3f -lm
+tests/audio_bridge_test: tests/audio_bridge_test.c audioio/audio_bridge.c audioio/audio_bridge.h radio/radio.h
+	$(CC) $(TEST_CFLAGS) -I/usr/include/csdr tests/audio_bridge_test.c audioio/audio_bridge.c -o $@ -lcsdr -lfftw3f -lm
 
 tests/stream_resampler_test: tests/stream_resampler_test.c dsp/stream_resampler.c dsp/stream_resampler.h
 	$(CC) $(TEST_CFLAGS) -I/usr/include/csdr tests/stream_resampler_test.c dsp/stream_resampler.c -o $@ -lcsdr -lfftw3f -lm
@@ -248,10 +265,10 @@ tests/mic_filter_test: tests/mic_filter_test.c dsp/mic_filter.c dsp/mic_filter.h
 tests/upsample2_test: tests/upsample2_test.c dsp/upsample2.c dsp/upsample2.h
 	$(CC) $(TEST_CFLAGS) -I/usr/include/csdr tests/upsample2_test.c dsp/upsample2.c -o $@ -lcsdr -lfftw3f -lm
 
-tests/compat_surface_test: tests/compat_surface_test.c radio_shm.c radio_shm.h \
-                           radio_pipeline.c radio_pipeline.h \
-                           radio_backend.h radio.h \
-                           shm_utils.h include/sbitx_io.h include/radio_cmds.h
+tests/compat_surface_test: tests/compat_surface_test.c control_interfaces/radio_shm.c control_interfaces/radio_shm.h \
+                           radio/radio_pipeline.c radio/radio_pipeline.h \
+                           radio/radio_backend.h radio/radio.h \
+                           common/shm_utils.h include/sbitx_io.h include/radio_cmds.h
 	$(CC) $(TEST_CFLAGS) tests/compat_surface_test.c -o $@ -lpthread
 
 # ── install ─────────────────────────────────────────────────────
@@ -272,7 +289,7 @@ install: radio_daemon radio_client
 	test -f $(DESTDIR)$(sysconfdir)/hermes/user.ini || \
 	  install -m 644 config/user.ini $(DESTDIR)$(sysconfdir)/hermes/user.ini
 	install -d $(DESTDIR)$(sysconfdir)/hermes/web
-	install -m 644 web/index.html $(DESTDIR)$(sysconfdir)/hermes/web/index.html
+	install -m 644 gui_interface/web/index.html $(DESTDIR)$(sysconfdir)/hermes/web/index.html
 	install -D -m 644 config/avahi/hermes-radio.service \
 	  $(DESTDIR)$(sysconfdir)/hermes/avahi/hermes-radio.service
 	# One radio controller per station: on a real install (not a package

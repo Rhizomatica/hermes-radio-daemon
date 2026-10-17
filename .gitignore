@@ -44,6 +44,9 @@
 
 # Kernel Module Compile Results
 *.mod*
+# ...but not Go module files
+!go.mod
+!go.sum
 *.cmd
 .tmp_versions/
 modules.order
@@ -61,9 +64,9 @@ tests/*_test
 /radio_daemon
 /radio_client
 /ws_client
-/tools/ambe_params
-/tools/ambe_roundtrip
-/tools/dstar_ambe_test
-/tools/dstar_probe
-/tools/dstar_rx
-/tools/dstar_tx_gen
+/utils/ambe_params
+/utils/ambe_roundtrip
+/utils/dstar_ambe_test
+/utils/dstar_probe
+/utils/dstar_rx
+/utils/dstar_tx_gen

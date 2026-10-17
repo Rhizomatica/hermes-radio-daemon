@@ -37,8 +37,8 @@
 #include "sbitx_si5351.h"
 #include "sbitx_alsa.h"
 #include "sbitx_dsp.h"
-#include "../radio_backend.h"
-#include "../radio_controls.h"
+#include "radio_backend.h"
+#include "radio_controls.h"
 
 extern _Atomic bool shutdown_;
 extern _Atomic bool tx_starting;

@@ -37,8 +37,8 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     return 22;
 }
 
-#include "../cfg_utils.c"
-#include "../radio_backend.c"
+#include "../common/cfg_utils.c"
+#include "../radio/radio_backend.c"
 
 static void test_backend_detect_defaults(void)
 {

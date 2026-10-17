@@ -30,10 +30,10 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#include "../radio.h"
-#include "../radio_backend.h"
-#include "../radio_controls.h"
-#include "../hamlib/rig_server.h"
+#include "../radio/radio.h"
+#include "../radio/radio_backend.h"
+#include "../radio/radio_controls.h"
+#include "../control_interfaces/rig_server.h"
 
 /* The daemon owns these; the server reads them. */
 _Atomic bool shutdown_ = false;
@@ -60,9 +60,9 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     return 0;
 }
 
-#include "../cfg_utils.c"
-#include "../radio_backend.c"
-#include "../radio_controls.c"
+#include "../common/cfg_utils.c"
+#include "../radio/radio_backend.c"
+#include "../radio/radio_controls.c"
 
 #define TEST_PORT 45329
 

@@ -40,7 +40,7 @@
 #include "../dsp/dstar_voice.h"
 #include <mbelib-neo/mbelib.h>
 #include <specbleach_denoiser.h>
-#include "../radio_backend.h"   /* radio_backend_set_txrx_state for auto-PTT */
+#include "radio_backend.h"   /* radio_backend_set_txrx_state for auto-PTT */
 
 /* Hard cap on an auto-keyed digital transmission. PTT is dropped the instant
  * the queue empties and the TX ring drains; this only fires if something stalls

@@ -33,9 +33,9 @@
 #include "sbitx_alsa.h"
 #include "sbitx_dsp.h"
 #include "sbitx_buffer.h"
-#include "../radio_media.h"
-#include "../audio_bridge.h"
-#include "../modem_audio.h"
+#include "radio_media.h"
+#include "audio_bridge.h"
+#include "modem_audio.h"
 #include "../dsp/mic_filter.h"
 
 char *radio_capture_dev = "hw:0,0";
