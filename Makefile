@@ -40,7 +40,7 @@ OPUS_DNN_OBJS     = $(OPUS_DNN_SRCS:.c=.o)
 FT8_LIB_OBJS      = $(FT8_LIB_SRCS:.c=.o)
 MM_FSK_OBJS       = $(MM_FSK_SRCS:.c=.o)
 
-.PHONY: all clean install test compat-tests
+.PHONY: all clean install test compat-tests check-symbols
 
 all: radio_daemon radio_client
 
@@ -120,6 +120,13 @@ DAEMON_OBJS = $(DAEMON_TOP_OBJS) $(SBITX_OBJS)
 
 radio_daemon: $(DAEMON_OBJS)
 	$(CC) -o radio_daemon $(DAEMON_OBJS) $(LDFLAGS)
+
+# A library linked into the daemon must not define a global the daemon also
+# defines, nor one of the shared-library symbols it uses: neither is a link
+# error, one side just silently runs the other's code.  MERCURY_LIBS names
+# the archives to check (tools/check_symbols.sh).
+check-symbols: $(DAEMON_OBJS)
+	tools/check_symbols.sh "$(DAEMON_OBJS)" $(MERCURY_LIBS)
 
 # RADE: rade_c and the Opus DNN subset it runs on (LPCNet features, FARGAN)
 # see their own include paths and config.h only, not ft8_lib's or
