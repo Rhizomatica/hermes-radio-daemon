@@ -15,6 +15,10 @@
  * Any number of listeners may join the RX group: the modem, ka9q's
  * pcmrecord, a monitor.
  *
+ * This is the network transport only: resampling, keying (PTT_SRC_MODEM)
+ * and delivering TX to the radio are modem_audio's, shared with a modem
+ * linked into the daemon.
+ *
  * Copyright (C) 2026 Rhizomatica
  * Author: Rafael Diniz <rafael@riseup.net>
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -40,19 +44,5 @@ bool rtp_audio_init(radio *radio_h);
 
 /* Stop the threads (unkeying if the TX stream holds PTT) and close the sockets. */
 void rtp_audio_shutdown(void);
-
-/* RX tap: one block of received audio, mono int16 at `rate` Hz (a multiple
- * of 8000). Called from the audio thread; never blocks on the network (the
- * sender thread does the I/O). No-op until rtp_audio_init. */
-void rtp_audio_push_rx(const int16_t *samples, size_t nsamples, uint32_t rate);
-
-/* sBitx TX: fill out[0..n) with the modem's TX audio at 48 kHz (silence
- * while prebuffering or on underrun).  Returns n while the TX stream holds
- * PTT, 0 otherwise (the caller then uses its normal TX source). */
-size_t rtp_audio_pop_tx(int16_t *out, size_t n);
-
-/* True while the TX stream holds PTT. Other TX sources (the Hamlib
- * loopback bridge) stand aside meanwhile. */
-bool rtp_audio_tx_active(void);
 
 #endif /* RTP_AUDIO_H */

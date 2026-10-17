@@ -30,6 +30,7 @@
 #include "shm_audio.h"
 #include "loop_audio.h"
 #include "rtp_audio.h"
+#include "modem_audio.h"
 #include "voice_crypto.h"
 #include "sbitx/sbitx_alsa.h"
 
@@ -229,6 +230,7 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
         loop_audio_shutdown();
     if (rtp_audio_started)
         rtp_audio_shutdown();
+    modem_audio_shutdown();         /* after every modem transport */
     if (media_started)
         radio_media_shutdown(&radio_h, &capture_tid, &playback_tid);
     if (backend_started)
@@ -255,6 +257,7 @@ fail:
         loop_audio_shutdown();
     if (rtp_audio_started)
         rtp_audio_shutdown();
+    modem_audio_shutdown();         /* after every modem transport */
     if (media_started)
         radio_media_shutdown(&radio_h, &capture_tid, &playback_tid);
     if (backend_started)

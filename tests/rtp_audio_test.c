@@ -22,6 +22,7 @@
 #include "radio_backend.h"
 #include "radio_media.h"
 #include "rtp_audio.h"
+#include "modem_audio.h"
 
 #define GROUP "239.255.72.99"
 #define TX_GROUP "239.255.72.98"
@@ -42,7 +43,7 @@ static size_t npushed;
 void radio_backend_set_ptt(radio *radio_h, bool txrx_state, ptt_source src, long id)
 {
     (void) radio_h;
-    if (txrx_state == IN_TX && src == PTT_SRC_RTP)
+    if (txrx_state == IN_TX && src == PTT_SRC_MODEM)
     {
         ptt_on_count++;
         ptt_id = id;
@@ -52,7 +53,7 @@ void radio_backend_set_ptt(radio *radio_h, bool txrx_state, ptt_source src, long
 void radio_backend_end_ptt(radio *radio_h, ptt_source src, long id)
 {
     (void) radio_h;
-    if (src == PTT_SRC_RTP && id == ptt_id)
+    if (src == PTT_SRC_MODEM && id == ptt_id)
         ptt_off_count++;
 }
 
@@ -141,7 +142,7 @@ static void test_tx(radio *r)
     }
     msleep(50);
     CHECK(ptt_on_count == 1 && ptt_id == 111, "PTT on %d times, id %ld", ptt_on_count, ptt_id);
-    CHECK(rtp_audio_tx_active(), "not active while keyed");
+    CHECK(modem_audio_tx_active(), "not active while keyed");
     CHECK(npushed == 50 * RTP_AUDIO_FRAME * 6, "pushed %zu samples, want %d", npushed, 50 * RTP_AUDIO_FRAME * 6);
     double a = tone_amp_at(pushed + 2000, (int) npushed - 4000, 48000.0);
     printf("TX 1 kHz at 48 kHz: amplitude %.0f\n", a);
@@ -151,7 +152,7 @@ static void test_tx(radio *r)
     send_tx(111, 0, 0);                          /* end packet */
     msleep(60);
     CHECK(ptt_off_count == 1, "end packet did not unkey (%d)", ptt_off_count);
-    CHECK(!rtp_audio_tx_active(), "still active after the end packet");
+    CHECK(!modem_audio_tx_active(), "still active after the end packet");
 
     /* Dead keyer: key, then go quiet. */
     send_tx(333, 1, RTP_AUDIO_FRAME);
@@ -163,10 +164,10 @@ static void test_tx(radio *r)
     /* sBitx path: the DSP loop pops 48 kHz blocks. */
     int16_t blk[480];
     r->backend_kind = RADIO_BACKEND_HFSIGNALS;
-    CHECK(rtp_audio_pop_tx(blk, 480) == 0, "pop while unkeyed");
+    CHECK(modem_audio_pop_tx(blk, 480) == 0, "pop while unkeyed");
     send_tx(444, 1, RTP_AUDIO_FRAME);
     msleep(30);
-    CHECK(rtp_audio_pop_tx(blk, 480) == 480, "pop while keyed");
+    CHECK(modem_audio_pop_tx(blk, 480) == 480, "pop while keyed");
     int pre_silent = 1;
     for (int i = 0; i < 480; i++)
         pre_silent &= blk[i] == 0;
@@ -174,13 +175,13 @@ static void test_tx(radio *r)
     send_tx(444, 0, RTP_AUDIO_FRAME);
     msleep(30);
     static int16_t got[1920];
-    rtp_audio_pop_tx(got, 1920);                  /* 2 packets = 1920 samples at 48 kHz */
+    modem_audio_pop_tx(got, 1920);                  /* 2 packets = 1920 samples at 48 kHz */
     double b = tone_amp_at(got + 400, 1920 - 800, 48000.0);
     CHECK(fabs(b - 16000.0) < 400.0, "sBitx TX tone amplitude %.0f", b);
     send_tx(444, 0, 0);
     msleep(60);
     CHECK(ptt_off_count == 3, "sBitx end packet did not unkey once drained (%d)", ptt_off_count);
-    CHECK(rtp_audio_pop_tx(blk, 480) == 0, "pop after unkey");
+    CHECK(modem_audio_pop_tx(blk, 480) == 0, "pop after unkey");
     r->backend_kind = RADIO_BACKEND_HAMLIB;
     close(tx_fd);
 }
@@ -262,7 +263,7 @@ int main(void)
             double f = (n + i) < SEG_SAMPLES ? 1000.0 : 5000.0;
             blk[i] = (int16_t) lrint(16000.0 * sin(2 * M_PI * f * (n + i) / IN_RATE));
         }
-        rtp_audio_push_rx(blk, 480, IN_RATE);
+        modem_audio_push_rx(blk, 480, IN_RATE);
         nanosleep(&(struct timespec){ 0, 5000000 }, NULL);
     }
 
