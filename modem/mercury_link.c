@@ -30,8 +30,11 @@ static int key(bool tx, void *user)
     (void) user;
     if (tx)
         return modem_audio_tx_begin(MERCURY_LINK_PTT_ID) ? 0 : -1;
-    /* Mercury has already waited out the frame and its tail: unkey now. */
-    modem_audio_tx_unkey("ended");
+    /* Mercury has already waited out the frame and its tail: unkey now.  Only
+     * if mercury holds PTT: it also unkeys once at shutdown, and after a
+     * key(true) refused because an RTP modem was on the air. */
+    if (modem_audio_tx_keyed_by(MERCURY_LINK_PTT_ID))
+        modem_audio_tx_unkey("ended");
     return 0;
 }
 
