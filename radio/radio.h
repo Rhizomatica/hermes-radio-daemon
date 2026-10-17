@@ -377,6 +377,12 @@ typedef struct {
     char rtp_tx_group[64];
     char rtp_iface[32];
     int  rtp_ttl;
+    /* Mercury linked in (modem/mercury_link.c): main:enable_mercury runs it
+     * in-process on modem_audio, with main:mercury_config as its mercury.ini
+     * and main:mercury_args as extra command-line options. */
+    _Atomic bool enable_mercury;
+    char mercury_config[256];
+    char mercury_args[256];
     /* Optional operator-side headset (hardware) audio path. When both
      * device names are non-empty, the daemon spawns capture+playback threads
      * that mirror the websocket browser audio path onto a local ALSA device. */

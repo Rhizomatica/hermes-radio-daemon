@@ -453,6 +453,13 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     i = iniparser_getint(ini, "main:rtp_ttl", 0);
     radio_h->rtp_ttl = i;
 
+    b = iniparser_getboolean(ini, "main:enable_mercury", 0);
+    radio_h->enable_mercury = (bool) b;
+    s = iniparser_getstring(ini, "main:mercury_config", "/etc/mercury/mercury.ini");
+    snprintf(radio_h->mercury_config, sizeof(radio_h->mercury_config), "%s", s);
+    s = iniparser_getstring(ini, "main:mercury_args", "");
+    snprintf(radio_h->mercury_args, sizeof(radio_h->mercury_args), "%s", s);
+
     s = iniparser_getstring(ini, "main:capture_device", "default");
     snprintf(radio_h->capture_device, sizeof(radio_h->capture_device), "%s", s);
 
