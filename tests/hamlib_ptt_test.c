@@ -25,9 +25,9 @@
 
 #include <hamlib/rig.h>
 
-#include "../radio.h"
-#include "../radio_backend.h"
-#include "../hamlib/rig_server.h"
+#include "../radio/radio.h"
+#include "../radio/radio_backend.h"
+#include "../control_interfaces/rig_server.h"
 
 _Atomic bool shutdown_ = false;
 
@@ -45,9 +45,9 @@ bool hamlib_digi_start(radio *radio_h) { (void) radio_h; return true; }
 void hamlib_digi_stop(radio *radio_h) { (void) radio_h; }
 void radio_pipeline_refresh(radio *radio_h) { (void) radio_h; }
 
-#include "../cfg_utils.c"
-#include "../radio_backend.c"
-#include "../radio_controls.c"
+#include "../common/cfg_utils.c"
+#include "../radio/radio_backend.c"
+#include "../radio/radio_controls.c"
 #include "../hamlib/radio_hamlib.c"
 
 #define TEST_PORT 45331

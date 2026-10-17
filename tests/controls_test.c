@@ -107,9 +107,9 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     return 0;
 }
 
-#include "../cfg_utils.c"
-#include "../radio_backend.c"
-#include "../radio_controls.c"
+#include "../common/cfg_utils.c"
+#include "../radio/radio_backend.c"
+#include "../radio/radio_controls.c"
 
 static radio *make_radio(void)
 {

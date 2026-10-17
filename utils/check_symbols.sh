@@ -8,7 +8,7 @@
 # symbols the daemon uses are checked too, since a definition in the archive
 # would take them over.
 #
-# Usage: tools/check_symbols.sh "<daemon objects>" <archive.a>...
+# Usage: utils/check_symbols.sh "<daemon objects>" <archive.a>...
 #
 # Copyright (C) 2026 Rhizomatica
 # SPDX-License-Identifier: GPL-3.0-or-later

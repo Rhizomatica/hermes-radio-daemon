@@ -25,8 +25,8 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     return 0;
 }
 
-#include "../cfg_utils.c"
-#include "../radio_backend.c"
+#include "../common/cfg_utils.c"
+#include "../radio/radio_backend.c"
 
 /* the backend side as the sbitx does it: store the value */
 static void stub_set_mode(radio *radio_h, uint16_t mode, uint32_t profile)

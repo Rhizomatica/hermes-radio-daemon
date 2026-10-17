@@ -31,30 +31,42 @@ Radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-net)
 
 ## Directory Structure
 
+Sources are grouped by module, one directory each, as in mercury; every module
+directory is on the include path, so `#include "x.h"` finds a header wherever
+its module lives.
+
 ```
 hermes-radio-daemon/
-├── radio.h                  Unified radio + radio_profile structs (one per process)
-├── radio_backend.{c,h}      Backend vtable dispatch
 ├── radio_daemon.c           main(): arg parse, backend detect, dispatch
-├── radio_daemon_core.c      Backend-neutral run loop (signal handler, init, join)
-├── radio_websocket.c        ws/wss server (one for both backends), built on websocket/
-├── radio_media.c            Audio rings, WAV recording, spectrum FFT
-├── audio_bridge.{c,h}       Rate-converting bridge between backend ALSA rate and ring rate (csdr polyphase)
-├── audio_headset.{c,h}      Optional operator-side hardware headset (second ALSA device pair)
-├── radio_pipeline.c         Per-backend capability descriptor
-├── radio_shm.c              SHM command dispatcher (sbitx_client wire protocol)
-├── cfg_utils.c              INI parser, dirty-flag writer thread, digi_tx_queue
-├── websocket/               In-tree RFC 6455 server + frame codec + TLS (OpenSSL)
-├── hamlib/                  Hamlib backend (radio_hamlib.{c,h}) — only this is hamlib-specific
+├── radio/                   The radio
+│   ├── radio.h              Unified radio + radio_profile structs (one per process)
+│   ├── radio_backend.{c,h}  Backend vtable dispatch, PTT ownership
+│   ├── radio_daemon_core.c  Backend-neutral run loop (signal handler, init, join)
+│   ├── radio_controls.c     Hamlib-named levels/funcs/parms surface
+│   ├── radio_pipeline.c     Per-backend capability descriptor
+│   └── radio_media.c        Audio rings, WAV recording, spectrum FFT
+├── hamlib/                  Hamlib backend (radio_hamlib, digital modes over a rig codec)
 ├── sbitx/                   HF Signals hardware backend (GPIO, I2C, Si5351, ALSA, encoders)
-├── dsp/                     SSB DSP + FM/AM demodulators + DRM (Dream subprocess) + digi encoders
+├── dsp/                     SSB DSP, FM/AM demodulators, DRM, digital modes, voice codecs
+├── modem/                   Radio <-> data modem audio: modem_audio (8 kHz, PTT_SRC_MODEM)
+│                            and its transports (RTP multicast, SHM, ALSA loopback)
+├── audioio/                 Operator audio: audio_bridge (browser, csdr polyphase), headset
+├── control_interfaces/      Control servers: CAT emulation (cat_server), rigctld
+│                            (rig_server), SHM command dispatcher (radio_shm)
+├── gui_interface/           User interfaces
+│   ├── radio_websocket.c    ws/wss UI server (one for both backends)
+│   ├── websocket/           In-tree RFC 6455 server + frame codec + TLS (OpenSSL)
+│   ├── web/                 Self-contained demo HTML client (index.html)
+│   └── api/                 Go module (go 1.27.2): REST + websocket APIs over cgo
+├── common/                  INI configuration (cfg_utils), shared-memory helpers
+├── include/                 SHM protocol headers (sbitx_io.h, radio_cmds.h)
+├── utils/                   radio_client, ws_client, D-STAR/AMBE tools, check_symbols.sh
 ├── vendor/rade_c/           rade_c pure-C RADE V1+V2 library (freedv/rade_c)
 ├── vendor/opus_dnn/         Opus subset: LPCNet features, FARGAN vocoder, nnet core
 ├── vendor/ft8_lib/          Vendored ft8_lib (MIT)
 ├── vendor/minimodem/        Vendored minimodem FSK core (GPLv3)
+├── vendor/hermes_shm/       Shared-memory rings, identical to mercury's copy
 ├── config/                  Sample core.ini and user.ini
-├── include/                 SHM protocol headers (sbitx_io.h, radio_cmds.h)
-├── web/                     Self-contained demo HTML client (index.html)
 └── tests/                   Regression tests
 ```
 
@@ -685,7 +697,7 @@ Run `sbitx_client -h` for the full command list.
 
 ## Demo HTML Client
 
-A self-contained websocket client is provided at `web/index.html`. Open it in any browser to connect to the daemon's websocket:
+A self-contained websocket client is provided at `gui_interface/web/index.html`. Open it in any browser to connect to the daemon's websocket:
 
 - **Control tab**: set frequency, mode, profile (0–8), PTT on/off
 - **Rig Controls tab**: the connected rig's own controls — the panel builds
@@ -704,7 +716,7 @@ A self-contained websocket client is provided at `web/index.html`. Open it in an
 No build step required — the daemon serves it directly when
 `enable_websocket = 1` (open `https://<host>:8080/index.html` for wss
 or `http://<host>:8080/index.html` for ws). The page auto-detects
-`ws://` vs `wss://` from its own URL. You can also open `web/index.html`
+`ws://` vs `wss://` from its own URL. You can also open `gui_interface/web/index.html`
 locally as a file:// and type the WebSocket URL into the top bar.
 
 ## zBitx Hardware Profile
