@@ -57,7 +57,7 @@ OPUS_DNN_OBJS     = $(OPUS_DNN_SRCS:.c=.o)
 FT8_LIB_OBJS      = $(FT8_LIB_SRCS:.c=.o)
 MM_FSK_OBJS       = $(MM_FSK_SRCS:.c=.o)
 
-.PHONY: all clean install test compat-tests check-symbols
+.PHONY: all clean install test compat-tests check-symbols FORCE
 
 all: radio_daemon radio_client
 
@@ -133,17 +133,44 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              $(FT8_LIB_OBJS) \
              $(MM_FSK_OBJS)
 
+# ── mercury, linked in (modem/mercury_link.c) ──────────────────
+# vendor/mercury holds mercury with the host API (host/mercury_host.h); it
+# is built there with MERCURY_HOST=daemon, which leaves out mercury's own
+# audio, PTT, websocket server, iniparser and hermes_shm (the daemon has
+# them).  Without it the daemon builds as before, and refuses
+# main:enable_mercury at startup.
+MERCURY_DIR  ?= vendor/mercury
+HAVE_MERCURY ?= $(if $(wildcard $(MERCURY_DIR)/host/mercury_host.h),1,0)
+ifeq ($(HAVE_MERCURY),1)
+MERCURY_LIBS ?= $(MERCURY_DIR)/libmercury_host.a $(MERCURY_DIR)/modem/freedv/libfreedvdata.a
+CFLAGS          += -DHAVE_MERCURY=1
+DAEMON_TOP_OBJS += modem/mercury_link.o
+modem/mercury_link.o: EXTRA_CPPFLAGS += -I$(MERCURY_DIR)/host
+# One kiss_fft in the binary: freedv's (same structs, MAXFACTORS and float
+# scalar as ft8_lib's).  The FT8 test links the same copy.
+FT8_LIB_OBJS := $(filter-out %/fft/kiss_fft.o %/fft/kiss_fftr.o,$(FT8_LIB_OBJS))
+FT8_TEST_SRCS = $(filter-out %/fft/kiss_fft.c %/fft/kiss_fftr.c,$(FT8_LIB_SRCS))
+FT8_TEST_LIBS = $(MERCURY_DIR)/modem/freedv/libfreedvdata.a
+$(MERCURY_LIBS) &: FORCE
+	$(MAKE) -C $(MERCURY_DIR) libmercury_host.a MERCURY_HOST=daemon
+else
+FT8_TEST_SRCS = $(FT8_LIB_SRCS)
+FT8_TEST_LIBS =
+endif
+
 DAEMON_OBJS = $(DAEMON_TOP_OBJS) $(SBITX_OBJS)
 
-radio_daemon: $(DAEMON_OBJS)
-	$(CC) -o radio_daemon $(DAEMON_OBJS) $(LDFLAGS)
+# Mercury's archives after the daemon's objects: they use its hermes_shm.
+radio_daemon: $(DAEMON_OBJS) $(if $(filter 1,$(HAVE_MERCURY)),$(MERCURY_LIBS))
+	$(CC) -o radio_daemon $(DAEMON_OBJS) $(if $(filter 1,$(HAVE_MERCURY)),$(MERCURY_LIBS)) $(LDFLAGS)
 
 # A library linked into the daemon must not define a global the daemon also
 # defines, nor one of the shared-library symbols it uses: neither is a link
 # error, one side just silently runs the other's code.  MERCURY_LIBS names
-# the archives to check (utils/check_symbols.sh).
+# the archives to check (utils/check_symbols.sh); with vendor/mercury it
+# defaults to mercury's.
 check-symbols: $(DAEMON_OBJS)
-	utils/check_symbols.sh "$(DAEMON_OBJS)" $(MERCURY_LIBS)
+	utils/check_symbols.sh "$(DAEMON_OBJS)" "$(LDFLAGS)" $(MERCURY_LIBS)
 
 # RADE: rade_c and the Opus DNN subset it runs on (LPCNet features, FARGAN)
 # see their own include paths and config.h only, not ft8_lib's or
@@ -248,10 +275,10 @@ tests/stream_resampler_test: tests/stream_resampler_test.c dsp/stream_resampler.
 	$(CC) $(TEST_CFLAGS) -I/usr/include/csdr tests/stream_resampler_test.c dsp/stream_resampler.c -o $@ -lcsdr -lfftw3f -lm
 
 tests/digi_modes_test: tests/digi_modes_test.c dsp/stream_resampler.c dsp/sbitx_cw.c dsp/sbitx_rtty.c \
-                       dsp/sbitx_ft8.c dsp/sbitx_ft8.h dsp/digi_log.c dsp/digi_log.h $(FT8_LIB_SRCS) $(MM_FSK_SRCS)
+                       dsp/sbitx_ft8.c dsp/sbitx_ft8.h dsp/digi_log.c dsp/digi_log.h $(FT8_TEST_SRCS) $(FT8_TEST_LIBS) $(MM_FSK_SRCS)
 	$(CC) $(TEST_CFLAGS) -w -I/usr/include/csdr -Idsp $(FT8_LIB_CPPFLAGS) $(MM_FSK_CPPFLAGS) \
 	      tests/digi_modes_test.c dsp/stream_resampler.c dsp/sbitx_cw.c dsp/sbitx_rtty.c \
-	      dsp/sbitx_ft8.c dsp/digi_log.c $(FT8_LIB_SRCS) $(MM_FSK_SRCS) -o $@ -lcsdr -lfftw3f -lfftw3 -lcw -lpthread -lm
+	      dsp/sbitx_ft8.c dsp/digi_log.c $(FT8_TEST_SRCS) $(MM_FSK_SRCS) $(FT8_TEST_LIBS) -o $@ -lcsdr -lfftw3f -lfftw3 -lcw -lpthread -lm
 
 tests/digi_log_test: tests/digi_log_test.c dsp/digi_log.c dsp/digi_log.h
 	$(CC) $(TEST_CFLAGS) -Idsp tests/digi_log_test.c dsp/digi_log.c -o $@ -lpthread -lm

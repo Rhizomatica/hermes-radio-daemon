@@ -31,6 +31,9 @@
 #include "loop_audio.h"
 #include "rtp_audio.h"
 #include "modem_audio.h"
+#ifdef HAVE_MERCURY
+#include "mercury_link.h"
+#endif
 #include "voice_crypto.h"
 #include "sbitx/sbitx_alsa.h"
 
@@ -126,6 +129,10 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     bool shm_audio_started = false;
     bool loop_audio_started = false;
     bool rtp_audio_started = false;
+#ifdef HAVE_MERCURY
+    bool mercury_started = false;
+#endif
+    cpu_set_t unpinned_cpus;
     bool websocket_started = false;
     bool shm_started = false;
     bool headset_started = false;
@@ -137,6 +144,10 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     pthread_mutex_init(&radio_h.message_mutex, NULL);
     radio_backend_configure(&radio_h, selection);
 
+    /* What the process may run on before -c pins this thread (and every
+     * thread it starts) to one CPU: mercury runs on this, off the DSP core. */
+    CPU_ZERO(&unpinned_cpus);
+    sched_getaffinity(0, sizeof(unpinned_cpus), &unpinned_cpus);
     maybe_pin_cpu(runtime->cpu_nr);
 
     if (!cfg_init(&radio_h, runtime->cfg_radio_path, runtime->cfg_user_path, &cfg_tid))
@@ -187,6 +198,16 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     if (radio_h.enable_rtp_audio)
         rtp_audio_started = rtp_audio_init(&radio_h);
 
+    if (radio_h.enable_mercury)
+    {
+#ifdef HAVE_MERCURY
+        mercury_started = mercury_link_start(&radio_h, &unpinned_cpus);
+#else
+        fprintf(stderr, "ERROR: main:enable_mercury is set, but this radio_daemon was built "
+                        "without mercury (no vendor/mercury); running without the modem.\n");
+#endif
+    }
+
     if (!radio_websocket_init(&radio_h, &websocket_tid))
     {
         fprintf(stderr, "Failed to initialize websocket service. Exiting.\n");
@@ -230,6 +251,10 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
         loop_audio_shutdown();
     if (rtp_audio_started)
         rtp_audio_shutdown();
+#ifdef HAVE_MERCURY
+    if (mercury_started)
+        mercury_link_stop();
+#endif
     modem_audio_shutdown();         /* after every modem transport */
     if (media_started)
         radio_media_shutdown(&radio_h, &capture_tid, &playback_tid);
@@ -257,6 +282,10 @@ fail:
         loop_audio_shutdown();
     if (rtp_audio_started)
         rtp_audio_shutdown();
+#ifdef HAVE_MERCURY
+    if (mercury_started)
+        mercury_link_stop();
+#endif
     modem_audio_shutdown();         /* after every modem transport */
     if (media_started)
         radio_media_shutdown(&radio_h, &capture_tid, &playback_tid);

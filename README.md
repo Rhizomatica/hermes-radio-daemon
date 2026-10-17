@@ -184,6 +184,17 @@ audio_period_size = 480        ; ALSA period, must be >= 256 for spectrum
 ; headset_playback_device = hw:Headset,0
 ; headset_sample_rate     = 48000
 
+; Mercury HF modem linked in (built when vendor/mercury holds mercury with
+; its host API): it runs inside the daemon on modem_audio, keying through
+; the daemon, instead of as a separate modem.service over RTP. Its TNC
+; ports and settings come from its own mercury.ini (audio and PTT there are
+; ignored); mercury_args adds command-line options, e.g. -p/-b for other
+; TNC ports. A daemon built without mercury reports enable_mercury as an
+; error and runs without the modem.
+; enable_mercury = 1
+; mercury_config = /etc/mercury/mercury.ini
+; mercury_args   =
+
 ; Dream DRM receiver binary path
 dream_path = /usr/bin/dream
 
