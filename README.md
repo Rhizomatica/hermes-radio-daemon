@@ -67,7 +67,8 @@ hermes-radio-daemon/
 ├── vendor/minimodem/        Vendored minimodem FSK core (GPLv3)
 ├── vendor/hermes_shm/       Shared-memory rings, identical to mercury's copy
 ├── config/                  Sample core.ini and user.ini
-└── tests/                   Unit tests: <module>/test_<unit>.c on Unity + fff (tests/tests.mk)
+└── tests/                   Unit tests: <module>/test_<unit>.c on Unity + fff (tests/tests.mk);
+                             integration/: Go tests that drive the real radio_daemon
 ```
 
 Each backend exposes its `radio_backend_ops` vtable (`hamlib_backend_ops` in
@@ -167,6 +168,22 @@ thread, and not in one-time setup in `main()` (use `TEST_REQUIRE` there).
 A test that races another thread should share state through atomics or a
 lock: `make test SANITIZE=tsan` checks.  Races inside libraries are
 suppressed, with a reason, in `tests/sanitizer-suppressions/tsan.supp`.
+
+### Integration tests
+
+```bash
+make integration-test       # needs go (tests/integration/go.mod names the toolchain)
+cd tests/integration && go test -run PTT -v ./...
+```
+
+`tests/integration` (Go, standard library only, as mercury's) runs the real
+`radio_daemon`: each test starts its own on Hamlib's dummy rig (model 1),
+with no sound card, in a temporary directory with its own `core.ini`,
+`user.ini` and ports, drives it over the websocket (a small RFC 6455 client
+in `clients_test.go`) and rigctl, and stops it with SIGTERM, requiring a
+clean shutdown.  With mercury linked in, `mercury_test.go` also starts it
+(`enable_mercury`, ALSA's `null` device) and talks to its TNC; without, that
+test skips.  `RADIOD_BIN=/path/to/radio_daemon` tests another binary.
 
 CI (`.github/workflows/ci.yml`) runs all of this on Debian 13, amd64 and
 arm64, with and without mercury, on every pull request;
