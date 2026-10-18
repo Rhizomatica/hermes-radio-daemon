@@ -1,0 +1,4 @@
+[submodule "vendor/mercury"]
+	path = vendor/mercury
+	url = https://github.com/Rhizomatica/mercury.git
+	branch = mercuryv2

@@ -204,7 +204,7 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
         mercury_started = mercury_link_start(&radio_h, &unpinned_cpus);
 #else
         fprintf(stderr, "ERROR: main:enable_mercury is set, but this radio_daemon was built "
-                        "without mercury (no vendor/mercury); running without the modem.\n");
+                        "without mercury (vendor/mercury not checked out); running without the modem.\n");
 #endif
     }
 

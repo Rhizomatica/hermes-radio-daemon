@@ -115,8 +115,14 @@ sudo cp dream /usr/bin/dream
 ## Compilation
 
 ```bash
+git submodule update --init   # vendor/mercury, the Mercury HF modem
 make
 ```
+
+Mercury (`vendor/mercury`, a submodule of Rhizomatica/mercury) is linked
+into the daemon when it is checked out; `make` builds it there as
+`libmercury_host.a`.  Without it (`git clone` with no `--recursive` and no
+`submodule update`) the daemon builds as before, without the modem.
 
 ## Installation
 
@@ -184,8 +190,8 @@ audio_period_size = 480        ; ALSA period, must be >= 256 for spectrum
 ; headset_playback_device = hw:Headset,0
 ; headset_sample_rate     = 48000
 
-; Mercury HF modem linked in (built when vendor/mercury holds mercury with
-; its host API): it runs inside the daemon on modem_audio, keying through
+; Mercury HF modem linked in (built when the vendor/mercury submodule is
+; checked out): it runs inside the daemon on modem_audio, keying through
 ; the daemon, instead of as a separate modem.service over RTP. Its TNC
 ; ports and settings come from its own mercury.ini (audio and PTT there are
 ; ignored); mercury_args adds command-line options, e.g. -p/-b for other
