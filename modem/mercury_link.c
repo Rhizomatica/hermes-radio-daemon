@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "mercury_link.h"
 #include "modem_audio.h"
@@ -15,6 +16,13 @@
 
 #define MAX_ARGS 32
 
+/* The TX clock: a block every CLOCK_MS, while mercury holds PTT and the
+ * radio's capture has gone quiet for RX_QUIET_MS (half-duplex closes it
+ * for the whole transmission). */
+#define CLOCK_MS     20
+#define CLOCK_BLOCK  (8000 / 1000 * CLOCK_MS)
+#define RX_QUIET_MS  40
+
 static radio          *s_radio;
 static bool            s_started;
 static pthread_t       s_launcher;
@@ -22,6 +30,17 @@ static _Atomic int     s_init_rc = 1;          /* 1 = still starting */
 static char            s_argbuf[sizeof(((radio *) 0)->mercury_args)];
 static char           *s_argv[MAX_ARGS + 1];
 static int             s_argc;
+static pthread_mutex_t s_exchange_lock = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic int64_t s_last_rx_ms;
+static pthread_t       s_clock;
+static _Atomic bool    s_clock_run;
+
+static int64_t now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
 
 /* ── radio ops (mercury's TX thread, its UI publisher) ── */
 
@@ -50,21 +69,58 @@ static bool get_frequency(uint64_t *hz, void *user)
 
 /* ── audio: one exchange per block of the radio's audio clock ── */
 
-static void rx_sink(const int16_t *pcm8k, size_t n, void *user)
+/* One exchange, from the RX sink or the TX clock; the lock keeps the two
+ * from interleaving mercury's TX audio. */
+static void exchange(const int16_t *rx, size_t n)
 {
     int16_t tx[1024];
 
+    pthread_mutex_lock(&s_exchange_lock);
+    mercury_host_audio_exchange(rx, tx, n);
+    /* Mercury's audio then silence, all of it while mercury holds PTT. */
+    if (modem_audio_tx_keyed_by(MERCURY_LINK_PTT_ID))
+        modem_audio_tx_feed(tx, n);
+    pthread_mutex_unlock(&s_exchange_lock);
+}
+
+static void rx_sink(const int16_t *pcm8k, size_t n, void *user)
+{
     (void) user;
+    s_last_rx_ms = now_ms();
     while (n)
     {
         size_t chunk = n > 1024 ? 1024 : n;
-        mercury_host_audio_exchange(pcm8k, tx, chunk);
-        /* Mercury's audio then silence, all of it while mercury holds PTT. */
-        if (modem_audio_tx_keyed_by(MERCURY_LINK_PTT_ID))
-            modem_audio_tx_feed(tx, chunk);
+        exchange(pcm8k, chunk);
         pcm8k += chunk;
         n -= chunk;
     }
+}
+
+/* Mercury's TX drains only through the exchange.  A half-duplex radio
+ * (main:audio_half_duplex) stops capture while keyed, so the RX sink stops
+ * with it: this clock carries the exchange on, at 8 kHz of wall time, until
+ * RX blocks flow again. */
+static void *tx_clock(void *arg)
+{
+    struct timespec next;
+
+    (void) arg;
+    clock_gettime(CLOCK_MONOTONIC, &next);
+    while (s_clock_run)
+    {
+        next.tv_nsec += CLOCK_MS * 1000000L;
+        if (next.tv_nsec >= 1000000000L)
+        {
+            next.tv_sec++;
+            next.tv_nsec -= 1000000000L;
+        }
+        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
+
+        if (modem_audio_tx_keyed_by(MERCURY_LINK_PTT_ID) &&
+            now_ms() - s_last_rx_ms > RX_QUIET_MS)
+            exchange(NULL, CLOCK_BLOCK);
+    }
+    return NULL;
 }
 
 /* ── lifecycle ── */
@@ -123,7 +179,17 @@ bool mercury_link_start(radio *radio_h, const cpu_set_t *cpus)
     if (cpus)
         pthread_attr_setaffinity_np(&attr, sizeof(*cpus), cpus);
     s_init_rc = 1;
-    int err = pthread_create(&s_launcher, &attr, launcher, NULL);
+    s_clock_run = true;
+    int err = pthread_create(&s_clock, &attr, tx_clock, NULL);
+    if (err == 0)
+    {
+        err = pthread_create(&s_launcher, &attr, launcher, NULL);
+        if (err != 0)
+        {
+            s_clock_run = false;
+            pthread_join(s_clock, NULL);
+        }
+    }
     pthread_attr_destroy(&attr);
     if (err != 0)
     {
@@ -145,7 +211,10 @@ void mercury_link_stop(void)
         return;
     s_started = false;
 
-    modem_audio_remove_rx_sink(rx_sink, NULL);   /* no exchange after this */
+    /* No exchange after these, as mercury_host.h asks of a host. */
+    modem_audio_remove_rx_sink(rx_sink, NULL);
+    s_clock_run = false;
+    pthread_join(s_clock, NULL);
     mercury_request_shutdown();                  /* ends a blocking test mode */
     pthread_join(s_launcher, NULL);
     mercury_shutdown();                          /* no-op if it never started */

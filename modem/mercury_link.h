@@ -4,7 +4,9 @@
  * a separate modem.service over RTP: mercury (built MERCURY_HOST=daemon, see
  * vendor/mercury/host/mercury_host.h) hears the radio through a modem_audio
  * RX sink, answers each block with its TX audio, keys through
- * PTT_SRC_MODEM, and reads the dial frequency from the active profile.  Its
+ * PTT_SRC_MODEM, and reads the dial frequency from the active profile.
+ * While it transmits on a radio whose capture stops (audio_half_duplex),
+ * a 20 ms clock of its own drains its TX audio instead.  Its
  * TNC ports (JNOS, uucpd) and configuration are mercury's own:
  * main:mercury_config names the mercury.ini, main:mercury_args adds
  * command-line options.

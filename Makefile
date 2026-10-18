@@ -169,8 +169,20 @@ radio_daemon: $(DAEMON_OBJS) $(if $(filter 1,$(HAVE_MERCURY)),$(MERCURY_LIBS))
 # error, one side just silently runs the other's code.  MERCURY_LIBS names
 # the archives to check (utils/check_symbols.sh); with vendor/mercury it
 # defaults to mercury's.
+#
+# Mercury's archive leaves out its hermes_shm rings and links against the
+# daemon's (vendor/hermes_shm), but its objects were compiled against its
+# own copy of the headers: the two copies must stay identical, or the ring
+# structs differ with no error at all.
+HERMES_SHM_FILES = ring_buffer_posix.c ring_buffer_posix.h shm_posix.c shm_posix.h
 check-symbols: $(DAEMON_OBJS)
 	utils/check_symbols.sh "$(DAEMON_OBJS)" "$(LDFLAGS)" $(MERCURY_LIBS)
+ifeq ($(HAVE_MERCURY),1)
+	@for f in $(HERMES_SHM_FILES); do \
+	    cmp -s vendor/hermes_shm/$$f $(MERCURY_DIR)/common/$$f || \
+	        { echo "check-symbols: vendor/hermes_shm/$$f differs from $(MERCURY_DIR)/common/$$f" >&2; exit 1; }; \
+	done; echo "check-symbols: hermes_shm matches mercury's"
+endif
 
 # RADE: rade_c and the Opus DNN subset it runs on (LPCNet features, FARGAN)
 # see their own include paths and config.h only, not ft8_lib's or
