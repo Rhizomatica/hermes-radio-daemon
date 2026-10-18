@@ -48,11 +48,18 @@ apt-get install -y --no-install-recommends csdr
 
 # libspecbleach: the stations run a 0.3.0-1 package that is in no APT
 # repository, so CI builds upstream's v0.3.0 tag (a superset of the
-# package's API).  It has no install rules: shared, no AVX (whose separate
-# archive -lspecbleach would not pull in), header and library copied in.
+# package's API).  It has no install rules: built shared, header and
+# library copied in.  On x86_64 its denoiser calls the AVX filter whatever
+# ENABLE_AVX says, so AVX stays on there and, position-independent, goes
+# into the shared library; elsewhere that file does not build.
+case "$(uname -m)" in
+    x86_64) avx=ON ;;
+    *)      avx=OFF ;;
+esac
 git clone -q --depth 1 --branch "$SPECBLEACH_REF" "$SPECBLEACH_URL" "$tmp/specbleach"
 cmake -S "$tmp/specbleach" -B "$tmp/specbleach/build" -DCMAKE_BUILD_TYPE=Release \
-      -DBUILD_SHARED_LIBS=ON -DENABLE_AVX=OFF -DENABLE_TESTS=OFF -DENABLE_EXAMPLES=OFF
+      -DBUILD_SHARED_LIBS=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DENABLE_AVX=$avx \
+      -DENABLE_TESTS=OFF -DENABLE_EXAMPLES=OFF
 cmake --build "$tmp/specbleach/build" -j "$(nproc)"
 install -m 644 "$tmp"/specbleach/include/specbleach_*.h /usr/include/
 install -m 644 "$tmp/specbleach/build/libspecbleach.so" /usr/lib/
