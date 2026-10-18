@@ -24,6 +24,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -55,6 +56,7 @@
 #define WS_DEFAULT_MAX_MESSAGE   8192
 #define WS_MAX_HTTP_HEADER       8192
 #define WS_HANDSHAKE_TIMEOUT_MS  10000
+#define WS_DEFAULT_MAX_HTTP_BODY (1024 * 1024)
 
 /* Write-buffer policy.  The spectrum/audio streams push often, so a client
  * that stops reading backs up fast.  Past the soft limit we drop frames that
@@ -73,6 +75,8 @@ struct ws_qmsg {
     uint8_t *data;
     size_t len;
     bool is_text;
+    long to_id;                   /* one connection, or -1: every one of class cls */
+    unsigned cls;
 };
 
 struct ws_conn {
@@ -86,6 +90,8 @@ struct ws_conn {
     bool tls_want_write;          /* a TLS op asked for POLLOUT */
 
     bool is_ws;                   /* upgrade completed */
+    unsigned cls;                 /* class from on_upgrade (broadcast filter) */
+    char peer[64];                /* the client's address */
     bool close_after_write;       /* drain the write buffer, then hang up */
     bool dead;                    /* drop at the end of this iteration */
 
@@ -111,7 +117,7 @@ struct ws_server {
 
     pthread_t tid;
     bool thread_started;
-    volatile bool running;
+    _Atomic bool running;         /* the server thread loops on it; stop clears it */
 
     ws_conn_t *conns;
     size_t nconns;
@@ -422,6 +428,11 @@ int ws_conn_send(ws_conn_t *c, const void *data, size_t len, bool is_text)
                            false);
 }
 
+unsigned ws_conn_class(ws_conn_t *c)
+{
+    return c != NULL ? c->cls : 0;
+}
+
 long ws_conn_id(ws_conn_t *c)
 {
     return (c != NULL) ? c->id : 0;
@@ -560,13 +571,59 @@ static int conn_process_frames(ws_conn_t *c)
 
 /* ---- HTTP ---- */
 
+static const char *http_reason(int status)
+{
+    switch (status)
+    {
+    case 200: return "OK";
+    case 201: return "Created";
+    case 202: return "Accepted";
+    case 204: return "No Content";
+    case 304: return "Not Modified";
+    case 400: return "Bad Request";
+    case 401: return "Unauthorized";
+    case 403: return "Forbidden";
+    case 404: return "Not Found";
+    case 405: return "Method Not Allowed";
+    case 409: return "Conflict";
+    case 411: return "Length Required";
+    case 413: return "Content Too Large";
+    case 415: return "Unsupported Media Type";
+    case 422: return "Unprocessable Content";
+    case 426: return "Upgrade Required";
+    case 429: return "Too Many Requests";
+    case 500: return "Internal Server Error";
+    case 501: return "Not Implemented";
+    case 503: return "Service Unavailable";
+    case 507: return "Insufficient Storage";
+    default:  return status < 300 ? "OK" : status < 500 ? "Client Error" : "Server Error";
+    }
+}
+
+bool ws_http_header(const ws_http_request_t *req, const char *name, char *out, size_t out_len)
+{
+    size_t vlen;
+    const char *v;
+
+    if (req == NULL || req->headers == NULL || out == NULL || out_len == 0)
+        return false;
+    v = header_find(req->headers, strlen(req->headers), name, &vlen);
+    if (v == NULL)
+        return false;
+    if (vlen >= out_len)
+        vlen = out_len - 1;
+    memcpy(out, v, vlen);
+    out[vlen] = '\0';
+    return true;
+}
+
 static void http_reply(ws_conn_t *c, int status, const char *reason,
                        const char *extra_headers,
                        const char *content_type,
                        const void *body, size_t body_len,
                        bool send_body)
 {
-    char head[512];
+    char head[2048];
     int n;
 
     n = snprintf(head, sizeof(head),
@@ -588,8 +645,10 @@ static void http_reply(ws_conn_t *c, int status, const char *reason,
     c->close_after_write = true;
 }
 
-/* Handle one request.  Returns -1 to drop the connection. */
-static int conn_handle_request(ws_conn_t *c, const char *req, size_t req_len)
+/* Handle one request (its header block, then body_len bytes of body).
+ * Returns -1 to drop the connection. */
+static int conn_handle_request(ws_conn_t *c, const char *req, size_t req_len,
+                               const void *body, size_t body_len)
 {
     ws_server_t *s = c->srv;
     const char *line_end;
@@ -600,7 +659,10 @@ static int conn_handle_request(ws_conn_t *c, const char *req, size_t req_len)
     const char *q;
     size_t vlen;
     const char *v;
-    bool is_head;
+    bool is_head, is_get;
+    char method_s[16], query_s[1024], *hdrs_s;
+    ws_http_request_t hreq;
+    int ret = 0;
 
     line_end = (const char *) memchr(req, '\n', req_len);
     if (line_end == NULL)
@@ -628,17 +690,30 @@ static int conn_handle_request(ws_conn_t *c, const char *req, size_t req_len)
     target_len = (size_t) (sp2 - target);
 
     is_head = (method_len == 4 && str_casecmp_n(method, "HEAD", 4) == 0);
-    if (!is_head && !(method_len == 3 && str_casecmp_n(method, "GET", 3) == 0))
+    is_get = (method_len == 3 && str_casecmp_n(method, "GET", 3) == 0);
+    if (method_len == 0 || method_len >= sizeof(method_s))
     {
-        http_reply(c, 405, "Method Not Allowed", "Allow: GET, HEAD\r\n",
-                   "text/plain", "method not allowed", 18, true);
+        http_reply(c, 400, "Bad Request", NULL, "text/plain", "bad method", 10, true);
         return 0;
     }
+    memcpy(method_s, method, method_len);
+    method_s[method_len] = '\0';
 
-    /* Strip any query string; none of the pages use one. */
+    /* The query goes to on_http; the static pages use none. */
+    query_s[0] = '\0';
     q = (const char *) memchr(target, '?', target_len);
     if (q != NULL)
+    {
+        size_t ql = target_len - (size_t) (q + 1 - target);
+        if (ql >= sizeof(query_s))
+        {
+            http_reply(c, 414, "URI Too Long", NULL, "text/plain", "query too long", 14, true);
+            return 0;
+        }
+        memcpy(query_s, q + 1, ql);
+        query_s[ql] = '\0';
         target_len = (size_t) (q - target);
+    }
 
     if (target_len == 0 || target_len >= sizeof(path))
     {
@@ -647,6 +722,19 @@ static int conn_handle_request(ws_conn_t *c, const char *req, size_t req_len)
     }
     memcpy(path, target, target_len);
     path[target_len] = '\0';
+
+    hdrs_s = (char *) malloc(hdrs_len + 1);
+    if (hdrs_s == NULL)
+        return -1;
+    memcpy(hdrs_s, hdrs, hdrs_len);
+    hdrs_s[hdrs_len] = '\0';
+    hreq.method = method_s;
+    hreq.path = path;
+    hreq.query = query_s;
+    hreq.headers = hdrs_s;
+    hreq.body = body;
+    hreq.body_len = body_len;
+    hreq.peer = c->peer;
 
     /* Any request carrying the handshake header is an upgrade, whatever the
      * path -- the same rule the Mongoose handler used, so existing clients
@@ -659,7 +747,10 @@ static int conn_handle_request(ws_conn_t *c, const char *req, size_t req_len)
         char accept_src[256];
         uint8_t digest[WS_SHA1_DIGEST_LEN];
         char accept[64];
-        char resp[256];
+        char resp[512];
+        char protocol[64] = "";
+        char proto_hdr[96] = "";
+        unsigned cls = 0;
         int n;
 
         v = header_find(hdrs, hdrs_len, "Upgrade", &vlen);
@@ -668,7 +759,7 @@ static int conn_handle_request(ws_conn_t *c, const char *req, size_t req_len)
             http_reply(c, 426, "Upgrade Required",
                        "Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n",
                        "text/plain", "websocket endpoint", 18, true);
-            return 0;
+            goto out;
         }
 
         /* RFC 6455 4.2.1 also requires the Connection header to carry the
@@ -679,7 +770,7 @@ static int conn_handle_request(ws_conn_t *c, const char *req, size_t req_len)
         {
             http_reply(c, 400, "Bad Request", NULL, "text/plain",
                        "connection must upgrade", 23, true);
-            return 0;
+            goto out;
         }
 
         v = header_find(hdrs, hdrs_len, "Sec-WebSocket-Version", &vlen);
@@ -688,7 +779,7 @@ static int conn_handle_request(ws_conn_t *c, const char *req, size_t req_len)
             http_reply(c, 426, "Upgrade Required",
                        "Sec-WebSocket-Version: 13\r\n",
                        "text/plain", "unsupported version", 19, true);
-            return 0;
+            goto out;
         }
 
         key = header_find(hdrs, hdrs_len, "Sec-WebSocket-Key", &key_len);
@@ -697,42 +788,85 @@ static int conn_handle_request(ws_conn_t *c, const char *req, size_t req_len)
         {
             http_reply(c, 400, "Bad Request", NULL, "text/plain",
                        "missing key", 11, true);
-            return 0;
+            goto out;
         }
 
         memcpy(accept_src, key, key_len);
         memcpy(accept_src + key_len, WS_GUID, strlen(WS_GUID));
         ws_sha1(accept_src, key_len + strlen(WS_GUID), digest);
         if (ws_base64_encode(digest, sizeof(digest), accept, sizeof(accept)) == 0)
-            return -1;
+        {
+            ret = -1;
+            goto out;
+        }
+
+        /* The owner may route the upgrade (by path, subprotocol, session)
+         * or refuse it with an HTTP status. */
+        if (s->opts.on_upgrade != NULL)
+        {
+            int st = s->opts.on_upgrade(c, &hreq, &cls, protocol, sizeof(protocol),
+                                        s->opts.user_data);
+            if (st != 0)
+            {
+                const char *reason = http_reason(st);
+                http_reply(c, st, reason, NULL, "text/plain", reason, strlen(reason), true);
+                goto out;
+            }
+            if (protocol[0])
+                snprintf(proto_hdr, sizeof(proto_hdr), "Sec-WebSocket-Protocol: %s\r\n", protocol);
+        }
 
         n = snprintf(resp, sizeof(resp),
                      "HTTP/1.1 101 Switching Protocols\r\n"
                      "Upgrade: websocket\r\n"
                      "Connection: Upgrade\r\n"
                      "Sec-WebSocket-Accept: %s\r\n"
+                     "%s"
                      "\r\n",
-                     accept);
-        if (n <= 0 || (size_t) n >= sizeof(resp))
-            return -1;
-
-        if (conn_queue(c, resp, (size_t) n, false) != 0)
-            return -1;
+                     accept, proto_hdr);
+        if (n <= 0 || (size_t) n >= sizeof(resp) || conn_queue(c, resp, (size_t) n, false) != 0)
+        {
+            ret = -1;
+            goto out;
+        }
 
         c->is_ws = true;
+        c->cls = cls;
         WS_LOG("client connected (fd %d)", c->fd);
 
         if (s->opts.on_connect != NULL)
             s->opts.on_connect(c, s->opts.user_data);
 
-        return 0;
+        goto out;
+    }
+
+    /* The owner's own routes (a REST API), ahead of the static pages. */
+    if (s->opts.on_http != NULL)
+    {
+        ws_http_response_t hresp = { 0 };
+        if (s->opts.on_http(c, &hreq, &hresp, s->opts.user_data))
+        {
+            int st = hresp.status ? hresp.status : 200;
+            http_reply(c, st, http_reason(st), hresp.extra_headers,
+                       hresp.content_type ? hresp.content_type : "application/json",
+                       hresp.body, hresp.body_len, !is_head);
+            free(hresp.body);
+            goto out;
+        }
+    }
+
+    if (!is_get && !is_head)
+    {
+        http_reply(c, 405, "Method Not Allowed", "Allow: GET, HEAD\r\n",
+                   "text/plain", "method not allowed", 18, true);
+        goto out;
     }
 
     /* Static pages. */
     if (s->opts.asset_lookup == NULL)
     {
         http_reply(c, 404, "Not Found", NULL, "text/plain", "not found", 9, true);
-        return 0;
+        goto out;
     }
 
     if (strcmp(path, "/") == 0)
@@ -742,7 +876,7 @@ static int conn_handle_request(ws_conn_t *c, const char *req, size_t req_len)
     if (strstr(path, "..") != NULL)
     {
         http_reply(c, 400, "Bad Request", NULL, "text/plain", "bad path", 8, true);
-        return 0;
+        goto out;
     }
 
     {
@@ -752,14 +886,16 @@ static int conn_handle_request(ws_conn_t *c, const char *req, size_t req_len)
         if (asset == NULL)
         {
             http_reply(c, 404, "Not Found", NULL, "text/plain", "not found", 9, true);
-            return 0;
+            goto out;
         }
 
         http_reply(c, 200, "OK", NULL, content_type_for(path),
                    asset, asset_len, !is_head);
     }
 
-    return 0;
+out:
+    free(hdrs_s);
+    return ret;
 }
 
 /* Returns -1 to drop the connection. */
@@ -809,11 +945,54 @@ static int conn_process_http(ws_conn_t *c)
         }
     }
 
-    if (conn_handle_request(c, start, hdr_len) != 0)
+    /* A body: Content-Length only, bounded; chunked is refused. */
+    size_t body_len = 0;
+    {
+        size_t vlen;
+        const char *v = header_find(start, hdr_len, "Transfer-Encoding", &vlen);
+        if (v != NULL)
+        {
+            http_reply(c, 501, "Not Implemented", NULL, "text/plain",
+                       "chunked bodies are not supported", 32, true);
+            return 0;
+        }
+        v = header_find(start, hdr_len, "Content-Length", &vlen);
+        if (v != NULL)
+        {
+            char num[24];
+            char *end;
+            size_t cap = c->srv->opts.max_http_body ? c->srv->opts.max_http_body
+                                                    : WS_DEFAULT_MAX_HTTP_BODY;
+            unsigned long long cl;
+            if (vlen == 0 || vlen >= sizeof(num))
+            {
+                http_reply(c, 400, "Bad Request", NULL, "text/plain", "bad length", 10, true);
+                return 0;
+            }
+            memcpy(num, v, vlen);
+            num[vlen] = '\0';
+            cl = strtoull(num, &end, 10);
+            if (*end != '\0' || num[0] == '-')
+            {
+                http_reply(c, 400, "Bad Request", NULL, "text/plain", "bad length", 10, true);
+                return 0;
+            }
+            if (cl > cap)
+            {
+                http_reply(c, 413, "Content Too Large", NULL, "text/plain", "body too large", 14, true);
+                return 0;
+            }
+            body_len = (size_t) cl;
+        }
+        if (c->rlen < hdr_len + body_len)
+            return 0;                   /* the rest of the body is on its way */
+    }
+
+    if (conn_handle_request(c, start, hdr_len, c->rbuf + hdr_len, body_len) != 0)
         return -1;
 
-    memmove(c->rbuf, c->rbuf + hdr_len, c->rlen - hdr_len);
-    c->rlen -= hdr_len;
+    memmove(c->rbuf, c->rbuf + hdr_len + body_len, c->rlen - hdr_len - body_len);
+    c->rlen -= hdr_len + body_len;
 
     return 0;
 }
@@ -908,6 +1087,11 @@ static void server_accept(ws_server_t *s)
         c->fd = fd;
         c->id = s->next_id++;
         c->created_ms = ws_uptime_ms();
+        if (getnameinfo((struct sockaddr *) &addr, alen, c->peer, sizeof(c->peer),
+                        NULL, 0, NI_NUMERICHOST) != 0)
+            c->peer[0] = '\0';
+        else if (strncmp(c->peer, "::ffff:", 7) == 0)        /* IPv4-mapped */
+            memmove(c->peer, c->peer + 7, strlen(c->peer + 7) + 1);
 
         if (s->tls_ctx != NULL)
         {
@@ -997,6 +1181,8 @@ static void server_drain_queue(ws_server_t *s)
         for (c = s->conns; c != NULL; c = c->next)
         {
             if (!c->is_ws || c->dead || c->close_after_write)
+                continue;
+            if (m->to_id >= 0 ? c->id != m->to_id : c->cls != m->cls)
                 continue;
 
             /* Binary frames are the spectrum/audio stream: droppable under
@@ -1337,8 +1523,8 @@ void ws_server_stop(ws_server_t *s)
     free(s);
 }
 
-int ws_server_broadcast(ws_server_t *s, const void *data, size_t len,
-                        bool is_text)
+static int server_enqueue(ws_server_t *s, long to_id, unsigned cls,
+                          const void *data, size_t len, bool is_text)
 {
     struct ws_qmsg *m;
 
@@ -1359,6 +1545,8 @@ int ws_server_broadcast(ws_server_t *s, const void *data, size_t len,
     memcpy(m->data, data, len);
     m->len = len;
     m->is_text = is_text;
+    m->to_id = to_id;
+    m->cls = cls;
     m->next = NULL;
 
     pthread_mutex_lock(&s->qlock);
@@ -1382,4 +1570,23 @@ int ws_server_broadcast(ws_server_t *s, const void *data, size_t len,
 
     pthread_mutex_unlock(&s->qlock);
     return 0;
+}
+
+int ws_server_broadcast(ws_server_t *s, const void *data, size_t len, bool is_text)
+{
+    return server_enqueue(s, -1, 0, data, len, is_text);
+}
+
+int ws_server_broadcast_class(ws_server_t *s, unsigned cls, const void *data,
+                              size_t len, bool is_text)
+{
+    return server_enqueue(s, -1, cls, data, len, is_text);
+}
+
+int ws_server_send_to(ws_server_t *s, long conn_id, const void *data,
+                      size_t len, bool is_text)
+{
+    if (conn_id < 0)
+        return -1;
+    return server_enqueue(s, conn_id, 0, data, len, is_text);
 }
