@@ -74,6 +74,7 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   radio/radio_media.o \
                   control_interfaces/radio_shm.o \
                   gui_interface/radio_websocket.o \
+                  gui_interface/ui_hub.o \
                   audioio/audio_bridge.o \
                   dsp/stream_resampler.o \
                   dsp/digi_log.o \

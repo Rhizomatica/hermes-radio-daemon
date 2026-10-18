@@ -42,6 +42,7 @@ TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
             tests/radio/test_controls tests/radio/test_dv_codec \
             tests/hamlib/test_hamlib_ptt tests/hamlib/test_hamlib_conf \
             tests/control_interfaces/test_rig_server \
+            tests/gui_interface/test_ui_hub \
             tests/modem/test_rtp_audio tests/modem/test_modem_audio \
             tests/audioio/test_audio_bridge \
             tests/dsp/test_upsample2 tests/dsp/test_stream_resampler tests/dsp/test_mic_filter \
@@ -112,6 +113,10 @@ tests/control_interfaces/test_rig_server: tests/control_interfaces/test_rig_serv
                                           radio/radio_backend.c common/cfg_utils.c radio/radio.h
 	$(CC) $(TEST_CFLAGS) $< control_interfaces/rig_server.c control_interfaces/cat_server.c \
 	      $(UNITY_SRC) -o $@ -liniparser -lpthread -lm
+
+# ── gui_interface/ ──────────────────────────────────────────────
+tests/gui_interface/test_ui_hub: tests/gui_interface/test_ui_hub.c gui_interface/ui_hub.c gui_interface/ui_hub.h
+	$(CC) $(TEST_CFLAGS) $< gui_interface/ui_hub.c $(UNITY_SRC) -o $@ -lpthread
 
 # ── modem/ ──────────────────────────────────────────────────────
 tests/modem/test_rtp_audio: tests/modem/test_rtp_audio.c modem/rtp_audio.c modem/rtp_audio.h \
