@@ -57,18 +57,9 @@ OPUS_DNN_OBJS     = $(OPUS_DNN_SRCS:.c=.o)
 FT8_LIB_OBJS      = $(FT8_LIB_SRCS:.c=.o)
 MM_FSK_OBJS       = $(MM_FSK_SRCS:.c=.o)
 
-.PHONY: all clean install test compat-tests check-symbols FORCE
+.PHONY: all clean install test check-symbols FORCE
 
 all: radio_daemon radio_client
-
-TEST_CFLAGS = -O0 -Wall -Wextra -std=gnu11 -fstack-protector \
-              -I. $(MODULE_INCLUDES) -I/usr/include/iniparser
-TEST_BINS = tests/backend_selection_test tests/compat_surface_test tests/controls_test \
-            tests/dstar_voice_test tests/upsample2_test tests/rig_server_test \
-            tests/hamlib_ptt_test tests/radae_vocoder_test tests/sbitx_buffer_test \
-            tests/rtp_audio_test tests/modem_audio_test tests/audio_bridge_test tests/mic_filter_test \
-            tests/stream_resampler_test tests/digi_modes_test tests/dv_codec_test \
-            tests/hamlib_conf_test tests/digi_log_test
 
 # ── daemon-level objects ────────────────────────────────────────
 DAEMON_TOP_OBJS = radio_daemon.o \
@@ -213,102 +204,8 @@ WS_CLIENT_SRCS = utils/ws_client.c gui_interface/websocket/ws_frame.c gui_interf
 ws_client: $(WS_CLIENT_SRCS) gui_interface/websocket/ws_frame.h gui_interface/websocket/ws_crypto.h
 	$(CC) $(CFLAGS) $(WS_CLIENT_SRCS) -o ws_client -lssl -lcrypto
 
-# ── regression tests ───────────────────────────────────────────────
-test: compat-tests
-
-compat-tests: $(TEST_BINS)
-	./tests/backend_selection_test
-	./tests/compat_surface_test
-	./tests/controls_test
-	./tests/dstar_voice_test
-	./tests/radae_vocoder_test
-	./tests/upsample2_test
-	./tests/rig_server_test
-	./tests/hamlib_ptt_test
-	./tests/sbitx_buffer_test
-	./tests/rtp_audio_test
-	./tests/modem_audio_test
-	./tests/audio_bridge_test
-	./tests/mic_filter_test
-	./tests/stream_resampler_test
-	./tests/digi_modes_test
-	./tests/digi_log_test
-	./tests/dv_codec_test
-	./tests/hamlib_conf_test
-
-tests/backend_selection_test: tests/backend_selection_test.c common/cfg_utils.c common/cfg_utils.h \
-                              radio/radio_backend.c radio/radio_backend.h radio/radio_daemon_core.h \
-                              hamlib/radio_hamlib.h radio/radio.h \
-                              tests/fixtures/backend-default.ini \
-                              tests/fixtures/backend-zbitx.ini
-	$(CC) $(TEST_CFLAGS) tests/backend_selection_test.c control_interfaces/rig_server.c radio/radio_controls.c control_interfaces/cat_server.c -o $@ -liniparser -lpthread -lm
-
-tests/dv_codec_test: tests/dv_codec_test.c common/cfg_utils.c common/cfg_utils.h \
-                     radio/radio_backend.c radio/radio_backend.h radio/radio.h
-	$(CC) $(TEST_CFLAGS) tests/dv_codec_test.c control_interfaces/rig_server.c radio/radio_controls.c control_interfaces/cat_server.c -o $@ -liniparser -lpthread -lm
-
-tests/rig_server_test: tests/rig_server_test.c control_interfaces/rig_server.c control_interfaces/rig_server.h \
-                      radio/radio_controls.c radio/radio_backend.c common/cfg_utils.c radio/radio.h
-	$(CC) $(TEST_CFLAGS) tests/rig_server_test.c control_interfaces/rig_server.c control_interfaces/cat_server.c -o $@ -liniparser -lpthread -lm
-
-tests/sbitx_buffer_test: tests/sbitx_buffer_test.c sbitx/sbitx_buffer.c sbitx/sbitx_buffer.h \
-                         sbitx/ring_buffer.c sbitx/ring_buffer.h
-	$(CC) $(TEST_CFLAGS) -Isbitx tests/sbitx_buffer_test.c -o $@ -lpthread
-
-tests/hamlib_ptt_test: tests/hamlib_ptt_test.c hamlib/radio_hamlib.c control_interfaces/rig_server.c \
-                       control_interfaces/rig_server.h radio/radio_controls.c radio/radio_backend.c radio/radio_backend.h \
-                       common/cfg_utils.c radio/radio.h
-	$(CC) $(TEST_CFLAGS) tests/hamlib_ptt_test.c control_interfaces/rig_server.c control_interfaces/cat_server.c -o $@ -lhamlib -liniparser -lpthread -lm
-
-# Links the daemon's own objects: the Opus subset needs its per-object flags.
-tests/radae_vocoder_test: tests/radae_vocoder_test.c dsp/radae_vocoder.h dsp/radae_vocoder.o $(OPUS_DNN_OBJS)
-	$(CC) $(TEST_CFLAGS) tests/radae_vocoder_test.c dsp/radae_vocoder.o $(OPUS_DNN_OBJS) -o $@ -lm
-
-tests/controls_test: tests/controls_test.c radio/radio_controls.c radio/radio_controls.h \
-                     radio/radio_backend.c radio/radio_backend.h control_interfaces/cat_server.c control_interfaces/cat_server.h \
-                     common/cfg_utils.c common/cfg_utils.h radio/radio.h
-	$(CC) $(TEST_CFLAGS) tests/controls_test.c control_interfaces/rig_server.c control_interfaces/cat_server.c -o $@ -liniparser -lpthread -lm
-
-tests/dstar_voice_test: tests/dstar_voice_test.c dsp/dstar_voice.c dsp/dstar_voice.h \
-                        dsp/voice_crypto.c dsp/voice_crypto.h dsp/sbitx_dstar.c dsp/sbitx_dstar.h
-	$(CC) $(TEST_CFLAGS) -Idsp tests/dstar_voice_test.c dsp/dstar_voice.c dsp/voice_crypto.c \
-	      dsp/sbitx_dstar.c -o $@ -lmbe-neo -lcrypto -lm
-
-tests/rtp_audio_test: tests/rtp_audio_test.c modem/rtp_audio.c modem/rtp_audio.h modem/modem_audio.c modem/modem_audio.h radio/radio.h
-	$(CC) $(TEST_CFLAGS) tests/rtp_audio_test.c modem/rtp_audio.c modem/modem_audio.c -o $@ -lpthread -lm
-
-tests/modem_audio_test: tests/modem_audio_test.c modem/modem_audio.c modem/modem_audio.h radio/radio.h
-	$(CC) $(TEST_CFLAGS) tests/modem_audio_test.c modem/modem_audio.c -o $@ -lpthread -lm
-
-tests/audio_bridge_test: tests/audio_bridge_test.c audioio/audio_bridge.c audioio/audio_bridge.h radio/radio.h
-	$(CC) $(TEST_CFLAGS) -I/usr/include/csdr tests/audio_bridge_test.c audioio/audio_bridge.c -o $@ -lcsdr -lfftw3f -lm
-
-tests/stream_resampler_test: tests/stream_resampler_test.c dsp/stream_resampler.c dsp/stream_resampler.h
-	$(CC) $(TEST_CFLAGS) -I/usr/include/csdr tests/stream_resampler_test.c dsp/stream_resampler.c -o $@ -lcsdr -lfftw3f -lm
-
-tests/digi_modes_test: tests/digi_modes_test.c dsp/stream_resampler.c dsp/sbitx_cw.c dsp/sbitx_rtty.c \
-                       dsp/sbitx_ft8.c dsp/sbitx_ft8.h dsp/digi_log.c dsp/digi_log.h $(FT8_TEST_SRCS) $(FT8_TEST_LIBS) $(MM_FSK_SRCS)
-	$(CC) $(TEST_CFLAGS) -w -I/usr/include/csdr -Idsp $(FT8_LIB_CPPFLAGS) $(MM_FSK_CPPFLAGS) \
-	      tests/digi_modes_test.c dsp/stream_resampler.c dsp/sbitx_cw.c dsp/sbitx_rtty.c \
-	      dsp/sbitx_ft8.c dsp/digi_log.c $(FT8_TEST_SRCS) $(MM_FSK_SRCS) $(FT8_TEST_LIBS) -o $@ -lcsdr -lfftw3f -lfftw3 -lcw -lpthread -lm
-
-tests/digi_log_test: tests/digi_log_test.c dsp/digi_log.c dsp/digi_log.h
-	$(CC) $(TEST_CFLAGS) -Idsp tests/digi_log_test.c dsp/digi_log.c -o $@ -lpthread -lm
-
-tests/hamlib_conf_test: tests/hamlib_conf_test.c hamlib/hamlib_conf.h
-	$(CC) $(TEST_CFLAGS) tests/hamlib_conf_test.c -o $@
-
-tests/mic_filter_test: tests/mic_filter_test.c dsp/mic_filter.c dsp/mic_filter.h
-	$(CC) $(TEST_CFLAGS) -Idsp tests/mic_filter_test.c dsp/mic_filter.c -o $@ -lm
-
-tests/upsample2_test: tests/upsample2_test.c dsp/upsample2.c dsp/upsample2.h
-	$(CC) $(TEST_CFLAGS) -I/usr/include/csdr tests/upsample2_test.c dsp/upsample2.c -o $@ -lcsdr -lfftw3f -lm
-
-tests/compat_surface_test: tests/compat_surface_test.c control_interfaces/radio_shm.c control_interfaces/radio_shm.h \
-                           radio/radio_pipeline.c radio/radio_pipeline.h \
-                           radio/radio_backend.h radio/radio.h \
-                           common/shm_utils.h include/sbitx_io.h include/radio_cmds.h
-	$(CC) $(TEST_CFLAGS) tests/compat_surface_test.c -o $@ -lpthread
+# ── unit tests (tests/tests.mk: make test, make test SANITIZE=asan|tsan) ──
+include tests/tests.mk
 
 # ── install ─────────────────────────────────────────────────────
 prefix     ?= /usr
@@ -350,7 +247,7 @@ install: radio_daemon radio_client
 # ── clean ───────────────────────────────────────────────────────
 clean:
 	rm -f radio_daemon radio_client ws_client \
-	      $(DAEMON_OBJS) $(DAEMON_OBJS:.o=.d) $(TEST_BINS)
+	      $(DAEMON_OBJS) $(DAEMON_OBJS:.o=.d) $(TEST_BINS) $(TEST_STAMP)
 
 # Auto-generated header dependencies (from -MMD). Hyphen: ignore on first build.
 -include $(DAEMON_OBJS:.o=.d)

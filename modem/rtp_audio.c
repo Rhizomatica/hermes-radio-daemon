@@ -48,7 +48,7 @@ enum {
 
 static radio          *s_radio;
 static _Atomic bool    s_started;
-static volatile bool   s_run;
+static _Atomic bool    s_run;
 static pthread_t       s_tid;
 static int             s_fd = -1;
 static struct sockaddr_in s_data_addr, s_status_addr;
@@ -322,7 +322,7 @@ static int open_output(const struct sockaddr_in *group, const char *iface, int t
 
 static int             s_tx_fd = -1;
 static pthread_t       s_tx_tid;
-static volatile bool   s_tx_run;
+static _Atomic bool    s_tx_run;
 static bool            s_tx_started;
 static bool            s_tx_have_ssrc;  /* s_tx_ssrc holds PTT through modem_audio */
 static uint32_t        s_tx_ssrc;       /* the keying SSRC */

@@ -41,6 +41,17 @@ static void f_to_i16(const float *in, int16_t *out, size_t n)
     }
 }
 
+static bool grow_pull(audio_bridge *b, size_t needed)
+{
+    if (needed > b->pull_cap) {
+        int16_t *p = realloc(b->pull_i16, needed * sizeof(int16_t));
+        if (!p) return false;
+        b->pull_i16 = p;
+        b->pull_cap = needed;
+    }
+    return true;
+}
+
 static bool grow_scratch(audio_bridge *b, size_t needed_in, size_t needed_out)
 {
     if (needed_in > b->scratch_cap_in) {
@@ -123,6 +134,7 @@ void audio_bridge_shutdown(audio_bridge *b)
     free(b->scratch_f_in);
     free(b->scratch_f_out);
     free(b->scratch_i16);
+    free(b->pull_i16);
     free(b->pend_up);
     free(b->pend_down);
     memset(b, 0, sizeof(*b));
@@ -234,18 +246,16 @@ size_t audio_bridge_pop_tx_native(audio_bridge *b, radio *radio_h,
     if (n_in_want == 0)
         n_in_want = 1;
 
-    /* Use a scratch from the bridge for the int16 ring pull. */
-    if (!grow_scratch(b, n_in_want, n_native + 32))
+    /* The pull has its own buffer: resample_down may reallocate scratch_i16
+     * (its output) before it has read its input. */
+    if (!grow_pull(b, n_in_want))
         return 0;
 
-    size_t got_in = sbitx_bridge_pop_tx(radio_h, b->scratch_i16, n_in_want);
+    size_t got_in = sbitx_bridge_pop_tx(radio_h, b->pull_i16, n_in_want);
     if (got_in == 0)
         return 0;
 
-    /* resample_down writes its int16 result into scratch_i16, overwriting
-     * what we just pulled — that's fine because we are not done reading
-     * the input until after i16_to_f copied it into scratch_f_in. */
-    size_t n_out = resample_down(b, b->scratch_i16, got_in);
+    size_t n_out = resample_down(b, b->pull_i16, got_in);
     if (n_out > n_native)
         n_out = n_native;
     if (n_out)
@@ -306,15 +316,15 @@ size_t audio_bridge_pop_rx_native(audio_bridge *b, radio *radio_h,
     size_t n_in_want = (size_t)((double) n_native *
                                 (double) b->decim_down /
                                 (double) b->interp_down) + 16;
-    if (!grow_scratch(b, n_in_want, n_native + 32))
+    if (!grow_pull(b, n_in_want))
         return 0;
 
     size_t got_in = pop_ring_to_buf(&radio_h->rx_audio_ring,
-                                    b->scratch_i16, n_in_want);
+                                    b->pull_i16, n_in_want);
     if (!got_in)
         return 0;
 
-    size_t n_out = resample_down(b, b->scratch_i16, got_in);
+    size_t n_out = resample_down(b, b->pull_i16, got_in);
     if (n_out > n_native)
         n_out = n_native;
     if (n_out)

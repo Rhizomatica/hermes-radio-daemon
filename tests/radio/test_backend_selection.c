@@ -1,10 +1,10 @@
-#include <assert.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
 #include <time.h>
 
+#include "unity.h"
 #include "radio.h"
 #include "radio_backend.h"
 
@@ -37,18 +37,18 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     return 22;
 }
 
-#include "../common/cfg_utils.c"
-#include "../radio/radio_backend.c"
+#include "common/cfg_utils.c"
+#include "radio/radio_backend.c"
 
 static void test_backend_detect_defaults(void)
 {
     radio_backend_selection selection;
 
     memset(&selection, 0, sizeof(selection));
-    assert(radio_backend_detect("tests/fixtures/backend-default.ini", &selection));
-    assert(selection.kind == RADIO_BACKEND_HAMLIB);
-    assert(selection.ops != NULL);
-    assert(strcmp(selection.ops->name, "hamlib") == 0);
+    TEST_ASSERT_TRUE(radio_backend_detect("tests/fixtures/backend-default.ini", &selection));
+    TEST_ASSERT_EQUAL_INT64(RADIO_BACKEND_HAMLIB, selection.kind);
+    TEST_ASSERT_NOT_NULL(selection.ops);
+    TEST_ASSERT_EQUAL_STRING("hamlib", selection.ops->name);
 }
 
 static void test_backend_detect_aliases(void)
@@ -56,14 +56,14 @@ static void test_backend_detect_aliases(void)
     radio_backend_selection selection;
 
     memset(&selection, 0, sizeof(selection));
-    assert(cfg_backend_kind_from_string("sbitx") == RADIO_BACKEND_HFSIGNALS);
-    assert(cfg_backend_kind_from_string("zbitx") == RADIO_BACKEND_HFSIGNALS);
-    assert(cfg_backend_kind_from_string("hamlib") == RADIO_BACKEND_HAMLIB);
+    TEST_ASSERT_EQUAL_INT64(RADIO_BACKEND_HFSIGNALS, cfg_backend_kind_from_string("sbitx"));
+    TEST_ASSERT_EQUAL_INT64(RADIO_BACKEND_HFSIGNALS, cfg_backend_kind_from_string("zbitx"));
+    TEST_ASSERT_EQUAL_INT64(RADIO_BACKEND_HAMLIB, cfg_backend_kind_from_string("hamlib"));
 
-    assert(radio_backend_detect("tests/fixtures/backend-zbitx.ini", &selection));
-    assert(selection.kind == RADIO_BACKEND_HFSIGNALS);
-    assert(selection.ops != NULL);
-    assert(strcmp(selection.ops->name, "hfsignals") == 0);
+    TEST_ASSERT_TRUE(radio_backend_detect("tests/fixtures/backend-zbitx.ini", &selection));
+    TEST_ASSERT_EQUAL_INT64(RADIO_BACKEND_HFSIGNALS, selection.kind);
+    TEST_ASSERT_NOT_NULL(selection.ops);
+    TEST_ASSERT_EQUAL_STRING("hfsignals", selection.ops->name);
 }
 
 static void test_backend_configure_and_run_dispatch(void)
@@ -85,35 +85,38 @@ static void test_backend_configure_and_run_dispatch(void)
 
     memset(&radio_h, 0, sizeof(radio_h));
     radio_backend_configure(&radio_h, &hfsignals);
-    assert(radio_h.backend_kind == RADIO_BACKEND_HFSIGNALS);
-    assert(radio_h.backend_ops == hfsignals.ops);
+    TEST_ASSERT_EQUAL_INT64(RADIO_BACKEND_HFSIGNALS, radio_h.backend_kind);
+    TEST_ASSERT_TRUE(radio_h.backend_ops == hfsignals.ops);
 
     /* Both backends now route through radio_daemon_core_run; there is no
      * separate launch path for hfsignals. */
     daemon_core_calls = 0;
-    assert(radio_backend_run(&hamlib, &runtime) == 22);
-    assert(daemon_core_calls == 1);
-    assert(last_daemon_core_call.selection.kind == RADIO_BACKEND_HAMLIB);
-    assert(last_daemon_core_call.runtime.cpu_nr == 3);
+    TEST_ASSERT_EQUAL_INT64(22, radio_backend_run(&hamlib, &runtime));
+    TEST_ASSERT_EQUAL_INT64(1, daemon_core_calls);
+    TEST_ASSERT_EQUAL_INT64(RADIO_BACKEND_HAMLIB, last_daemon_core_call.selection.kind);
+    TEST_ASSERT_EQUAL_INT64(3, last_daemon_core_call.runtime.cpu_nr);
 
-    assert(radio_backend_run(&hfsignals, &runtime) == 22);
-    assert(daemon_core_calls == 2);
-    assert(last_daemon_core_call.selection.kind == RADIO_BACKEND_HFSIGNALS);
+    TEST_ASSERT_EQUAL_INT64(22, radio_backend_run(&hfsignals, &runtime));
+    TEST_ASSERT_EQUAL_INT64(2, daemon_core_calls);
+    TEST_ASSERT_EQUAL_INT64(RADIO_BACKEND_HFSIGNALS, last_daemon_core_call.selection.kind);
 }
 
 static void test_timeout_reset_passthrough(void)
 {
     timer_reset = false;
     radio_backend_reset_timeout_timer();
-    assert(timer_reset);
+    TEST_ASSERT_TRUE(timer_reset);
 }
+
+void setUp(void) {}
+void tearDown(void) {}
 
 int main(void)
 {
-    test_backend_detect_defaults();
-    test_backend_detect_aliases();
-    test_backend_configure_and_run_dispatch();
-    test_timeout_reset_passthrough();
-    puts("backend_selection_test: ok");
-    return 0;
+    UNITY_BEGIN();
+    RUN_TEST(test_backend_detect_defaults);
+    RUN_TEST(test_backend_detect_aliases);
+    RUN_TEST(test_backend_configure_and_run_dispatch);
+    RUN_TEST(test_timeout_reset_passthrough);
+    return UNITY_END();
 }

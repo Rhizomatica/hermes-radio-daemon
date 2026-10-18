@@ -12,11 +12,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "unity.h"
+#include "test_util.h"
 #include "dsp/digi_log.h"
 
-static int failures;
-#define CHECK(c, ...) do { if (!(c)) { failures++; printf("FAIL %s:%d: ", __FILE__, __LINE__); \
-                                         printf(__VA_ARGS__); printf("\n"); } } while (0)
 
 /* ── a minimal JSON validator (RFC 8259 syntax, ASCII) ─────────────── */
 static const char *js_ws(const char *p) { while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++; return p; }
@@ -110,11 +109,11 @@ static void test_sanitize(void)
 {
     char out[64];
     digi_log_sanitize("  CQ\tPU2UIT\x01\x1b[31m GG66 \xc3\xa9  ", out, sizeof out, 60);
-    CHECK(strcmp(out, "CQ PU2UIT[31m GG66") == 0, "sanitised [%s]", out);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("CQ PU2UIT[31m GG66", out, test_msg("sanitised [%s]", out));
     digi_log_sanitize("ABCDEFGHIJ", out, sizeof out, 4);
-    CHECK(strcmp(out, "ABCD") == 0, "capped [%s]", out);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("ABCD", out, test_msg("capped [%s]", out));
     digi_log_sanitize(NULL, out, sizeof out, 10);
-    CHECK(out[0] == '\0', "NULL gives empty");
+    TEST_ASSERT_EQUAL_INT64_MESSAGE('\0', out[0], "NULL gives empty");
 }
 
 static void test_format_escapes(void)
@@ -124,23 +123,23 @@ static void test_format_escapes(void)
                          .text = "say \"hi\" \\ </script><b>", .from = "PU2UIT", .grid = NULL };
     size_t n = digi_log_format(&e, 42, 1791570615.25, line, sizeof line);
     printf("format: %s\n", line);
-    CHECK(n > 0 && json_valid(line), "formatted line is not valid JSON: %s", line);
-    CHECK(strstr(line, "\"text\":\"say \\\"hi\\\" \\\\ </script><b>\"") != NULL, "escaping: %s", line);
-    CHECK(strstr(line, "\"at\":\"2026-10-09T18:30:15.250Z\"") != NULL, "timestamp: %s", line);
-    CHECK(strstr(line, "\"from\":\"PU2UIT\",\"to\":null,\"grid\":null") != NULL, "optional fields: %s", line);
-    CHECK(strstr(line, "\"snr_db\":null,\"dt_s\":null") != NULL, "absent numbers are null: %s", line);
-    CHECK(strstr(line, "\"dstar\":null") != NULL, "no dstar object: %s", line);
+    do { TEST_ASSERT_GREATER_THAN_INT64_MESSAGE(0, n, test_msg("formatted line is not valid JSON: %s", line)); TEST_ASSERT_TRUE_MESSAGE(json_valid(line), test_msg("formatted line is not valid JSON: %s", line)); } while (0);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(line, "\"text\":\"say \\\"hi\\\" \\\\ </script><b>\""), test_msg("escaping: %s", line));
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(line, "\"at\":\"2026-10-09T18:30:15.250Z\""), test_msg("timestamp: %s", line));
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(line, "\"from\":\"PU2UIT\",\"to\":null,\"grid\":null"), test_msg("optional fields: %s", line));
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(line, "\"snr_db\":null,\"dt_s\":null"), test_msg("absent numbers are null: %s", line));
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(line, "\"dstar\":null"), test_msg("no dstar object: %s", line));
 
     /* An unknown mode or direction can't be smuggled into the output, and
      * is refused rather than relabelled: falling back to FT8/rx would log a
      * new mode, or a typo, as FT8 traffic with no error. */
     digi_log_entry bad = { .mode = "FT8\",\"x\":\"", .dir = "up", .text = "" };
     n = digi_log_format(&bad, 1, 1.0, line, sizeof line);
-    CHECK(n == 0 && line[0] == '\0', "bad mode/dir must be refused: %s", line);
+    do { TEST_ASSERT_EQUAL_INT64_MESSAGE(0, n, test_msg("bad mode/dir must be refused: %s", line)); TEST_ASSERT_EQUAL_INT64_MESSAGE('\0', line[0], test_msg("bad mode/dir must be refused: %s", line)); } while (0);
     digi_log_entry newmode = { .mode = "RADE", .dir = "rx", .text = "x" };
-    CHECK(digi_log_format(&newmode, 1, 1.0, line, sizeof line) == 0, "a mode outside the schema is refused");
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(0, digi_log_format(&newmode, 1, 1.0, line, sizeof line), "a mode outside the schema is refused");
     digi_log_entry baddir = { .mode = "CW", .dir = "up", .text = "x" };
-    CHECK(digi_log_format(&baddir, 1, 1.0, line, sizeof line) == 0, "a dir outside the schema is refused");
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(0, digi_log_format(&baddir, 1, 1.0, line, sizeof line), "a dir outside the schema is refused");
 }
 
 static void test_random_bytes_stay_valid(void)
@@ -159,7 +158,7 @@ static void test_random_bytes_stay_valid(void)
                              .text = text, .from = call, .to = call, .grid = call, .dstar = &d };
         size_t n = digi_log_format(&e, (uint64_t) iter, 1e9 + iter, line, sizeof line);
         if (!(n > 0 && json_valid(line) && !strchr(line, '\n'))) {
-            CHECK(0, "random input %d gave invalid output: %s", iter, line);
+            TEST_FAIL_MESSAGE(test_msg("random input %d gave invalid output: %s", iter, line));
             break;
         }
     }
@@ -188,39 +187,38 @@ static void test_add_read_ring_and_legacy(void)
 
     size_t len;
     char *jsonl = read_file("digi.jsonl", &len);
-    CHECK(jsonl && count_lines(jsonl) == 7, "digi.jsonl has %d lines, want 7", count_lines(jsonl));
+    do { TEST_ASSERT_TRUE_MESSAGE(jsonl, test_msg("digi.jsonl has %d lines, want 7", count_lines(jsonl))); TEST_ASSERT_EQUAL_INT64_MESSAGE(7, count_lines(jsonl), test_msg("digi.jsonl has %d lines, want 7", count_lines(jsonl))); } while (0);
     for (char *line = jsonl, *nl; line && (nl = strchr(line, '\n')); line = nl + 1) {
         *nl = '\0';
-        CHECK(json_valid(line), "jsonl line not valid JSON: %s", line);
+        TEST_ASSERT_TRUE_MESSAGE(json_valid(line), test_msg("jsonl line not valid JSON: %s", line));
     }
     free(jsonl);
 
     char *legacy = read_file("spool.log", &len);
     printf("spool.log:\n%s", legacy ? legacy : "(none)");
-    CHECK(legacy && count_lines(legacy) == 7, "spool.log has %d lines, want 7", count_lines(legacy));
-    CHECK(legacy && strstr(legacy, "FT8 rx 14.074: MSG 0\n"), "legacy FT8 line");
-    CHECK(legacy && strstr(legacy, "FT8 tx 14.074: MSG 4\n"), "legacy tx line");
-    CHECK(legacy && strstr(legacy, "RTTY rx 7.040: HELLOFT8 rx 14.074: FAKE LINE\n"), "injected newline removed");
-    CHECK(legacy && strstr(legacy, "DSTAR rx header: ur=CQCQCQ my=PU2UIT\n"), "legacy D-STAR line");
+    do { TEST_ASSERT_TRUE_MESSAGE(legacy, test_msg("spool.log has %d lines, want 7", count_lines(legacy))); TEST_ASSERT_EQUAL_INT64_MESSAGE(7, count_lines(legacy), test_msg("spool.log has %d lines, want 7", count_lines(legacy))); } while (0);
+    do { TEST_ASSERT_TRUE_MESSAGE(legacy, "legacy FT8 line"); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(legacy, "FT8 rx 14.074: MSG 0\n"), "legacy FT8 line"); } while (0);
+    do { TEST_ASSERT_TRUE_MESSAGE(legacy, "legacy tx line"); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(legacy, "FT8 tx 14.074: MSG 4\n"), "legacy tx line"); } while (0);
+    do { TEST_ASSERT_TRUE_MESSAGE(legacy, "injected newline removed"); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(legacy, "RTTY rx 7.040: HELLOFT8 rx 14.074: FAKE LINE\n"), "injected newline removed"); } while (0);
+    do { TEST_ASSERT_TRUE_MESSAGE(legacy, "legacy D-STAR line"); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(legacy, "DSTAR rx header: ur=CQCQCQ my=PU2UIT\n"), "legacy D-STAR line"); } while (0);
     free(legacy);
 
     char *arr = digi_log_last_json(3);
     printf("last 3: %s\n", arr);
-    CHECK(arr && json_valid(arr), "last_json not valid JSON");
-    CHECK(arr && strstr(arr, "\"mode\":\"DSTAR\"") && strstr(arr, "HELLO") && strstr(arr, "MSG 4")
-          && !strstr(arr, "MSG 3"), "last 3 should be D-STAR, RTTY, MSG 4: %s", arr);
-    CHECK(arr && strstr(arr, "DSTAR") < strstr(arr, "MSG 4"), "newest first");
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, "last_json not valid JSON"); TEST_ASSERT_TRUE_MESSAGE(json_valid(arr), "last_json not valid JSON"); } while (0);
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, test_msg("last 3 should be D-STAR, RTTY, MSG 4: %s", arr)); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(arr, "\"mode\":\"DSTAR\""), test_msg("last 3 should be D-STAR, RTTY, MSG 4: %s", arr)); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(arr, "HELLO"), test_msg("last 3 should be D-STAR, RTTY, MSG 4: %s", arr)); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(arr, "MSG 4"), test_msg("last 3 should be D-STAR, RTTY, MSG 4: %s", arr)); TEST_ASSERT_FALSE_MESSAGE(strstr(arr, "MSG 3"), test_msg("last 3 should be D-STAR, RTTY, MSG 4: %s", arr)); } while (0);
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, "newest first"); TEST_ASSERT_TRUE_MESSAGE(strstr(arr, "DSTAR") < strstr(arr, "MSG 4"), "newest first"); } while (0);
     free(arr);
 
     char lines[16][DIGI_LOG_LINE_MAX];
     uint64_t ids[16];
     int n = digi_log_since(start_id, lines, ids, 16);
-    CHECK(n == 7, "since(start) gave %d entries, want 7", n);
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(7, n, test_msg("since(start) gave %d entries, want 7", n));
     for (int i = 1; i < n; i++)
-        CHECK(ids[i] > ids[i - 1], "ids not increasing");
-    CHECK(n == 7 && strstr(lines[0], "MSG 0") && strstr(lines[6], "DSTAR"), "ring order oldest first");
-    CHECK(digi_log_since(ids[n - 1], lines, ids, 16) == 0, "nothing after the newest id");
-    CHECK(digi_log_latest_id() == ids[n - 1], "latest id");
+        TEST_ASSERT_TRUE_MESSAGE(ids[i] > ids[i - 1], "ids not increasing");
+    do { TEST_ASSERT_EQUAL_INT64_MESSAGE(7, n, "ring order oldest first"); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(lines[0], "MSG 0"), "ring order oldest first"); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(lines[6], "DSTAR"), "ring order oldest first"); } while (0);
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(0, digi_log_since(ids[n - 1], lines, ids, 16), "nothing after the newest id");
+    TEST_ASSERT_TRUE_MESSAGE(digi_log_latest_id() == ids[n - 1], "latest id");
 }
 
 static void test_rotation(void)
@@ -235,8 +233,8 @@ static void test_rotation(void)
     size_t len1, len0;
     char *old = read_file("digi.jsonl.1", &len1);
     char *cur = read_file("digi.jsonl", &len0);
-    CHECK(old != NULL, "rotated file digi.jsonl.1 exists");
-    CHECK(cur && (long) len0 < 4096 + DIGI_LOG_LINE_MAX, "current file stays near the cap (%zu bytes)", len0);
+    TEST_ASSERT_NOT_NULL_MESSAGE(old, "rotated file digi.jsonl.1 exists");
+    do { TEST_ASSERT_TRUE_MESSAGE(cur, test_msg("current file stays near the cap (%zu bytes)", len0)); TEST_ASSERT_TRUE_MESSAGE((long) len0 < 4096 + DIGI_LOG_LINE_MAX, test_msg("current file stays near the cap (%zu bytes)", len0)); } while (0);
     free(old);
     free(cur);
 
@@ -250,9 +248,8 @@ static void test_rotation(void)
     char *arr = digi_log_last_json(want);
     int entries = 0;
     for (const char *p = arr; p && (p = strstr(p, "\"id\":")); p++) entries++;
-    CHECK(arr && json_valid(arr) && entries == want, "last %d across both files: %d entries", want, entries);
-    CHECK(arr && strstr(arr, "NUMBER 59") && strstr(arr, "NUMBER 59") < strstr(arr, "NUMBER 58"),
-          "newest first across the rotation");
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, test_msg("last %d across both files: %d entries", want, entries)); TEST_ASSERT_TRUE_MESSAGE(json_valid(arr), test_msg("last %d across both files: %d entries", want, entries)); TEST_ASSERT_TRUE_MESSAGE(entries == want, test_msg("last %d across both files: %d entries", want, entries)); } while (0);
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, "newest first across the rotation"); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(arr, "NUMBER 59"), "newest first across the rotation"); TEST_ASSERT_TRUE_MESSAGE(strstr(arr, "NUMBER 59") < strstr(arr, "NUMBER 58"), "newest first across the rotation"); } while (0);
     free(arr);
 }
 
@@ -265,8 +262,8 @@ static void test_add_refuses_unknown_mode(void)
     digi_log_entry e = { .mode = "PSK31", .dir = "rx", .freq_hz = 14070000, .text = "NOPE" };
     digi_log_add(&e);
     char *f1 = read_file("digi.jsonl", &l1);
-    CHECK(digi_log_latest_id() == before, "an unknown mode must not get an id");
-    CHECK(l1 == l0 && (!f1 || !strstr(f1, "NOPE")), "an unknown mode must not reach digi.jsonl");
+    TEST_ASSERT_TRUE_MESSAGE(digi_log_latest_id() == before, "an unknown mode must not get an id");
+    do { TEST_ASSERT_TRUE_MESSAGE(l1 == l0, "an unknown mode must not reach digi.jsonl"); TEST_ASSERT_TRUE_MESSAGE(!f1 || !strstr(f1, "NOPE"), "an unknown mode must not reach digi.jsonl"); } while (0);
     free(f0);
     free(f1);
 }
@@ -301,22 +298,21 @@ static void test_tail_read_large_file(void)
     }
     size_t flen;
     char *f = read_file("tail/digi.jsonl", &flen);
-    CHECK(flen > 3 * 65536, "the test file must span several windows (%zu bytes)", flen);
+    TEST_ASSERT_TRUE_MESSAGE(flen > 3 * 65536, test_msg("the test file must span several windows (%zu bytes)", flen));
     free(f);
 
     const int want = 500;                    /* needs the window to grow */
     char *arr = digi_log_last_json(want);
     int entries = 0;
     for (const char *p = arr; p && (p = strstr(p, "\"id\":")); p++) entries++;
-    CHECK(arr && json_valid(arr), "tail read gives valid JSON");
-    CHECK(entries == want, "tail read: %d entries, want %d", entries, want);
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, "tail read gives valid JSON"); TEST_ASSERT_TRUE_MESSAGE(json_valid(arr), "tail read gives valid JSON"); } while (0);
+    TEST_ASSERT_TRUE_MESSAGE(entries == want, test_msg("tail read: %d entries, want %d", entries, want));
     char newest[64], oldest[64], beyond[64];
     snprintf(newest, sizeof newest, "ENTRY %04d", total - 1);
     snprintf(oldest, sizeof oldest, "ENTRY %04d", total - want);
     snprintf(beyond, sizeof beyond, "ENTRY %04d", total - want - 1);
-    CHECK(arr && strstr(arr, newest) && strstr(arr, oldest) && !strstr(arr, beyond),
-          "exactly the newest %d entries", want);
-    CHECK(arr && strstr(arr, newest) < strstr(arr, oldest), "newest first");
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, test_msg("exactly the newest %d entries", want)); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(arr, newest), test_msg("exactly the newest %d entries", want)); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(arr, oldest), test_msg("exactly the newest %d entries", want)); TEST_ASSERT_FALSE_MESSAGE(strstr(arr, beyond), test_msg("exactly the newest %d entries", want)); } while (0);
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, "newest first"); TEST_ASSERT_TRUE_MESSAGE(strstr(arr, newest) < strstr(arr, oldest), "newest first"); } while (0);
     free(arr);
     digi_log_set_dir(tmpdir);
 }
@@ -333,7 +329,7 @@ static void test_tail_fragment_on_brace(void)
     mkdir(dir, 0755);
     snprintf(path, sizeof path, "%s/digi.jsonl", dir);
     FILE *fp = fopen(path, "w");
-    CHECK(fp != NULL, "create the crafted file");
+    TEST_ASSERT_NOT_NULL_MESSAGE(fp, "create the crafted file");
     if (!fp) return;
 
     const char *filler = "{\"id\":1,\"mode\":\"CW\",\"text\":\"FILLER\"}\n";
@@ -367,18 +363,17 @@ static void test_tail_fragment_on_brace(void)
     stat(path, &st);
     long cut = (long) st.st_size - window;
     long brace_at = (long) strlen(filler) + (long) (suffix - line_l);
-    CHECK(cut == brace_at, "the window must start on the nested '{' (cut %ld, brace %ld)", cut, brace_at);
+    TEST_ASSERT_TRUE_MESSAGE(cut == brace_at, test_msg("the window must start on the nested '{' (cut %ld, brace %ld)", cut, brace_at));
 
     digi_log_set_dir(dir);
     int want = after + 1;                                /* reaches line L */
     char *arr = digi_log_last_json(want);
     int ids = 0;
     for (const char *p = arr; p && (p = strstr(p, "\"id\":")); p++) ids++;
-    CHECK(arr && json_valid(arr), "valid JSON");
-    CHECK(arr && !strstr(arr, "[{\"mycall\"") && !strstr(arr, ",{\"mycall\""),
-          "a fragment must never be returned as an entry");
-    CHECK(ids == want, "every element must be a real entry: %d ids for %d wanted", ids, want);
-    CHECK(arr && strstr(arr, "LINE L"), "line L itself is reached by widening the window");
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, "valid JSON"); TEST_ASSERT_TRUE_MESSAGE(json_valid(arr), "valid JSON"); } while (0);
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, "a fragment must never be returned as an entry"); TEST_ASSERT_FALSE_MESSAGE(strstr(arr, "[{\"mycall\""), "a fragment must never be returned as an entry"); TEST_ASSERT_FALSE_MESSAGE(strstr(arr, ",{\"mycall\""), "a fragment must never be returned as an entry"); } while (0);
+    TEST_ASSERT_TRUE_MESSAGE(ids == want, test_msg("every element must be a real entry: %d ids for %d wanted", ids, want));
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, "line L itself is reached by widening the window"); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(arr, "LINE L"), "line L itself is reached by widening the window"); } while (0);
     free(arr);
     digi_log_set_dir(tmpdir);
 }
@@ -394,7 +389,7 @@ static void test_ids_continue_from_file(void)
     snprintf(path, sizeof path, "%s/digi.jsonl", dir);
     const unsigned long long future = 4102444800000000ULL;   /* year 2100, in us */
     FILE *fp = fopen(path, "w");
-    CHECK(fp != NULL, "plant a previous run's log");
+    TEST_ASSERT_NOT_NULL_MESSAGE(fp, "plant a previous run's log");
     if (!fp) return;
     fprintf(fp, "{\"id\":%llu,\"at\":\"2100-01-01T00:00:00.000Z\",\"mode\":\"CW\",\"dir\":\"rx\","
                 "\"frequency_hz\":7030000,\"offset_hz\":null,\"snr_db\":null,\"dt_s\":null,"
@@ -405,9 +400,7 @@ static void test_ids_continue_from_file(void)
     digi_log_set_dir(dir);
     digi_log_entry e = { .mode = "CW", .dir = "rx", .freq_hz = 7030000, .text = "AFTER RESTART" };
     digi_log_add(&e);
-    CHECK(digi_log_latest_id() > future,
-          "a new id must follow the file's last one (%llu), got %llu",
-          future, (unsigned long long) digi_log_latest_id());
+    TEST_ASSERT_TRUE_MESSAGE(digi_log_latest_id() > future, test_msg("a new id must follow the file's last one (%llu), got %llu", future, (unsigned long long) digi_log_latest_id()));
     digi_log_set_dir(tmpdir);
 }
 
@@ -426,25 +419,28 @@ static void test_dstar_header_helper(void)
 
     digi_log_dstar_header(h, sizeof h, "tx", 7100000, true, true);
     char *arr = digi_log_last_json(1);
-    CHECK(arr && json_valid(arr), "header entry is valid JSON");
-    CHECK(arr && strstr(arr, "\"mode\":\"DSTAR\",\"dir\":\"tx\""), "mode and dir: %s", arr);
-    CHECK(arr && strstr(arr, "\"from\":\"PU2UIT\",\"to\":\"CQCQCQ\""), "from/to when CRC ok: %s", arr);
-    CHECK(arr && strstr(arr, "\"encrypted\":true,\"crc_ok\":true"), "flags: %s", arr);
-    CHECK(arr && strstr(arr, "\"suffix\":\"MOBI\""), "suffix: %s", arr);
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, "header entry is valid JSON"); TEST_ASSERT_TRUE_MESSAGE(json_valid(arr), "header entry is valid JSON"); } while (0);
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, test_msg("mode and dir: %s", arr)); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(arr, "\"mode\":\"DSTAR\",\"dir\":\"tx\""), test_msg("mode and dir: %s", arr)); } while (0);
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, test_msg("from/to when CRC ok: %s", arr)); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(arr, "\"from\":\"PU2UIT\",\"to\":\"CQCQCQ\""), test_msg("from/to when CRC ok: %s", arr)); } while (0);
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, test_msg("flags: %s", arr)); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(arr, "\"encrypted\":true,\"crc_ok\":true"), test_msg("flags: %s", arr)); } while (0);
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, test_msg("suffix: %s", arr)); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(arr, "\"suffix\":\"MOBI\""), test_msg("suffix: %s", arr)); } while (0);
     free(arr);
 
     h[27] = (char) 0xff;                            /* a garbled callsign */
     digi_log_dstar_header(h, sizeof h, "rx", 7100000, false, false);
     arr = digi_log_last_json(1);
-    CHECK(arr && json_valid(arr), "garbled header is still valid JSON");
-    CHECK(arr && strstr(arr, "\"from\":null,\"to\":null"), "no from/to on a failed CRC: %s", arr);
-    CHECK(arr && strstr(arr, "\"crc_ok\":false"), "crc flag: %s", arr);
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, "garbled header is still valid JSON"); TEST_ASSERT_TRUE_MESSAGE(json_valid(arr), "garbled header is still valid JSON"); } while (0);
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, test_msg("no from/to on a failed CRC: %s", arr)); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(arr, "\"from\":null,\"to\":null"), test_msg("no from/to on a failed CRC: %s", arr)); } while (0);
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, test_msg("crc flag: %s", arr)); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(arr, "\"crc_ok\":false"), test_msg("crc flag: %s", arr)); } while (0);
     free(arr);
 
     uint64_t before = digi_log_latest_id();
     digi_log_dstar_header(h, 10, "rx", 7100000, false, true);   /* too short */
-    CHECK(digi_log_latest_id() == before, "a short header is ignored");
+    TEST_ASSERT_TRUE_MESSAGE(digi_log_latest_id() == before, "a short header is ignored");
 }
+
+void setUp(void) {}
+void tearDown(void) {}
 
 int main(void)
 {
@@ -452,30 +448,23 @@ int main(void)
     const char *t = getenv("TMPDIR");
     if (t && t[0])
         snprintf(tmpdir, sizeof tmpdir, "%s/digi_log_test.XXXXXX", t);
-    if (!mkdtemp(tmpdir)) {
-        perror("mkdtemp");
-        return 1;
-    }
+    TEST_REQUIRE(mkdtemp(tmpdir));
 
-    test_sanitize();
-    test_format_escapes();
-    test_random_bytes_stay_valid();
-    test_add_read_ring_and_legacy();
-    test_add_refuses_unknown_mode();
-    test_rotation();
-    test_tail_read_large_file();
-    test_tail_fragment_on_brace();
-    test_ids_continue_from_file();
-    test_dstar_header_helper();
+    UNITY_BEGIN();
+    RUN_TEST(test_sanitize);
+    RUN_TEST(test_format_escapes);
+    RUN_TEST(test_random_bytes_stay_valid);
+    RUN_TEST(test_add_read_ring_and_legacy);
+    RUN_TEST(test_add_refuses_unknown_mode);
+    RUN_TEST(test_rotation);
+    RUN_TEST(test_tail_read_large_file);
+    RUN_TEST(test_tail_fragment_on_brace);
+    RUN_TEST(test_ids_continue_from_file);
+    RUN_TEST(test_dstar_header_helper);
+    int failed = UNITY_END();
 
     char cmd[600];
     snprintf(cmd, sizeof cmd, "rm -rf '%s'", tmpdir);
     if (system(cmd) != 0) { /* best effort */ }
-
-    if (failures) {
-        printf("digi_log_test: %d failure(s)\n", failures);
-        return 1;
-    }
-    printf("digi_log_test: ok\n");
-    return 0;
+    return failed;
 }

@@ -1,0 +1,96 @@
+# hermes-radio-daemon CI: build and unit tests (tests/tests.mk)
+#
+# On every pull request to main, every push to main, and by hand.  All jobs
+# run in debian:trixie, the stations' distribution, with the dependencies
+# from tests/ci/install-deps.sh.
+#
+#   build-test   amd64 and arm64 (the stations' architecture), with mercury
+#                linked in (vendor/mercury submodule): make, make test,
+#                make check-symbols
+#   no-mercury   the build without the submodule, which must still work
+#   sanitizers   make test under ASan+UBSan and under TSan
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    name: Build + unit tests (Debian 13, ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: debian:trixie
+    timeout-minutes: 60
+    steps:
+      - name: Git for the checkout
+        run: apt-get update && apt-get install -y --no-install-recommends ca-certificates git
+      - name: Checkout (with the mercury submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Git safe directory (the checkout is another user's)
+        run: git config --global --add safe.directory '*'
+      - name: Build dependencies
+        run: tests/ci/install-deps.sh
+      - name: Build
+        run: make -j"$(nproc)" all
+      - name: Unit tests
+        run: make test
+      - name: Symbol check (daemon vs mercury)
+        run: make check-symbols
+
+  no-mercury:
+    name: Build + unit tests without mercury (Debian 13, amd64)
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    timeout-minutes: 60
+    steps:
+      - name: Git for the checkout
+        run: apt-get update && apt-get install -y --no-install-recommends ca-certificates git
+      - name: Checkout (no submodules)
+        uses: actions/checkout@v4
+      - name: Git safe directory (the checkout is another user's)
+        run: git config --global --add safe.directory '*'
+      - name: Build dependencies
+        run: tests/ci/install-deps.sh
+      - name: Build
+        run: make -j"$(nproc)" all
+      - name: The daemon has no mercury in it
+        run: "! nm radio_daemon | grep -q ' T mercury_init$'"
+      - name: Unit tests
+        run: make test
+
+  sanitizers:
+    name: Unit tests under ${{ matrix.sanitize }} (Debian 13, amd64)
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitize: [asan, tsan]
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    timeout-minutes: 60
+    steps:
+      - name: Git for the checkout
+        run: apt-get update && apt-get install -y --no-install-recommends ca-certificates git
+      - name: Checkout (with the mercury submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Git safe directory (the checkout is another user's)
+        run: git config --global --add safe.directory '*'
+      - name: Build dependencies
+        run: tests/ci/install-deps.sh
+      - name: Unit tests under ${{ matrix.sanitize }}
+        run: make test SANITIZE=${{ matrix.sanitize }}

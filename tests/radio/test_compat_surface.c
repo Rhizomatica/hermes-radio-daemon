@@ -7,7 +7,6 @@
  * keeps coverage of the SHM protocol semantics, which has not changed.
  */
 
-#include <assert.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -21,6 +20,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "unity.h"
 #include "radio.h"
 #include "radio_backend.h"
 #include "radio_pipeline.h"
@@ -134,8 +134,8 @@ bool shm_destroy(key_t k, size_t s)    { (void) k; (void) s; return true; }
 void *shm_attach(key_t k, size_t s)
 { static controller_conn connector; (void) k; (void) s; return &connector; }
 
-#include "../radio/radio_pipeline.c"
-#include "../control_interfaces/radio_shm.c"
+#include "radio/radio_pipeline.c"
+#include "control_interfaces/radio_shm.c"
 
 static void reset_backend_call(void)
 {
@@ -177,18 +177,18 @@ static void test_shm_profile_and_message_semantics(void)
     cmd[4] = CMD_GET_FREQ | (1u << 6);
     process_radio_command(cmd, response);
     memcpy(&value, response + 1, sizeof(value));
-    assert(response[0] == CMD_RESP_GET_FREQ_ACK);
-    assert(value == 7200000);
+    TEST_ASSERT_EQUAL_INT64(CMD_RESP_GET_FREQ_ACK, response[0]);
+    TEST_ASSERT_EQUAL_INT64(7200000, value);
 
     memset(cmd, 0, sizeof(cmd));
     value = 7215000;
     memcpy(cmd, &value, sizeof(value));
     cmd[4] = CMD_SET_FREQ | (1u << 6);
     process_radio_command(cmd, response);
-    assert(response[0] == CMD_RESP_ACK);
-    assert(backend_call.frequency == 7215000);
-    assert(backend_call.profile == 1);
-    assert(radio_h.profiles[1].freq == 7215000);
+    TEST_ASSERT_EQUAL_INT64(CMD_RESP_ACK, response[0]);
+    TEST_ASSERT_EQUAL_INT64(7215000, backend_call.frequency);
+    TEST_ASSERT_EQUAL_INT64(1, backend_call.profile);
+    TEST_ASSERT_EQUAL_INT64(7215000, radio_h.profiles[1].freq);
 
     /* SET_MODE wire encoding (see radio_cmds.h):
      *   0x00 LSB  0x01 USB  0x02 FM  0x03 AM
@@ -198,37 +198,37 @@ static void test_shm_profile_and_message_semantics(void)
     cmd[0] = 0x00;
     cmd[4] = CMD_SET_MODE | (1u << 6);
     process_radio_command(cmd, response);
-    assert(response[0] == CMD_RESP_ACK);
-    assert(backend_call.mode == MODE_LSB);
-    assert(radio_h.profiles[1].mode == MODE_LSB);
+    TEST_ASSERT_EQUAL_INT64(CMD_RESP_ACK, response[0]);
+    TEST_ASSERT_EQUAL_INT64(MODE_LSB, backend_call.mode);
+    TEST_ASSERT_EQUAL_INT64(MODE_LSB, radio_h.profiles[1].mode);
 
     memset(cmd, 0, sizeof(cmd));
     cmd[0] = 0x02;
     cmd[4] = CMD_SET_MODE | (1u << 6);
     process_radio_command(cmd, response);
-    assert(response[0] == CMD_RESP_ACK);
-    assert(backend_call.mode == MODE_FM);
-    assert(radio_h.profiles[1].mode == MODE_FM);
+    TEST_ASSERT_EQUAL_INT64(CMD_RESP_ACK, response[0]);
+    TEST_ASSERT_EQUAL_INT64(MODE_FM, backend_call.mode);
+    TEST_ASSERT_EQUAL_INT64(MODE_FM, radio_h.profiles[1].mode);
 
     memset(cmd, 0, sizeof(cmd));
     cmd[0] = 0x07;
     cmd[4] = CMD_SET_MODE | (1u << 6);
     process_radio_command(cmd, response);
-    assert(response[0] == CMD_RESP_ACK);
-    assert(backend_call.mode == MODE_RTTY);
+    TEST_ASSERT_EQUAL_INT64(CMD_RESP_ACK, response[0]);
+    TEST_ASSERT_EQUAL_INT64(MODE_RTTY, backend_call.mode);
 
     memset(cmd, 0, sizeof(cmd));
     cmd[4] = CMD_GET_MODE | (1u << 6);
     process_radio_command(cmd, response);
-    assert(response[0] == CMD_RESP_GET_MODE_RTTY);
+    TEST_ASSERT_EQUAL_INT64(CMD_RESP_GET_MODE_RTTY, response[0]);
 
     /* Unknown mode index NACKs without changing the profile. */
     memset(cmd, 0, sizeof(cmd));
     cmd[0] = 0x42;
     cmd[4] = CMD_SET_MODE | (1u << 6);
     process_radio_command(cmd, response);
-    assert(response[0] == CMD_RESP_WRONG_COMMAND);
-    assert(radio_h.profiles[1].mode == MODE_RTTY);
+    TEST_ASSERT_EQUAL_INT64(CMD_RESP_WRONG_COMMAND, response[0]);
+    TEST_ASSERT_EQUAL_INT64(MODE_RTTY, radio_h.profiles[1].mode);
 
     /* SET_CONNECTED_STATUS=false clears both buffer slots. */
     pthread_mutex_lock(&radio_h.message_mutex);
@@ -242,18 +242,18 @@ static void test_shm_profile_and_message_semantics(void)
     memset(cmd, 0, sizeof(cmd));
     cmd[4] = CMD_SET_CONNECTED_STATUS;
     process_radio_command(cmd, response);
-    assert(response[0] == CMD_RESP_ACK);
-    assert(!radio_h.system_is_connected);
-    assert(radio_h.message_available);
-    assert(connector.message_available);
-    assert(radio_h.message[0] == '\0');
-    assert(connector.message[0] == '\0');
+    TEST_ASSERT_EQUAL_INT64(CMD_RESP_ACK, response[0]);
+    TEST_ASSERT_FALSE(radio_h.system_is_connected);
+    TEST_ASSERT_TRUE(radio_h.message_available);
+    TEST_ASSERT_TRUE(connector.message_available);
+    TEST_ASSERT_EQUAL_INT64('\0', radio_h.message[0]);
+    TEST_ASSERT_EQUAL_INT64('\0', connector.message[0]);
 
     /* GET_DIGITAL_VOICE for an out-of-range profile NACKs. */
     memset(cmd, 0, sizeof(cmd));
     cmd[4] = CMD_GET_DIGITAL_VOICE | (3u << 6);
     process_radio_command(cmd, response);
-    assert(response[0] == CMD_RESP_WRONG_COMMAND);
+    TEST_ASSERT_EQUAL_INT64(CMD_RESP_WRONG_COMMAND, response[0]);
 
     destroy_test_radio(&radio_h);
 }
@@ -277,22 +277,22 @@ static void test_shm_ptt_off_always_unkeys(void)
     radio_h.txrx_state = IN_RX;
     cmd[4] = CMD_PTT_OFF;
     process_radio_command(cmd, response);
-    assert(backend_call.txrx_calls == 1 && backend_call.txrx_state == IN_RX);
-    assert(response[0] == CMD_RESP_PTT_OFF_NACK);
+    do { TEST_ASSERT_EQUAL_INT64(1, backend_call.txrx_calls); TEST_ASSERT_EQUAL_INT64(IN_RX, backend_call.txrx_state); } while (0);
+    TEST_ASSERT_EQUAL_INT64(CMD_RESP_PTT_OFF_NACK, response[0]);
 
     reset_backend_call();
     radio_h.txrx_state = IN_TX;
     radio_h.swr_protection_enabled = true;
     process_radio_command(cmd, response);
-    assert(backend_call.txrx_calls == 1 && radio_h.txrx_state == IN_RX);
-    assert(response[0] == CMD_ALERT_PROTECTION_ON);
+    do { TEST_ASSERT_EQUAL_INT64(1, backend_call.txrx_calls); TEST_ASSERT_EQUAL_INT64(IN_RX, radio_h.txrx_state); } while (0);
+    TEST_ASSERT_EQUAL_INT64(CMD_ALERT_PROTECTION_ON, response[0]);
     radio_h.swr_protection_enabled = false;
 
     reset_backend_call();
     radio_h.txrx_state = IN_TX;
     process_radio_command(cmd, response);
-    assert(backend_call.txrx_calls == 1 && radio_h.txrx_state == IN_RX);
-    assert(response[0] == CMD_RESP_ACK);
+    do { TEST_ASSERT_EQUAL_INT64(1, backend_call.txrx_calls); TEST_ASSERT_EQUAL_INT64(IN_RX, radio_h.txrx_state); } while (0);
+    TEST_ASSERT_EQUAL_INT64(CMD_RESP_ACK, response[0]);
 
     destroy_test_radio(&radio_h);
     puts("  shm PTT off always unkeys ............ ok");
@@ -305,9 +305,9 @@ static void test_shm_ptt_off_always_unkeys(void)
 static int keyer_fork_named(controller_conn *conn, int *ctl_w, const char *name)
 {
     int up[2], down[2];
-    assert(pipe(up) == 0 && pipe(down) == 0);
+    do { TEST_ASSERT_EQUAL_INT64(0, pipe(up)); TEST_ASSERT_EQUAL_INT64(0, pipe(down)); } while (0);
     pid_t pid = fork();
-    assert(pid >= 0);
+    TEST_ASSERT_GREATER_OR_EQUAL_INT64(0, pid);
     if (pid == 0)
     {
         char c;
@@ -316,14 +316,15 @@ static int keyer_fork_named(controller_conn *conn, int *ctl_w, const char *name)
         if (name)
             prctl(PR_SET_NAME, name, 0, 0, 0);
         pthread_mutex_lock(&conn->response_mutex);
-        assert(write(up[1], "L", 1) == 1);
+        if (write(up[1], "L", 1) != 1)                  /* no Unity asserts in the child */
+            _exit(1);
         if (read(down[0], &c, 1) == 1 && c == 'U')      /* reply read */
             pthread_mutex_unlock(&conn->response_mutex);
         (void) read(down[0], &c, 1);                    /* wait to die */
         _exit(0);
     }
     char c;
-    assert(read(up[0], &c, 1) == 1 && c == 'L');
+    do { TEST_ASSERT_EQUAL_INT64(1, read(up[0], &c, 1)); TEST_ASSERT_EQUAL_INT64('L', c); } while (0);
     close(up[0]); close(up[1]); close(down[0]);
     *ctl_w = down[1];
     return pid;
@@ -337,7 +338,7 @@ static int keyer_fork(controller_conn *conn, int *ctl_w)
 static void keyer_reap(pid_t pid, int ctl_w)
 {
     close(ctl_w);                       /* EOF: the child exits */
-    assert(waitpid(pid, NULL, 0) == pid);
+    TEST_ASSERT_EQUAL_INT(pid, waitpid(pid, NULL, 0));
 }
 
 static void test_shm_keyer_death_releases_ptt(void)
@@ -349,9 +350,9 @@ static void test_shm_keyer_death_releases_ptt(void)
 
     controller_conn *conn = mmap(NULL, sizeof(*conn), PROT_READ | PROT_WRITE,
                                  MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    assert(conn != MAP_FAILED);
+    TEST_ASSERT_TRUE(conn != MAP_FAILED);
     memset(conn, 0, sizeof(*conn));
-    assert(initialize_connector(conn));
+    TEST_ASSERT_TRUE(initialize_connector(conn));
 
     init_test_radio(&radio_h, RADIO_BACKEND_HAMLIB, false);
     connector_local = conn;
@@ -362,40 +363,40 @@ static void test_shm_keyer_death_releases_ptt(void)
     int ctl;
     pid_t pid = keyer_fork(conn, &ctl);
     process_radio_command(on, response);
-    assert(response[0] == CMD_RESP_ACK && radio_h.txrx_state == IN_TX);
-    assert(ptt_owner.src == PTT_SRC_SHM && ptt_owner.id == pid);
-    assert(write(ctl, "U", 1) == 1);
+    do { TEST_ASSERT_EQUAL_INT64(CMD_RESP_ACK, response[0]); TEST_ASSERT_EQUAL_INT64(IN_TX, radio_h.txrx_state); } while (0);
+    do { TEST_ASSERT_EQUAL_INT64(PTT_SRC_SHM, ptt_owner.src); TEST_ASSERT_EQUAL_INT64(pid, ptt_owner.id); } while (0);
+    TEST_ASSERT_EQUAL_INT64(1, write(ctl, "U", 1));
 
     shm_check_keyer(&radio_h);          /* alive: leave it keyed */
-    assert(radio_h.txrx_state == IN_TX && ptt_owner.releases == 0);
+    do { TEST_ASSERT_EQUAL_INT64(IN_TX, radio_h.txrx_state); TEST_ASSERT_EQUAL_INT64(0, ptt_owner.releases); } while (0);
 
     keyer_reap(pid, ctl);
     shm_check_keyer(&radio_h);
-    assert(radio_h.txrx_state == IN_RX && ptt_owner.releases == 1);
+    do { TEST_ASSERT_EQUAL_INT64(IN_RX, radio_h.txrx_state); TEST_ASSERT_EQUAL_INT64(1, ptt_owner.releases); } while (0);
     shm_check_keyer(&radio_h);          /* once only */
-    assert(ptt_owner.releases == 1);
+    TEST_ASSERT_EQUAL_INT64(1, ptt_owner.releases);
 
     /* Keys, unkeys, then exits: nothing to release. */
     pid = keyer_fork(conn, &ctl);
     process_radio_command(on, response);
-    assert(write(ctl, "U", 1) == 1);
+    TEST_ASSERT_EQUAL_INT64(1, write(ctl, "U", 1));
     process_radio_command(off, response);
-    assert(radio_h.txrx_state == IN_RX);
+    TEST_ASSERT_EQUAL_INT64(IN_RX, radio_h.txrx_state);
     int calls = backend_call.txrx_calls;
     keyer_reap(pid, ctl);
     shm_check_keyer(&radio_h);
-    assert(backend_call.txrx_calls == calls && ptt_owner.releases == 1);
+    do { TEST_ASSERT_EQUAL_INT(calls, backend_call.txrx_calls); TEST_ASSERT_EQUAL_INT64(1, ptt_owner.releases); } while (0);
 
     /* Keys; another source takes PTT over; the first then dies: the
      * other source's transmission must go on. */
     pid = keyer_fork(conn, &ctl);
     process_radio_command(on, response);
-    assert(write(ctl, "U", 1) == 1);
+    TEST_ASSERT_EQUAL_INT64(1, write(ctl, "U", 1));
     ptt_owner.src = PTT_SRC_WEBSOCKET;
     ptt_owner.id = 7;
     keyer_reap(pid, ctl);
     shm_check_keyer(&radio_h);
-    assert(radio_h.txrx_state == IN_TX && ptt_owner.releases == 1);
+    do { TEST_ASSERT_EQUAL_INT64(IN_TX, radio_h.txrx_state); TEST_ASSERT_EQUAL_INT64(1, ptt_owner.releases); } while (0);
 
     /* The command-line client keys and exits by design (the web panel's
      * PTT button): its PTT stays latched until a PTT-off. */
@@ -403,14 +404,13 @@ static void test_shm_keyer_death_releases_ptt(void)
     ptt_owner.releases = 0;
     pid = keyer_fork_named(conn, &ctl, "sbitx_client");
     process_radio_command(on, response);
-    assert(response[0] == CMD_RESP_ACK && radio_h.txrx_state == IN_TX);
-    assert(write(ctl, "U", 1) == 1);
+    do { TEST_ASSERT_EQUAL_INT64(CMD_RESP_ACK, response[0]); TEST_ASSERT_EQUAL_INT64(IN_TX, radio_h.txrx_state); } while (0);
+    TEST_ASSERT_EQUAL_INT64(1, write(ctl, "U", 1));
     keyer_reap(pid, ctl);
     shm_check_keyer(&radio_h);
-    assert(radio_h.txrx_state == IN_TX && ptt_owner.releases == 0 &&
-           "the web panel's PTT was released when sbitx_client exited");
+    do { TEST_ASSERT_EQUAL_INT64_MESSAGE(IN_TX, radio_h.txrx_state, "the web panel's PTT was released when sbitx_client exited"); TEST_ASSERT_EQUAL_INT64_MESSAGE(0, ptt_owner.releases, "the web panel's PTT was released when sbitx_client exited"); } while (0);
     process_radio_command(off, response);
-    assert(radio_h.txrx_state == IN_RX);
+    TEST_ASSERT_EQUAL_INT64(IN_RX, radio_h.txrx_state);
 
     shm_keyer_forget();
     destroy_test_radio(&radio_h);
@@ -418,12 +418,14 @@ static void test_shm_keyer_death_releases_ptt(void)
     puts("  shm keyer death releases PTT ......... ok");
 }
 
+void setUp(void) { reset_backend_call(); }
+void tearDown(void) {}
+
 int main(void)
 {
-    reset_backend_call();
-    test_shm_profile_and_message_semantics();
-    test_shm_ptt_off_always_unkeys();
-    test_shm_keyer_death_releases_ptt();
-    puts("compat_surface_test: ok");
-    return 0;
+    UNITY_BEGIN();
+    RUN_TEST(test_shm_profile_and_message_semantics);
+    RUN_TEST(test_shm_ptt_off_always_unkeys);
+    RUN_TEST(test_shm_keyer_death_releases_ptt);
+    return UNITY_END();
 }

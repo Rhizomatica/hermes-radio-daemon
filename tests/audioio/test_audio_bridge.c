@@ -10,11 +10,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "unity.h"
 #include "audio_bridge.h"
-
-static int failures;
-#define CHECK(c, ...) do { if (!(c)) { failures++; printf("FAIL %s:%d: ", __FILE__, __LINE__); \
-                                         printf(__VA_ARGS__); printf("\n"); } } while (0)
 
 /* Stubs for the rings the bridge feeds. */
 static int16_t sink[200000];
@@ -53,13 +50,16 @@ static double tone_snr(const int16_t *x, size_t n, double rate)
     return 10 * log10(sig / (xx - sig));
 }
 
-int main(void)
-{
-    static radio r;
-    audio_bridge b;
+static radio r;
 
-    /* Capture side: codec 48 kHz -> 8 kHz, 480-frame blocks, 2 s. */
-    CHECK(audio_bridge_init(&b, 48000, 8000), "init 48k->8k");
+void setUp(void) { nsink = nsrc = src_pos = 0; }
+void tearDown(void) {}
+
+/* Capture side: codec 48 kHz -> 8 kHz, 480-frame blocks, 2 s. */
+static void test_capture_48k_to_8k(void)
+{
+    audio_bridge b;
+    TEST_ASSERT_TRUE(audio_bridge_init(&b, 48000, 8000));
     int16_t blk[480];
     for (int n = 0; n < 2 * 48000; n += 480)
     {
@@ -70,23 +70,34 @@ int main(void)
     audio_bridge_shutdown(&b);
     double snr = tone_snr(sink + 800, nsink - 1600, 8000.0);
     printf("48k -> 8k: %zu samples out of 16000, tone SNR %.1f dB\n", nsink, snr);
-    CHECK(nsink > 16000 - 200 && nsink <= 16000, "lost samples: %zu of 16000", nsink);
-    CHECK(snr > 40.0, "tone SNR %.1f dB", snr);
+    TEST_ASSERT_GREATER_THAN_size_t_MESSAGE(16000 - 200, nsink, "samples lost");
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(16000, nsink);
+    TEST_ASSERT_GREATER_THAN_DOUBLE_MESSAGE(40.0, snr, "tone SNR (dB)");
+}
 
-    /* Playback side: 8 kHz ring -> codec 48 kHz, pulled in 480-frame blocks. */
+/* Playback side: 8 kHz ring -> codec 48 kHz, pulled in 480-frame blocks. */
+static void test_playback_8k_to_48k(void)
+{
+    audio_bridge b;
     for (nsrc = 0; nsrc < 2 * 8000; nsrc++)
         src[nsrc] = (int16_t) lrint(16000.0 * sin(2 * M_PI * 1000.0 * nsrc / 8000.0));
-    CHECK(audio_bridge_init(&b, 48000, 8000), "init 8k->48k");
+    TEST_ASSERT_TRUE(audio_bridge_init(&b, 48000, 8000));
     static int16_t out[2 * 48000];
     size_t nout = 0;
     for (int i = 0; i < 2 * 48000 / 480; i++)
         nout += audio_bridge_pop_tx_native(&b, &r, out + nout, 480);
     audio_bridge_shutdown(&b);
-    snr = tone_snr(out + 4800, nout - 9600, 48000.0);
+    double snr = tone_snr(out + 4800, nout - 9600, 48000.0);
     printf("8k -> 48k: %zu samples out of 96000, tone SNR %.1f dB\n", nout, snr);
-    CHECK(nout > 96000 - 1200 && nout <= 96000, "lost samples: %zu of 96000", nout);
-    CHECK(snr > 40.0, "tone SNR %.1f dB", snr);
+    TEST_ASSERT_GREATER_THAN_size_t_MESSAGE(96000 - 1200, nout, "samples lost");
+    TEST_ASSERT_LESS_OR_EQUAL_size_t(96000, nout);
+    TEST_ASSERT_GREATER_THAN_DOUBLE_MESSAGE(40.0, snr, "tone SNR (dB)");
+}
 
-    printf("audio_bridge_test: %s\n", failures ? "FAILED" : "ok");
-    return failures ? 1 : 0;
+int main(void)
+{
+    UNITY_BEGIN();
+    RUN_TEST(test_capture_48k_to_8k);
+    RUN_TEST(test_playback_8k_to_48k);
+    return UNITY_END();
 }

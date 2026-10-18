@@ -1,0 +1,9 @@
+# ThreadSanitizer suppressions for radiod's unit tests (make test SANITIZE=tsan).
+#
+# Policy, as mercury's: every entry has a one-line justification, and only
+# known, triaged findings outside radiod's own code go here, so that a new
+# race in radiod fails the run.  Format: race:<symbol or library substring>
+
+# hamlib 4.6 writes its debug-message buffer (debugmsgsave2) from rig_open and
+# its own threads without a lock; library-internal, not radiod's.
+race:libhamlib.so

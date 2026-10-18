@@ -16,7 +16,6 @@
  * Copyright (C) 2026 Rhizomatica
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
-#include <assert.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,9 +24,11 @@
 
 #include <hamlib/rig.h>
 
-#include "../radio/radio.h"
-#include "../radio/radio_backend.h"
-#include "../control_interfaces/rig_server.h"
+#include "unity.h"
+#include "test_util.h"
+#include "radio/radio.h"
+#include "radio/radio_backend.h"
+#include "control_interfaces/rig_server.h"
 
 _Atomic bool shutdown_ = false;
 
@@ -45,10 +46,10 @@ bool hamlib_digi_start(radio *radio_h) { (void) radio_h; return true; }
 void hamlib_digi_stop(radio *radio_h) { (void) radio_h; }
 void radio_pipeline_refresh(radio *radio_h) { (void) radio_h; }
 
-#include "../common/cfg_utils.c"
-#include "../radio/radio_backend.c"
-#include "../radio/radio_controls.c"
-#include "../hamlib/radio_hamlib.c"
+#include "common/cfg_utils.c"
+#include "radio/radio_backend.c"
+#include "radio/radio_controls.c"
+#include "hamlib/radio_hamlib.c"
 
 #define TEST_PORT 45331
 
@@ -66,7 +67,7 @@ static void remote_set_txrx_state(radio *radio_h, bool txrx_state)
 static void start_remote(void)
 {
     remote = calloc(1, sizeof(*remote));
-    assert(remote);
+    TEST_REQUIRE(remote);
 
     /* Hamlib's dummy rig describes itself through the real backend's
      * dump_state, so the NET client opens as it would against the daemon;
@@ -84,10 +85,11 @@ static void start_remote(void)
     remote->rig_server_port = TEST_PORT;
 
     RIG *dummy = rig_init(RIG_MODEL_DUMMY);
-    assert(dummy && rig_open(dummy) == RIG_OK);
+    TEST_REQUIRE(dummy);
+    TEST_REQUIRE(rig_open(dummy) == RIG_OK);
     remote->rig = dummy;
 
-    assert(rig_server_start(remote));
+    TEST_REQUIRE(rig_server_start(remote));
 }
 
 static void init_local(radio *r)
@@ -108,9 +110,9 @@ static void test_init_unkeys_a_keyed_rig(void)
 
     remote->txrx_state = IN_TX;            /* left keyed by a dead daemon */
     int calls = remote_ptt_calls;
-    assert(radio_hamlib_init(&local));
-    assert(remote_ptt_calls > calls && remote->txrx_state == IN_RX);
-    assert(local.txrx_state == IN_RX);
+    TEST_ASSERT_TRUE(radio_hamlib_init(&local));
+    do { TEST_ASSERT_GREATER_THAN_INT(calls, remote_ptt_calls); TEST_ASSERT_EQUAL_INT64(IN_RX, remote->txrx_state); } while (0);
+    TEST_ASSERT_EQUAL_INT64(IN_RX, local.txrx_state);
     radio_hamlib_shutdown(&local);
     printf("  start-up unkeys a keyed rig .......... ok\n");
 }
@@ -119,20 +121,20 @@ static void test_ptt_off_ignores_stale_cache(void)
 {
     radio local;
     init_local(&local);
-    assert(radio_hamlib_init(&local));
+    TEST_ASSERT_TRUE(radio_hamlib_init(&local));
 
     tr_switch(&local, IN_TX);
-    assert(remote->txrx_state == IN_TX && local.txrx_state == IN_TX);
+    do { TEST_ASSERT_EQUAL_INT64(IN_TX, remote->txrx_state); TEST_ASSERT_EQUAL_INT64(IN_TX, local.txrx_state); } while (0);
 
     /* Keying twice must not send a second PTT-on. */
     int calls = remote_ptt_calls;
     tr_switch(&local, IN_TX);
-    assert(remote_ptt_calls == calls);
+    TEST_ASSERT_EQUAL_INT(calls, remote_ptt_calls);
 
     /* The cache goes stale: it reads RX while the rig transmits. */
     local.txrx_state = IN_RX;
     tr_switch(&local, IN_RX);
-    assert(remote->txrx_state == IN_RX && "PTT-off skipped on a stale cache");
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(IN_RX, remote->txrx_state, "PTT-off skipped on a stale cache");
 
     radio_hamlib_shutdown(&local);
     printf("  PTT off ignores a stale RX cache ..... ok\n");
@@ -142,16 +144,16 @@ static void test_shutdown_unkeys_whatever_the_cache(void)
 {
     radio local;
     init_local(&local);
-    assert(radio_hamlib_init(&local));
+    TEST_ASSERT_TRUE(radio_hamlib_init(&local));
 
     tr_switch(&local, IN_TX);
-    assert(remote->txrx_state == IN_TX);
+    TEST_ASSERT_EQUAL_INT64(IN_TX, remote->txrx_state);
     /* Take PTT ownership off this connection, or the server's own release
      * on disconnect would unkey and hide what shutdown did. */
     radio_backend_set_ptt(remote, IN_TX, PTT_SRC_INTERNAL, 0);
     local.txrx_state = IN_RX;
     radio_hamlib_shutdown(&local);
-    assert(remote->txrx_state == IN_RX && "shutdown left the rig keyed");
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(IN_RX, remote->txrx_state, "shutdown left the rig keyed");
     printf("  shutdown unkeys whatever the cache ... ok\n");
 }
 
@@ -161,23 +163,26 @@ static void test_force_ptt_off(void)
     init_local(&local);
 
     remote->txrx_state = IN_TX;
-    assert(radio_hamlib_force_ptt_off(&local));
-    assert(remote->txrx_state == IN_RX);
+    TEST_ASSERT_TRUE(radio_hamlib_force_ptt_off(&local));
+    TEST_ASSERT_EQUAL_INT64(IN_RX, remote->txrx_state);
     printf("  --ptt-off unkeys with nothing running  ok\n");
 }
+
+void setUp(void) {}
+void tearDown(void) {}
 
 int main(void)
 {
     rig_set_debug(RIG_DEBUG_NONE);
     start_remote();
 
-    printf("hamlib backend PTT:\n");
-    test_init_unkeys_a_keyed_rig();
-    test_ptt_off_ignores_stale_cache();
-    test_shutdown_unkeys_whatever_the_cache();
-    test_force_ptt_off();
+    UNITY_BEGIN();
+    RUN_TEST(test_init_unkeys_a_keyed_rig);
+    RUN_TEST(test_ptt_off_ignores_stale_cache);
+    RUN_TEST(test_shutdown_unkeys_whatever_the_cache);
+    RUN_TEST(test_force_ptt_off);
+    int failed = UNITY_END();
 
     rig_server_stop();
-    printf("hamlib_ptt_test: all ok\n");
-    return 0;
+    return failed;
 }

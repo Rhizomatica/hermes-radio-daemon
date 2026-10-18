@@ -17,7 +17,6 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include <arpa/inet.h>
-#include <assert.h>
 #include <errno.h>
 #include <netinet/in.h>
 #include <pthread.h>
@@ -30,10 +29,12 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#include "../radio/radio.h"
-#include "../radio/radio_backend.h"
-#include "../radio/radio_controls.h"
-#include "../control_interfaces/rig_server.h"
+#include "unity.h"
+#include "test_util.h"
+#include "radio/radio.h"
+#include "radio/radio_backend.h"
+#include "radio/radio_controls.h"
+#include "control_interfaces/rig_server.h"
 
 /* The daemon owns these; the server reads them. */
 _Atomic bool shutdown_ = false;
@@ -60,16 +61,16 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     return 0;
 }
 
-#include "../common/cfg_utils.c"
-#include "../radio/radio_backend.c"
-#include "../radio/radio_controls.c"
+#include "common/cfg_utils.c"
+#include "radio/radio_backend.c"
+#include "radio/radio_controls.c"
 
 #define TEST_PORT 45329
 
 static int connect_server(void)
 {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    assert(fd >= 0);
+    TEST_ASSERT_GREATER_OR_EQUAL_INT64(0, fd);
     struct sockaddr_in a = {
         .sin_family = AF_INET,
         .sin_port   = htons(TEST_PORT),
@@ -88,7 +89,7 @@ static int connect_server(void)
         }
         usleep(10000);
     }
-    assert(!"could not connect to rig_server");
+    TEST_ASSERT_FALSE("could not connect to rig_server");
     return -1;
 }
 
@@ -110,7 +111,7 @@ static size_t read_line(int fd, char *buf, size_t max)
 
 static void send_line(int fd, const char *s)
 {
-    assert(write(fd, s, strlen(s)) == (ssize_t) strlen(s));
+    TEST_ASSERT_EQUAL_INT64((ssize_t) strlen(s), write(fd, s, strlen(s)));
 }
 
 /* "q" must be answered AND must close the connection. */
@@ -121,13 +122,13 @@ static void test_quit_replies_and_closes(void)
 
     send_line(fd, "q\n");
     size_t n = read_line(fd, buf, sizeof(buf));
-    assert(n > 0 && "server must answer q -- silence costs hamlib a 20 s timeout");
-    assert(strcmp(buf, "RPRT 0\n") == 0);
+    TEST_ASSERT_GREATER_THAN_INT64_MESSAGE(0, n, "server must answer q -- silence costs hamlib a 20 s timeout");
+    TEST_ASSERT_EQUAL_STRING("RPRT 0\n", buf);
 
     /* and then the server must drop us, so netrigctl_close() returns at once */
     char c;
     ssize_t r = read(fd, &c, 1);
-    assert(r == 0 && "server must close the connection after q");
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(0, r, "server must close the connection after q");
     close(fd);
     printf("  quit replies RPRT 0 and closes ....... ok\n");
 }
@@ -140,10 +141,9 @@ static void test_chk_vfo_is_a_bare_value(void)
 
     send_line(fd, "\\chk_vfo\n");
     size_t n = read_line(fd, buf, sizeof(buf));
-    assert(n > 0);
-    assert(strncmp(buf, "CHKVFO", 6) != 0 &&
-           "extended form makes hamlib log 'unknown value ... =9'");
-    assert((strcmp(buf, "0\n") == 0 || strcmp(buf, "1\n") == 0));
+    TEST_ASSERT_GREATER_THAN_INT64(0, n);
+    TEST_ASSERT_NOT_EQUAL_INT64_MESSAGE(0, strncmp(buf, "CHKVFO", 6), "extended form makes hamlib log 'unknown value ... =9'");
+    TEST_ASSERT_TRUE(strcmp(buf, "0\n") == 0 || strcmp(buf, "1\n") == 0);
     close(fd);
     printf("  chk_vfo answers a bare value ......... ok (\"%c\")\n", buf[0]);
 }
@@ -155,17 +155,17 @@ static void test_ordinary_and_unknown(void)
     char buf[128];
 
     send_line(fd, "f\n");
-    assert(read_line(fd, buf, sizeof(buf)) > 0);
-    assert(strtoul(buf, NULL, 10) == 14200000);
+    TEST_ASSERT_GREATER_THAN_INT64(0, read_line(fd, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_INT64(14200000, strtoul(buf, NULL, 10));
 
     send_line(fd, "zzz\n");
-    assert(read_line(fd, buf, sizeof(buf)) > 0);
-    assert(strcmp(buf, "RPRT -11\n") == 0);
+    TEST_ASSERT_GREATER_THAN_INT64(0, read_line(fd, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("RPRT -11\n", buf);
 
     /* several lines in one write must all be answered */
     send_line(fd, "f\nf\n");
-    assert(read_line(fd, buf, sizeof(buf)) > 0);
-    assert(read_line(fd, buf, sizeof(buf)) > 0);
+    TEST_ASSERT_GREATER_THAN_INT64(0, read_line(fd, buf, sizeof(buf)));
+    TEST_ASSERT_GREATER_THAN_INT64(0, read_line(fd, buf, sizeof(buf)));
 
     close(fd);
     printf("  ordinary + unknown commands .......... ok\n");
@@ -188,8 +188,8 @@ static void cmd_ok(int fd, const char *line)
 {
     char buf[128];
     send_line(fd, line);
-    assert(read_line(fd, buf, sizeof(buf)) > 0);
-    assert(strcmp(buf, "RPRT 0\n") == 0);
+    TEST_ASSERT_GREATER_THAN_INT64(0, read_line(fd, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("RPRT 0\n", buf);
 }
 
 /* A client that keys with "T 1" and drops the connection without "T 0"
@@ -198,10 +198,10 @@ static void test_ptt_released_when_keyer_disconnects(void)
 {
     int fd = connect_server();
     cmd_ok(fd, "T 1\n");
-    assert(expect_ptt(IN_TX, 100));
+    TEST_ASSERT_TRUE(expect_ptt(IN_TX, 100));
 
     close(fd);
-    assert(expect_ptt(IN_RX, 1000) && "keyer dropped: PTT must be released");
+    TEST_ASSERT_TRUE_MESSAGE(expect_ptt(IN_RX, 1000), "keyer dropped: PTT must be released");
     printf("  keyer disconnect releases PTT ........ ok\n");
 }
 
@@ -212,20 +212,20 @@ static void test_ptt_kept_for_other_clients(void)
     char buf[128];
     int keyer = connect_server();
     cmd_ok(keyer, "T 1\n");
-    assert(expect_ptt(IN_TX, 100));
+    TEST_ASSERT_TRUE(expect_ptt(IN_TX, 100));
 
     int other = connect_server();
     send_line(other, "t\n");
-    assert(read_line(other, buf, sizeof(buf)) > 0 && strcmp(buf, "1\n") == 0);
+    do { TEST_ASSERT_GREATER_THAN_INT64(0, read_line(other, buf, sizeof(buf))); TEST_ASSERT_EQUAL_STRING("1\n", buf); } while (0);
     close(other);
     usleep(300000);
-    assert(test_radio->txrx_state == IN_TX && "a reader left: keep transmitting");
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(IN_TX, test_radio->txrx_state, "a reader left: keep transmitting");
 
     cmd_ok(keyer, "T 0\n");
     int calls = ptt_calls;
     close(keyer);
     usleep(300000);
-    assert(ptt_calls == calls && "unkeyed before leaving: nothing to release");
+    TEST_ASSERT_TRUE_MESSAGE(ptt_calls == calls, "unkeyed before leaving: nothing to release");
     printf("  other clients leave PTT alone ........ ok\n");
 }
 
@@ -240,17 +240,20 @@ static void test_ptt_follows_last_keyer(void)
 
     close(a);
     usleep(300000);
-    assert(test_radio->txrx_state == IN_TX);
+    TEST_ASSERT_EQUAL_INT64(IN_TX, test_radio->txrx_state);
 
     close(b);
-    assert(expect_ptt(IN_RX, 1000));
+    TEST_ASSERT_TRUE(expect_ptt(IN_RX, 1000));
     printf("  PTT follows the last keyer ........... ok\n");
 }
+
+void setUp(void) {}
+void tearDown(void) {}
 
 int main(void)
 {
     radio *r = calloc(1, sizeof(*r));
-    assert(r);
+    TEST_REQUIRE(r);
     test_radio = r;
     r->backend_kind     = RADIO_BACKEND_HAMLIB;
     r->backend_ops      = &hamlib_backend_ops;
@@ -258,19 +261,18 @@ int main(void)
     r->rig_server_enable = true;
     r->rig_server_port  = TEST_PORT;
     r->profiles[0].freq = 14200000;
+    TEST_REQUIRE(rig_server_start(r));
 
-    assert(rig_server_start(r) && "rig_server_start failed");
-
-    printf("rig_server protocol:\n");
-    test_ordinary_and_unknown();
-    test_chk_vfo_is_a_bare_value();
-    test_quit_replies_and_closes();
-    test_ptt_released_when_keyer_disconnects();
-    test_ptt_kept_for_other_clients();
-    test_ptt_follows_last_keyer();
+    UNITY_BEGIN();
+    RUN_TEST(test_ordinary_and_unknown);
+    RUN_TEST(test_chk_vfo_is_a_bare_value);
+    RUN_TEST(test_quit_replies_and_closes);
+    RUN_TEST(test_ptt_released_when_keyer_disconnects);
+    RUN_TEST(test_ptt_kept_for_other_clients);
+    RUN_TEST(test_ptt_follows_last_keyer);
+    int failed = UNITY_END();
 
     rig_server_stop();
     free(r);
-    printf("rig_server_test: all ok\n");
-    return 0;
+    return failed;
 }

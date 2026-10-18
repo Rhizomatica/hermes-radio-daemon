@@ -43,7 +43,7 @@ typedef struct {
 static radio     *rig_radio       = NULL;
 static int        rig_listen_fd   = -1;
 static pthread_t  rig_thread;
-static bool       rig_running     = false;
+static _Atomic bool rig_running   = false;
 static bool       rig_thread_started = false;
 
 static void rig_respond(int fd, const char *fmt, ...)
@@ -871,16 +871,21 @@ void rig_server_stop(void)
 {
     rig_running = false;
 
+    /* Wake the thread's select (it also wakes every 100 ms), and close the
+     * socket only once the thread is gone: it selects on rig_listen_fd, so
+     * closing first left it testing fd -1 (or a reused fd number). */
     if (rig_listen_fd >= 0)
-    {
         shutdown(rig_listen_fd, SHUT_RDWR);
-        close(rig_listen_fd);
-        rig_listen_fd = -1;
-    }
 
     if (rig_thread_started)
     {
         pthread_join(rig_thread, NULL);
         rig_thread_started = false;
+    }
+
+    if (rig_listen_fd >= 0)
+    {
+        close(rig_listen_fd);
+        rig_listen_fd = -1;
     }
 }

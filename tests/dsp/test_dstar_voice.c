@@ -13,14 +13,12 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "unity.h"
+#include "test_util.h"
 #include "dsp/dstar_voice.h"
 #include "dsp/sbitx_dstar.h"
 #include "dsp/voice_crypto.h"
 
-static int failures;
-#define CHECK(cond, ...) do { if (!(cond)) { failures++; \
-    fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-    fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } } while (0)
 
 #define NFRAMES (21 * 12)   /* 12 superframes, ~5 s */
 
@@ -119,21 +117,21 @@ static void test_clear(void)
 {
     voice_crypto_clear_key();
     transmit(false);
-    CHECK((wire_hdr[2] & DSTAR_HDR_FLAG3_ENCRYPTED) == 0, "clear header flagged encrypted");
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(0, (wire_hdr[2] & DSTAR_HDR_FLAG3_ENCRYPTED), "clear header flagged encrypted");
     rx_result r = receive(0, true, -1);
-    CHECK(r.played == NFRAMES && r.match == NFRAMES, "clear over, no key: played %d match %d", r.played, r.match);
-    CHECK(r.status == DSTAR_VC_CLEAR, "clear status %d", r.status);
+    do { TEST_ASSERT_EQUAL_INT64_MESSAGE(NFRAMES, r.played, test_msg("clear over, no key: played %d match %d", r.played, r.match)); TEST_ASSERT_EQUAL_INT64_MESSAGE(NFRAMES, r.match, test_msg("clear over, no key: played %d match %d", r.played, r.match)); } while (0);
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(DSTAR_VC_CLEAR, r.status, test_msg("clear status %d", r.status));
 
     voice_crypto_set_key(KEY_A);   /* a keyed receiver still plays clear overs */
     r = receive(0, true, -1);
-    CHECK(r.played == NFRAMES && r.match == NFRAMES, "clear over, keyed rx: played %d match %d", r.played, r.match);
+    do { TEST_ASSERT_EQUAL_INT64_MESSAGE(NFRAMES, r.played, test_msg("clear over, keyed rx: played %d match %d", r.played, r.match)); TEST_ASSERT_EQUAL_INT64_MESSAGE(NFRAMES, r.match, test_msg("clear over, keyed rx: played %d match %d", r.played, r.match)); } while (0);
 }
 
 static void test_encrypted(void)
 {
     voice_crypto_set_key(KEY_A);
     transmit(true);
-    CHECK(wire_hdr[2] & DSTAR_HDR_FLAG3_ENCRYPTED, "encrypted header not flagged");
+    TEST_ASSERT_TRUE_MESSAGE(wire_hdr[2] & DSTAR_HDR_FLAG3_ENCRYPTED, "encrypted header not flagged");
 
     /* The ciphertext really differs: FEC-decode the wire frames as-is. */
     long diff = 0;
@@ -146,28 +144,26 @@ static void test_encrypted(void)
                 diff += d[i] != plain[f][i];
     }
     double frac = (double) diff / (NFRAMES * (DSTAR_VOICE_AMBE_BITS - 1));
-    CHECK(frac > 0.45 && frac < 0.55, "ciphertext differs in %.1f%% of bits, want ~50%%", 100 * frac);
+    do { TEST_ASSERT_TRUE_MESSAGE(frac > 0.45, test_msg("ciphertext differs in %.1f%% of bits, want ~50%%", 100 * frac)); TEST_ASSERT_TRUE_MESSAGE(frac < 0.55, test_msg("ciphertext differs in %.1f%% of bits, want ~50%%", 100 * frac)); } while (0);
 
     /* From the start of the over: the header carries R under its FEC and
      * CRC, so every frame decrypts from the first one. */
     rx_result r = receive(0, true, -1);
-    CHECK(r.first_match == 0, "decrypt starts at frame %d, want 0", r.first_match);
-    CHECK(r.muted == 0 && r.played == NFRAMES && r.match == NFRAMES,
-          "start of over: muted %d played %d match %d", r.muted, r.played, r.match);
-    CHECK(r.status == DSTAR_VC_DECRYPTING, "status %d, want decrypting", r.status);
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(0, r.first_match, test_msg("decrypt starts at frame %d, want 0", r.first_match));
+    do { TEST_ASSERT_EQUAL_INT64_MESSAGE(0, r.muted, test_msg("start of over: muted %d played %d match %d", r.muted, r.played, r.match)); TEST_ASSERT_EQUAL_INT64_MESSAGE(NFRAMES, r.played, test_msg("start of over: muted %d played %d match %d", r.muted, r.played, r.match)); TEST_ASSERT_EQUAL_INT64_MESSAGE(NFRAMES, r.match, test_msg("start of over: muted %d played %d match %d", r.muted, r.played, r.match)); } while (0);
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(DSTAR_VC_DECRYPTING, r.status, test_msg("status %d, want decrypting", r.status));
 
     /* Late entry at superframe 5, no header yet: the first 20 frames can't be
      * told from a clear over and play as-is (garbage, not speech); from the
      * first sync block the over is known to be encrypted and mutes; from
      * the confirming block (superframe 6), exact. */
     r = receive(5 * 21, false, -1);
-    CHECK(r.first_match == 6 * 21 + 20, "late entry decrypt starts at %d", r.first_match);
-    CHECK(r.match == NFRAMES - (6 * 21 + 20), "late entry match %d", r.match);
+    TEST_ASSERT_TRUE_MESSAGE(r.first_match == 6 * 21 + 20, test_msg("late entry decrypt starts at %d", r.first_match));
+    TEST_ASSERT_TRUE_MESSAGE(r.match == NFRAMES - (6 * 21 + 20), test_msg("late entry match %d", r.match));
 
     /* A missed data sync (fc runs to 41) keeps the frame count right. */
     r = receive(0, true, 4);
-    CHECK(r.match == r.played && r.played == NFRAMES,
-          "missed data sync: played %d match %d", r.played, r.match);
+    do { TEST_ASSERT_TRUE_MESSAGE(r.match == r.played, test_msg("missed data sync: played %d match %d", r.played, r.match)); TEST_ASSERT_EQUAL_INT64_MESSAGE(NFRAMES, r.played, test_msg("missed data sync: played %d match %d", r.played, r.match)); } while (0);
 
     /* A header that fails its CRC is not trusted: the sync blocks lock as
      * before (superframe 1's block confirms superframe 0's). */
@@ -175,15 +171,13 @@ static void test_encrypted(void)
     wire_hdr[20] ^= 0x10;                      /* a callsign bit: CRC fails */
     r = receive(0, true, -1);
     wire_hdr[20] = saved;
-    CHECK(r.first_match == 41 && r.match == r.played,
-          "corrupt header: decrypt starts at %d (want 41), played %d match %d",
-          r.first_match, r.played, r.match);
+    do { TEST_ASSERT_EQUAL_INT64_MESSAGE(41, r.first_match, test_msg("corrupt header: decrypt starts at %d (want 41), played %d match %d", r.first_match, r.played, r.match)); TEST_ASSERT_TRUE_MESSAGE(r.match == r.played, test_msg("corrupt header: decrypt starts at %d (want 41), played %d match %d", r.first_match, r.played, r.match)); } while (0);
 
     /* A second over draws a new nonce: same speech, different ciphertext. */
     uint8_t first[SBITX_DSTAR_FRAME_BYTES];
     memcpy(first, wire[30], sizeof(first));
     transmit(true);
-    CHECK(memcmp(first, wire[30], 9) != 0, "two overs produced identical ciphertext");
+    TEST_ASSERT_NOT_EQUAL_INT64_MESSAGE(0, memcmp(first, wire[30], 9), "two overs produced identical ciphertext");
 }
 
 static void test_wrong_and_no_key(void)
@@ -193,13 +187,13 @@ static void test_wrong_and_no_key(void)
 
     voice_crypto_set_key(KEY_B);
     rx_result r = receive(0, true, -1);
-    CHECK(r.played == 0, "wrong key played %d frames", r.played);
-    CHECK(r.status == DSTAR_VC_BAD_KEY, "wrong key status %d", r.status);
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(0, r.played, test_msg("wrong key played %d frames", r.played));
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(DSTAR_VC_BAD_KEY, r.status, test_msg("wrong key status %d", r.status));
 
     voice_crypto_clear_key();
     r = receive(0, true, -1);
-    CHECK(r.played == 0, "no key played %d frames", r.played);
-    CHECK(r.status == DSTAR_VC_NO_KEY, "no key status %d", r.status);
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(0, r.played, test_msg("no key played %d frames", r.played));
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(DSTAR_VC_NO_KEY, r.status, test_msg("no key status %d", r.status));
 }
 
 /* The sync block's keyed check is one byte, so a receiver holding the wrong
@@ -239,10 +233,9 @@ static void test_wrong_key_false_check(void)
         cases++;
         voice_crypto_set_key(KEY_B);
         rx_result r = receive(0, true, -1);
-        CHECK(r.played == 0, "wrong key, check collision at superframe %d: played %d frames",
-              hit, r.played);
+        TEST_ASSERT_EQUAL_INT64_MESSAGE(0, r.played, test_msg("wrong key, check collision at superframe %d: played %d frames", hit, r.played));
     }
-    CHECK(cases == 8, "found only %d false-check overs in %d", cases, overs);
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(8, cases, test_msg("found only %d false-check overs in %d", cases, overs));
 }
 
 /* A receiver whose key stops matching mid-over (the key was switched during
@@ -270,10 +263,8 @@ static void test_key_lost_mid_over(void)
             played_after++;
         fc++;
     }
-    CHECK(played_after == 0, "key lost mid-over: still playing %d frames 6 superframes later",
-          played_after);
-    CHECK(rx.status == DSTAR_VC_BAD_KEY, "key lost mid-over: status %d, want key mismatch",
-          rx.status);
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(0, played_after, test_msg("key lost mid-over: still playing %d frames 6 superframes later", played_after));
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(DSTAR_VC_BAD_KEY, rx.status, test_msg("key lost mid-over: status %d, want key mismatch", rx.status));
 }
 
 static void test_corrupt_sync(void)
@@ -283,8 +274,7 @@ static void test_corrupt_sync(void)
     wire[19][10] ^= 0x04;   /* one bit of superframe 0's sync block */
     /* With the header, the sync blocks do not matter at the start. */
     rx_result r = receive(0, true, -1);
-    CHECK(r.first_match == 0 && r.match == NFRAMES, "corrupt sync, header: starts at %d match %d",
-          r.first_match, r.match);
+    do { TEST_ASSERT_EQUAL_INT64_MESSAGE(0, r.first_match, test_msg("corrupt sync, header: starts at %d match %d", r.first_match, r.match)); TEST_ASSERT_EQUAL_INT64_MESSAGE(NFRAMES, r.match, test_msg("corrupt sync, header: starts at %d match %d", r.first_match, r.match)); } while (0);
     /* Joined mid-over (superframe 0 is before the join, so its corrupt
      * block is not seen): superframes 1 and 2 confirm each other. */
 }
@@ -308,8 +298,7 @@ static void test_bit_errors(void)
                         if (rand() < ber[k] * RAND_MAX)
                             wire[f][b] ^= (uint8_t) (1U << bit);
             rx_result r = receive(0, true, -1);
-            CHECK(r.match == r.played, "BER %.0f%%: played %d but only %d exact",
-                  100 * ber[k], r.played, r.match);
+            TEST_ASSERT_TRUE_MESSAGE(r.match == r.played, test_msg("BER %.0f%%: played %d but only %d exact", 100 * ber[k], r.played, r.match));
             if (r.status == DSTAR_VC_DECRYPTING && r.first_match >= 0) {
                 locked++;
                 if (r.first_match > worst)
@@ -318,14 +307,13 @@ static void test_bit_errors(void)
 
             voice_crypto_set_key(KEY_B);
             r = receive(0, true, -1);
-            CHECK(r.played == 0, "BER %.0f%%, wrong key: played %d frames", 100 * ber[k], r.played);
+            TEST_ASSERT_EQUAL_INT64_MESSAGE(0, r.played, test_msg("BER %.0f%%, wrong key: played %d frames", 100 * ber[k], r.played));
         }
         printf("slow-data BER %.0f%%: locked in %d of %d overs, latest at frame %d (superframe %d)\n",
                100 * ber[k], locked, runs, worst, worst / DSTAR_VOICE_SF_FRAMES);
-        CHECK(locked == runs, "BER %.0f%%: locked in only %d of %d overs", 100 * ber[k], locked, runs);
+        TEST_ASSERT_TRUE_MESSAGE(locked == runs, test_msg("BER %.0f%%: locked in only %d of %d overs", 100 * ber[k], locked, runs));
         if (ber[k] <= 0.02)
-            CHECK(worst <= 6 * DSTAR_VOICE_SF_FRAMES, "BER %.0f%%: locked as late as frame %d",
-                  100 * ber[k], worst);
+            TEST_ASSERT_TRUE_MESSAGE(worst <= 6 * DSTAR_VOICE_SF_FRAMES, test_msg("BER %.0f%%: locked as late as frame %d", 100 * ber[k], worst));
     }
 }
 
@@ -356,15 +344,13 @@ static void test_late_header(void)
         }
         fc++;
     }
-    CHECK(first == 3 * 21 + 20, "late header: decrypt starts at %d, want %d", first, 3 * 21 + 20);
-    CHECK(match == played && rx.status == DSTAR_VC_DECRYPTING,
-          "late header: played %d match %d status %d", played, match, rx.status);
+    TEST_ASSERT_TRUE_MESSAGE(first == 3 * 21 + 20, test_msg("late header: decrypt starts at %d, want %d", first, 3 * 21 + 20));
+    do { TEST_ASSERT_TRUE_MESSAGE(match == played, test_msg("late header: played %d match %d status %d", played, match, rx.status)); TEST_ASSERT_EQUAL_INT64_MESSAGE(DSTAR_VC_DECRYPTING, rx.status, test_msg("late header: played %d match %d status %d", played, match, rx.status)); } while (0);
 
     /* ...and with the wrong key the header proves it at once: nothing plays. */
     voice_crypto_set_key(KEY_B);
     rx_result r = receive(0, true, -1);
-    CHECK(r.played == 0 && r.status == DSTAR_VC_BAD_KEY, "wrong key, header: played %d status %d",
-          r.played, r.status);
+    do { TEST_ASSERT_EQUAL_INT64_MESSAGE(0, r.played, test_msg("wrong key, header: played %d status %d", r.played, r.status)); TEST_ASSERT_EQUAL_INT64_MESSAGE(DSTAR_VC_BAD_KEY, r.status, test_msg("wrong key, header: played %d status %d", r.played, r.status)); } while (0);
 }
 
 static void test_fail_closed(void)
@@ -372,11 +358,11 @@ static void test_fail_closed(void)
     static const uint8_t null_ambe[9] = {0x9E, 0x8D, 0x32, 0x88, 0x26, 0x1A, 0x3F, 0x61, 0xE8};
     voice_crypto_clear_key();
     transmit(true);
-    CHECK((wire_hdr[2] & DSTAR_HDR_FLAG3_ENCRYPTED) == 0, "fail-closed header flagged encrypted");
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(0, (wire_hdr[2] & DSTAR_HDR_FLAG3_ENCRYPTED), "fail-closed header flagged encrypted");
     int silent = 0;
     for (int f = 0; f < NFRAMES; f++)
         silent += memcmp(wire[f], null_ambe, 9) == 0;
-    CHECK(silent == NFRAMES, "fail-closed: %d/%d frames silent", silent, NFRAMES);
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(NFRAMES, silent, test_msg("fail-closed: %d/%d frames silent", silent, NFRAMES));
 }
 
 static bool load_key_text(const char *text, size_t len)
@@ -395,18 +381,17 @@ static bool load_key_text(const char *text, size_t len)
 static void test_key_files(void)
 {
     const char *hex = "000102030405060708090a0b0c0d0e0f101112131415161718191A1B1C1D1E1F\n";
-    CHECK(load_key_text(hex, strlen(hex)), "hex key rejected");
-    CHECK(voice_crypto_have_key(), "hex key not installed");
-    CHECK(load_key_text((const char *) KEY_A, sizeof(KEY_A)), "raw key rejected");
+    TEST_ASSERT_TRUE_MESSAGE(load_key_text(hex, strlen(hex)), "hex key rejected");
+    TEST_ASSERT_TRUE_MESSAGE(voice_crypto_have_key(), "hex key not installed");
+    TEST_ASSERT_TRUE_MESSAGE(load_key_text((const char *) KEY_A, sizeof(KEY_A)), "raw key rejected");
     /* Must match hermes-voice-key's "show" (vector from Python hashlib). */
     char fp[17];
-    CHECK(voice_crypto_fingerprint(fp) && strcmp(fp, "b730d4e0ada7e438") == 0,
-          "fingerprint %s, want b730d4e0ada7e438", fp);
-    CHECK(!load_key_text("0011", 4), "short key accepted");
-    CHECK(!voice_crypto_have_key(), "failed load left a key installed");
+    do { TEST_ASSERT_TRUE_MESSAGE(voice_crypto_fingerprint(fp), test_msg("fingerprint %s, want b730d4e0ada7e438", fp)); TEST_ASSERT_EQUAL_STRING_MESSAGE("b730d4e0ada7e438", fp, test_msg("fingerprint %s, want b730d4e0ada7e438", fp)); } while (0);
+    TEST_ASSERT_FALSE_MESSAGE(load_key_text("0011", 4), "short key accepted");
+    TEST_ASSERT_FALSE_MESSAGE(voice_crypto_have_key(), "failed load left a key installed");
     char bad[64];
     memset(bad, 'g', sizeof(bad));
-    CHECK(!load_key_text(bad, sizeof(bad)), "non-hex key accepted");
+    TEST_ASSERT_FALSE_MESSAGE(load_key_text(bad, sizeof(bad)), "non-hex key accepted");
 }
 
 /* ── end to end through the GMSK modem ─────────────────────────── */
@@ -459,11 +444,10 @@ static void test_modem_e2e(void)
 
     printf("modem e2e: %d frames delivered, %d played, %d exact, status %d\n",
            e2e_frames, e2e_played, e2e_match, e2e_rx.status);
-    CHECK(e2e_frames == NFRAMES, "modem delivered %d of %d frames", e2e_frames, NFRAMES);
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(NFRAMES, e2e_frames, test_msg("modem delivered %d of %d frames", e2e_frames, NFRAMES));
     /* The header comes through the real modulator and demodulator (FEC,
      * CRC), so decryption starts with the first voice frame. */
-    CHECK(e2e_match == NFRAMES && e2e_played == e2e_match,
-          "modem e2e: played %d exact %d, want %d", e2e_played, e2e_match, NFRAMES);
+    do { TEST_ASSERT_EQUAL_INT64_MESSAGE(NFRAMES, e2e_match, test_msg("modem e2e: played %d exact %d, want %d", e2e_played, e2e_match, NFRAMES)); TEST_ASSERT_TRUE_MESSAGE(e2e_played == e2e_match, test_msg("modem e2e: played %d exact %d, want %d", e2e_played, e2e_match, NFRAMES)); } while (0);
     sbitx_dstar_tx_free(mod);
     sbitx_dstar_rx_free(e2e_demod);
 }
@@ -481,7 +465,7 @@ static void test_header_after_false_sync(void)
     sbitx_dstar_tx *mod = sbitx_dstar_tx_new();
     size_t cap = (size_t) (60 + 85 + 12 * NFRAMES + 18) * 40 + 8192, len = 0;
     float *sig = malloc(cap * sizeof(float));
-    CHECK(mod != NULL && sig != NULL, "allocation");
+    do { TEST_ASSERT_NOT_NULL_MESSAGE(mod, "allocation"); TEST_ASSERT_NOT_NULL_MESSAGE(sig, "allocation"); } while (0);
     if (!mod || !sig)
         return;
     sbitx_dstar_tx_header(mod, wire_hdr);
@@ -514,7 +498,7 @@ static void test_header_after_false_sync(void)
         if (b >= 23 && (w ^ FS) == DIFF)
             trap = b;
     }
-    CHECK(real > 0 && trap > 0, "no frame sync (%d) or preamble window (%d)", real, trap);
+    do { TEST_ASSERT_GREATER_THAN_INT64_MESSAGE(0, real, test_msg("no frame sync (%d) or preamble window (%d)", real, trap)); TEST_ASSERT_GREATER_THAN_INT64_MESSAGE(0, trap, test_msg("no frame sync (%d) or preamble window (%d)", real, trap)); } while (0);
     if (real > 0 && trap > 0) {
         /* Flip window bits 10, 14, 15 (0 = oldest): 2 errors remain. */
         static const int flip[3] = {10, 14, 15};
@@ -538,11 +522,9 @@ static void test_header_after_false_sync(void)
         printf("false preamble sync %d bits early: %u candidates, header ok %u bad %u, "
                "%d frames, %d exact\n", real - trap, st.frame_sync, st.header_ok,
                st.header_bad, e2e_frames, e2e_match);
-        CHECK(st.header_bad >= 1, "the planted preamble match was not taken as a candidate");
-        CHECK(st.header_ok == 1, "the real header was not decoded");
-        CHECK(e2e_frames == NFRAMES && e2e_match == NFRAMES,
-              "after a false preamble sync: %d frames, %d exact, want %d", e2e_frames,
-              e2e_match, NFRAMES);
+        TEST_ASSERT_GREATER_OR_EQUAL_INT64_MESSAGE(1, st.header_bad, "the planted preamble match was not taken as a candidate");
+        TEST_ASSERT_EQUAL_INT64_MESSAGE(1, st.header_ok, "the real header was not decoded");
+        do { TEST_ASSERT_EQUAL_INT64_MESSAGE(NFRAMES, e2e_frames, test_msg("after a false preamble sync: %d frames, %d exact, want %d", e2e_frames, e2e_match, NFRAMES)); TEST_ASSERT_EQUAL_INT64_MESSAGE(NFRAMES, e2e_match, test_msg("after a false preamble sync: %d frames, %d exact, want %d", e2e_frames, e2e_match, NFRAMES)); } while (0);
         sbitx_dstar_rx_free(e2e_demod);
     }
     free(sig);
@@ -556,7 +538,7 @@ static void test_tx_eot_drains(void)
     sbitx_dstar_tx *tx = sbitx_dstar_tx_new();
     uint8_t frame[SBITX_DSTAR_FRAME_BYTES] = {0};
     float buf[4096];
-    CHECK(tx != NULL, "sbitx_dstar_tx_new");
+    TEST_ASSERT_NOT_NULL_MESSAGE(tx, "sbitx_dstar_tx_new");
     if (!tx)
         return;
     sbitx_dstar_tx_header(tx, wire_hdr);
@@ -567,34 +549,31 @@ static void test_tx_eot_drains(void)
     int got;
     while ((got = sbitx_dstar_tx_generate(tx, buf, 4096)) > 0)
         samples += got;
-    CHECK(!sbitx_dstar_tx_pending(tx), "modem still pending after the EOT went out");
+    TEST_ASSERT_FALSE_MESSAGE(sbitx_dstar_tx_pending(tx), "modem still pending after the EOT went out");
     /* preamble 60 + header 85 + 5 x 12 data + 18 EOT bytes, 40 samples each */
-    CHECK(samples == (60 + 85 + 5 * 12 + 18) * 40L, "generated %ld samples, want %ld",
-          samples, (60 + 85 + 5 * 12 + 18) * 40L);
+    TEST_ASSERT_TRUE_MESSAGE(samples == (60 + 85 + 5 * 12 + 18) * 40L, test_msg("generated %ld samples, want %ld", samples, (60 + 85 + 5 * 12 + 18) * 40L));
     sbitx_dstar_tx_free(tx);
 }
+
+void setUp(void) {}
+void tearDown(void) {}
 
 int main(void)
 {
     make_plain();
-    test_clear();
-    test_encrypted();
-    test_wrong_and_no_key();
-    test_wrong_key_false_check();
-    test_bit_errors();
-    test_tx_eot_drains();
-    test_late_header();
-    test_key_lost_mid_over();
-    test_corrupt_sync();
-    test_fail_closed();
-    test_key_files();
-    test_modem_e2e();
-    test_header_after_false_sync();
-
-    if (failures) {
-        fprintf(stderr, "dstar_voice_test: %d failure(s)\n", failures);
-        return 1;
-    }
-    printf("dstar_voice_test: ok\n");
-    return 0;
+    UNITY_BEGIN();
+    RUN_TEST(test_clear);
+    RUN_TEST(test_encrypted);
+    RUN_TEST(test_wrong_and_no_key);
+    RUN_TEST(test_wrong_key_false_check);
+    RUN_TEST(test_bit_errors);
+    RUN_TEST(test_tx_eot_drains);
+    RUN_TEST(test_late_header);
+    RUN_TEST(test_key_lost_mid_over);
+    RUN_TEST(test_corrupt_sync);
+    RUN_TEST(test_fail_closed);
+    RUN_TEST(test_key_files);
+    RUN_TEST(test_modem_e2e);
+    RUN_TEST(test_header_after_false_sync);
+    return UNITY_END();
 }
