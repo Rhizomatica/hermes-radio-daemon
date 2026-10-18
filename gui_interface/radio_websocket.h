@@ -19,4 +19,7 @@
 bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid);
 void radio_websocket_shutdown(pthread_t *websocket_tid);
 
+/* Module traffic (mercury's UI) reaches this websocket through ui_hub.h,
+ * of which this server is one transport. */
+
 #endif /* RADIO_WEBSOCKET_H_ */

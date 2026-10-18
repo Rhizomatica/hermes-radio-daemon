@@ -39,6 +39,7 @@
 #include "radio_backend.h"
 #include "radio_controls.h"
 #include "radio_websocket.h"
+#include "ui_hub.h"
 #include "dsp/sbitx_ft8.h"
 #include "cfg_utils.h"
 #include "voice_crypto.h"
@@ -77,6 +78,11 @@ typedef struct {
 } websocket_ctx;
 
 static websocket_ctx ws_ctx;
+
+/* This websocket as a ui_hub transport (ui_hub.h): the hub's broadcasts are
+ * queued to every client; the sink is removed, waiting out any broadcast in
+ * flight, before the server is stopped. */
+static int s_hub_sink = -1;
 
 static int64_t now_ms(void)
 {
@@ -312,6 +318,30 @@ static void json_escape(const char *in, char *out, size_t out_len)
     out[o] = '\0';
 }
 
+/* ─────────────────────── ui_hub transport ─────────────────────── */
+
+static void hub_text(const char *json, size_t len, void *user)
+{
+    ws_server_broadcast((ws_server_t *) user, json, len, true);
+}
+
+static void hub_binary(const uint8_t *frame, size_t len, void *user)
+{
+    ws_server_broadcast((ws_server_t *) user, frame, len, false);
+}
+
+/* A text message with no "cmd": a module's command (mercury's, by its key),
+ * answered on this connection.  False if it is not one either. */
+static bool module_command(ws_conn_t *c, const char *payload)
+{
+    char reply[320];
+
+    if (!ui_hub_command(payload, strlen(payload), reply, sizeof(reply)))
+        return false;
+    ws_send_text(c, reply);
+    return true;
+}
+
 static void build_status_json(radio *radio_h, char *json, size_t json_len)
 {
     uint32_t active = radio_h->profile_active_idx;
@@ -427,7 +457,8 @@ static void handle_ws_command(radio *radio_h, ws_conn_t *c,
 
     if (!extract_json_string(payload, "cmd", cmd, sizeof(cmd)))
     {
-        ws_send_text(c, "{\"ok\":false,\"error\":\"missing cmd\"}");
+        if (!module_command(c, payload))        /* mercury's, by its key */
+            ws_send_text(c, "{\"ok\":false,\"error\":\"missing cmd\"}");
         return;
     }
 
@@ -1252,18 +1283,26 @@ static const void *asset_lookup(const char *path, size_t *size)
 static void on_ws_connect(ws_conn_t *c, void *user_data)
 {
     websocket_ctx *ctx = (websocket_ctx *) user_data;
-    char hello[256];
+    char hello[512];
     char status[2048];
+    size_t n;
 
-    snprintf(hello, sizeof(hello),
+    n = (size_t) snprintf(hello, sizeof(hello),
              "{\"type\":\"hello\",\"api\":\"hermes_radio_daemon\","
              "\"audio_binary_type\":1,"
              "\"rx_spectrum_binary_type\":2,"
-             "\"tx_spectrum_binary_type\":3}");
+             "\"tx_spectrum_binary_type\":3,");
+    if (n < sizeof(hello))
+        n += ui_hub_hello_fields(hello + n, sizeof(hello) - n);
+    if (n < sizeof(hello))
+        snprintf(hello + n, sizeof(hello) - n, "}");
     ws_conn_send(c, hello, strlen(hello), true);
 
     build_status_json(ctx->radio_h, status, sizeof(status));
     ws_conn_send(c, status, strlen(status), true);
+
+    /* Each module sends a new client its own one-time state. */
+    ui_hub_client_connected();
 }
 
 static void on_ws_message(ws_conn_t *c, const void *data, size_t len,
@@ -1457,12 +1496,18 @@ bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid)
         return false;
     }
     ws_ctx.thread_started = true;
+    ui_hub_sink sink = { .text = hub_text, .binary = hub_binary, .user = ws_ctx.server };
+    s_hub_sink = ui_hub_add_sink(&sink);
+    if (s_hub_sink < 0)
+        fprintf(stderr, "radio_websocket: no ui_hub sink left; module traffic stays off\n");
     return true;
 }
 
 void radio_websocket_shutdown(pthread_t *websocket_tid)
 {
     if (!ws_ctx.thread_started) return;
+    ui_hub_remove_sink(s_hub_sink);         /* no module broadcast after this */
+    s_hub_sink = -1;
     pthread_join(*websocket_tid, NULL);
     ws_ctx.thread_started = false;
     if (ws_ctx.server) {
