@@ -56,6 +56,10 @@ typedef struct {
     int16_t *scratch_i16;
     size_t   scratch_cap_in;
     size_t   scratch_cap_out;
+    /* What a pop pulls from a ring, the resampler's input: apart from
+     * scratch_i16, which resample_step may reallocate while reading it. */
+    int16_t *pull_i16;
+    size_t   pull_cap;
 } audio_bridge;
 
 /* Both rates in Hz, both non-zero. When equal, the bridge is a pass-through
