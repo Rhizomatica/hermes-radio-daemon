@@ -752,8 +752,48 @@ Binary frames for audio and waterfall:
 | `0x01` | client → server | TX audio, mono S16_LE at `audio_sample_rate` |
 | `0x02` | server → client | RX spectrum: u32 sample_rate, u16 bins, float32[bins] |
 | `0x03` | server → client | TX spectrum: u32 sample_rate, u16 bins, float32[bins] |
+| `0x04` | server → client | Mercury's spectrum, as its own websocket sends it (below) |
 
 Recordings saved as `rx-*.wav` / `tx-*.wav` under `recording_dir`.
+
+### Mercury on the same websocket
+
+With mercury linked in and `enable_mercury = 1`, everything mercury's own
+websocket would carry (its `docs/WEBSOCKET_API.md`) shares this one; there is
+no second port.  On connect, `hello` lists it:
+
+```json
+{"type":"hello","api":"hermes_radio_daemon","audio_binary_type":1,
+ "rx_spectrum_binary_type":2,"tx_spectrum_binary_type":3,
+ "modules":["mercury"],"mercury_binary_type":4}
+```
+
+- **Events** reach every client unchanged: `{"type":"status",…}` every 500 ms
+  (callsigns, SNR, bitrate, ARQ modes, byte counters, TX gain and peak, the
+  dial frequency, …), and `history`, `capture_dev_list`, `playback_dev_list`,
+  `input_channel`, `audio_system` and `radio_list` on connect and on change.
+- **Spectrum**: binary type `0x04`, then mercury's frame: `"YRCM"` (u32 LE
+  `0x4D435259`), u16 FFT size, u16 sample rate, float32 dB bins.
+- **Commands** use mercury's key, `command`, where radiod's use `cmd`:
+
+```json
+{"command":"set_tx_gain","value":"6"}       -> {"command":"set_tx_gain","status":"ok"}
+{"command":"set_waterfall","value":"off"}   -> {"command":"set_waterfall","status":"ok"}
+{"command":"set_callsign","value":"PU2UIT"} -> {"command":"set_callsign","status":"ok"}
+{"command":"bogus"}                         -> {"command":"bogus","status":"error","code":<mercury's code>}
+```
+
+  The reply goes to the client that sent the command, as mercury's own does,
+  with `command` added so the client can match it.  With no mercury running
+  the reply is `{"command":…,"error":"no handler"}` and `modules` is empty.
+  In the daemon `set_audio_config` and `set_ptt_config` do nothing useful:
+  radiod owns the audio and PTT.
+
+The daemon side is `gui_interface/ui_hub.h`, the UI traffic independent of
+any transport: modules (mercury, via `modem/mercury_link.c`) publish to it
+and take commands from it, routed by JSON key and binary type byte; this
+websocket is one transport of it, and the Go UI layer (websocket and/or
+REST, over CGo) is meant to be another, with the same wire format.
 
 ## `sbitx_client` CLI
 
@@ -793,6 +833,9 @@ A self-contained websocket client is provided at `gui_interface/web/index.html`.
   transaction.
 - **Digital Modes tab**: send FT8/CW/RTTY text, view decoded messages, configure WPM/pitch/baud
 - **Spectrum tab**: real-time FFT waterfall from binary spectrum frames
+- **Mercury tab** (mercury linked in): its status, TX gain, waterfall and
+  callsign controls, its spectrum (binary type 4), message history and its
+  other events, all on the daemon's websocket
 - RX audio playback via Web Audio API (8 kHz mono S16_LE)
 
 No build step required — the daemon serves it directly when

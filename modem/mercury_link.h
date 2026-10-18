@@ -6,7 +6,11 @@
  * RX sink, answers each block with its TX audio, keys through
  * PTT_SRC_MODEM, and reads the dial frequency from the active profile.
  * While it transmits on a radio whose capture stops (audio_half_duplex),
- * a 20 ms clock of its own drains its TX audio instead.  Its
+ * a 20 ms clock of its own drains its TX audio instead.  Its UI goes
+ * through ui_hub.h to the daemon's UI transports (its websocket, later the
+ * Go layer): status, lists, history and spectrum (binary type
+ * UI_HUB_STREAM_MERCURY_SPECTRUM) to every client, and clients'
+ * {"command": ...} messages to mercury.  Its
  * TNC ports (JNOS, uucpd) and configuration are mercury's own:
  * main:mercury_config names the mercury.ini, main:mercury_args adds
  * command-line options.
