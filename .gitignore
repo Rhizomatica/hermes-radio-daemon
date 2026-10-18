@@ -70,7 +70,3 @@ tests/*_test
 /utils/dstar_probe
 /utils/dstar_rx
 /utils/dstar_tx_gen
-
-# mercury with the host API, linked in when present (modem/mercury_link.c):
-# a clone until it becomes a submodule
-/vendor/mercury/

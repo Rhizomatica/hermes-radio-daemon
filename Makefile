@@ -134,11 +134,11 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              $(MM_FSK_OBJS)
 
 # ── mercury, linked in (modem/mercury_link.c) ──────────────────
-# vendor/mercury holds mercury with the host API (host/mercury_host.h); it
-# is built there with MERCURY_HOST=daemon, which leaves out mercury's own
-# audio, PTT, websocket server, iniparser and hermes_shm (the daemon has
-# them).  Without it the daemon builds as before, and refuses
-# main:enable_mercury at startup.
+# vendor/mercury is the Rhizomatica/mercury submodule (host API in
+# host/mercury_host.h); it is built there with MERCURY_HOST=daemon, which
+# leaves out mercury's own audio, PTT, websocket server, iniparser and
+# hermes_shm (the daemon has them).  With the submodule not checked out the
+# daemon builds as before, and refuses main:enable_mercury at startup.
 MERCURY_DIR  ?= vendor/mercury
 HAVE_MERCURY ?= $(if $(wildcard $(MERCURY_DIR)/host/mercury_host.h),1,0)
 ifeq ($(HAVE_MERCURY),1)
