@@ -80,6 +80,7 @@ label { color: #080; }
   <span class="tab" onclick="show_tab('digi', this)">Digital Modes</span>
   <span class="tab" onclick="show_tab('rig', this)">Rig Controls</span>
   <span class="tab" onclick="show_tab('spectrum-tab', this)">Spectrum</span>
+  <span class="tab" onclick="show_tab('mercury', this)">Mercury</span>
 </div>
 
 <!-- Control tab -->
@@ -256,6 +257,43 @@ label { color: #080; }
   </div>
 </div>
 
+<!-- Mercury tab: mercury linked into the daemon (main:enable_mercury), its
+     UI on this same websocket: status, history and the other events as it
+     publishes them, its spectrum as binary type 4, and {"command": ...}. -->
+<div id="tab-mercury" class="tab-content">
+  <div class="panel">
+    <h2>Mercury HF modem</h2>
+    <div id="mercury-present">Not connected.</div>
+    <pre id="mercury-status" style="white-space:pre-wrap">No status yet</pre>
+  </div>
+  <div class="panel">
+    <h2>Controls</h2>
+    <div class="row">
+      <label>TX gain (dB, -20..20): <input type="number" id="mercury-gain" min="-20" max="20" step="0.5" value="0"></label>
+      <button onclick="mercury_cmd('set_tx_gain', $('mercury-gain').value)">Set</button>
+      <label><input type="checkbox" id="mercury-wf-on" checked onchange="mercury_cmd('set_waterfall', this.checked ? 'on' : 'off')"> Waterfall</label>
+    </div>
+    <div class="row">
+      <label>Callsign (saved in mercury.ini): <input type="text" id="mercury-call" size="10"></label>
+      <button onclick="mercury_cmd('set_callsign', $('mercury-call').value)">Save</button>
+    </div>
+    <div id="mercury-reply" style="font-size:12px"></div>
+  </div>
+  <div class="panel">
+    <h2>Spectrum</h2>
+    <canvas id="mercury-wf" style="width:100%; height:150px; background:#000; display:block; border:1px solid #333; image-rendering:pixelated"></canvas>
+    <div id="mercury-wf-info" style="font-size:12px">No spectrum yet</div>
+  </div>
+  <div class="panel">
+    <h2>Messages</h2>
+    <div id="mercury-history" style="max-height:200px; overflow-y:auto">None</div>
+  </div>
+  <div class="panel">
+    <h2>Other events</h2>
+    <pre id="mercury-events" style="white-space:pre-wrap; font-size:11px">None yet</pre>
+  </div>
+</div>
+
 <script>
 var ws = null;
 var audio_ctx = null;
@@ -353,6 +391,8 @@ function handle_text(data) {
       }
       $('state').textContent = JSON.stringify(j, null, 1);
     }
+    if (j.type === 'hello') on_hello(j);
+    if (mercury_event(j)) return;
     if (j.cmd === 'get_controls' && j.ok) { on_controls(j); }
     if (j.cmd === 'get_control_values' && j.ok) { on_control_values(j); }
     if (j.cmd === 'get_vfo' || j.cmd === 'get_split' || j.cmd === 'get_split_freq' ||
@@ -584,6 +624,108 @@ function handle_binary(data) {
   if (data[0] === 0x02) {
     draw_spectrum(data.subarray(1));
   }
+  if (g_mercury_bin && data[0] === g_mercury_bin) {
+    draw_mercury_spectrum(data.subarray(1));
+  }
+}
+
+/* ── mercury (radio_websocket.h modules) ────────────────────────────── */
+
+var g_mercury = false, g_mercury_bin = 0;
+var g_mercury_events = {};
+var g_mwf_lo = null, g_mwf_hi = null;
+
+function on_hello(j) {
+  g_mercury = (j.modules || []).indexOf('mercury') >= 0;
+  g_mercury_bin = g_mercury ? (j.mercury_binary_type || 0) : 0;
+  $('mercury-present').textContent = g_mercury
+    ? 'Mercury runs inside the daemon; its UI is on this connection.'
+    : 'Mercury is not running in this daemon (main:enable_mercury, or built without vendor/mercury).';
+}
+
+function mercury_cmd(command, value) {
+  send_obj({ command: command, value: String(value) });
+}
+
+function esc_html(s) {
+  return String(s).replace(/[&<>"]/g, function(c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+  });
+}
+
+/* Mercury's own messages: its events (by "type", none of which radiod
+ * uses) and the replies to its commands (by "command").  True if handled. */
+function mercury_event(j) {
+  if (j.command !== undefined) {
+    var ok = j.status === 'ok';
+    $('mercury-reply').textContent = j.command + ': ' +
+      (ok ? 'ok' : (j.error || ('error ' + (j.code !== undefined ? j.code : ''))));
+    return true;
+  }
+  if (j.type === 'status' && j.user_callsign !== undefined) {
+    var f = ['user_callsign', 'dest_callsign', 'direction', 'sync', 'snr', 'bitrate',
+             'arq_tx_mode', 'arq_rx_mode', 'peer_hears_mode', 'bytes_transmitted',
+             'bytes_received', 'client_tcp_connected', 'tx_gain_db', 'tx_peak_dbfs',
+             'waterfall', 'audio_ok', 'audio_error', 'radio_frequency_hz',
+             'radio_frequency_age_ms', 'peer_snr', 'peer_snr_valid'];
+    var out = [];
+    for (var k in j) if (k !== 'type' && f.indexOf(k) < 0) f.push(k);  /* fields added later */
+    for (var i = 0; i < f.length; i++)
+      if (j[f[i]] !== undefined) out.push((f[i] + ':').padEnd(24) + JSON.stringify(j[f[i]]));
+    $('mercury-status').textContent = out.join('\n');
+    if (document.activeElement !== $('mercury-gain') && typeof j.tx_gain_db === 'number')
+      $('mercury-gain').value = j.tx_gain_db.toFixed(1);
+    if (typeof j.waterfall === 'boolean') $('mercury-wf-on').checked = j.waterfall;
+    return true;
+  }
+  if (j.type === 'history') {
+    var msgs = j.messages || [], html = '';
+    for (var m = msgs.length - 1; m >= 0; m--) {
+      var e = msgs[m], t = new Date((e.ts || 0) * 1000).toISOString().replace('T', ' ').slice(0, 19);
+      html += '<div class="' + (e.dir === 'tx' ? 'tx' : 'rx') + '">' + esc_html(t + ' ' + (e.plane || '') +
+              ' ' + (e.dir || '') + ' ' + (e.peer || '') + ': ' + (e.text || '')) + '</div>';
+    }
+    $('mercury-history').innerHTML = html || 'None';
+    return true;
+  }
+  var others = ['capture_dev_list', 'playback_dev_list', 'input_channel', 'audio_system', 'radio_list'];
+  if (others.indexOf(j.type) >= 0) {
+    g_mercury_events[j.type] = j;
+    var lines = [];
+    for (var t2 in g_mercury_events) lines.push(JSON.stringify(g_mercury_events[t2]));
+    $('mercury-events').textContent = lines.join('\n');
+    return true;
+  }
+  return false;
+}
+
+/* Mercury's spectrum frame, after the type byte: "YRCM" (u32 LE
+ * 0x4D435259), FFT size u16, sample rate u16, then float32 dB bins.  Its
+ * dB scale is its own, so the colours follow a slowly adapting range. */
+function draw_mercury_spectrum(data) {
+  var dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  if (dv.byteLength < 8 || dv.getUint32(0, true) !== 0x4D435259) return;
+  var n = dv.getUint16(4, true), sr = dv.getUint16(6, true);
+  if (n < 1 || dv.byteLength < 8 + 4 * n) return;
+  var lo = Infinity, hi = -Infinity, db = new Float32Array(n);
+  for (var i = 0; i < n; i++) {
+    db[i] = dv.getFloat32(8 + 4 * i, true);
+    if (db[i] < lo) lo = db[i];
+    if (db[i] > hi) hi = db[i];
+  }
+  g_mwf_lo = g_mwf_lo === null ? lo : g_mwf_lo + 0.05 * (lo - g_mwf_lo);
+  g_mwf_hi = g_mwf_hi === null ? hi : g_mwf_hi + 0.05 * (hi - g_mwf_hi);
+  var span = Math.max(g_mwf_hi - g_mwf_lo, 1);
+  var wf = $('mercury-wf');
+  if (wf.width !== n) { wf.width = n; wf.height = 150; }
+  var w = wf.getContext('2d');
+  w.drawImage(wf, 0, 1);
+  for (var k = 0; k < n; k++) {
+    w.fillStyle = wf_color((db[k] - g_mwf_lo) / span);
+    w.fillRect(k, 0, 1, 1);
+  }
+  $('mercury-wf-info').textContent = n + ' bins, 0..' + (sr / 2) + ' Hz, ' +
+    g_mwf_lo.toFixed(0) + '..' + g_mwf_hi.toFixed(0) + ' dB';
 }
 
 function send_cmd(cmd, key, val) {
