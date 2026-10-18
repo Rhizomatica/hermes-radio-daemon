@@ -88,6 +88,27 @@ func freePort(t *testing.T) int {
 	return l.Addr().(*net.TCPAddr).Port
 }
 
+// freePortPair returns a port p with p and p+1 both free (mercury's TNC
+// control and data ports).
+func freePortPair(t *testing.T) int {
+	t.Helper()
+	for i := 0; i < 50; i++ {
+		l1, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("free port: %v", err)
+		}
+		p := l1.Addr().(*net.TCPAddr).Port
+		l2, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p+1))
+		l1.Close()
+		if err == nil {
+			l2.Close()
+			return p
+		}
+	}
+	t.Fatal("no two adjacent free ports")
+	return 0
+}
+
 // Daemon is one running radio_daemon.
 type Daemon struct {
 	t        *testing.T

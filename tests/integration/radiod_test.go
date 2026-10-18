@@ -177,3 +177,27 @@ func TestBadCommands(t *testing.T) {
 		t.Errorf("get_frequency after bad commands = 0")
 	}
 }
+
+// A mercury command with no mercury running is answered "no handler", as
+// mercury's own server answers a command it has no handler for; hello lists
+// no modules.
+func TestModuleCommandWithoutModule(t *testing.T) {
+	d := startDaemon(t, daemonOpts{})
+	ws, err := wsDial(d.WSURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+
+	hello := waitJSON(t, ws, 5*time.Second, nil, func(j map[string]any) bool { return j["type"] == "hello" })
+	if mods, _ := hello["modules"].([]any); len(mods) != 0 {
+		t.Errorf("hello modules = %v without mercury, want []", hello["modules"])
+	}
+	if err := ws.writeFrame(opText, []byte(`{"command":"set_callsign","value":"X"}`)); err != nil {
+		t.Fatal(err)
+	}
+	r := waitJSON(t, ws, 5*time.Second, nil, func(j map[string]any) bool { return j["command"] == "set_callsign" })
+	if r["error"] != "no handler" {
+		t.Errorf("reply = %v, want error \"no handler\"", r)
+	}
+}
