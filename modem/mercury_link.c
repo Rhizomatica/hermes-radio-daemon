@@ -12,6 +12,7 @@
 #include "mercury_link.h"
 #include "modem_audio.h"
 #include "radio_backend.h"
+#include "ui_hub.h"
 #include "mercury_host.h"     /* host API and lifecycle (vendor/mercury/host) */
 
 #define MAX_ARGS 32
@@ -123,6 +124,53 @@ static void *tx_clock(void *arg)
     return NULL;
 }
 
+/* ── UI: everything mercury's own websocket would carry, on radiod's ──
+ *
+ * Through ui_hub.h, so on every transport radiod has (its websocket now,
+ * the Go UI layer later): status, device and radio lists, history (JSON,
+ * as is), the spectrum (binary, after UI_HUB_STREAM_MERCURY_SPECTRUM), and
+ * the clients' {"command": ...} messages and connects.  The broadcasts run
+ * with mercury's UI lock held and only queue a frame, never calling back
+ * into mercury_host.h. */
+
+static void ui_broadcast_json(const char *json, void *user)
+{
+    (void) user;
+    ui_hub_broadcast_text(json);
+}
+
+static void ui_broadcast_binary(const void *data, size_t len, void *user)
+{
+    (void) user;
+    ui_hub_broadcast_stream(UI_HUB_STREAM_MERCURY_SPECTRUM, data, len);
+}
+
+static int ui_command(const char *json, size_t len, void *user)
+{
+    (void) user;
+    return mercury_host_ui_command_json(json, len);
+}
+
+static void ui_client_connected(void *user)
+{
+    (void) user;
+    mercury_host_ui_client_connected();
+}
+
+static const ui_hub_module s_ui_module = {
+    .name = "mercury",
+    .command_key = "command",           /* mercury's websocket API */
+    .stream_type = UI_HUB_STREAM_MERCURY_SPECTRUM,
+    .command = ui_command,
+    .client_connected = ui_client_connected,
+};
+
+static void ui_detach(void)
+{
+    ui_hub_unregister_module(s_ui_module.name);   /* waits for calls in flight */
+    mercury_host_set_ui(NULL);
+}
+
 /* ── lifecycle ── */
 
 /* mercury_init returns once the engine is up, or blocks until shutdown in
@@ -166,10 +214,16 @@ bool mercury_link_start(radio *radio_h, const cpu_set_t *cpus)
 
     mercury_host_radio_ops ops = { .key = key, .get_frequency = get_frequency, .user = NULL };
     mercury_host_set_radio(&ops);
+    mercury_host_ui_ops ui_ops = { .broadcast_json = ui_broadcast_json,
+                                   .broadcast_binary = ui_broadcast_binary, .user = NULL };
+    mercury_host_set_ui(&ui_ops);
+    if (!ui_hub_register_module(&s_ui_module))
+        fprintf(stderr, "mercury_link: cannot register with ui_hub; mercury's UI is off\n");
 
     if (!modem_audio_init(radio_h) || !modem_audio_add_rx_sink(rx_sink, NULL))
     {
         fprintf(stderr, "mercury_link: no modem audio path\n");
+        ui_detach();
         mercury_host_set_radio(NULL);
         return false;
     }
@@ -195,6 +249,7 @@ bool mercury_link_start(radio *radio_h, const cpu_set_t *cpus)
     {
         fprintf(stderr, "mercury_link: pthread_create: %s\n", strerror(err));
         modem_audio_remove_rx_sink(rx_sink, NULL);
+        ui_detach();
         mercury_host_set_radio(NULL);
         return false;
     }
@@ -211,7 +266,8 @@ void mercury_link_stop(void)
         return;
     s_started = false;
 
-    /* No exchange after these, as mercury_host.h asks of a host. */
+    /* No exchange or UI call after these, as mercury_host.h asks of a host. */
+    ui_hub_unregister_module(s_ui_module.name);
     modem_audio_remove_rx_sink(rx_sink, NULL);
     s_clock_run = false;
     pthread_join(s_clock, NULL);
@@ -221,6 +277,7 @@ void mercury_link_stop(void)
 
     if (modem_audio_tx_keyed_by(MERCURY_LINK_PTT_ID))
         modem_audio_tx_unkey("unkeyed at shutdown");
+    mercury_host_set_ui(NULL);
     mercury_host_set_radio(NULL);
     fprintf(stderr, "mercury_link: mercury stopped\n");
 }
