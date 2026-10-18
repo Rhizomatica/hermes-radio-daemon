@@ -10,7 +10,6 @@
  * Copyright (C) 2026 Rhizomatica
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
-#include <assert.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -20,10 +19,12 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "unity.h"
+
 _Atomic bool shutdown_ = false;
 
-#include "../sbitx/ring_buffer.c"
-#include "../sbitx/sbitx_buffer.c"
+#include "sbitx/ring_buffer.c"
+#include "sbitx/sbitx_buffer.c"
 
 #define BLOCK 4096
 
@@ -64,31 +65,33 @@ static void test_round_trip(void)
         in[i] = (uint8_t) i;
     sbitx_buf_write(&ring, in, BLOCK);
     sbitx_buf_read(&ring, back, BLOCK);
-    assert(memcmp(in, back, BLOCK) == 0);
-    printf("  data round trip ....................... ok\n");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(in, back, BLOCK);
 }
 
 /* A reader on an empty ring waits while running, and returns (with
  * silence) soon after shutdown is set. */
 static void test_reader_ends_at_shutdown(void)
 {
+    static const uint8_t silence[BLOCK];
     pthread_t t;
     shutdown_ = false;
     returned = false;
-    assert(pthread_create(&t, NULL, reader, NULL) == 0);
+    TEST_ASSERT_EQUAL_INT(0, pthread_create(&t, NULL, reader, NULL));
 
     usleep(300000);
-    assert(!returned && "sbitx_buf_read returned on an empty ring while running");
+    bool early = returned;
 
+    /* Release the reader before asserting, so a failure leaves no thread behind. */
     double t0 = now_s();
     shutdown_ = true;
     pthread_join(t, NULL);
     double took = now_s() - t0;
-    assert(returned);
-    assert(took < 0.5 && "sbitx_buf_read did not notice shutdown");
-    for (int i = 0; i < BLOCK; i++)
-        assert(out[i] == 0);
-    printf("  blocked reader ends at shutdown ....... ok (%.0f ms)\n", took * 1000);
+    printf("blocked reader ended %.0f ms after shutdown\n", took * 1000);
+
+    TEST_ASSERT_FALSE_MESSAGE(early, "sbitx_buf_read returned on an empty ring while running");
+    TEST_ASSERT_TRUE(returned);
+    TEST_ASSERT_LESS_THAN_DOUBLE_MESSAGE(0.5, took, "sbitx_buf_read did not notice shutdown (s)");
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(silence, out, BLOCK, "a read cut short by shutdown gives silence");
 }
 
 /* A writer on a full ring waits while running, and gives up soon after
@@ -102,29 +105,37 @@ static void test_writer_ends_at_shutdown(void)
 
     pthread_t t;
     returned = false;
-    assert(pthread_create(&t, NULL, writer, NULL) == 0);
+    TEST_ASSERT_EQUAL_INT(0, pthread_create(&t, NULL, writer, NULL));
 
     usleep(300000);
-    assert(!returned && "sbitx_buf_write returned on a full ring while running");
+    bool early = returned;
 
     double t0 = now_s();
     shutdown_ = true;
     pthread_join(t, NULL);
     double took = now_s() - t0;
-    assert(returned);
-    assert(took < 0.5 && "sbitx_buf_write did not notice shutdown");
-    printf("  blocked writer ends at shutdown ....... ok (%.0f ms)\n", took * 1000);
+    printf("blocked writer ended %.0f ms after shutdown\n", took * 1000);
+
+    TEST_ASSERT_FALSE_MESSAGE(early, "sbitx_buf_write returned on a full ring while running");
+    TEST_ASSERT_TRUE(returned);
+    TEST_ASSERT_LESS_THAN_DOUBLE_MESSAGE(0.5, took, "sbitx_buf_write did not notice shutdown (s)");
 }
+
+void setUp(void)
+{
+    shutdown_ = false;
+    sbitx_buf_clear(&ring);
+}
+
+void tearDown(void) {}
 
 int main(void)
 {
     sbitx_buf_init(&ring, 16);   /* 64 KiB, as the daemon's rings */
 
-    printf("sbitx audio rings:\n");
-    test_round_trip();
-    test_reader_ends_at_shutdown();
-    sbitx_buf_clear(&ring);
-    test_writer_ends_at_shutdown();
-    printf("sbitx_buffer_test: all ok\n");
-    return 0;
+    UNITY_BEGIN();
+    RUN_TEST(test_round_trip);
+    RUN_TEST(test_reader_ends_at_shutdown);
+    RUN_TEST(test_writer_ends_at_shutdown);
+    return UNITY_END();
 }

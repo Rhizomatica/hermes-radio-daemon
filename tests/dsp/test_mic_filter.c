@@ -4,11 +4,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "unity.h"
 #include "mic_filter.h"
 
-static int failures;
-#define CHECK(c, ...) do { if (!(c)) { failures++; printf("FAIL %s:%d: ", __FILE__, __LINE__); \
-                                         printf(__VA_ARGS__); printf("\n"); } } while (0)
 #define FS 96000
 #define N  (FS * 2)
 
@@ -28,16 +26,22 @@ static double gain_db(unsigned cutoff, double f)
     return 20 * log10(sqrt(e / (N / 2)) / (0.25 * 2147483647.0 / sqrt(2)));
 }
 
-int main(void)
+void setUp(void) {}
+void tearDown(void) {}
+
+static void test_response(void)
 {
     double g1k = gain_db(200, 1000), g200 = gain_db(200, 200), g100 = gain_db(200, 100), g50 = gain_db(200, 50);
     printf("200 Hz high-pass: 1 kHz %+.2f dB, 200 Hz %+.2f dB, 100 Hz %+.2f dB, 50 Hz %+.2f dB\n", g1k, g200, g100, g50);
-    CHECK(fabs(g1k) < 0.1, "passband 1 kHz %+.2f dB", g1k);
-    CHECK(fabs(g200 + 3.01) < 0.3, "cutoff 200 Hz should be -3 dB, got %+.2f", g200);
-    CHECK(g100 < -23.0, "100 Hz hum only %+.2f dB", g100);
-    CHECK(g50 < -47.0, "50 Hz only %+.2f dB", g50);
+    TEST_ASSERT_DOUBLE_WITHIN_MESSAGE(0.1, 0.0, g1k, "passband at 1 kHz");
+    TEST_ASSERT_DOUBLE_WITHIN_MESSAGE(0.3, -3.01, g200, "the 200 Hz cutoff should be -3 dB");
+    TEST_ASSERT_LESS_THAN_DOUBLE_MESSAGE(-23.0, g100, "100 Hz hum");
+    TEST_ASSERT_LESS_THAN_DOUBLE_MESSAGE(-47.0, g50, "50 Hz");
+}
 
-    /* DC offset of +0.18 full scale (as on estacao2's mic) is removed */
+/* DC offset of +0.18 full scale (as on estacao2's mic) is removed */
+static void test_dc_removed(void)
+{
     static int32_t b[N];
     mic_hpf h;
     mic_hpf_setup(&h, 200, FS);
@@ -49,16 +53,26 @@ int main(void)
         m += b[i];
     m /= (N / 2) * 2147483647.0;
     printf("DC 0.18 FS -> %.2e FS after the filter\n", m);
-    CHECK(fabs(m) < 1e-4, "DC left %.2e", m);
+    TEST_ASSERT_DOUBLE_WITHIN_MESSAGE(1e-4, 0.0, m, "DC left after the filter");
+}
 
-    /* 0 disables: samples come out untouched */
+/* 0 disables: samples come out untouched */
+static void test_zero_disables(void)
+{
     int32_t c[64], d[64];
+    mic_hpf h;
     for (int i = 0; i < 64; i++)
         c[i] = d[i] = (int32_t) (i * 123456789u);
     mic_hpf_setup(&h, 0, FS);
     mic_hpf_run_s32(&h, c, 64);
-    CHECK(!memcmp(c, d, sizeof(c)), "cutoff 0 changed the samples");
+    TEST_ASSERT_EQUAL_INT32_ARRAY(d, c, 64);
+}
 
-    printf("mic_filter_test: %s\n", failures ? "FAILED" : "ok");
-    return failures ? 1 : 0;
+int main(void)
+{
+    UNITY_BEGIN();
+    RUN_TEST(test_response);
+    RUN_TEST(test_dc_removed);
+    RUN_TEST(test_zero_disables);
+    return UNITY_END();
 }

@@ -19,10 +19,9 @@
 #include "dsp/sbitx_ft8.h"
 #include "dsp/digi_log.h"
 #include <unistd.h>
+#include "unity.h"
+#include "test_util.h"
 
-static int failures;
-#define CHECK(c, ...) do { if (!(c)) { failures++; printf("FAIL %s:%d: ", __FILE__, __LINE__); \
-                                         printf(__VA_ARGS__); printf("\n"); } } while (0)
 
 static unsigned rng = 12345;
 static float gauss(void)
@@ -90,7 +89,7 @@ static const char *rtty_decode(const float *y, int m)
 
 /* Signal amplitudes: CW 1.0, RTTY 0.4 (the encoders'). Noise RMS is over
  * the full 48 kHz band at 96 kHz; the decoders see ~1/16 of it (3 kHz). */
-static void test_cw(float noise_rms)
+static void check_cw(float noise_rms)
 {
     /* One continuous stream, as on air: 1 s, message, 2 s, message, 1 s. */
     static float x[96000 * 20], y[12000 * 20];
@@ -103,10 +102,10 @@ static void test_cw(float noise_rms)
     int m = to12k(x, p, noise_rms, y);
     const char *got = cw_decode(y, m);
     printf("CW   noise %.3f: [%s]\n", noise_rms, got);
-    CHECK(strcmp(got, "HERMES TEST CW DE PU2UIT K") == 0, "CW at noise %.3f decoded [%s]", noise_rms, got);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("HERMES TEST CW DE PU2UIT K", got, test_msg("CW at noise %.3f decoded [%s]", noise_rms, got));
 }
 
-static void test_rtty(float noise_rms)
+static void check_rtty(float noise_rms)
 {
     static float x[96000 * 12], y[12000 * 12];
     memset(x, 0, sizeof x);
@@ -114,10 +113,10 @@ static void test_rtty(float noise_rms)
     int m = to12k(x, 9600 + n + 9600, noise_rms, y);
     const char *got = rtty_decode(y, m);
     printf("RTTY noise %.3f: [%s]\n", noise_rms, got);
-    CHECK(strcmp(got, "RYRY HERMES TEST RTTY 73") == 0, "RTTY at noise %.3f decoded [%s]", noise_rms, got);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("RYRY HERMES TEST RTTY 73", got, test_msg("RTTY at noise %.3f decoded [%s]", noise_rms, got));
 }
 
-static void test_ft8(float noise_rms)
+static void check_ft8(float noise_rms)
 {
     static float s12[12000 * 16], x[96000 * 16], y[12000 * 16];
     memset(x, 0, sizeof x);
@@ -129,12 +128,12 @@ static void test_ft8(float noise_rms)
     char out[1024];
     sbitx_ft8_decode(y, m < 12000 * 15 ? m : 12000 * 15, out, sizeof out);
     printf("FT8  noise %.3f: [%s]\n", noise_rms, out);
-    CHECK(strcmp(out, "HERMES TEST.9") == 0, "FT8 at noise %.3f decoded [%s]", noise_rms, out);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("HERMES TEST.9", out, test_msg("FT8 at noise %.3f decoded [%s]", noise_rms, out));
 }
 
 /* One structured decode: the fields come from ft8_lib's field map, the
  * offset from the decoder, and the SNR estimate falls as the noise rises. */
-static float test_ft8_fields(const char *msg, float noise_rms, const char *want_to,
+static float check_ft8_fields(const char *msg, float noise_rms, const char *want_to,
                              const char *want_from, const char *want_grid)
 {
     static float s12[12000 * 16], x[96000 * 16], y[12000 * 16];
@@ -146,20 +145,20 @@ static float test_ft8_fields(const char *msg, float noise_rms, const char *want_
     int m = to12k(x, 96000 * 15, noise_rms, y);
     sbitx_ft8_decode_result r[8];
     int n = sbitx_ft8_decode_ex(y, m < 12000 * 15 ? m : 12000 * 15, r, 8);
-    CHECK(n == 1, "FT8 [%s] at noise %.3f: %d decodes", msg, noise_rms, n);
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(1, n, test_msg("FT8 [%s] at noise %.3f: %d decodes", msg, noise_rms, n));
     if (n < 1)
         return NAN;
     printf("FT8  [%s] noise %.3f: to=[%s] from=[%s] grid=[%s] offset %.1f Hz t %.2f s snr %s%.0f dB\n",
            r[0].text, noise_rms, r[0].to, r[0].from, r[0].grid, r[0].freq_hz, r[0].time_s,
            r[0].has_snr ? "" : "(none) ", r[0].snr_db);
-    CHECK(strcmp(r[0].text, msg) == 0, "FT8 text [%s]", r[0].text);
-    CHECK(strcmp(r[0].to, want_to) == 0, "FT8 [%s] to [%s], want [%s]", msg, r[0].to, want_to);
-    CHECK(strcmp(r[0].from, want_from) == 0, "FT8 [%s] from [%s], want [%s]", msg, r[0].from, want_from);
-    CHECK(strcmp(r[0].grid, want_grid) == 0, "FT8 [%s] grid [%s], want [%s]", msg, r[0].grid, want_grid);
-    CHECK(fabsf(r[0].freq_hz - 1500.0f) < 10.0f, "FT8 offset %.1f Hz, want about 1500", r[0].freq_hz);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(msg, r[0].text, test_msg("FT8 text [%s]", r[0].text));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(want_to, r[0].to, test_msg("FT8 [%s] to [%s], want [%s]", msg, r[0].to, want_to));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(want_from, r[0].from, test_msg("FT8 [%s] from [%s], want [%s]", msg, r[0].from, want_from));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(want_grid, r[0].grid, test_msg("FT8 [%s] grid [%s], want [%s]", msg, r[0].grid, want_grid));
+    TEST_ASSERT_TRUE_MESSAGE(fabsf(r[0].freq_hz - 1500.0f) < 10.0f, test_msg("FT8 offset %.1f Hz, want about 1500", r[0].freq_hz));
     /* The signal starts 0.2 s into the window; ft8_lib resolves 0.08 s. */
-    CHECK(fabsf(r[0].time_s - 0.2f) < 0.1f, "FT8 start %.2f s into the window, want 0.2", r[0].time_s);
-    CHECK(r[0].has_snr && r[0].snr_db >= -30 && r[0].snr_db <= 30, "FT8 SNR %.0f dB", r[0].snr_db);
+    TEST_ASSERT_TRUE_MESSAGE(fabsf(r[0].time_s - 0.2f) < 0.1f, test_msg("FT8 start %.2f s into the window, want 0.2", r[0].time_s));
+    do { TEST_ASSERT_TRUE_MESSAGE(r[0].has_snr, test_msg("FT8 SNR %.0f dB", r[0].snr_db)); TEST_ASSERT_GREATER_OR_EQUAL_INT64_MESSAGE(-30, r[0].snr_db, test_msg("FT8 SNR %.0f dB", r[0].snr_db)); TEST_ASSERT_LESS_OR_EQUAL_INT64_MESSAGE(30, r[0].snr_db, test_msg("FT8 SNR %.0f dB", r[0].snr_db)); } while (0);
     return r[0].snr_db;
 }
 
@@ -170,7 +169,7 @@ static void test_ft8_log_once(void)
     char dir[256];
     const char *t = getenv("TMPDIR");
     snprintf(dir, sizeof dir, "%s/ft8_log_test.XXXXXX", t && t[0] ? t : "/tmp");
-    if (!mkdtemp(dir)) { CHECK(0, "mkdtemp"); return; }
+    if (!mkdtemp(dir)) { TEST_FAIL_MESSAGE("mkdtemp"); return; }
     digi_log_set_dir(dir);
 
     /* 2026-10-09 18:30:15 UTC is a slot start; the signal starts 0.5 s in. */
@@ -186,11 +185,10 @@ static void test_ft8_log_once(void)
     int entries = 0;
     for (const char *p = arr; p && (p = strstr(p, "\"id\":")); p++) entries++;
     printf("FT8 log after 3 overlapping windows: %s\n", arr);
-    CHECK(entries == 1, "one transmission logged %d times", entries);
-    CHECK(arr && strstr(arr, "\"at\":\"2026-10-09T18:30:15.500Z\""), "start time");
-    CHECK(arr && strstr(arr, "\"dt_s\":0.0") && strstr(arr, "\"snr_db\":-7") && strstr(arr, "\"offset_hz\":1500"),
-          "dt, snr and offset");
-    CHECK(arr && strstr(arr, "\"from\":\"PU2UIT\",\"to\":\"CQ\",\"grid\":\"GG66\""), "fields");
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(1, entries, test_msg("one transmission logged %d times", entries));
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, "start time"); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(arr, "\"at\":\"2026-10-09T18:30:15.500Z\""), "start time"); } while (0);
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, "dt, snr and offset"); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(arr, "\"dt_s\":0.0"), "dt, snr and offset"); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(arr, "\"snr_db\":-7"), "dt, snr and offset"); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(arr, "\"offset_hz\":1500"), "dt, snr and offset"); } while (0);
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, "fields"); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(arr, "\"from\":\"PU2UIT\",\"to\":\"CQ\",\"grid\":\"GG66\""), "fields"); } while (0);
     free(arr);
 
     /* The same text 15 s later is a new transmission. */
@@ -199,7 +197,7 @@ static void test_ft8_log_once(void)
     arr = digi_log_last_json(10);
     entries = 0;
     for (const char *p = arr; p && (p = strstr(p, "\"id\":")); p++) entries++;
-    CHECK(entries == 2, "a repeat 15 s later should be logged: %d entries", entries);
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(2, entries, test_msg("a repeat 15 s later should be logged: %d entries", entries));
     free(arr);
 
     char cmd[300];
@@ -224,7 +222,7 @@ static void test_ft8_same_text_two_stations(void)
     char dir[256];
     const char *t = getenv("TMPDIR");
     snprintf(dir, sizeof dir, "%s/ft8_dedup_test.XXXXXX", t && t[0] ? t : "/tmp");
-    if (!mkdtemp(dir)) { CHECK(0, "mkdtemp"); return; }
+    if (!mkdtemp(dir)) { TEST_FAIL_MESSAGE("mkdtemp"); return; }
     digi_log_set_dir(dir);
 
     const double start = 1791570615.5;
@@ -241,9 +239,8 @@ static void test_ft8_same_text_two_stations(void)
     char *arr = digi_log_last_json(10);
     int n = count_entries(arr);
     printf("same text, two stations, 3 windows: %s\n", arr);
-    CHECK(n == 2, "two stations sending \"73\" at once should be 2 entries, got %d", n);
-    CHECK(arr && strstr(arr, "\"offset_hz\":1200") && strstr(arr, "\"offset_hz\":1850"),
-          "both offsets kept");
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(2, n, test_msg("two stations sending \"73\" at once should be 2 entries, got %d", n));
+    do { TEST_ASSERT_TRUE_MESSAGE(arr, "both offsets kept"); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(arr, "\"offset_hz\":1200"), "both offsets kept"); TEST_ASSERT_NOT_NULL_MESSAGE(strstr(arr, "\"offset_hz\":1850"), "both offsets kept"); } while (0);
     free(arr);
 
     char cmd[300];
@@ -267,7 +264,7 @@ static void test_ft8_dt_fold(void)
         char dir[256];
         const char *t = getenv("TMPDIR");
         snprintf(dir, sizeof dir, "%s/ft8_dt_test.XXXXXX", t && t[0] ? t : "/tmp");
-        if (!mkdtemp(dir)) { CHECK(0, "mkdtemp"); return; }
+        if (!mkdtemp(dir)) { TEST_FAIL_MESSAGE("mkdtemp"); return; }
         digi_log_set_dir(dir);
 
         const double slot = 1791570615.0 + 30.0 * (double) i;  /* fresh dedup key */
@@ -277,11 +274,10 @@ static void test_ft8_dt_fold(void)
         char *arr = digi_log_last_json(1);
         const char *p = arr ? strstr(arr, "\"dt_s\":") : NULL;
         float got = p ? strtof(p + 7, NULL) : 99.0f;
-        CHECK(p && fabsf(got - cases[i].want) < 0.051f,
-              "dt at %.2f s into the slot: got %.1f, want %.1f", cases[i].offset_in_slot, got, cases[i].want);
+        do { TEST_ASSERT_TRUE_MESSAGE(p, test_msg("dt at %.2f s into the slot: got %.1f, want %.1f", cases[i].offset_in_slot, got, cases[i].want)); TEST_ASSERT_TRUE_MESSAGE(fabsf(got - cases[i].want) < 0.051f, test_msg("dt at %.2f s into the slot: got %.1f, want %.1f", cases[i].offset_in_slot, got, cases[i].want)); } while (0);
         /* dt is folded into [-7.5, 7.5) but logged with one decimal, so
          * 7.45..7.49 prints as 7.5: check the printed range inclusively. */
-        CHECK(p && got >= -7.5f && got <= 7.5f, "dt %.1f outside [-7.5, 7.5]", got);
+        do { TEST_ASSERT_TRUE_MESSAGE(p, test_msg("dt %.1f outside [-7.5, 7.5]", got)); TEST_ASSERT_TRUE_MESSAGE(got >= -7.5f, test_msg("dt %.1f outside [-7.5, 7.5]", got)); TEST_ASSERT_TRUE_MESSAGE(got <= 7.5f, test_msg("dt %.1f outside [-7.5, 7.5]", got)); } while (0);
         free(arr);
 
         char cmd[300];
@@ -301,33 +297,45 @@ static void test_noise_only(void)
     const char *rt = rtty_decode(y, m);
     int rt_n = (int) strlen(rt);
     printf("noise only, 10 s: CW [%s] RTTY [%s]\n", cw, rt);
-    CHECK(cw_n <= 2, "CW printed %d characters from noise", cw_n);
-    CHECK(rt_n <= 2, "RTTY printed %d characters from noise", rt_n);
+    TEST_ASSERT_LESS_OR_EQUAL_INT64_MESSAGE(2, cw_n, test_msg("CW printed %d characters from noise", cw_n));
+    TEST_ASSERT_LESS_OR_EQUAL_INT64_MESSAGE(2, rt_n, test_msg("RTTY printed %d characters from noise", rt_n));
 }
+
+void setUp(void) {}
+void tearDown(void) {}
+
+static void test_ft8_snr_falls_with_noise(void)
+{
+    float snr_quiet = check_ft8_fields("CQ PU2UIT GG66", 0.02f, "CQ", "PU2UIT", "GG66");
+    float snr_noisy = check_ft8_fields("CQ PU2UIT GG66", 0.2f, "CQ", "PU2UIT", "GG66");
+    TEST_ASSERT_LESS_THAN_FLOAT_MESSAGE(snr_quiet - 3, snr_noisy,
+        test_msg("FT8 SNR should fall with noise: %.0f dB quiet, %.0f dB noisy", snr_quiet, snr_noisy));
+}
+
+static void test_ft8_fields_report(void)    { check_ft8_fields("PU2UIT PY2XYZ -12", 0.05f, "PU2UIT", "PY2XYZ", ""); }
+static void test_ft8_fields_free_text(void) { check_ft8_fields("HERMES TEST.9", 0.05f, "", "", ""); }
+static void test_cw_clean(void)             { check_cw(0.0f); }
+static void test_cw_noisy(void)             { check_cw(0.4f); }
+static void test_rtty_clean(void)           { check_rtty(0.0f); }
+static void test_rtty_noisy(void)           { check_rtty(0.3f); }
+static void test_ft8_clean(void)            { check_ft8(0.0f); }
+static void test_ft8_noisy(void)            { check_ft8(0.5f); }
 
 int main(void)
 {
-    float snr_quiet = test_ft8_fields("CQ PU2UIT GG66", 0.02f, "CQ", "PU2UIT", "GG66");
-    float snr_noisy = test_ft8_fields("CQ PU2UIT GG66", 0.2f, "CQ", "PU2UIT", "GG66");
-    CHECK(snr_noisy < snr_quiet - 3, "FT8 SNR should fall with noise: %.0f dB quiet, %.0f dB noisy",
-          snr_quiet, snr_noisy);
-    test_ft8_fields("PU2UIT PY2XYZ -12", 0.05f, "PU2UIT", "PY2XYZ", "");
-    test_ft8_fields("HERMES TEST.9", 0.05f, "", "", "");
-    test_ft8_log_once();
-    test_ft8_same_text_two_stations();
-    test_ft8_dt_fold();
-
-    test_cw(0.0f);
-    test_cw(0.4f);
-    test_rtty(0.0f);
-    test_rtty(0.3f);
-    test_ft8(0.0f);
-    test_ft8(0.5f);
-    test_noise_only();
-    if (failures) {
-        printf("digi_modes_test: %d failure(s)\n", failures);
-        return 1;
-    }
-    printf("digi_modes_test: ok\n");
-    return 0;
+    UNITY_BEGIN();
+    RUN_TEST(test_ft8_snr_falls_with_noise);
+    RUN_TEST(test_ft8_fields_report);
+    RUN_TEST(test_ft8_fields_free_text);
+    RUN_TEST(test_ft8_log_once);
+    RUN_TEST(test_ft8_same_text_two_stations);
+    RUN_TEST(test_ft8_dt_fold);
+    RUN_TEST(test_cw_clean);
+    RUN_TEST(test_cw_noisy);
+    RUN_TEST(test_rtty_clean);
+    RUN_TEST(test_rtty_noisy);
+    RUN_TEST(test_ft8_clean);
+    RUN_TEST(test_ft8_noisy);
+    RUN_TEST(test_noise_only);
+    return UNITY_END();
 }

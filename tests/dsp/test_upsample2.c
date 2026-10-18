@@ -20,6 +20,7 @@
 #include <fft_fftw.h>
 #include <libcsdr.h>
 
+#include "unity.h"
 #include "dsp/upsample2.h"
 
 #define FS_IN      48000.0
@@ -27,10 +28,6 @@
 #define NBLOCKS    60
 #define TONE_HZ    1000.0
 #define AMP        0.3
-
-static int failures;
-
-#define CHECK(cond, ...) do { if (!(cond)) { failures++; printf("FAIL: " __VA_ARGS__); printf("\n"); } } while (0)
 
 /* Least-squares fit of a*sin + b*cos + c at a known frequency; returns
  * residual RMS / tone RMS in dB. */
@@ -73,24 +70,34 @@ static void make_input(float *x, int n)
         x[i] = (float) (AMP * sin(2 * M_PI * TONE_HZ * i / FS_IN));
 }
 
-int main(void)
-{
-    const int nin = BLOCK * NBLOCKS, nout = 2 * nin;
-    float *x = malloc(nin * sizeof(float));
-    float *y = calloc(nout, sizeof(float));
-    make_input(x, nin);
+static const int nin = BLOCK * NBLOCKS, nout = 2 * BLOCK * NBLOCKS;
+static const int skip = 4 * 2 * BLOCK;      /* the filter's start-up transient */
+static float *x, *y;
 
-    /* 1. the fix */
+void setUp(void)
+{
+    x = malloc(nin * sizeof(float));
+    y = calloc(nout, sizeof(float));
+    make_input(x, nin);
+}
+
+void tearDown(void)
+{
+    free(x);
+    free(y);
+}
+
+/* The fix: a clean, continuous tone at unity gain, and reset forgets. */
+static void test_upsample2(void)
+{
     upsample2 u;
-    CHECK(upsample2_init(&u, 0.05f, BLOCK) == 0, "init");
+    TEST_ASSERT_EQUAL_INT(0, upsample2_init(&u, 0.05f, BLOCK));
     for (int b = 0; b < NBLOCKS; b++)
         upsample2_process(&u, x + b * BLOCK, BLOCK, y + 2 * b * BLOCK);
 
-    /* skip the filter's start-up transient (a few blocks) */
-    const int skip = 4 * 2 * BLOCK;
     double res = residual_db(y + skip, nout - skip, TONE_HZ, 2 * FS_IN);
     printf("upsample2: residual %.1f dB below the tone\n", res);
-    CHECK(res < -60.0, "residual %.1f dB, want < -60 dB", res);
+    TEST_ASSERT_LESS_THAN_DOUBLE_MESSAGE(-60.0, res, "residual (dB below the tone)");
 
     /* the steepest step at a block boundary is no worse than anywhere else */
     double max_step_boundary = 0, max_step_inside = 0;
@@ -101,12 +108,13 @@ int main(void)
         else if (d > max_step_inside) max_step_inside = d;
     }
     printf("upsample2: max step at block boundaries %.4f, inside blocks %.4f\n", max_step_boundary, max_step_inside);
-    CHECK(max_step_boundary <= max_step_inside * 1.01, "discontinuity at block boundaries");
+    TEST_ASSERT_LESS_OR_EQUAL_DOUBLE_MESSAGE(max_step_inside * 1.01, max_step_boundary,
+                                             "discontinuity at block boundaries");
 
     /* unity gain in the passband */
     double peak = 0;
     for (int i = skip; i < nout; i++) if (fabs(y[i]) > peak) peak = fabs(y[i]);
-    CHECK(fabs(peak - AMP) < 0.01 * AMP, "peak %.4f, want %.4f", peak, AMP);
+    TEST_ASSERT_DOUBLE_WITHIN_MESSAGE(0.01 * AMP, AMP, peak, "passband peak");
 
     /* reset really forgets: an all-zero block after reset stays silent */
     upsample2_reset(&u);
@@ -114,16 +122,18 @@ int main(void)
     upsample2_process(&u, zeros, BLOCK, out);
     double e0 = 0;
     for (int i = 0; i < 2 * BLOCK; i++) e0 += out[i] * out[i];
-    CHECK(e0 == 0.0, "history survived reset");
     upsample2_free(&u);
+    TEST_ASSERT_EQUAL_DOUBLE_MESSAGE(0.0, e0, "history survived reset");
+}
 
-    /* 2. the old call pattern, for comparison: must be caught */
+/* The old call pattern, for comparison: the measurement must catch it. */
+static void test_old_pattern_is_caught(void)
+{
     int T = firdes_filter_len(0.05f);
     float *taps = malloc(T * sizeof(float));
     rational_resampler_get_lowpass_f(taps, T, 2, 1, WINDOW_BLACKMAN);
     rational_resampler_ff_t st = {0, 0, 0};
     float blk[2 * BLOCK];
-    memset(y, 0, nout * sizeof(float));
     for (int b = 0; b < NBLOCKS; b++)
     {
         st = rational_resampler_ff(x + b * BLOCK, blk, BLOCK, 2, 1, taps, T, st.last_taps_delay);
@@ -132,18 +142,16 @@ int main(void)
         memcpy(stale, blk, st.output_size * sizeof(float));
         memcpy(y + 2 * b * BLOCK, stale, 2 * BLOCK * sizeof(float));
     }
+    free(taps);
     double res_old = residual_db(y + skip, nout - skip, TONE_HZ, 2 * FS_IN);
     printf("old call pattern: residual %.1f dB below the tone\n", res_old);
-    CHECK(res_old > -30.0, "old pattern not detected (%.1f dB)", res_old);
-    free(taps);
+    TEST_ASSERT_GREATER_THAN_DOUBLE_MESSAGE(-30.0, res_old, "the old pattern went undetected");
+}
 
-    free(x);
-    free(y);
-    if (failures)
-    {
-        printf("upsample2_test: %d failure(s)\n", failures);
-        return 1;
-    }
-    printf("upsample2_test: OK\n");
-    return 0;
+int main(void)
+{
+    UNITY_BEGIN();
+    RUN_TEST(test_upsample2);
+    RUN_TEST(test_old_pattern_is_caught);
+    return UNITY_END();
 }

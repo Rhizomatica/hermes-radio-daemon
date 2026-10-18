@@ -1,12 +1,12 @@
 /* Digital voice ON/OFF in each main:digital_voice_codec: RADEv2 is the
  * profile's digital_voice flag, D-STAR is the profile in MODE_DSTAR. */
-#include <assert.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
 #include <time.h>
 
+#include "unity.h"
 #include "radio.h"
 #include "radio_backend.h"
 
@@ -25,8 +25,8 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     return 0;
 }
 
-#include "../common/cfg_utils.c"
-#include "../radio/radio_backend.c"
+#include "common/cfg_utils.c"
+#include "radio/radio_backend.c"
 
 /* the backend side as the sbitx does it: store the value */
 static void stub_set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
@@ -78,69 +78,68 @@ static const char *user_key(const char *key)
 static void test_radev2(void)
 {
     setup(DV_CODEC_RADEV2);
-    assert(radio_backend_set_digital_voice(&radio_h, true, 1));
-    assert(radio_h.profiles[1].digital_voice);
-    assert(radio_h.profiles[1].mode == MODE_LSB);
-    assert(radio_backend_get_digital_voice(&radio_h, 1));
-    assert(radio_backend_set_digital_voice(&radio_h, false, 1));
-    assert(!radio_backend_get_digital_voice(&radio_h, 1));
+    TEST_ASSERT_TRUE(radio_backend_set_digital_voice(&radio_h, true, 1));
+    TEST_ASSERT_TRUE(radio_h.profiles[1].digital_voice);
+    TEST_ASSERT_EQUAL_INT64(MODE_LSB, radio_h.profiles[1].mode);
+    TEST_ASSERT_TRUE(radio_backend_get_digital_voice(&radio_h, 1));
+    TEST_ASSERT_TRUE(radio_backend_set_digital_voice(&radio_h, false, 1));
+    TEST_ASSERT_FALSE(radio_backend_get_digital_voice(&radio_h, 1));
 }
 
 static void test_dstar_round_trip(void)
 {
     setup(DV_CODEC_DSTAR);
-    assert(radio_backend_set_digital_voice(&radio_h, true, 1));
-    assert(radio_h.profiles[1].mode == MODE_DSTAR);
-    assert(!radio_h.profiles[1].digital_voice);
-    assert(radio_backend_get_digital_voice(&radio_h, 1));
-    assert(!strcmp(user_key("profile1:dv_restore_mode"), "LSB"));
+    TEST_ASSERT_TRUE(radio_backend_set_digital_voice(&radio_h, true, 1));
+    TEST_ASSERT_EQUAL_INT64(MODE_DSTAR, radio_h.profiles[1].mode);
+    TEST_ASSERT_FALSE(radio_h.profiles[1].digital_voice);
+    TEST_ASSERT_TRUE(radio_backend_get_digital_voice(&radio_h, 1));
+    TEST_ASSERT_EQUAL_STRING("LSB", user_key("profile1:dv_restore_mode"));
     /* profile 0 is untouched */
-    assert(radio_h.profiles[0].mode == MODE_USB);
-    assert(!radio_backend_get_digital_voice(&radio_h, 0));
+    TEST_ASSERT_EQUAL_INT64(MODE_USB, radio_h.profiles[0].mode);
+    TEST_ASSERT_FALSE(radio_backend_get_digital_voice(&radio_h, 0));
 
-    assert(radio_backend_set_digital_voice(&radio_h, false, 1));
-    assert(radio_h.profiles[1].mode == MODE_LSB);
-    assert(!radio_backend_get_digital_voice(&radio_h, 1));
-    assert(!strcmp(user_key("profile1:dv_restore_mode"), ""));
+    TEST_ASSERT_TRUE(radio_backend_set_digital_voice(&radio_h, false, 1));
+    TEST_ASSERT_EQUAL_INT64(MODE_LSB, radio_h.profiles[1].mode);
+    TEST_ASSERT_FALSE(radio_backend_get_digital_voice(&radio_h, 1));
+    TEST_ASSERT_EQUAL_STRING("", user_key("profile1:dv_restore_mode"));
 }
 
 static void test_refused_while_transmitting(void)
 {
     setup(DV_CODEC_DSTAR);
     radio_h.txrx_state = IN_TX;
-    assert(!radio_backend_set_digital_voice(&radio_h, true, 1));
-    assert(radio_h.profiles[1].mode == MODE_LSB);
+    TEST_ASSERT_FALSE(radio_backend_set_digital_voice(&radio_h, true, 1));
+    TEST_ASSERT_EQUAL_INT64(MODE_LSB, radio_h.profiles[1].mode);
     /* asking for the state it is already in is not a change */
-    assert(radio_backend_set_digital_voice(&radio_h, false, 1));
-    assert(!radio_backend_set_digital_voice_codec(&radio_h, DV_CODEC_RADEV2));
-    assert(radio_h.digital_voice_codec == DV_CODEC_DSTAR);
+    TEST_ASSERT_TRUE(radio_backend_set_digital_voice(&radio_h, false, 1));
+    TEST_ASSERT_FALSE(radio_backend_set_digital_voice_codec(&radio_h, DV_CODEC_RADEV2));
+    TEST_ASSERT_EQUAL_INT64(DV_CODEC_DSTAR, radio_h.digital_voice_codec);
 }
 
 static void test_codec_switch_keeps_digital_voice(void)
 {
     setup(DV_CODEC_RADEV2);
-    assert(radio_backend_set_digital_voice(&radio_h, true, 1));
-    assert(radio_backend_set_digital_voice_codec(&radio_h, DV_CODEC_DSTAR));
-    assert(radio_h.profiles[1].mode == MODE_DSTAR);
-    assert(!radio_h.profiles[1].digital_voice);
-    assert(radio_backend_get_digital_voice(&radio_h, 1));
-    assert(!radio_backend_get_digital_voice(&radio_h, 0));
-    assert(!strcmp(iniparser_getstring(radio_h.cfg_radio, "main:digital_voice_codec", ""),
-                   "DSTAR"));
+    TEST_ASSERT_TRUE(radio_backend_set_digital_voice(&radio_h, true, 1));
+    TEST_ASSERT_TRUE(radio_backend_set_digital_voice_codec(&radio_h, DV_CODEC_DSTAR));
+    TEST_ASSERT_EQUAL_INT64(MODE_DSTAR, radio_h.profiles[1].mode);
+    TEST_ASSERT_FALSE(radio_h.profiles[1].digital_voice);
+    TEST_ASSERT_TRUE(radio_backend_get_digital_voice(&radio_h, 1));
+    TEST_ASSERT_FALSE(radio_backend_get_digital_voice(&radio_h, 0));
+    TEST_ASSERT_EQUAL_STRING("DSTAR", iniparser_getstring(radio_h.cfg_radio, "main:digital_voice_codec", ""));
 
-    assert(radio_backend_set_digital_voice_codec(&radio_h, DV_CODEC_RADEV2));
-    assert(radio_h.profiles[1].mode == MODE_LSB);
-    assert(radio_h.profiles[1].digital_voice);
-    assert(radio_backend_get_digital_voice(&radio_h, 1));
+    TEST_ASSERT_TRUE(radio_backend_set_digital_voice_codec(&radio_h, DV_CODEC_RADEV2));
+    TEST_ASSERT_EQUAL_INT64(MODE_LSB, radio_h.profiles[1].mode);
+    TEST_ASSERT_TRUE(radio_h.profiles[1].digital_voice);
+    TEST_ASSERT_TRUE(radio_backend_get_digital_voice(&radio_h, 1));
 }
 
 static void test_hamlib_has_no_dstar_digital_voice(void)
 {
     setup(DV_CODEC_RADEV2);
     radio_h.backend_kind = RADIO_BACKEND_HAMLIB;
-    assert(!radio_backend_dv_codec_supported(&radio_h, DV_CODEC_DSTAR));
-    assert(!radio_backend_set_digital_voice_codec(&radio_h, DV_CODEC_DSTAR));
-    assert(radio_h.digital_voice_codec == DV_CODEC_RADEV2);
+    TEST_ASSERT_FALSE(radio_backend_dv_codec_supported(&radio_h, DV_CODEC_DSTAR));
+    TEST_ASSERT_FALSE(radio_backend_set_digital_voice_codec(&radio_h, DV_CODEC_DSTAR));
+    TEST_ASSERT_EQUAL_INT64(DV_CODEC_RADEV2, radio_h.digital_voice_codec);
 }
 
 static void test_startup_carries_digital_voice(void)
@@ -149,36 +148,39 @@ static void test_startup_carries_digital_voice(void)
     setup(DV_CODEC_DSTAR);
     radio_h.profiles[1].digital_voice = true;
     cfg_carry_digital_voice(&radio_h);
-    assert(radio_h.profiles[1].mode == MODE_DSTAR);
-    assert(radio_h.profiles[1].dv_restore_mode == MODE_LSB);
-    assert(radio_backend_get_digital_voice(&radio_h, 1));
-    assert(!strcmp(user_key("profile1:dv_restore_mode"), "LSB"));
-    assert(!strcmp(user_key("profile1:mode"), "DSTAR"));
+    TEST_ASSERT_EQUAL_INT64(MODE_DSTAR, radio_h.profiles[1].mode);
+    TEST_ASSERT_EQUAL_INT64(MODE_LSB, radio_h.profiles[1].dv_restore_mode);
+    TEST_ASSERT_TRUE(radio_backend_get_digital_voice(&radio_h, 1));
+    TEST_ASSERT_EQUAL_STRING("LSB", user_key("profile1:dv_restore_mode"));
+    TEST_ASSERT_EQUAL_STRING("DSTAR", user_key("profile1:mode"));
 
     /* then started under RADEV2 again */
     radio_h.digital_voice_codec = DV_CODEC_RADEV2;
     cfg_carry_digital_voice(&radio_h);
-    assert(radio_h.profiles[1].mode == MODE_LSB);
-    assert(radio_h.profiles[1].digital_voice);
-    assert(!strcmp(user_key("profile1:mode"), "LSB"));
-    assert(!strcmp(user_key("profile1:dv_restore_mode"), ""));
+    TEST_ASSERT_EQUAL_INT64(MODE_LSB, radio_h.profiles[1].mode);
+    TEST_ASSERT_TRUE(radio_h.profiles[1].digital_voice);
+    TEST_ASSERT_EQUAL_STRING("LSB", user_key("profile1:mode"));
+    TEST_ASSERT_EQUAL_STRING("", user_key("profile1:dv_restore_mode"));
 
     /* DSTAR picked as a mode, not as digital voice, stays DSTAR */
     setup(DV_CODEC_RADEV2);
     radio_h.profiles[1].mode = MODE_DSTAR;
     cfg_carry_digital_voice(&radio_h);
-    assert(radio_h.profiles[1].mode == MODE_DSTAR);
-    assert(!radio_h.profiles[1].digital_voice);
+    TEST_ASSERT_EQUAL_INT64(MODE_DSTAR, radio_h.profiles[1].mode);
+    TEST_ASSERT_FALSE(radio_h.profiles[1].digital_voice);
 }
+
+void setUp(void) {}
+void tearDown(void) {}
 
 int main(void)
 {
-    test_radev2();
-    test_dstar_round_trip();
-    test_refused_while_transmitting();
-    test_codec_switch_keeps_digital_voice();
-    test_hamlib_has_no_dstar_digital_voice();
-    test_startup_carries_digital_voice();
-    puts("dv_codec_test: ok");
-    return 0;
+    UNITY_BEGIN();
+    RUN_TEST(test_radev2);
+    RUN_TEST(test_dstar_round_trip);
+    RUN_TEST(test_refused_while_transmitting);
+    RUN_TEST(test_codec_switch_keeps_digital_voice);
+    RUN_TEST(test_hamlib_has_no_dstar_digital_voice);
+    RUN_TEST(test_startup_carries_digital_voice);
+    return UNITY_END();
 }

@@ -12,11 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "unity.h"
 #include "dsp/stream_resampler.h"
-
-static int failures;
-#define CHECK(c, ...) do { if (!(c)) { failures++; printf("FAIL %s:%d: ", __FILE__, __LINE__); \
-                                         printf(__VA_ARGS__); printf("\n"); } } while (0)
 
 /* Run x through a fresh resampler in blocks of `block` (0 = varying odd
  * sizes). Returns the output count; out must be large enough. */
@@ -60,7 +57,7 @@ static void tone_fit(const float *y, size_t n, double f, double fs, double *amp,
     *snr_db = 10 * log10(sig / (err + 1e-30));
 }
 
-static void test_ratio(const char *what, int in_rate, int out_rate, float tbw, double f)
+static void check_ratio(const char *what, int in_rate, int out_rate, float tbw, double f)
 {
     int L = out_rate, M = in_rate;
     const size_t n = (size_t) in_rate * 2;                      /* 2 s */
@@ -87,40 +84,55 @@ static void test_ratio(const char *what, int in_rate, int out_rate, float tbw, d
     printf("%-26s %5d -> %5d Hz: %zu out (ideal %ld), block-independent %s/%s, tone %.0f Hz gain %.4f SNR %.1f dB\n",
            what, in_rate, out_rate, nb, ideal, same_b ? "yes" : "NO", same_c ? "yes" : "NO", f,
            amp / 0.5, snr);
-    CHECK(same_b && same_c, "%s: output depends on block size", what);
+    TEST_ASSERT_TRUE_MESSAGE(same_b, "output differs in 1024-sample blocks");
+    TEST_ASSERT_TRUE_MESSAGE(same_c, "output differs in odd-sized blocks");
     /* Short only by the look-ahead still held back for the next call. */
     stream_resampler probe;
     stream_resampler_init(&probe, L, M, tbw);
     long held = ((long) probe.taps_len / probe.interp + 3) * out_rate / in_rate + 2;
     stream_resampler_free(&probe);
-    CHECK(nb <= (size_t) ideal && (long) nb >= ideal - held,
-          "%s: %zu outputs, want %ld minus up to %ld held back", what, nb, ideal, held);
-    CHECK(fabs(amp / 0.5 - 1.0) < 0.02, "%s: gain %.4f", what, amp / 0.5);
-    CHECK(snr > 60.0, "%s: SNR %.1f dB", what, snr);
+    TEST_ASSERT_LESS_OR_EQUAL_INT64_MESSAGE(ideal, (long) nb, "more outputs than interp/decim gives");
+    TEST_ASSERT_GREATER_OR_EQUAL_INT64_MESSAGE(ideal - held, (long) nb, "short by more than the look-ahead held back");
+    TEST_ASSERT_DOUBLE_WITHIN_MESSAGE(0.02, 1.0, amp / 0.5, "passband gain");
+    TEST_ASSERT_GREATER_THAN_DOUBLE_MESSAGE(60.0, snr, "tone SNR (dB)");
     free(x); free(a); free(b); free(c);
 }
 
+void setUp(void) {}
+void tearDown(void) {}
+
+#define RATIO(name, what, in, out, tbw, f) \
+    static void name(void) { check_ratio(what, in, out, tbw, f); }
+
+/* sBitx */
+RATIO(test_ft8_cw_rtty_rx,     "FT8/CW/RTTY RX",        96000, 12000, 0.02f,  1500)
+RATIO(test_dstar_tx_mic,       "D-STAR TX mic",         96000,  8000, 0.01f,  1000)
+RATIO(test_rade_tx_speech,     "RADE TX speech",        96000, 16000, 0.015f, 1000)
+RATIO(test_rade_tx_modem,      "RADE TX modem",          8000, 96000, 0.01f,  1500)
+RATIO(test_rade_rx_modem,      "RADE RX modem",         96000,  8000, 0.01f,  1500)
+RATIO(test_rade_rx_speech,     "RADE RX speech",        16000, 96000, 0.015f, 1000)
+RATIO(test_drm_rx_iq,          "DRM RX I/Q",            96000, 48000, 0.05f, 10000)
+RATIO(test_drm_audio,          "DRM audio",              8000, 96000, 0.01f,  1000)
+/* Hamlib rigs (48 kHz codec ring as the common case) */
+RATIO(test_hamlib_digi_rx,     "Hamlib FT8/CW/RTTY RX", 48000, 12000, 0.02f,  1500)
+RATIO(test_hamlib_ft8_tx,      "Hamlib FT8 TX",         12000, 48000, 0.02f,  1500)
+RATIO(test_hamlib_rade_rx,     "Hamlib RADE modem RX",  48000,  8000, 0.02f,  1500)
+RATIO(test_hamlib_44k1_to_12k, "Hamlib 44.1k -> 12k",   44100, 12000, 0.02f,  1500)
+
 int main(void)
 {
-    /* sBitx */
-    test_ratio("FT8/CW/RTTY RX", 96000, 12000, 0.02f, 1500);
-    test_ratio("D-STAR TX mic", 96000, 8000, 0.01f, 1000);
-    test_ratio("RADE TX speech", 96000, 16000, 0.015f, 1000);
-    test_ratio("RADE TX modem", 8000, 96000, 0.01f, 1500);
-    test_ratio("RADE RX modem", 96000, 8000, 0.01f, 1500);
-    test_ratio("RADE RX speech", 16000, 96000, 0.015f, 1000);
-    test_ratio("DRM RX I/Q", 96000, 48000, 0.05f, 10000);
-    test_ratio("DRM audio", 8000, 96000, 0.01f, 1000);
-    /* Hamlib rigs (48 kHz codec ring as the common case) */
-    test_ratio("Hamlib FT8/CW/RTTY RX", 48000, 12000, 0.02f, 1500);
-    test_ratio("Hamlib FT8 TX", 12000, 48000, 0.02f, 1500);
-    test_ratio("Hamlib RADE modem RX", 48000, 8000, 0.02f, 1500);
-    test_ratio("Hamlib 44.1k -> 12k", 44100, 12000, 0.02f, 1500);
-
-    if (failures) {
-        printf("stream_resampler_test: %d failure(s)\n", failures);
-        return 1;
-    }
-    printf("stream_resampler_test: ok\n");
-    return 0;
+    UNITY_BEGIN();
+    RUN_TEST(test_ft8_cw_rtty_rx);
+    RUN_TEST(test_dstar_tx_mic);
+    RUN_TEST(test_rade_tx_speech);
+    RUN_TEST(test_rade_tx_modem);
+    RUN_TEST(test_rade_rx_modem);
+    RUN_TEST(test_rade_rx_speech);
+    RUN_TEST(test_drm_rx_iq);
+    RUN_TEST(test_drm_audio);
+    RUN_TEST(test_hamlib_digi_rx);
+    RUN_TEST(test_hamlib_ft8_tx);
+    RUN_TEST(test_hamlib_rade_rx);
+    RUN_TEST(test_hamlib_44k1_to_12k);
+    return UNITY_END();
 }

@@ -67,7 +67,7 @@ hermes-radio-daemon/
 ├── vendor/minimodem/        Vendored minimodem FSK core (GPLv3)
 ├── vendor/hermes_shm/       Shared-memory rings, identical to mercury's copy
 ├── config/                  Sample core.ini and user.ini
-└── tests/                   Regression tests
+└── tests/                   Unit tests: <module>/test_<unit>.c on Unity + fff (tests/tests.mk)
 ```
 
 Each backend exposes its `radio_backend_ops` vtable (`hamlib_backend_ops` in
@@ -123,6 +123,54 @@ Mercury (`vendor/mercury`, a submodule of Rhizomatica/mercury) is linked
 into the daemon when it is checked out; `make` builds it there as
 `libmercury_host.a`.  Without it (`git clone` with no `--recursive` and no
 `submodule update`) the daemon builds as before, without the modem.
+
+## Tests
+
+```bash
+make test                   # every unit test binary; fails if any test fails
+make test SANITIZE=asan     # under AddressSanitizer + UndefinedBehaviorSanitizer
+make test SANITIZE=tsan     # under ThreadSanitizer
+make tests/dsp/test_mic_filter && ./tests/dsp/test_mic_filter   # just one
+```
+
+The unit tests use [Unity](https://github.com/ThrowTheSwitch/Unity) with
+[fff](https://github.com/meekrosoft/fff) for fakes, the same framework as
+mercury's tests (both vendored in `tests/`).  Each module's tests live in
+`tests/<module>/test_<unit>.c` and link the sources they test directly;
+`tests/tests.mk` has one rule per binary and `TEST_BINS`, the list `make
+test` runs.  A test file:
+
+```c
+#include "unity.h"
+#include "test_util.h"          /* test_msg(): formatted messages; TEST_REQUIRE() */
+#include "dsp/mic_filter.h"
+
+void setUp(void) {}             /* before every test */
+void tearDown(void) {}          /* after every test */
+
+static void test_zero_disables(void)
+{
+    TEST_ASSERT_EQUAL_INT32_ARRAY(expected, got, 64);
+}
+
+int main(void)
+{
+    UNITY_BEGIN();
+    RUN_TEST(test_zero_disables);
+    return UNITY_END();
+}
+```
+
+Unity's asserts end the test that fails (a `longjmp` back to `RUN_TEST`),
+so they belong in the test's own thread: not in a forked child or another
+thread, and not in one-time setup in `main()` (use `TEST_REQUIRE` there).
+A test that races another thread should share state through atomics or a
+lock: `make test SANITIZE=tsan` checks.  Races inside libraries are
+suppressed, with a reason, in `tests/sanitizer-suppressions/tsan.supp`.
+
+CI (`.github/workflows/ci.yml`) runs all of this on Debian 13, amd64 and
+arm64, with and without mercury, on every pull request;
+`tests/ci/install-deps.sh` installs the build dependencies there.
 
 ## Installation
 

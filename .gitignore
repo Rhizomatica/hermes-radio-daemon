@@ -58,7 +58,10 @@ dkms.conf
 *.dwo
 
 # Generated test binaries
-tests/*_test
+# unit test binaries (tests/tests.mk), and the SANITIZE they were built with
+/tests/*/test_*
+!/tests/*/test_*.c
+/tests/.sanitize
 
 # Build outputs
 /radio_daemon
