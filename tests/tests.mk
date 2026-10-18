@@ -66,6 +66,12 @@ test: $(TEST_BINS)
 	if [ -n "$$failed" ]; then echo "FAILED:$$failed"; exit 1; fi; \
 	echo "== all $(words $(TEST_BINS)) test binaries passed"
 
+# Integration tests (tests/integration, Go): the real radio_daemon on
+# Hamlib's dummy rig, driven over its websocket, rigctl and (with mercury
+# linked in) mercury's TNC ports.  Needs go; go.mod names the toolchain.
+integration-test: radio_daemon
+	cd tests/integration && RADIOD_BIN=$(CURDIR)/radio_daemon go test -count=1 ./...
+
 # ── radio/ ──────────────────────────────────────────────────────
 tests/radio/test_backend_selection: tests/radio/test_backend_selection.c common/cfg_utils.c common/cfg_utils.h \
                                     radio/radio_backend.c radio/radio_backend.h radio/radio_daemon_core.h \

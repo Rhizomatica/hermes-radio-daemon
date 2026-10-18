@@ -57,7 +57,7 @@ OPUS_DNN_OBJS     = $(OPUS_DNN_SRCS:.c=.o)
 FT8_LIB_OBJS      = $(FT8_LIB_SRCS:.c=.o)
 MM_FSK_OBJS       = $(MM_FSK_SRCS:.c=.o)
 
-.PHONY: all clean install test check-symbols FORCE
+.PHONY: all clean install test integration-test check-symbols FORCE
 
 all: radio_daemon radio_client
 

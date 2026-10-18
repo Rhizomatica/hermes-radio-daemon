@@ -6,8 +6,9 @@
 #
 #   build-test   amd64 and arm64 (the stations' architecture), with mercury
 #                linked in (vendor/mercury submodule): make, make test,
-#                make check-symbols
-#   no-mercury   the build without the submodule, which must still work
+#                make check-symbols, make integration-test
+#   no-mercury   the build without the submodule, which must still work,
+#                with its unit and integration tests
 #   sanitizers   make test under ASan+UBSan and under TSan
 
 name: CI
@@ -50,6 +51,13 @@ jobs:
         run: make test
       - name: Symbol check (daemon vs mercury)
         run: make check-symbols
+      - name: Go (the toolchain tests/integration/go.mod names)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: tests/integration/go.mod
+          cache: false
+      - name: Integration tests
+        run: make integration-test
 
   no-mercury:
     name: Build + unit tests without mercury (Debian 13, amd64)
@@ -71,6 +79,13 @@ jobs:
         run: "! nm radio_daemon | grep -q ' T mercury_init$'"
       - name: Unit tests
         run: make test
+      - name: Go (the toolchain tests/integration/go.mod names)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: tests/integration/go.mod
+          cache: false
+      - name: Integration tests (the mercury test skips)
+        run: make integration-test
 
   sanitizers:
     name: Unit tests under ${{ matrix.sanitize }} (Debian 13, amd64)

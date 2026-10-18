@@ -25,6 +25,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <strings.h>
+#include <stdatomic.h>
 #include <stdio.h>
 
 #include "cfg_utils.h"
@@ -310,27 +311,30 @@ bool cfg_shutdown(radio *radio_h, pthread_t *config_tid)
     return true;
 }
 
+/* Write whichever config changed.  Each flag is cleared before its write,
+ * so a change made while the file is being written marks it dirty again. */
+static void flush_config(radio *radio_h)
+{
+    if (atomic_exchange(&radio_h->cfg_radio_dirty, false))
+        write_config_radio(radio_h, radio_h->cfg_radio_path);
+
+    if (atomic_exchange(&radio_h->cfg_user_dirty, false))
+        write_config_user(radio_h, radio_h->cfg_user_path);
+}
+
 void *config_thread(void *radio_h_v)
 {
     radio *radio_h = (radio *) radio_h_v;
 
     while (!shutdown_)
     {
-        if (radio_h->cfg_radio_dirty)
-        {
-            write_config_radio(radio_h, radio_h->cfg_radio_path);
-            radio_h->cfg_radio_dirty = false;
-        }
-
-        if (radio_h->cfg_user_dirty)
-        {
-            write_config_user(radio_h, radio_h->cfg_user_path);
-            radio_h->cfg_user_dirty = false;
-        }
-
+        flush_config(radio_h);
         sleep(2);
     }
 
+    /* A change from the last 2 s before shutdown (a retune, then the
+     * station is stopped) is still saved. */
+    flush_config(radio_h);
     return NULL;
 }
 
