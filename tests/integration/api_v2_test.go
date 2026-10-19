@@ -294,3 +294,25 @@ func TestHermesV1RadioStateTopic(t *testing.T) {
 		t.Errorf("event after rigctl F = %v", ev)
 	}
 }
+
+// /radio/settings through the radiod C API: read, change, read back. The
+// dummy rig is a Hamlib radio, so it has no BFO.
+func TestAPIv2RadioSettings(t *testing.T) {
+	needGoAPI(t)
+	d := startAPIDaemon(t)
+	base := apiBase(d)
+	r := call(t, "GET", base+"/radio/settings", "")
+	if r.status != 200 || r.body["bfo_hz"] != nil || r.body["tx_timeout_s"] != nil || r.body["step_hz"] == nil {
+		t.Fatalf("GET /radio/settings = %d %s", r.status, r.raw)
+	}
+	r = call(t, "PATCH", base+"/radio/settings", `{"step_hz":500,"swr_limit":3.2,"default_profile_fallback_s":120}`)
+	if r.status != 200 || r.body["step_hz"] != 500.0 || r.body["swr_limit"] != 3.2 || r.body["default_profile_fallback_s"] != 120.0 {
+		t.Fatalf("PATCH = %d %s", r.status, r.raw)
+	}
+	if r = call(t, "GET", base+"/radio/settings", ""); r.body["step_hz"] != 500.0 || r.body["swr_limit"] != 3.2 {
+		t.Errorf("read back = %s", r.raw)
+	}
+	if r = call(t, "PATCH", base+"/radio/settings", `{"bfo_hz":40035000}`); r.status != 422 {
+		t.Errorf("BFO on a Hamlib radio = %d %s", r.status, r.raw)
+	}
+}
