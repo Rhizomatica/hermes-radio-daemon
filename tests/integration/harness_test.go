@@ -77,6 +77,13 @@ func hasMercury(t *testing.T) bool {
 	return false
 }
 
+func wsHostOr(h string) string {
+	if h == "" {
+		return "127.0.0.1"
+	}
+	return h
+}
+
 // freePort asks the kernel for a free TCP port on 127.0.0.1.
 func freePort(t *testing.T) int {
 	t.Helper()
@@ -129,6 +136,8 @@ type daemonOpts struct {
 	core []string
 	// The profile 0 frequency user.ini starts with.
 	freq int
+	// The address the websocket listens on ("" = 127.0.0.1).
+	wsHost string
 }
 
 const defaultUserINI = `[main]
@@ -176,7 +185,7 @@ func startDaemon(t *testing.T, o daemonOpts) *Daemon {
 		"rig_pathname = /dev/null",
 		"ptt_type = RIG",
 		"enable_websocket = 1",
-		fmt.Sprintf("websocket_url = ws://127.0.0.1:%d", wsPort),
+		fmt.Sprintf("websocket_url = ws://%s:%d", wsHostOr(o.wsHost), wsPort),
 		"rig_server_enable = 1",
 		fmt.Sprintf("rig_server_port = %d", rigPort),
 		"cat_server_enable = 0",
