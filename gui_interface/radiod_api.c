@@ -106,9 +106,9 @@ void radiod_api_state_get(radiod_api_state *out)
     out->power = r->profiles[a].power_level_percentage;
     /* Both backends' getters give watts x 10 and SWR x 10 (the sBitx one
      * converts its bridge ADC reading with bridge_compensation). */
-    out->fwd_w = radio_backend_get_fwd_power(r) / 10.0;
-    out->ref_w = radio_backend_get_ref_power(r) / 10.0;
-    out->swr = radio_backend_get_swr(r) / 10.0;
+    out->fwd_x10 = radio_backend_get_fwd_power(r);
+    out->ref_x10 = radio_backend_get_ref_power(r);
+    out->swr_x10 = radio_backend_get_swr(r);
     int32_t s = r->s_meter_db;
     out->s_meter_valid = s > -200;
     out->s_meter_db = s;

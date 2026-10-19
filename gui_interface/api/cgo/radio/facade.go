@@ -30,8 +30,8 @@ func (facade) State() State {
 	C.radiod_api_state_get(&s)
 	return State{
 		ActiveProfile: int(s.active_profile), TX: bool(s.tx), FrequencyHz: uint32(s.frequency_hz),
-		Mode: cstr(s.mode[:]), Power: int(s.power), FwdW: float64(s.fwd_w), RefW: float64(s.ref_w),
-		SWR: float64(s.swr), SMeterValid: bool(s.s_meter_valid), SMeterDB: float64(s.s_meter_db),
+		Mode: cstr(s.mode[:]), Power: int(s.power), FwdW: float64(s.fwd_x10) / 10, RefW: float64(s.ref_x10) / 10,
+		SWR: float64(s.swr_x10) / 10, SMeterValid: bool(s.s_meter_valid), SMeterDB: float64(s.s_meter_db),
 		Protection: bool(s.protection), TimeoutS: int(s.timeout_s), DigitalVoice: bool(s.digital_voice),
 		Backend: cstr(s.backend[:]),
 	}

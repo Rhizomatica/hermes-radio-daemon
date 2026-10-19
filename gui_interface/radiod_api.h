@@ -32,7 +32,10 @@ typedef struct {
     uint32_t frequency_hz;
     char     mode[8];             /* LSB, USB, CW, FM, AM, DRM, FT8, RTTY, DSTAR */
     int      power;               /* percent */
-    double   fwd_w, ref_w, swr;   /* meaningful while transmitting */
+    /* Meaningful while transmitting; tenths (watts x 10, SWR x 10) as the
+     * backends give them: Go divides, so radiod's -Ofast (x / 10.0 becomes
+     * x * 0.1) cannot turn 0.3 W into 0.30000000000000004. */
+    uint32_t fwd_x10, ref_x10, swr_x10;
     bool     s_meter_valid;
     double   s_meter_db;          /* dB relative to S9 */
     bool     protection;          /* high-SWR protection tripped */
