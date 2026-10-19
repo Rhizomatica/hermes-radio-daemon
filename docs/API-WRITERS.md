@@ -308,8 +308,9 @@ returns plain Go values; errors are `radio.ErrNoProfile`, `ErrInvalid`, `ErrBusy
 `ErrNotSupported`.
 
 The setters change the radio exactly as radiod's own commands do, and profile changes are saved
-to `user.ini`. Some values are station-wide in radiod (step, SWR threshold, BFO): a profile
-reports them all the same.
+to the configuration. Values radiod keeps once for the station (the default profile and its
+fallback, the tuning step, the SWR limit, the sBitx's BFO) are `Settings()` and their own
+setters, not part of a profile.
 
 **If you need something the interface does not have**, it needs a new function in the
 radiod C API (`api/radiod_api.h/.c`) and its cgo binding (`cgo/radio/binding.go`), plus the stub
@@ -385,7 +386,7 @@ CI runs all three on Debian 13, amd64 and arm64, with and without the Go layer.
   `messages`), mercury's `modem.status` and `modem.config`; then **binary frames** (spectrum)
   and **WebRTC** audio (in C, with libdatachannel; the signalling arrives as `rtc.offer`
   commands).
-- **Station-wide radio settings** (`/radio/settings`) and a **transmit timeout**: proposed in
-  the spec, not in radiod yet.
+- **A transmit timeout** (`tx_timeout_s` in `/radio/settings`): in the spec, not in radiod
+  yet, so it is null and a PATCH of it is refused.
 - **APIs moving from hermes-api** (messages, users, stations, schedules, ...): each one is a
   domain package written as in this guide.

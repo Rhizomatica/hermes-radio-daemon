@@ -863,6 +863,8 @@ curl -X PATCH -H 'Content-Type: application/json' \
 | `updateProfile` | `PATCH /api/v2/radio/profiles/{profile}` | operator |
 | `selectProfile` | `PUT /api/v2/radio/active-profile` | operator |
 | `resetProtection` | `POST /api/v2/radio/protection/reset` | operator |
+| `getRadioSettings` | `GET /api/v2/radio/settings` (default profile and fallback, step, SWR limit, BFO) | readonly |
+| `updateRadioSettings` | `PATCH /api/v2/radio/settings` | admin |
 | `getDigiSettings` | `GET /api/v2/radio/digi` | readonly |
 | `updateDigiSettings` | `PATCH /api/v2/radio/digi` | operator |
 | `getDigiLog` | `GET /api/v2/digi/log` (cursor pagination) | readonly |
@@ -900,8 +902,8 @@ second, whatever changed them (a command, CAT, rigctl, the front panel).
 - logins, sessions and roles (`/api/v2/session`);
 - WebRTC audio (in C, with libdatachannel; signalled over `hermes.v1`);
 - the APIs moving from hermes-api (messages, users, stations, schedules, ...);
-- the station-wide radio settings (`/radio/settings`) and a transmit timeout,
-  which the daemon does not have (`timeout_s` is refused).
+- a transmit timeout, which the daemon does not have (`tx_timeout_s` is null and
+  refused).
 
 ## `sbitx_client` CLI
 

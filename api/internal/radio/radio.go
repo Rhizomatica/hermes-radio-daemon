@@ -26,6 +26,8 @@ func Register(rt *api.Router) {
 	rt.Op("updateProfile", h.updateProfile)
 	rt.Op("selectProfile", h.selectProfile)
 	rt.Op("resetProtection", h.resetProtection)
+	rt.Op("getRadioSettings", h.getSettings)
+	rt.Op("updateRadioSettings", h.updateSettings)
 
 	rt.Command("radio.set", spec.RoleOperator, h.cmdSet)
 	rt.Command("radio.select_profile", spec.RoleOperator, h.cmdSelect)
@@ -56,24 +58,15 @@ type State struct {
 	RigModel      *string  `json:"rig_model"`
 }
 
-// Profile is RadioProfile. radiod keeps step, ref threshold and BFO
-// station-wide, so every profile reports the same; it has no profile names
-// or CTCSS tones (name and tone_hz are null). It has no transmit timeout
-// either: its "timeout" is how long a non-default profile lasts before the
-// radio falls back to the default one, which the spec has no field for, so
-// timeout_s is left out (it is optional) rather than mislabelled.
+// Profile is RadioProfile. Station-wide values (step, SWR limit, BFO, the
+// default profile) are RadioSettings (settings.go).
 type Profile struct {
 	Profile       int     `json:"profile"`
-	Name          *string `json:"name"`
 	FrequencyHz   uint32  `json:"frequency_hz"`
 	Mode          string  `json:"mode"`
 	Power         int     `json:"power"`
 	Volume        int     `json:"volume"`
-	StepHz        uint32  `json:"step_hz"`
 	FilterWidthHz *uint32 `json:"filter_width_hz"`
-	ToneHz        *int    `json:"tone_hz"`
-	RefThreshold  uint32  `json:"ref_threshold"`
-	BfoHz         int     `json:"bfo_hz"`
 	DigitalVoice  bool    `json:"digital_voice"`
 }
 
@@ -95,8 +88,7 @@ func stateOf(s rad.State) State {
 func profileOf(p rad.Profile) Profile {
 	out := Profile{
 		Profile: p.Profile, FrequencyHz: p.FrequencyHz, Mode: p.Mode, Power: p.Power,
-		Volume: p.Volume, StepHz: p.StepHz, RefThreshold: p.RefThreshold,
-		BfoHz: p.BfoHz, DigitalVoice: p.DigitalVoice,
+		Volume: p.Volume, DigitalVoice: p.DigitalVoice,
 	}
 	if p.FilterWidthHz != 0 {
 		w := p.FilterWidthHz
@@ -205,12 +197,12 @@ func (h handlers) problemFor(w http.ResponseWriter, r *http.Request, err error) 
 // ── one validator for PATCH and radio.set ──
 
 type patch struct {
-	profile                         *int
-	frequency                       *uint32
-	mode                            *string
-	power, volume, bfo              *int
-	step, refThreshold, filterWidth *uint32
-	digitalVoice                    *bool
+	profile       *int
+	frequency     *uint32
+	mode          *string
+	power, volume *int
+	filterWidth   *uint32
+	digitalVoice  *bool
 }
 
 var modes = map[string]bool{"LSB": true, "USB": true, "CW": true, "FM": true, "AM": true,
@@ -265,23 +257,8 @@ func parsePatch(raw map[string]json.RawMessage, withProfile bool) (patch, api.Fi
 					p.volume = &n
 				}
 			}
-		case "step_hz":
-			if v := intIn(key, 1, 1<<32-1); v != nil {
-				n := uint32(*v)
-				p.step = &n
-			}
-		case "timeout_s":
-			f.Add(key, "radiod has no transmit timeout (its profile timeout is the fallback to the default profile)")
-		case "ref_threshold":
-			if v := intIn(key, 0, 1<<32-1); v != nil {
-				n := uint32(*v)
-				p.refThreshold = &n
-			}
-		case "bfo_hz":
-			if v := intIn(key, -(1 << 31), 1<<31-1); v != nil {
-				n := int(*v)
-				p.bfo = &n
-			}
+		case "step_hz", "bfo_hz", "swr_limit", "ref_threshold", "timeout_s", "tx_timeout_s":
+			f.Add(key, "a station-wide setting, not a profile's: see /radio/settings")
 		case "filter_width_hz":
 			var n uint32 // null: the rig's default
 			if !null(key) {
@@ -298,14 +275,6 @@ func parsePatch(raw map[string]json.RawMessage, withProfile bool) (patch, api.Fi
 				f.Add(key, "true or false")
 			} else {
 				p.digitalVoice = &b
-			}
-		case "name":
-			if !null(key) {
-				f.Add(key, "radiod does not store profile names")
-			}
-		case "tone_hz":
-			if !null(key) {
-				f.Add(key, "this radio has no CTCSS tone")
 			}
 		default:
 			f.Add(key, "unknown field")
@@ -335,15 +304,6 @@ func (h handlers) apply(n int, p patch) error {
 	}
 	if p.filterWidth != nil {
 		steps = append(steps, func() error { return h.r.SetFilterWidth(n, *p.filterWidth) })
-	}
-	if p.step != nil {
-		steps = append(steps, func() error { return h.r.SetStep(*p.step) })
-	}
-	if p.refThreshold != nil {
-		steps = append(steps, func() error { return h.r.SetRefThreshold(*p.refThreshold) })
-	}
-	if p.bfo != nil {
-		steps = append(steps, func() error { return h.r.SetBfo(*p.bfo) })
 	}
 	if p.digitalVoice != nil {
 		steps = append(steps, func() error { return h.r.SetDigitalVoice(n, *p.digitalVoice) })

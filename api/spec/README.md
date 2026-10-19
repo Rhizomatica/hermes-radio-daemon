@@ -2,7 +2,7 @@
 
 `api-rest.yaml` (REST, OpenAPI 3.1) and `api-ws.yaml` (the `hermes.v1` WebSocket,
 AsyncAPI 3.1) are copies of hermes-documentation's `tech_docs/api-redesign/`, the station
-API's contract, at commit `e19b688` (2026-10-18). They are
+API's contract, at commit `6aad461` (2026-10-19). They are
 maintained there; update them here only by copying a newer commit, and say which in the
 commit message.
 
