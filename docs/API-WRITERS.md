@@ -124,7 +124,10 @@ api_v2_enable = 1
 
 Then `curl http://127.0.0.1:8080/api/v2/radio`. **Until logins exist, `/api/v2` answers only
 to this machine (127.0.0.1, ::1)** and every caller is treated as `admin`; from anywhere else
-it answers 403. A radiod built without Go answers `/api/v2` with 503.
+it answers 403. A radiod built without Go answers `/api/v2` with 503. **Never put a reverse
+proxy on the station in front of radiod's port** (nginx's `/api` goes to hermes-api, not
+radiod): to radiod every proxied request would come from 127.0.0.1, and the network would be
+`admin`.
 
 ## 5. Adding a REST operation
 
