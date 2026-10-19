@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/spec"
 )
 
-// hermes.v1 (spec/api-ws.yaml), stage 1: hello, heartbeat, and commands
-// with exactly one reply each. Topics (subscribe, events) come in stage 2.
+// hermes.v1 (spec/api-ws.yaml): hello, heartbeat, commands with exactly
+// one reply each, and topics (topics.go).
 //
 // radiod's C websocket server owns the socket and hands each text frame to
 // WSMessage; frames go back through radio.WSSend/WSBroadcast. Commands run
@@ -84,6 +85,11 @@ type Conn struct {
 	rt   *Router
 	in   chan []byte
 	done chan struct{}
+
+	// mu orders this connection's events: its goroutine (snapshots) and
+	// the publisher both send under it.
+	mu   sync.Mutex
+	subs map[string]*subscription
 }
 
 const (
@@ -100,15 +106,16 @@ func (rt *Router) WSOpen(id int64, r *http.Request) int {
 	if roleRank[role] == 0 {
 		return http.StatusUnauthorized
 	}
-	c := &Conn{ID: id, Role: role, rt: rt, in: make(chan []byte, connQueue), done: make(chan struct{})}
-	rt.conns.Store(id, c)
-	rt.hbStart.Do(func() { go rt.heartbeat() })
+	c := &Conn{ID: id, Role: role, rt: rt, in: make(chan []byte, connQueue), done: make(chan struct{}),
+		subs: map[string]*subscription{}}
 	c.send(hello{
 		Type: "hello", Protocol: "hermes.v1", Service: "hermes-radio-daemon",
 		Version: rt.radio.Version(), Role: string(role),
-		Topics: []string{}, Commands: rt.Commands(role),
-		Limits: map[string]int{"max_frame_bytes": maxFrame},
+		Topics: rt.Topics(role), Commands: rt.Commands(role),
+		Limits: map[string]int{"max_frame_bytes": maxFrame, "max_events_per_s": int(time.Second / publishPeriod)},
 	})
+	rt.conns.Store(id, c)
+	rt.hbStart.Do(func() { go rt.heartbeat(); go rt.publish() })
 	go c.run()
 	return 0
 }
@@ -147,7 +154,7 @@ func (rt *Router) heartbeat() {
 		if !open {
 			continue
 		}
-		b, _ := json.Marshal(heartbeat{"heartbeat", time.Now().UTC().Format("2006-01-02T15:04:05.000Z")})
+		b, _ := json.Marshal(heartbeat{"heartbeat", stamp(time.Now())})
 		_ = rt.radio.WSBroadcast(b)
 	}
 }
@@ -205,10 +212,11 @@ func (c *Conn) run() {
 
 func (c *Conn) handle(frame []byte) {
 	var f struct {
-		Type string          `json:"type"`
-		ID   string          `json:"id"`
-		Cmd  string          `json:"cmd"`
-		Args json.RawMessage `json:"args"`
+		Type   string          `json:"type"`
+		ID     string          `json:"id"`
+		Cmd    string          `json:"cmd"`
+		Args   json.RawMessage `json:"args"`
+		Topics []string        `json:"topics"`
 	}
 	if len(frame) > maxFrame {
 		c.reply("", nil, Errf(CodeBadRequest, "frame larger than %d bytes", maxFrame))
@@ -238,8 +246,10 @@ func (c *Conn) handle(frame []byte) {
 		}
 		data, cerr := c.safeRun(cmd.h, f.Args)
 		c.reply(f.ID, data, cerr)
-	case "subscribe", "unsubscribe":
-		c.reply(f.ID, nil, Errf(CodeNotSupported, "topics are not served yet"))
+	case "subscribe":
+		c.subscribe(f.ID, f.Topics)
+	case "unsubscribe":
+		c.unsubscribe(f.ID, f.Topics)
 	default:
 		c.reply(f.ID, nil, Errf(CodeBadRequest, "unknown frame type %q", f.Type))
 	}

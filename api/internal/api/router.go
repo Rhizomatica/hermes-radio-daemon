@@ -24,6 +24,7 @@ type Router struct {
 	radio    radio.Radio
 	ops      map[string]spec.Operation
 	commands map[string]command
+	topics   map[string]topic
 
 	// RoleOf gives a request's session role. Until sessions exist
 	// (/api/v2/session) every caller is admin: radiod answers /api/v2 only
@@ -41,6 +42,7 @@ func NewRouter(r radio.Radio) *Router {
 		radio:    r,
 		ops:      map[string]spec.Operation{},
 		commands: map[string]command{},
+		topics:   map[string]topic{},
 		RoleOf:   func(*http.Request) spec.Role { return spec.RoleAdmin },
 	}
 	return rt

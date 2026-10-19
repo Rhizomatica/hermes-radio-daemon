@@ -2,6 +2,7 @@ package radio_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/testapi"
 )
@@ -98,4 +99,51 @@ func TestCommands(t *testing.T) {
 	if r = e.Cmd("radio.reset_protection", ""); r["ok"] != true {
 		t.Errorf("reset_protection = %v", r)
 	}
+}
+
+func radioState(m map[string]any) bool { return m["type"] == "event" && m["topic"] == "radio.state" }
+
+// radio.state carries getRadioState's data: the whole of it on subscribe,
+// then what changed, whether the change came from a command on this
+// connection or from elsewhere in the daemon (CAT, rigctl, the front panel).
+func TestRadioStateTopic(t *testing.T) {
+	e := testapi.New(t)
+	w := e.Open()
+	if h := w.Next(testapi.Type("hello"), time.Second); !contains(h["topics"], "radio.state") {
+		t.Fatalf("hello topics = %v", h["topics"])
+	}
+	w.Send(`{"type":"subscribe","id":"s","topics":["radio.state"]}`)
+	snap := w.Next(radioState, time.Second)
+	rest := e.Do("GET", "/radio", "").JSON(t)
+	data := snap["data"].(map[string]any)
+	for k, v := range rest {
+		if data[k] != v {
+			t.Errorf("snapshot %s = %v, GET /radio says %v", k, data[k], v)
+		}
+	}
+
+	w.Send(`{"type":"cmd","id":"c","cmd":"radio.set","args":{"frequency_hz":7074000}}`)
+	if r := w.Next(testapi.Type("reply"), time.Second); r["ok"] != true {
+		t.Fatalf("radio.set = %v", r)
+	}
+	ev := w.Next(radioState, time.Second)
+	if d := ev["data"].(map[string]any); d["frequency_hz"] != 7074000.0 || len(d) != 1 || ev["seq"] != 1.0 {
+		t.Errorf("after radio.set: %v, want seq 1 with frequency_hz only", ev)
+	}
+
+	e.Radio.SetTX(true) // a change from elsewhere in the daemon
+	ev = w.Next(radioState, time.Second)
+	if d := ev["data"].(map[string]any); d["tx"] != true || ev["seq"] != 2.0 {
+		t.Errorf("after keying: %v", ev)
+	}
+}
+
+func contains(list any, s string) bool {
+	l, _ := list.([]any)
+	for _, v := range l {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }

@@ -48,3 +48,18 @@ func TestCommands(t *testing.T) {
 		t.Error("a command that is not in the contract was found")
 	}
 }
+
+func TestTopics(t *testing.T) {
+	got := Topics()
+	if len(got) != 15 {
+		t.Fatalf("read %d topics from api-ws.yaml, want 15: %v", len(got), got)
+	}
+	for _, name := range []string{"radio.state", "radio.spectrum.rx", "digi", "modem.status", "reticulum"} {
+		if !HasTopic(name) {
+			t.Errorf("topic %s not found (read %v)", name, got)
+		}
+	}
+	if HasTopic("radio.nonsense") || HasTopic("radio.set") {
+		t.Error("a name that is not a topic was found")
+	}
+}
