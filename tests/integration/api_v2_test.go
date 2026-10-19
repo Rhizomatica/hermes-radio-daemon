@@ -248,3 +248,49 @@ func TestHermesV1(t *testing.T) {
 		t.Errorf("legacy get_frequency = %d", got)
 	}
 }
+
+// hermes.v1 topics through the real daemon: radio.state's snapshot, then an
+// event when the frequency changes through radiod's rigctld port, a path
+// that never touches the Go layer.
+func TestHermesV1RadioStateTopic(t *testing.T) {
+	needGoAPI(t)
+	d := startAPIDaemon(t)
+	ws, _, err := wsDialProto(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	if h := readFrame(t, ws, 5*time.Second); !strings.Contains(fmt.Sprint(h["topics"]), "radio.state") {
+		t.Fatalf("hello topics = %v", h["topics"])
+	}
+
+	if err := ws.writeFrame(opText, []byte(`{"type":"subscribe","id":"s","topics":["radio.state"]}`)); err != nil {
+		t.Fatal(err)
+	}
+	next := func(match func(map[string]any) bool) map[string]any {
+		for {
+			if f := readFrame(t, ws, 5*time.Second); match(f) {
+				return f
+			}
+		}
+	}
+	if r := next(func(f map[string]any) bool { return f["type"] == "reply" }); r["ok"] != true {
+		t.Fatalf("subscribe reply = %v", r)
+	}
+	isState := func(f map[string]any) bool { return f["type"] == "event" && f["topic"] == "radio.state" }
+	snap := next(isState)
+	if data, _ := snap["data"].(map[string]any); snap["snapshot"] != true || data["frequency_hz"] != 7100000.0 {
+		t.Fatalf("snapshot = %v", snap)
+	}
+
+	if got := dialRigctl(t, d).cmd("F 7074000"); got != "RPRT 0" {
+		t.Fatalf("rigctl F = %q", got)
+	}
+	ev := next(func(f map[string]any) bool {
+		data, _ := f["data"].(map[string]any)
+		return isState(f) && data["frequency_hz"] != nil
+	})
+	if data := ev["data"].(map[string]any); data["frequency_hz"] != 7074000.0 || ev["seq"] == 0.0 {
+		t.Errorf("event after rigctl F = %v", ev)
+	}
+}
