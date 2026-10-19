@@ -16,6 +16,8 @@ Radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-net)
 - **Complete rig control surface** — every level, function and parameter the connected rig exposes (RF/mic gain, squelch, NB/NR/notch, preamp/attenuator, VOX, break-in, monitor, keyer speed, …) plus split, RIT/XIT, filter width, antenna, memory channels and tuner control. Discovered from the rig's own Hamlib capabilities, not hardcoded per model, and served identically over the websocket API, the network `rigctld` server and the web panel. See [Radio Controls](#radio-controls).
 - **Up to 9 profiles** with frequency, mode, power, timeout, and digital-voice state
 - **Single in-tree websocket server** speaking one JSON dialect for both backends, with `ws://` and `wss://` (TLS) support out of the box (no Mongoose dependency)
+- **Station API** (`/api/v2` REST and the `hermes.v1` WebSocket, as specified in hermes-documentation `tech_docs/api-redesign`): handlers written in Go (`api/`), linked into the daemon; the daemon's C code owns every socket. Off by default; see [Station API](#station-api-apiv2-hermesv1)
+- **Mercury HF modem inside the daemon** (`enable_mercury`): keyed and fed audio by the daemon directly, its UI traffic on the daemon's websocket
 - WAV recording with remote start/stop on both backends
 - INI configuration at `/etc/hermes/core.ini` and `/etc/hermes/user.ini`
 - Optional CPU affinity pinning
@@ -250,6 +252,11 @@ enable_shm_control = 1
 ; (CFG_SSL_CERT and CFG_SSL_KEY — defaults /etc/ssl/certs/hermes.radio.crt
 ; and /etc/ssl/private/hermes.radio.key).
 websocket_url = ws://0.0.0.0:8080
+
+; Station API: /api/v2 (REST) and /api/v2/ws (hermes.v1) on the same
+; listener. Needs a daemon built with Go (otherwise /api/v2 answers 503).
+; Until logins exist it answers only to this machine (127.0.0.1, ::1).
+api_v2_enable = 0
 
 ; Audio bridge (works with both backends — hfsignals taps the
 ; embedded ALSA path; hamlib opens capture_device/playback_device
@@ -740,6 +747,10 @@ When `enable_websocket = 1` the daemon listens on the URL given by
 `wss://0.0.0.0:8443` (or any host:port) to terminate TLS using the
 cert/key paths from `radio.h:CFG_SSL_CERT` /`CFG_SSL_KEY`.
 
+This section is the daemon's own JSON protocol, spoken on a WebSocket
+upgrade at any path except `/api/v2/ws`. The same listener serves the
+static web client and, when enabled, the [Station API](#station-api-apiv2-hermesv1).
+
 Text frames use compact JSON commands:
 ```json
 {"cmd":"get_state"}
@@ -807,8 +818,82 @@ no second port.  On connect, `hello` lists it:
 The daemon side is `gui_interface/ui_hub.h`, the UI traffic independent of
 any transport: modules (mercury, via `modem/mercury_link.c`) publish to it
 and take commands from it, routed by JSON key and binary type byte; this
-websocket is one transport of it, and the Go UI layer (websocket and/or
-REST, over CGo) is meant to be another, with the same wire format.
+websocket is one transport of it.
+
+Mercury's protocol above is available only here. In the
+[Station API](#station-api-apiv2-hermesv1) mercury is so far a read-only status
+(`GET /api/v2/modem`); its configuration, chat, live status and spectrum
+are specified there as `modem.*` operations and topics, in the API's own format,
+and are not implemented yet.
+
+## Station API (`/api/v2`, `hermes.v1`)
+
+The station's API as specified in hermes-documentation `tech_docs/api-redesign`
+(`api-rest.yaml`, `api-ws.yaml`; the copy this daemon implements is pinned in
+`api/spec/`). The handlers are Go (`api/`, built as a C archive and linked into
+`radio_daemon` when `go` is on the `PATH`); the daemon's C websocket server
+carries them on the same listener as everything else. Developers:
+[docs/API-WRITERS.md](docs/API-WRITERS.md), [docs/ONBOARDING.md](docs/ONBOARDING.md).
+
+Enable it with `api_v2_enable = 1` in `[main]`. Until logins exist:
+
+- `/api/v2` answers only to this machine; from any other address, 403;
+- every caller has the `admin` role.
+
+A daemon built without Go answers `/api/v2` with 503 (`not_supported`).
+Errors are RFC 9457 `application/problem+json` with a stable `code`, and every
+reply carries an `X-Request-Id`.
+
+```bash
+curl http://127.0.0.1:8080/api/v2/radio
+curl -X PATCH -H 'Content-Type: application/json' \
+     -d '{"frequency_hz":7074000,"mode":"USB"}' http://127.0.0.1:8080/api/v2/radio/profiles/0
+```
+
+(`https://` when `websocket_url` is `wss://`.)
+
+### Implemented
+
+| Operation | Request | Role |
+|-----------|---------|------|
+| `getHealth` | `GET /api/v2/health` | none |
+| `getRadioState` | `GET /api/v2/radio` | readonly |
+| `listProfiles` | `GET /api/v2/radio/profiles` | readonly |
+| `getProfile` | `GET /api/v2/radio/profiles/{profile}` | readonly |
+| `updateProfile` | `PATCH /api/v2/radio/profiles/{profile}` | operator |
+| `selectProfile` | `PUT /api/v2/radio/active-profile` | operator |
+| `resetProtection` | `POST /api/v2/radio/protection/reset` | operator |
+| `getDigiSettings` | `GET /api/v2/radio/digi` | readonly |
+| `updateDigiSettings` | `PATCH /api/v2/radio/digi` | operator |
+| `getDigiLog` | `GET /api/v2/digi/log` (cursor pagination) | readonly |
+| `getModemStatus` | `GET /api/v2/modem` (mercury's last status; 503 without mercury) | readonly |
+
+`hermes.v1` at `/api/v2/ws` (the WebSocket subprotocol `hermes.v1` is required;
+426 without it): a `hello` (protocol, version, role, the commands the role may
+run), a `heartbeat` every 5 s, and commands answered by exactly one `reply`:
+
+```json
+{"type":"cmd","id":"7","cmd":"radio.set","args":{"frequency_hz":7080000}}
+{"type":"reply","id":"7","ok":true,"data":{...}}
+```
+
+| Command | Role |
+|---------|------|
+| `radio.set` | operator |
+| `radio.select_profile` | operator |
+| `radio.reset_protection` | operator |
+
+### Not implemented yet
+
+- `hermes.v1` topics (subscribe, snapshot, `seq`) and binary frames: `radio.*`
+  state events, and mercury's `modem.status`, `modem.config`, `modem.chat` and
+  `modem.spectrum.rx`;
+- mercury: `getModemConfig`, `updateModemConfig` and the `modem.chat.send` command;
+- logins, sessions and roles (`/api/v2/session`);
+- WebRTC audio (in C, with libdatachannel; signalled over `hermes.v1`);
+- the APIs moving from hermes-api (messages, users, stations, schedules, ...);
+- the station-wide radio settings (`/radio/settings`) and a transmit timeout,
+  which the daemon does not have (`timeout_s` is refused).
 
 ## `sbitx_client` CLI
 
