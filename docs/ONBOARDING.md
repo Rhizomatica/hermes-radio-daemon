@@ -32,7 +32,6 @@ Until logins exist, `/api/v2` answers only on localhost, and every caller is adm
 - **Examples to copy** (real operations we need):
   - REST: health, radio state, list/get/update/select profiles, protection reset, digi log (paginated), digi settings, modem (mercury) status;
   - commands: `radio.set`, `radio.select_profile`, `radio.reset_protection`.
-  - They work on the real sBitx: we followed a full mercury ARQ call live through `/api/v2/modem`.
 - **Coming:**
   - the APIs that move over from hermes-api (messages, users, stations, schedules, ...), one Go package per domain;
   - hermes.v1 topics and events;
@@ -46,6 +45,4 @@ Until logins exist, `/api/v2` answers only on localhost, and every caller is adm
 4. **Only `api/cgo/radio` talks to C.** If you need something from radiod that the C API doesn't offer, ask for a new C API function; don't reach into radiod.
 5. **Test the refusals** (every 4xx), not only the happy path. Add an integration test when you touch the radio in a new way.
 6. **Branch, then a PR to `main`.** CI runs amd64 + arm64, the sanitizers, and a build without Go. It must be green.
-7. **Real radios are shared.** Never transmit or restart anything on the bench stations without arranging it with Rafael first.
 
-Questions: Rafael.

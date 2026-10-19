@@ -602,8 +602,7 @@ static snd_pcm_sframes_t play_catch_up(snd_pcm_t *pcm, snd_pcm_uframes_t buffer_
 
 /* Open a PCM, waiting while another process still holds it: a radiod (or a
  * test daemon) that is still shutting down keeps the codec for a moment, and
- * giving up at once left the daemon running with no audio at all (estacao,
- * 19 Oct 2026). Bounded; any other error returns at once. */
+ * giving up at once left the daemon running with no audio at all. Bounded; any other error returns at once. */
 #define PCM_BUSY_WAIT_MS 10000
 static int pcm_open_wait(snd_pcm_t **pcm, const char *device, snd_pcm_stream_t stream)
 {

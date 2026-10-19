@@ -109,7 +109,7 @@ sudo cmake --install build && sudo ldconfig
 
 **Dream** (optional, for DRM mode): build in console mode:
 ```bash
-cd /home/rafael2k/files/rhizomatica/hermes/dream
+cd dream                     # your checkout of Dream
 qmake "CONFIG+=console"
 make
 sudo cp dream /usr/bin/dream
