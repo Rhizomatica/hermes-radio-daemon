@@ -13,6 +13,7 @@ type Stub struct {
 	mu       sync.Mutex
 	state    State
 	profiles []Profile
+	settings Settings
 	digi     DigiSettings
 	log      []json.RawMessage
 	modem    json.RawMessage
@@ -22,11 +23,12 @@ type Stub struct {
 // NewStub returns a Stub tuned to 7.1 MHz USB.
 func NewStub() *Stub {
 	s := &Stub{
-		state: State{FrequencyHz: 7100000, Mode: "USB", Power: 10, Backend: "hamlib", TimeoutS: 180},
+		state: State{FrequencyHz: 7100000, Mode: "USB", Power: 10, Backend: "hamlib"},
 		profiles: []Profile{
-			{Profile: 0, FrequencyHz: 7100000, Mode: "USB", Power: 10, Volume: 50, StepHz: 100, TimeoutS: 180, RefThreshold: 30},
-			{Profile: 1, FrequencyHz: 14200000, Mode: "USB", Power: 100, Volume: 50, StepHz: 100, TimeoutS: 180, RefThreshold: 30},
+			{Profile: 0, FrequencyHz: 7100000, Mode: "USB", Power: 10, Volume: 50},
+			{Profile: 1, FrequencyHz: 14200000, Mode: "USB", Power: 100, Volume: 50},
 		},
+		settings: Settings{DefaultProfile: 0, DefaultProfileFallback: -1, StepHz: 100, SWRLimitX10: 25},
 		digi: DigiSettings{CWWPM: 20, CWPitchHz: 700, RTTYBaud: 45, RTTYShiftHz: 170, RTTYMarkHz: 2125,
 			DstarMycall: "N0CALL", VoiceCodec: "RADEV2"},
 		Sent: map[int64][][]byte{},
@@ -153,31 +155,73 @@ func (s *Stub) SetDigitalVoice(n int, on bool) error {
 	return s.with(n, func(p *Profile) error { p.DigitalVoice = on; return nil })
 }
 
-func (s *Stub) SetStep(hz uint32) error {
-	if hz < 1 {
-		return ErrInvalid
-	}
-	s.all(func(p *Profile) { p.StepHz = hz })
-	return nil
-}
+func (s *Stub) ResetProtection() { s.mu.Lock(); s.state.Protection = false; s.mu.Unlock() }
 
-func (s *Stub) SetTimeout(sec int) error {
-	if sec < 0 {
-		return ErrInvalid
-	}
-	s.all(func(p *Profile) { p.TimeoutS = sec })
+// UseSBitx makes the stub an sBitx, which has a BFO (for tests).
+func (s *Stub) UseSBitx() {
 	s.mu.Lock()
-	s.state.TimeoutS = sec
+	s.state.Backend = "sbitx"
+	s.settings.HasBfo, s.settings.BfoHz = true, 40035000
 	s.mu.Unlock()
-	return nil
 }
 
-func (s *Stub) SetRefThreshold(v uint32) error {
-	s.all(func(p *Profile) { p.RefThreshold = v })
-	return nil
+func (s *Stub) Settings() Settings { s.mu.Lock(); defer s.mu.Unlock(); return s.settings }
+
+func (s *Stub) setting(f func(st *Settings) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return f(&s.settings)
 }
-func (s *Stub) SetBfo(hz int) error { s.all(func(p *Profile) { p.BfoHz = hz }); return nil }
-func (s *Stub) ResetProtection()    { s.mu.Lock(); s.state.Protection = false; s.mu.Unlock() }
+
+func (s *Stub) SetDefaultProfile(n int) error {
+	return s.setting(func(st *Settings) error {
+		if n < 0 || n >= len(s.profiles) {
+			return ErrNoProfile
+		}
+		st.DefaultProfile = n
+		return nil
+	})
+}
+
+func (s *Stub) SetDefaultProfileFallback(sec int) error {
+	return s.setting(func(st *Settings) error {
+		if sec < 1 && sec != -1 {
+			return ErrInvalid
+		}
+		st.DefaultProfileFallback = sec
+		return nil
+	})
+}
+
+func (s *Stub) SetStep(hz uint32) error {
+	return s.setting(func(st *Settings) error {
+		if hz < 1 {
+			return ErrInvalid
+		}
+		st.StepHz = hz
+		return nil
+	})
+}
+
+func (s *Stub) SetSWRLimit(v uint32) error {
+	return s.setting(func(st *Settings) error {
+		if v < 10 {
+			return ErrInvalid
+		}
+		st.SWRLimitX10 = v
+		return nil
+	})
+}
+
+func (s *Stub) SetBfo(hz uint32) error {
+	return s.setting(func(st *Settings) error {
+		if !st.HasBfo {
+			return ErrNotSupported
+		}
+		st.BfoHz = hz
+		return nil
+	})
+}
 
 // TripProtection sets the high-SWR protection (for tests).
 func (s *Stub) TripProtection() { s.mu.Lock(); s.state.Protection = true; s.mu.Unlock() }

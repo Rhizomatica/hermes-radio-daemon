@@ -39,7 +39,6 @@ typedef struct {
     bool     s_meter_valid;
     double   s_meter_db;          /* dB relative to S9 */
     bool     protection;          /* high-SWR protection tripped */
-    int32_t  timeout_s;
     bool     digital_voice;
     char     backend[8];          /* sbitx, hamlib */
 } radiod_api_state;
@@ -50,17 +49,24 @@ typedef struct {
     char     mode[8];
     int      power;               /* percent */
     int      volume;              /* percent */
-    uint32_t step_hz;             /* station-wide in radiod */
     uint32_t filter_width_hz;     /* 0: the rig's default */
-    int32_t  timeout_s;           /* station-wide in radiod */
-    uint32_t ref_threshold;       /* SWR x 10, station-wide in radiod */
-    int32_t  bfo_hz;              /* station-wide in radiod */
     bool     digital_voice;
 } radiod_api_profile;
+
+/* What radiod keeps once for the station, not per profile (RadioSettings). */
+typedef struct {
+    uint32_t default_profile;
+    int32_t  default_profile_fallback_s; /* -1: never returns to the default */
+    uint32_t step_hz;                    /* the tuning step */
+    uint32_t swr_limit_x10;              /* SWR x 10 that trips protection */
+    bool     has_bfo;                    /* the sBitx; false on Hamlib radios */
+    uint32_t bfo_hz;                     /* absolute frequency, when has_bfo */
+} radiod_api_settings;
 
 void     radiod_api_state_get(radiod_api_state *out);
 uint32_t radiod_api_profile_count(void);
 int      radiod_api_profile_get(uint32_t profile, radiod_api_profile *out);
+void     radiod_api_settings_get(radiod_api_settings *out);
 
 int radiod_api_select_profile(uint32_t profile);
 int radiod_api_set_frequency(uint32_t profile, uint32_t hz);
@@ -69,10 +75,13 @@ int radiod_api_set_power(uint32_t profile, int percent);
 int radiod_api_set_volume(uint32_t profile, int percent);
 int radiod_api_set_filter_width(uint32_t profile, uint32_t hz);
 int radiod_api_set_digital_voice(uint32_t profile, bool on);
+
+/* Station-wide settings; each is saved to the configuration. */
+int radiod_api_set_default_profile(uint32_t profile);
+int radiod_api_set_default_profile_fallback(int32_t seconds);   /* -1: never */
 int radiod_api_set_step(uint32_t hz);
-int radiod_api_set_timeout(int32_t seconds);
-int radiod_api_set_ref_threshold(uint32_t swr_x10);
-int radiod_api_set_bfo(int32_t hz);
+int radiod_api_set_swr_limit(uint32_t swr_x10);                  /* >= 10 */
+int radiod_api_set_bfo(uint32_t hz);                             /* ENOTSUP on Hamlib */
 void radiod_api_reset_protection(void);
 
 /* ── digital modes ── */

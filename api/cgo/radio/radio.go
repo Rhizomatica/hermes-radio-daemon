@@ -31,25 +31,29 @@ type State struct {
 	SMeterValid   bool
 	SMeterDB      float64 // dB relative to S9
 	Protection    bool
-	TimeoutS      int
 	DigitalVoice  bool
 	Backend       string // sbitx, hamlib
 }
 
-// Profile is one saved profile. Step, timeout, ref threshold and BFO are
-// station-wide in radiod: every profile reports the same value.
+// Profile is one saved profile.
 type Profile struct {
 	Profile       int
 	FrequencyHz   uint32
 	Mode          string
 	Power         int
 	Volume        int
-	StepHz        uint32
 	FilterWidthHz uint32 // 0: the rig's default
-	TimeoutS      int
-	RefThreshold  uint32 // SWR x 10
-	BfoHz         int
 	DigitalVoice  bool
+}
+
+// Settings are what radiod keeps once for the station, not per profile.
+type Settings struct {
+	DefaultProfile         int
+	DefaultProfileFallback int // seconds before returning to DefaultProfile; -1: never
+	StepHz                 uint32
+	SWRLimitX10            uint32 // SWR x 10 that trips high-SWR protection
+	HasBfo                 bool   // the sBitx; false on Hamlib radios
+	BfoHz                  uint32
 }
 
 // DigiSettings are the CW, RTTY and D-STAR settings.
@@ -75,11 +79,14 @@ type Radio interface {
 	SetVolume(profile int, percent int) error
 	SetFilterWidth(profile int, hz uint32) error
 	SetDigitalVoice(profile int, on bool) error
-	SetStep(hz uint32) error
-	SetTimeout(seconds int) error
-	SetRefThreshold(swrX10 uint32) error
-	SetBfo(hz int) error
 	ResetProtection()
+
+	Settings() Settings
+	SetDefaultProfile(n int) error
+	SetDefaultProfileFallback(seconds int) error // -1: never
+	SetStep(hz uint32) error
+	SetSWRLimit(swrX10 uint32) error
+	SetBfo(hz uint32) error // ErrNotSupported on Hamlib radios
 
 	DigiSettings() DigiSettings
 	// SetDigi takes radiod's keys: cw_wpm, cw_pitch, rtty_baud, rtty_mark,

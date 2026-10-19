@@ -32,7 +32,7 @@ func (binding) State() State {
 		ActiveProfile: int(s.active_profile), TX: bool(s.tx), FrequencyHz: uint32(s.frequency_hz),
 		Mode: cstr(s.mode[:]), Power: int(s.power), FwdW: float64(s.fwd_x10) / 10, RefW: float64(s.ref_x10) / 10,
 		SWR: float64(s.swr_x10) / 10, SMeterValid: bool(s.s_meter_valid), SMeterDB: float64(s.s_meter_db),
-		Protection: bool(s.protection), TimeoutS: int(s.timeout_s), DigitalVoice: bool(s.digital_voice),
+		Protection: bool(s.protection), DigitalVoice: bool(s.digital_voice),
 		Backend: cstr(s.backend[:]),
 	}
 }
@@ -49,9 +49,8 @@ func (binding) Profile(n int) (Profile, error) {
 	}
 	return Profile{
 		Profile: int(p.profile), FrequencyHz: uint32(p.frequency_hz), Mode: cstr(p.mode[:]),
-		Power: int(p.power), Volume: int(p.volume), StepHz: uint32(p.step_hz),
-		FilterWidthHz: uint32(p.filter_width_hz), TimeoutS: int(p.timeout_s),
-		RefThreshold: uint32(p.ref_threshold), BfoHz: int(p.bfo_hz), DigitalVoice: bool(p.digital_voice),
+		Power: int(p.power), Volume: int(p.volume),
+		FilterWidthHz: uint32(p.filter_width_hz), DigitalVoice: bool(p.digital_voice),
 	}, nil
 }
 
@@ -83,13 +82,29 @@ func (binding) SetFilterWidth(n int, hz uint32) error {
 func (binding) SetDigitalVoice(n int, on bool) error {
 	return codeErr(int(C.radiod_api_set_digital_voice(prof(n), C.bool(on))))
 }
-func (binding) SetStep(hz uint32) error { return codeErr(int(C.radiod_api_set_step(C.uint32_t(hz)))) }
-func (binding) SetTimeout(s int) error  { return codeErr(int(C.radiod_api_set_timeout(C.int32_t(s)))) }
-func (binding) SetRefThreshold(v uint32) error {
-	return codeErr(int(C.radiod_api_set_ref_threshold(C.uint32_t(v))))
+func (binding) ResetProtection() { C.radiod_api_reset_protection() }
+
+func (binding) Settings() Settings {
+	var s C.radiod_api_settings
+	C.radiod_api_settings_get(&s)
+	return Settings{
+		DefaultProfile: int(s.default_profile), DefaultProfileFallback: int(s.default_profile_fallback_s),
+		StepHz: uint32(s.step_hz), SWRLimitX10: uint32(s.swr_limit_x10),
+		HasBfo: bool(s.has_bfo), BfoHz: uint32(s.bfo_hz),
+	}
 }
-func (binding) SetBfo(hz int) error { return codeErr(int(C.radiod_api_set_bfo(C.int32_t(hz)))) }
-func (binding) ResetProtection()    { C.radiod_api_reset_protection() }
+
+func (binding) SetDefaultProfile(n int) error {
+	return codeErr(int(C.radiod_api_set_default_profile(prof(n))))
+}
+func (binding) SetDefaultProfileFallback(s int) error {
+	return codeErr(int(C.radiod_api_set_default_profile_fallback(C.int32_t(s))))
+}
+func (binding) SetStep(hz uint32) error { return codeErr(int(C.radiod_api_set_step(C.uint32_t(hz)))) }
+func (binding) SetSWRLimit(v uint32) error {
+	return codeErr(int(C.radiod_api_set_swr_limit(C.uint32_t(v))))
+}
+func (binding) SetBfo(hz uint32) error { return codeErr(int(C.radiod_api_set_bfo(C.uint32_t(hz)))) }
 
 func (binding) DigiSettings() DigiSettings {
 	var d C.radiod_api_digi_settings

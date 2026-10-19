@@ -1,6 +1,8 @@
 package radio_test
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -146,4 +148,100 @@ func contains(list any, s string) bool {
 		}
 	}
 	return false
+}
+
+// /radio/settings: what radiod keeps once for the station. On a Hamlib radio
+// there is no BFO (null, and refused); there is no transmit timeout yet.
+func TestRadioSettings(t *testing.T) {
+	e := testapi.New(t)
+	r := e.Do("GET", "/radio/settings", "")
+	j := r.JSON(t)
+	if r.Status != 200 || j["default_profile"] != 0.0 || j["default_profile_fallback_s"] != nil ||
+		j["step_hz"] != 100.0 || j["swr_limit"] != 2.5 || j["bfo_hz"] != nil || j["tx_timeout_s"] != nil {
+		t.Fatalf("GET /radio/settings = %d %s", r.Status, r.Body)
+	}
+	for _, k := range []string{"default_profile", "default_profile_fallback_s", "step_hz", "swr_limit", "bfo_hz", "tx_timeout_s"} {
+		if _, ok := j[k]; !ok {
+			t.Errorf("settings have no %s: %s", k, r.Body)
+		}
+	}
+
+	r = e.Do("PATCH", "/radio/settings", `{"default_profile":1,"default_profile_fallback_s":300,"step_hz":500,"swr_limit":3.0}`)
+	j = r.JSON(t)
+	if r.Status != 200 || j["default_profile"] != 1.0 || j["default_profile_fallback_s"] != 300.0 ||
+		j["step_hz"] != 500.0 || j["swr_limit"] != 3.0 {
+		t.Fatalf("PATCH = %d %s", r.Status, r.Body)
+	}
+	if s := e.Radio.Settings(); s.SWRLimitX10 != 30 || s.DefaultProfileFallback != 300 {
+		t.Errorf("the radio got %+v", s)
+	}
+	if j = e.Do("PATCH", "/radio/settings", `{"default_profile_fallback_s":null}`).JSON(t); j["default_profile_fallback_s"] != nil {
+		t.Errorf("null fallback: %v", j)
+	}
+	if s := e.Radio.Settings(); s.DefaultProfileFallback != -1 {
+		t.Errorf("null fallback reached the radio as %d, want -1", s.DefaultProfileFallback)
+	}
+}
+
+// Every field is checked before any is applied; a refused PATCH changes nothing.
+func TestRadioSettingsRefused(t *testing.T) {
+	e := testapi.New(t)
+	cases := map[string]string{
+		`{"step_hz":250,"swr_limit":2.55}`:   "swr_limit",
+		`{"step_hz":250,"swr_limit":0.9}`:    "swr_limit",
+		`{"step_hz":0}`:                      "step_hz",
+		`{"default_profile":2}`:              "default_profile",
+		`{"default_profile_fallback_s":0}`:   "default_profile_fallback_s",
+		`{"bfo_hz":40036000}`:                "bfo_hz",
+		`{"tx_timeout_s":60}`:                "tx_timeout_s",
+		`{"step_hz":250,"ref_threshold":25}`: "ref_threshold",
+	}
+	for body, field := range cases {
+		r := e.Do("PATCH", "/radio/settings", body)
+		j := r.JSON(t)
+		errs, _ := j["errors"].(map[string]any)
+		if r.Status != 422 || j["code"] != "invalid" || errs[field] == nil {
+			t.Errorf("PATCH %s = %d %s, want 422 on %s", body, r.Status, r.Body, field)
+		}
+	}
+	if s := e.Radio.Settings(); s.StepHz != 100 {
+		t.Errorf("a refused PATCH changed the step to %d", s.StepHz)
+	}
+}
+
+// On an sBitx the BFO is reported and can be set.
+func TestRadioSettingsBfo(t *testing.T) {
+	e := testapi.New(t)
+	e.Radio.UseSBitx()
+	if j := e.Do("GET", "/radio/settings", "").JSON(t); j["bfo_hz"] != 40035000.0 {
+		t.Fatalf("sBitx BFO = %v", j["bfo_hz"])
+	}
+	r := e.Do("PATCH", "/radio/settings", `{"bfo_hz":40036000}`)
+	if r.Status != 200 || r.JSON(t)["bfo_hz"] != 40036000.0 {
+		t.Errorf("PATCH bfo_hz = %d %s", r.Status, r.Body)
+	}
+}
+
+// Profiles no longer carry station-wide values, and refuse them with a
+// pointer to /radio/settings (PATCH and radio.set alike).
+func TestProfilesWithoutStationSettings(t *testing.T) {
+	e := testapi.New(t)
+	p := e.Do("GET", "/radio/profiles/0", "").JSON(t)
+	for _, k := range []string{"step_hz", "bfo_hz", "ref_threshold", "timeout_s", "name", "tone_hz"} {
+		if _, has := p[k]; has {
+			t.Errorf("profile has %s: %v", k, p)
+		}
+	}
+	r := e.Do("PATCH", "/radio/profiles/0", `{"power":20,"step_hz":500}`)
+	j := r.JSON(t)
+	errs, _ := j["errors"].(map[string]any)
+	if r.Status != 422 || !strings.Contains(fmt.Sprint(errs["step_hz"]), "/radio/settings") {
+		t.Errorf("PATCH profile step_hz = %d %s", r.Status, r.Body)
+	}
+	if prof := e.Do("GET", "/radio/profiles/0", "").JSON(t); prof["power"] != 10.0 {
+		t.Errorf("a refused PATCH changed power to %v", prof["power"])
+	}
+	if rep := e.Cmd("radio.set", `{"bfo_hz":40036000}`); rep["ok"] != false {
+		t.Errorf("radio.set bfo_hz = %v", rep)
+	}
 }

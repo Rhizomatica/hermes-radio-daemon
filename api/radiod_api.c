@@ -113,7 +113,6 @@ void radiod_api_state_get(radiod_api_state *out)
     out->s_meter_valid = s > -200;
     out->s_meter_db = s;
     out->protection = r->swr_protection_enabled;
-    out->timeout_s = r->profile_timeout;
     out->digital_voice = radio_backend_get_digital_voice(r, a);
     snprintf(out->backend, sizeof(out->backend), "%s",
              r->backend_kind == RADIO_BACKEND_HFSIGNALS ? "sbitx" : "hamlib");
@@ -135,11 +134,7 @@ int radiod_api_profile_get(uint32_t p, radiod_api_profile *out)
     snprintf(out->mode, sizeof(out->mode), "%s", mode_name(r->profiles[p].mode));
     out->power = r->profiles[p].power_level_percentage;
     out->volume = (int) r->profiles[p].speaker_level;
-    out->step_hz = r->step_size;
     out->filter_width_hz = r->profiles[p].filter_width;
-    out->timeout_s = r->profile_timeout;
-    out->ref_threshold = r->reflected_threshold;
-    out->bfo_hz = (int32_t) r->bfo_frequency;
     out->digital_voice = radio_backend_get_digital_voice(r, p);
     return RADIOD_API_OK;
 }
@@ -217,6 +212,34 @@ int radiod_api_set_digital_voice(uint32_t p, bool on)
     return radio_backend_set_digital_voice(s_radio, on, p) ? RADIOD_API_OK : RADIOD_API_EBUSY;
 }
 
+void radiod_api_settings_get(radiod_api_settings *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (!s_radio)
+        return;
+    radio *r = s_radio;
+    out->default_profile = r->profile_default_idx;
+    out->default_profile_fallback_s = r->profile_timeout;
+    out->step_hz = r->step_size;
+    out->swr_limit_x10 = r->reflected_threshold;
+    out->has_bfo = r->backend_kind == RADIO_BACKEND_HFSIGNALS;
+    out->bfo_hz = out->has_bfo ? r->bfo_frequency : 0;
+}
+
+int radiod_api_set_default_profile(uint32_t p)
+{
+    if (!valid_profile(p))
+        return RADIOD_API_ENOENT;
+    if (s_radio->profile_default_idx == p)
+        return RADIOD_API_OK;
+    s_radio->profile_default_idx = p;
+    char val[16];
+    snprintf(val, sizeof(val), "%u", p);
+    cfg_set(s_radio, s_radio->cfg_user, "main:default_profile", val);
+    s_radio->cfg_user_dirty = true;
+    return RADIOD_API_OK;
+}
+
 int radiod_api_set_step(uint32_t hz)
 {
     if (!s_radio)
@@ -227,29 +250,33 @@ int radiod_api_set_step(uint32_t hz)
     return RADIOD_API_OK;
 }
 
-int radiod_api_set_timeout(int32_t seconds)
+int radiod_api_set_default_profile_fallback(int32_t seconds)
 {
     if (!s_radio)
         return RADIOD_API_ENOENT;
-    if (seconds < 0)
+    if (seconds < 1 && seconds != -1)
         return RADIOD_API_EINVAL;
     radio_backend_set_profile_timeout(s_radio, seconds);
     return RADIOD_API_OK;
 }
 
-int radiod_api_set_ref_threshold(uint32_t swr_x10)
+int radiod_api_set_swr_limit(uint32_t swr_x10)
 {
     if (!s_radio)
         return RADIOD_API_ENOENT;
+    if (swr_x10 < 10)
+        return RADIOD_API_EINVAL;
     radio_backend_set_reflected_threshold(s_radio, swr_x10);
     return RADIOD_API_OK;
 }
 
-int radiod_api_set_bfo(int32_t hz)
+int radiod_api_set_bfo(uint32_t hz)
 {
     if (!s_radio)
         return RADIOD_API_ENOENT;
-    radio_backend_set_bfo(s_radio, (uint32_t) hz);
+    if (s_radio->backend_kind != RADIO_BACKEND_HFSIGNALS)
+        return RADIOD_API_ENOTSUP;
+    radio_backend_set_bfo(s_radio, hz);
     return RADIOD_API_OK;
 }
 
