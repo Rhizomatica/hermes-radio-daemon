@@ -78,3 +78,7 @@ dkms.conf
 /api/libhermes_api.a
 /api/libhermes_api.h
 /.radiod_version
+
+# Go API layer build output and the self-check's local database
+/api/bin/
+/api/data/

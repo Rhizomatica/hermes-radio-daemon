@@ -12,7 +12,18 @@ cmd/hermesapi/    the C exports
 cgo/radio/        the Radio interface: the cgo binding (tag radiod) or a stub
 internal/api/     the common library: router, problem details, JSON, pagination, hermes.v1
 internal/<domain> the handlers, one package per API domain
+internal/store/   the SQLite persistence layer (WAL, embedded migrations)
+internal/config/  environment configuration
+internal/system/  process-level health: the /health liveness handler
+docs/             the hermes-backend ADRs and development plan
+deployments/      the standalone hermesd systemd unit (reference)
 ```
+
+Ported from `hermes-backend` (branch `feat/go-rewrite`): `internal/store`,
+`internal/config` and `internal/system` add persistence and process health to
+this layer. The standalone `hermesd` binary and its `internal/server` HTTP
+server were not ported — radiod's C server owns every socket (see
+`docs/README.md` for the mapping).
 
 How to add an operation or a command: [docs/API-WRITERS.md](../docs/API-WRITERS.md).
 `go test ./...` here needs no C toolchain and no radio.

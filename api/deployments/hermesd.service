@@ -1,0 +1,42 @@
+# hermesd systemd unit (Phase 1 skeleton).
+#
+# Install:
+#   sudo install -m 0644 deployments/hermesd.service /etc/systemd/system/hermesd.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now hermesd
+#
+# Runtime user and directories:
+#   sudo useradd --system --home-dir /var/lib/hermes --shell /usr/sbin/nologin hermes
+#   sudo install -d -o hermes -g hermes /var/lib/hermes /etc/hermes
+#   sudo install -m 0640 -o root -g hermes /etc/hermes/hermesd.env  # see .env.example
+
+[Unit]
+Description=Hermes station backend (hermesd)
+Documentation=https://www.rhizomatica.org/hermes/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=hermes
+Group=hermes
+WorkingDirectory=/var/lib/hermes
+EnvironmentFile=-/etc/hermes/hermesd.env
+ExecStart=/usr/local/bin/hermesd
+Restart=on-failure
+RestartSec=5
+
+# hermesd drains connections and closes the SQLite database on SIGTERM.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# Hardening. Radio/modem engines (cgo, Phase 5+) may need device access and
+# extra writable paths; relax these then.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/hermes
+
+[Install]
+WantedBy=multi-user.target
