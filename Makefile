@@ -169,7 +169,7 @@ $(GO_API_LIB) $(GO_API_DIR)/libhermes_api.h &: $(GO_API_SRCS) api/radiod_api.h
 gui_interface/radio_websocket.o: $(GO_API_DIR)/libhermes_api.h
 endif
 
-# The facade reports the commit it was built from; the stamp changes only
+# The C API reports the commit it was built from; the stamp changes only
 # with the commit, so the object is rebuilt then and only then.
 RADIOD_GIT_HASH := $(shell git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)
 ifneq ($(shell cat .radiod_version 2>/dev/null),$(RADIOD_GIT_HASH))

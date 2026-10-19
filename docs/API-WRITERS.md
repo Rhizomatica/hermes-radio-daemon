@@ -3,7 +3,7 @@
 This guide is for people who add to the station's API: the REST API under `/api/v2` and the
 `hermes.v1` WebSocket at `/api/v2/ws`. **You write Go only.** radiod's C code owns every
 socket (HTTP, HTTPS, WebSocket, and WebRTC to come) and calls your Go handlers; your
-handlers reach the radio through a small facade. You never touch a socket, a thread pool or
+handlers reach the radio through the radiod C API (`api/radiod_api.h`). You never touch a socket, a thread pool or
 C memory.
 
 ## 1. The contract
@@ -40,7 +40,7 @@ ISO 8601 UTC timestamps, RFC 9457 `application/problem+json` errors with a stabl
  Go API layer (api/, linked into radiod as a C archive)
       |  your handlers, internal/<domain>
       |
-      |  Go calls the facade (cgo/radio -> api/radiod_api.h)
+      |  Go calls the radiod C API (cgo/radio binding -> api/radiod_api.h)
       v
  radiod core (C): the radio, DSP, mercury (the modem), the digi log
 ```
@@ -81,13 +81,13 @@ lives in `api/`, a Go module (go.mod: Go 1.27.2) with the one C file it needs be
 
 ```
 api/
-├── radiod_api.h/.c     THE FACADE (C): everything the API may read or change in radiod
+├── radiod_api.h/.c     THE RADIOD C API: everything the API layer may read or change in radiod
 ├── spec/               pinned api-rest.yaml, api-ws.yaml, and the reader (spec.go)
 ├── cmd/hermesapi/      the C exports; converts C types, nothing else
-├── cgo/radio/          the Radio interface; facade.go (cgo, build tag `radiod`),
+├── cgo/radio/          the Radio interface; binding.go (the cgo binding, build tag `radiod`),
 │                       stub.go (an in-memory radio for tests and Go-only work)
 └── internal/
-    ├── api/            the toolkit: Router, problems, JSON, pagination, hermes.v1
+    ├── api/            the common library: Router, problem details, JSON, pagination, hermes.v1
     ├── station/        assembles every domain: add your package's Register here
     ├── testapi/        test helpers: a router over the stub, requests, commands
     ├── health/         getHealth
@@ -182,7 +182,7 @@ if !f.OK() {
 // only now change the radio
 ```
 
-The toolkit (`internal/api`):
+The common library (`internal/api`):
 
 | Call | Does |
 | --- | --- |
@@ -259,10 +259,10 @@ The setters change the radio exactly as radiod's own commands do, and profile ch
 to `user.ini`. Some values are station-wide in radiod (step, SWR threshold, BFO): a profile
 reports them all the same.
 
-**If you need something the interface does not have**, it needs a facade call in C
-(`api/radiod_api.h/.c`) and its Go side (`cgo/radio/facade.go`), plus the stub
+**If you need something the interface does not have**, it needs a new function in the
+radiod C API (`api/radiod_api.h/.c`) and its cgo binding (`cgo/radio/binding.go`), plus the stub
 (`cgo/radio/stub.go`) so tests keep working without C. Ask for it (open an issue or tell the
-radiod maintainers what you need and why); keep the facade small and typed, never a way into
+radiod maintainers what you need and why); keep the C API small and typed, never a way into
 radiod's internals.
 
 ## 8. Testing
@@ -311,7 +311,7 @@ CI runs all three on Debian 13, amd64 and arm64, with and without the Go layer.
   blocks only that request. Don't start goroutines that outlive their request or connection.
 - **Memory:** the Go heap has a soft 64 MB limit (`GOMEMLIMIT` overrides it) for the 1 GB Pi.
   Page large collections; don't load a whole log.
-- **cgo:** only `cgo/radio` talks to C, and only through the facade. Don't add `import "C"`
+- **cgo:** only `cgo/radio` talks to C, and only through the radiod C API. Don't add `import "C"`
   elsewhere.
 
 ## 10. Not there yet

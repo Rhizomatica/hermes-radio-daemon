@@ -1,6 +1,6 @@
 // Package radio serves the radio's REST operations (api-rest.yaml, tag
 // radio) and hermes.v1 commands (radio.set, radio.select_profile,
-// radio.reset_protection) over the daemon's facade.
+// radio.reset_protection) through the radiod C API.
 package radio
 
 import (
@@ -34,7 +34,7 @@ func Register(rt *api.Router) {
 
 type handlers struct{ r rad.Radio }
 
-// ── wire shapes (api-rest.yaml components) ──
+// ── response schemas (api-rest.yaml components) ──
 
 // State is RadioState.
 type State struct {

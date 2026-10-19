@@ -4,7 +4,7 @@ package radio
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../..
-// The facade's symbols live in radio_daemon, linked after this archive;
+// The C API's symbols live in radio_daemon, linked after this archive;
 // cgo's own check link must not insist on them.
 #cgo LDFLAGS: -Wl,--unresolved-symbols=ignore-all
 #include <stdlib.h>
@@ -18,14 +18,14 @@ import (
 	"unsafe"
 )
 
-// Default is radiod's facade.
-func Default() Radio { return facade{} }
+// Default is the cgo binding to the radiod C API.
+func Default() Radio { return binding{} }
 
-type facade struct{}
+type binding struct{}
 
 func cstr(b []C.char) string { return C.GoString(&b[0]) }
 
-func (facade) State() State {
+func (binding) State() State {
 	var s C.radiod_api_state
 	C.radiod_api_state_get(&s)
 	return State{
@@ -37,9 +37,9 @@ func (facade) State() State {
 	}
 }
 
-func (facade) ProfileCount() int { return int(C.radiod_api_profile_count()) }
+func (binding) ProfileCount() int { return int(C.radiod_api_profile_count()) }
 
-func (facade) Profile(n int) (Profile, error) {
+func (binding) Profile(n int) (Profile, error) {
 	if n < 0 {
 		return Profile{}, ErrNoProfile
 	}
@@ -62,36 +62,36 @@ func prof(n int) C.uint32_t {
 	return C.uint32_t(n)
 }
 
-func (facade) SelectProfile(n int) error { return codeErr(int(C.radiod_api_select_profile(prof(n)))) }
-func (facade) SetFrequency(n int, hz uint32) error {
+func (binding) SelectProfile(n int) error { return codeErr(int(C.radiod_api_select_profile(prof(n)))) }
+func (binding) SetFrequency(n int, hz uint32) error {
 	return codeErr(int(C.radiod_api_set_frequency(prof(n), C.uint32_t(hz))))
 }
-func (facade) SetMode(n int, mode string) error {
+func (binding) SetMode(n int, mode string) error {
 	cs := C.CString(mode)
 	defer C.free(unsafe.Pointer(cs))
 	return codeErr(int(C.radiod_api_set_mode(prof(n), cs)))
 }
-func (facade) SetPower(n int, v int) error {
+func (binding) SetPower(n int, v int) error {
 	return codeErr(int(C.radiod_api_set_power(prof(n), C.int(v))))
 }
-func (facade) SetVolume(n int, v int) error {
+func (binding) SetVolume(n int, v int) error {
 	return codeErr(int(C.radiod_api_set_volume(prof(n), C.int(v))))
 }
-func (facade) SetFilterWidth(n int, hz uint32) error {
+func (binding) SetFilterWidth(n int, hz uint32) error {
 	return codeErr(int(C.radiod_api_set_filter_width(prof(n), C.uint32_t(hz))))
 }
-func (facade) SetDigitalVoice(n int, on bool) error {
+func (binding) SetDigitalVoice(n int, on bool) error {
 	return codeErr(int(C.radiod_api_set_digital_voice(prof(n), C.bool(on))))
 }
-func (facade) SetStep(hz uint32) error { return codeErr(int(C.radiod_api_set_step(C.uint32_t(hz)))) }
-func (facade) SetTimeout(s int) error  { return codeErr(int(C.radiod_api_set_timeout(C.int32_t(s)))) }
-func (facade) SetRefThreshold(v uint32) error {
+func (binding) SetStep(hz uint32) error { return codeErr(int(C.radiod_api_set_step(C.uint32_t(hz)))) }
+func (binding) SetTimeout(s int) error  { return codeErr(int(C.radiod_api_set_timeout(C.int32_t(s)))) }
+func (binding) SetRefThreshold(v uint32) error {
 	return codeErr(int(C.radiod_api_set_ref_threshold(C.uint32_t(v))))
 }
-func (facade) SetBfo(hz int) error { return codeErr(int(C.radiod_api_set_bfo(C.int32_t(hz)))) }
-func (facade) ResetProtection()    { C.radiod_api_reset_protection() }
+func (binding) SetBfo(hz int) error { return codeErr(int(C.radiod_api_set_bfo(C.int32_t(hz)))) }
+func (binding) ResetProtection()    { C.radiod_api_reset_protection() }
 
-func (facade) DigiSettings() DigiSettings {
+func (binding) DigiSettings() DigiSettings {
 	var d C.radiod_api_digi_settings
 	C.radiod_api_digi_settings_get(&d)
 	return DigiSettings{
@@ -103,19 +103,19 @@ func (facade) DigiSettings() DigiSettings {
 	}
 }
 
-func (facade) SetDigi(key string, v int) error {
+func (binding) SetDigi(key string, v int) error {
 	cs := C.CString(key)
 	defer C.free(unsafe.Pointer(cs))
 	return codeErr(int(C.radiod_api_digi_set(cs, C.long(v))))
 }
 
-func (facade) SetVoiceCodec(name string) error {
+func (binding) SetVoiceCodec(name string) error {
 	cs := C.CString(name)
 	defer C.free(unsafe.Pointer(cs))
 	return codeErr(int(C.radiod_api_set_voice_codec(cs)))
 }
 
-func (facade) DigiLog(after uint64, max int) []json.RawMessage {
+func (binding) DigiLog(after uint64, max int) []json.RawMessage {
 	if max <= 0 {
 		return nil
 	}
@@ -132,7 +132,7 @@ func (facade) DigiLog(after uint64, max int) []json.RawMessage {
 	return out
 }
 
-func (facade) ModemStatus() (json.RawMessage, bool) {
+func (binding) ModemStatus() (json.RawMessage, bool) {
 	buf := C.malloc(4096)
 	defer C.free(buf)
 	if !bool(C.radiod_api_modem_status((*C.char)(buf), 4096)) {
@@ -141,7 +141,7 @@ func (facade) ModemStatus() (json.RawMessage, bool) {
 	return json.RawMessage(C.GoString((*C.char)(buf))), true
 }
 
-func (facade) WSSend(conn int64, f []byte) error {
+func (binding) WSSend(conn int64, f []byte) error {
 	if len(f) == 0 {
 		return nil
 	}
@@ -153,7 +153,7 @@ func (facade) WSSend(conn int64, f []byte) error {
 	return nil
 }
 
-func (facade) WSBroadcast(f []byte) error {
+func (binding) WSBroadcast(f []byte) error {
 	if len(f) == 0 {
 		return nil
 	}
@@ -165,4 +165,4 @@ func (facade) WSBroadcast(f []byte) error {
 	return nil
 }
 
-func (facade) Version() string { return C.GoString(C.radiod_api_version()) }
+func (binding) Version() string { return C.GoString(C.radiod_api_version()) }

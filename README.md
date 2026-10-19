@@ -54,7 +54,7 @@ hermes-radio-daemon/
 ├── control_interfaces/      Control servers: CAT emulation (cat_server), rigctld
 │                            (rig_server), SHM command dispatcher (radio_shm)
 ├── api/                     The station API (/api/v2 REST, hermes.v1): Go module (go 1.27.2)
-│                            linked in as a C archive, and its C facade (radiod_api.h)
+│                            linked in as a C archive, and the radiod C API it calls (radiod_api.h)
 ├── gui_interface/           Transports and user interfaces
 │   ├── radio_websocket.c    ws/wss server: radiod's own protocol; routes /api/v2 to api/
 │   ├── websocket/           In-tree RFC 6455 server + HTTP + frame codec + TLS (OpenSSL)
@@ -178,7 +178,7 @@ Go and linked into radiod as a C archive when `go` is on the `PATH` (`make`; wit
 daemon builds as before and answers `/api/v2` with 503). radiod's C code owns the sockets and
 calls the Go handlers. Turn it on with `main:api_v2_enable = 1`; until logins exist it answers
 only to this machine. How to add operations and commands, the directory layout and the rules:
-**[docs/API-WRITERS.md](docs/API-WRITERS.md)**.
+**[docs/API-WRITERS.md](docs/API-WRITERS.md)**; new to it: [docs/ONBOARDING.md](docs/ONBOARDING.md).
 
 ```bash
 make go-test            # the Go layer's unit tests, no radio or C needed
