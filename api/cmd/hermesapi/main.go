@@ -27,7 +27,7 @@ import (
 var router *api.Router
 
 // HermesInit builds the router; radiod calls it once, after attaching the
-// facade and before the first request. The Go heap gets a soft limit for
+// C API and before the first request. The Go heap gets a soft limit for
 // the 1 GB Pi unless GOMEMLIMIT says otherwise.
 //
 //export HermesInit

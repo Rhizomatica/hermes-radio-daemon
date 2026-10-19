@@ -1365,7 +1365,7 @@ static int on_ws_upgrade(ws_conn_t *c, const ws_http_request_t *req, unsigned *c
         !strstr(want, "hermes.v1"))
         return 426;
 #ifdef HAVE_GO_API
-    /* The hello goes out from WSOpen: make sure the facade can send even on
+    /* The hello goes out from WSOpen: make sure the C API can send even on
      * a connection accepted before init published the server. */
     radiod_api_attach_ws(ws_conn_server(c));
     int st = HermesWSOpen(ws_conn_id(c), (char *) req->path, (char *) req->headers, (char *) req->peer);

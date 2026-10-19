@@ -304,7 +304,7 @@ static snd_pcm_t *open_pcm_device(const char *device, snd_pcm_stream_t stream,
  * its C-Media codec shares a full-speed USB hub TT with the CP2105 CAT serial,
  * and repeated stream reconfiguration provokes back-to-back USB device resets
  * ("reset full-speed USB device") that can cascade until the host loses the bus
- * (it took estacao off the network once). So reopen at most a handful of times
+ * (it has taken a station off the network). So reopen at most a handful of times
  * with capped exponential backoff, then GIVE UP — the audio bridge goes dead but
  * the daemon and its networking stay alive, leaving the device quiescent so the
  * problem can be diagnosed instead of crash-looping an unattended station. */

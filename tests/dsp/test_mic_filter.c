@@ -39,7 +39,7 @@ static void test_response(void)
     TEST_ASSERT_LESS_THAN_DOUBLE_MESSAGE(-47.0, g50, "50 Hz");
 }
 
-/* DC offset of +0.18 full scale (as on estacao2's mic) is removed */
+/* DC offset of +0.18 full scale (as measured on an sBitx mic input) is removed */
 static void test_dc_removed(void)
 {
     static int32_t b[N];

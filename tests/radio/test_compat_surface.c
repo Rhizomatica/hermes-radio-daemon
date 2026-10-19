@@ -259,7 +259,7 @@ static void test_shm_profile_and_message_semantics(void)
 }
 
 /* CMD_PTT_OFF must reach the backend even when the cached state already
- * reads RX (the radio may still be keyed: the estacao8 incident) and while
+ * reads RX (the radio may still be keyed) and while
  * SWR protection is on. The replies keep their old meaning. */
 static void test_shm_ptt_off_always_unkeys(void)
 {
