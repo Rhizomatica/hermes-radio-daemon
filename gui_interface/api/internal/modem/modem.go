@@ -71,6 +71,8 @@ func str(s string) *string {
 // link state of its own: "connected" while it is synchronised with a peer,
 // "idle" otherwise. The session transport and listen mode are not in it.
 func statusOf(m mercuryStatus) Status {
+	// A mode is null until data has gone that way in the session: mercury
+	// sends "" until then (a carousel side that only polled has no TX mode).
 	s := Status{
 		Link: "idle", MyCall: str(m.UserCallsign), PeerCall: str(m.DestCallsign),
 		Direction: m.Direction, BytesTx: m.BytesTx, BytesRx: m.BytesRx,
