@@ -1,0 +1,117 @@
+// Package radio is the Go side of radiod's C facade (gui_interface/radiod_api.h):
+// what API handlers may read and change in the daemon.
+//
+// Handlers take a Radio. In radiod (build tag `radiod`) Default() is the
+// facade over cgo; otherwise it is a Stub, so the API code builds and is
+// tested with no C toolchain and no radio.
+package radio
+
+import (
+	"encoding/json"
+	"errors"
+)
+
+// Errors of the setters, matching radiod_api.h.
+var (
+	ErrNoProfile    = errors.New("no such profile")
+	ErrInvalid      = errors.New("a value the radio does not take")
+	ErrBusy         = errors.New("refused while transmitting")
+	ErrNotSupported = errors.New("not on this radio or build")
+)
+
+// State is the radio's live state.
+type State struct {
+	ActiveProfile int
+	TX            bool
+	FrequencyHz   uint32
+	Mode          string // LSB, USB, CW, FM, AM, DRM, FT8, RTTY, DSTAR
+	Power         int    // percent
+	FwdW, RefW    float64
+	SWR           float64
+	SMeterValid   bool
+	SMeterDB      float64 // dB relative to S9
+	Protection    bool
+	TimeoutS      int
+	DigitalVoice  bool
+	Backend       string // sbitx, hamlib
+}
+
+// Profile is one saved profile. Step, timeout, ref threshold and BFO are
+// station-wide in radiod: every profile reports the same value.
+type Profile struct {
+	Profile       int
+	FrequencyHz   uint32
+	Mode          string
+	Power         int
+	Volume        int
+	StepHz        uint32
+	FilterWidthHz uint32 // 0: the rig's default
+	TimeoutS      int
+	RefThreshold  uint32 // SWR x 10
+	BfoHz         int
+	DigitalVoice  bool
+}
+
+// DigiSettings are the CW, RTTY and D-STAR settings.
+type DigiSettings struct {
+	CWWPM, CWPitchHz                         int
+	RTTYBaud, RTTYShiftHz, RTTYMarkHz        int
+	DstarMycall                              string
+	DstarEncrypt, DstarDenoise, DstarVerbose bool
+	VoiceCodec                               string // RADEV2, DSTAR
+}
+
+// Radio is what the API layer may do with the daemon. Every method is safe
+// from any goroutine.
+type Radio interface {
+	State() State
+	ProfileCount() int
+	Profile(n int) (Profile, error)
+
+	SelectProfile(n int) error
+	SetFrequency(profile int, hz uint32) error
+	SetMode(profile int, mode string) error
+	SetPower(profile int, percent int) error
+	SetVolume(profile int, percent int) error
+	SetFilterWidth(profile int, hz uint32) error
+	SetDigitalVoice(profile int, on bool) error
+	SetStep(hz uint32) error
+	SetTimeout(seconds int) error
+	SetRefThreshold(swrX10 uint32) error
+	SetBfo(hz int) error
+	ResetProtection()
+
+	DigiSettings() DigiSettings
+	// SetDigi takes radiod's keys: cw_wpm, cw_pitch, rtty_baud, rtty_mark,
+	// rtty_shift, dstar_verbose, dstar_denoise, dstar_encrypt.
+	SetDigi(key string, value int) error
+	SetVoiceCodec(name string) error
+	// DigiLog returns up to max entries after id `after`, oldest first,
+	// each one JSON object in digi_log's line format.
+	DigiLog(after uint64, max int) []json.RawMessage
+
+	// ModemStatus is mercury's last status JSON; false without mercury.
+	ModemStatus() (json.RawMessage, bool)
+
+	// WSSend queues a hermes.v1 text frame for one connection;
+	// WSBroadcast for every hermes.v1 connection.
+	WSSend(conn int64, frame []byte) error
+	WSBroadcast(frame []byte) error
+
+	Version() string
+}
+
+func codeErr(rc int) error {
+	switch rc {
+	case 0:
+		return nil
+	case -1:
+		return ErrNoProfile
+	case -2:
+		return ErrInvalid
+	case -3:
+		return ErrBusy
+	default:
+		return ErrNotSupported
+	}
+}
