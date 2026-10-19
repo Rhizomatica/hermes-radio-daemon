@@ -428,6 +428,11 @@ int ws_conn_send(ws_conn_t *c, const void *data, size_t len, bool is_text)
                            false);
 }
 
+ws_server_t *ws_conn_server(ws_conn_t *c)
+{
+    return c != NULL ? c->srv : NULL;
+}
+
 unsigned ws_conn_class(ws_conn_t *c)
 {
     return c != NULL ? c->cls : 0;

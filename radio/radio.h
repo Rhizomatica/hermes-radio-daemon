@@ -381,6 +381,10 @@ typedef struct {
      * in-process on modem_audio, with main:mercury_config as its mercury.ini
      * and main:mercury_args as extra command-line options. */
     _Atomic bool enable_mercury;
+    /* The /api/v2 REST API and the hermes.v1 websocket (gui_interface/api,
+     * Go), on the websocket_url listener.  Until sessions exist they answer
+     * only to loopback clients. */
+    bool api_v2_enable;
     char mercury_config[256];
     char mercury_args[256];
     /* Optional operator-side headset (hardware) audio path. When both

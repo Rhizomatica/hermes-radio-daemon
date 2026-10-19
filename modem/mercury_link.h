@@ -25,6 +25,7 @@
 
 #include <sched.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "radio.h"
 
@@ -39,5 +40,9 @@ bool mercury_link_start(radio *radio_h, const cpu_set_t *cpus);
 
 /* Stop mercury, unkeying if it holds PTT.  Call before modem_audio_shutdown. */
 void mercury_link_stop(void);
+
+/* Mercury's last {"type":"status",...} JSON into out; false when it is not
+ * running or has published none yet.  Any thread. */
+bool mercury_link_last_status(char *out, size_t out_len);
 
 #endif /* MERCURY_LINK_H */

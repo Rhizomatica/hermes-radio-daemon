@@ -67,6 +67,11 @@ test: $(TEST_BINS)
 	if [ -n "$$failed" ]; then echo "FAILED:$$failed"; exit 1; fi; \
 	echo "== all $(words $(TEST_BINS)) test binaries passed"
 
+# The Go API layer's unit tests (gui_interface/api): the stub build, no C,
+# under the race detector.
+go-test:
+	cd gui_interface/api && go test -race -count=1 ./...
+
 # Integration tests (tests/integration, Go): the real radio_daemon on
 # Hamlib's dummy rig, driven over its websocket, rigctl and (with mercury
 # linked in) mercury's TNC ports.  Needs go; go.mod names the toolchain.

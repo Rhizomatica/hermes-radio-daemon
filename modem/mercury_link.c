@@ -25,7 +25,7 @@
 #define RX_QUIET_MS  40
 
 static radio          *s_radio;
-static bool            s_started;
+static _Atomic bool    s_started;
 static pthread_t       s_launcher;
 static _Atomic int     s_init_rc = 1;          /* 1 = still starting */
 static char            s_argbuf[sizeof(((radio *) 0)->mercury_args)];
@@ -133,10 +133,33 @@ static void *tx_clock(void *arg)
  * with mercury's UI lock held and only queue a frame, never calling back
  * into mercury_host.h. */
 
+/* Mercury's last status, for the REST API's GET /modem. */
+static pthread_mutex_t s_status_lock = PTHREAD_MUTEX_INITIALIZER;
+static char            s_status[4096];
+
 static void ui_broadcast_json(const char *json, void *user)
 {
     (void) user;
+    if (strncmp(json, "{\"type\":\"status\"", 16) == 0)
+    {
+        pthread_mutex_lock(&s_status_lock);
+        snprintf(s_status, sizeof(s_status), "%s", json);
+        pthread_mutex_unlock(&s_status_lock);
+    }
     ui_hub_broadcast_text(json);
+}
+
+bool mercury_link_last_status(char *out, size_t out_len)
+{
+    bool have;
+    if (!out || !out_len)
+        return false;
+    pthread_mutex_lock(&s_status_lock);
+    have = s_started && s_status[0];
+    if (have)
+        snprintf(out, out_len, "%s", s_status);
+    pthread_mutex_unlock(&s_status_lock);
+    return have;
 }
 
 static void ui_broadcast_binary(const void *data, size_t len, void *user)
@@ -279,5 +302,8 @@ void mercury_link_stop(void)
         modem_audio_tx_unkey("unkeyed at shutdown");
     mercury_host_set_ui(NULL);
     mercury_host_set_radio(NULL);
+    pthread_mutex_lock(&s_status_lock);
+    s_status[0] = '\0';
+    pthread_mutex_unlock(&s_status_lock);
     fprintf(stderr, "mercury_link: mercury stopped\n");
 }

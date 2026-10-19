@@ -127,4 +127,7 @@ long ws_conn_id(ws_conn_t *c);
 /* The class on_upgrade gave the connection (0 before or without it). */
 unsigned ws_conn_class(ws_conn_t *c);
 
+/* The server a connection belongs to. */
+ws_server_t *ws_conn_server(ws_conn_t *c);
+
 #endif /* WS_SERVER_H_ */

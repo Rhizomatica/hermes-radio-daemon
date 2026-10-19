@@ -73,3 +73,8 @@ dkms.conf
 /utils/dstar_probe
 /utils/dstar_rx
 /utils/dstar_tx_gen
+
+# the Go API layer's C archive (make), and the commit the daemon was built from
+/gui_interface/api/libhermes_api.a
+/gui_interface/api/libhermes_api.h
+/.radiod_version

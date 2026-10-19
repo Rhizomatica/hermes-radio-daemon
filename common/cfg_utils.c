@@ -457,6 +457,9 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     i = iniparser_getint(ini, "main:rtp_ttl", 0);
     radio_h->rtp_ttl = i;
 
+    b = iniparser_getboolean(ini, "main:api_v2_enable", 0);
+    radio_h->api_v2_enable = (bool) b;
+
     b = iniparser_getboolean(ini, "main:enable_mercury", 0);
     radio_h->enable_mercury = (bool) b;
     s = iniparser_getstring(ini, "main:mercury_config", "/etc/mercury/mercury.ini");
