@@ -30,10 +30,11 @@
 void sound_system_init(radio *radio_h, pthread_t *control_tid, pthread_t *radio_capture,
                        pthread_t *radio_playback, pthread_t *loop_capture, pthread_t *loop_playback);
 
-/* Wait up to timeout_ms for the loopback threads to configure their
- * devices. True when both have (or none were started, e.g. controls-only
- * mode); false on timeout. */
-bool sound_system_wait_ready(int timeout_ms);
+/* Wait up to timeout_ms for the codec and loopback threads to configure
+ * their devices. Returns whether both loopback cables are open, and sets
+ * *codec_ok to whether the codec's capture and playback are (both true when
+ * no audio threads were started, e.g. controls-only mode). */
+bool sound_system_wait_ready(int timeout_ms, bool *codec_ok);
 
 void sound_system_shutdown(radio *radio_h, pthread_t *control_tid, pthread_t *radio_capture,
                            pthread_t *radio_playback, pthread_t *loop_capture, pthread_t *loop_playback);

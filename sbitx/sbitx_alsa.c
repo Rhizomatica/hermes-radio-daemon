@@ -600,6 +600,31 @@ static snd_pcm_sframes_t play_catch_up(snd_pcm_t *pcm, snd_pcm_uframes_t buffer_
     return late;
 }
 
+/* Open a PCM, waiting while another process still holds it: a radiod (or a
+ * test daemon) that is still shutting down keeps the codec for a moment, and
+ * giving up at once left the daemon running with no audio at all (estacao,
+ * 19 Oct 2026). Bounded; any other error returns at once. */
+#define PCM_BUSY_WAIT_MS 10000
+static int pcm_open_wait(snd_pcm_t **pcm, const char *device, snd_pcm_stream_t stream)
+{
+    for (int waited_ms = 0; ; waited_ms += 250)
+    {
+        int e = snd_pcm_open(pcm, device, stream, 0);
+        if (e != -EBUSY || waited_ms >= PCM_BUSY_WAIT_MS || shutdown_)
+        {
+            if (e == 0 && waited_ms > 0)
+                fprintf(stderr, "audio device %s: free after %d ms\n", device, waited_ms);
+            return e;
+        }
+        if (waited_ms == 0)
+            fprintf(stderr, "audio device %s is busy (another process has it); "
+                            "waiting up to %d s\n", device, PCM_BUSY_WAIT_MS / 1000);
+        usleep(250 * 1000);
+    }
+}
+
+static void codec_opened(void);
+
 static void *radio_capture_thread(void *device_ptr)
 {
     char *device = (char *) device_ptr;
@@ -614,7 +639,7 @@ static void *radio_capture_thread(void *device_ptr)
         return NULL;
     }
 
-    if ((e = snd_pcm_open (&pcm_capture_handle, device, SND_PCM_STREAM_CAPTURE, 0)) < 0)
+    if ((e = pcm_open_wait(&pcm_capture_handle, device, SND_PCM_STREAM_CAPTURE)) < 0)
     {
         fprintf (stderr, "Can not open audio device %s (%s)\n", device, snd_strerror (e));
         return NULL;
@@ -693,6 +718,7 @@ static void *radio_capture_thread(void *device_ptr)
     snd_pcm_prepare(pcm_capture_handle);
     snd_pcm_drop(pcm_capture_handle);
     snd_pcm_prepare(pcm_capture_handle);
+    codec_opened();
 
     while (!shutdown_)
     {
@@ -762,7 +788,7 @@ static void *radio_playback_thread(void *device_ptr)
         return NULL;
     }
 
-    if ((e = snd_pcm_open (&pcm_play_handle, device, SND_PCM_STREAM_PLAYBACK, 0)) < 0)
+    if ((e = pcm_open_wait(&pcm_play_handle, device, SND_PCM_STREAM_PLAYBACK)) < 0)
     {
         fprintf (stderr, "Can not open audio device %s (%s)\n", device, snd_strerror (e));
         return NULL;
@@ -857,6 +883,7 @@ static void *radio_playback_thread(void *device_ptr)
     snd_pcm_drop(pcm_play_handle);
     snd_pcm_prepare(pcm_play_handle);
     play_prime(pcm_play_handle, silence, hw_period_size, PLAY_PRIME_PERIODS);
+    codec_opened();
 
     while (!shutdown_)
     {
@@ -924,11 +951,13 @@ static void loop_check_period(const char *device, snd_pcm_uframes_t period)
                 device, (unsigned long) period, LOOPBACK_PERIOD);
 }
 
-/* Both loop threads report here once their device is configured, so that
- * sound_system_wait_ready() can tell systemd the cables are open. */
+/* The codec and loop threads report here once their device is configured,
+ * so that sound_system_wait_ready() can tell systemd the radio has audio and
+ * the cables are open. */
 static pthread_mutex_t loop_ready_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  loop_ready_cond = PTHREAD_COND_INITIALIZER;
 static int             loop_ready_count, loop_ready_expected;
+static int             codec_ready_count, codec_ready_expected;
 
 static void loop_opened(void)
 {
@@ -938,7 +967,15 @@ static void loop_opened(void)
     pthread_mutex_unlock(&loop_ready_lock);
 }
 
-bool sound_system_wait_ready(int timeout_ms)
+static void codec_opened(void)
+{
+    pthread_mutex_lock(&loop_ready_lock);
+    codec_ready_count++;
+    pthread_cond_broadcast(&loop_ready_cond);
+    pthread_mutex_unlock(&loop_ready_lock);
+}
+
+bool sound_system_wait_ready(int timeout_ms, bool *codec_ok)
 {
     struct timespec dl;
     bool ready;
@@ -952,10 +989,11 @@ bool sound_system_wait_ready(int timeout_ms)
         dl.tv_nsec -= 1000000000L;
     }
     pthread_mutex_lock(&loop_ready_lock);
-    while (loop_ready_count < loop_ready_expected &&
+    while ((loop_ready_count < loop_ready_expected || codec_ready_count < codec_ready_expected) &&
            pthread_cond_timedwait(&loop_ready_cond, &loop_ready_lock, &dl) == 0)
         ;
     ready = loop_ready_count >= loop_ready_expected;
+    *codec_ok = codec_ready_count >= codec_ready_expected;
     pthread_mutex_unlock(&loop_ready_lock);
     return ready;
 }
@@ -977,7 +1015,7 @@ void *loop_capture_thread(void *device_ptr)
         return NULL;
     }
 
-    if ((e = snd_pcm_open (&loopback_capture_handle, device, SND_PCM_STREAM_CAPTURE, 0)) < 0)
+    if ((e = pcm_open_wait(&loopback_capture_handle, device, SND_PCM_STREAM_CAPTURE)) < 0)
     {
         fprintf (stderr, "Can not open audio device %s (%s)\n", device, snd_strerror (e));
         return NULL;
@@ -1106,7 +1144,7 @@ void *loop_playback_thread(void *device_ptr)
         return NULL;
     }
 
-    if ((e = snd_pcm_open (&loopback_play_handle, device, SND_PCM_STREAM_PLAYBACK, 0)) < 0)
+    if ((e = pcm_open_wait(&loopback_play_handle, device, SND_PCM_STREAM_PLAYBACK)) < 0)
     {
         fprintf (stderr, "Can not open audio device %s (%s)\n", device, snd_strerror (e));
         return NULL;
@@ -1464,6 +1502,7 @@ void sound_system_init(radio *radio_h, pthread_t *control_tid, pthread_t *radio_
 
     pthread_mutex_lock(&loop_ready_lock);
     loop_ready_expected = 2;            /* loop capture + loop playback */
+    codec_ready_expected = 2;           /* codec capture + codec playback */
     pthread_mutex_unlock(&loop_ready_lock);
 
     pthread_create(radio_playback, NULL, radio_playback_thread, (void*)radio_playback_dev);
