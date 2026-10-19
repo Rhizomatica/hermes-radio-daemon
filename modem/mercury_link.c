@@ -181,6 +181,13 @@ static void *launcher(void *arg)
     (void) arg;
     int rc = mercury_init(s_argc, s_argv, s_radio->mercury_config, NULL);
     s_init_rc = rc;
+    /* mercury opens its TNC ports before it sets its UI hooks, and returns
+     * from mercury_init only after both: a UI client that connected in
+     * between got no history or initial state. Give it them now (to every
+     * client: mercury's connect frames are state, so a second copy is
+     * harmless). Not from ui_broadcast_json: mercury holds its UI lock there. */
+    if (rc == 0)
+        mercury_host_ui_client_connected();
     if (rc == MERCURY_INIT_CONFIG_ERROR)
         fprintf(stderr, "mercury_link: cannot read %s; the radio runs without mercury\n",
                 s_radio->mercury_config);
