@@ -45,13 +45,14 @@ type Operation struct {
 const BasePath = "/api/v2"
 
 var (
-	reOpPath  = regexp.MustCompile(`^  (/\S*):\s*$`)
-	reOpVerb  = regexp.MustCompile(`^    (get|post|put|patch|delete):`)
-	reOpID    = regexp.MustCompile(`^      operationId:\s*(\S+)`)
-	reOpRole  = regexp.MustCompile(`^      x-hermes-role:\s*(\S+)`)
-	reOpOpen  = regexp.MustCompile(`^      security:\s*\[\]`)
-	reTopKey  = regexp.MustCompile(`^[A-Za-z]`)
-	reCmdName = regexp.MustCompile(`^        - ([a-z]+\.[a-z_.]+)\s*$`)
+	reOpPath    = regexp.MustCompile(`^  (/\S*):\s*$`)
+	reOpVerb    = regexp.MustCompile(`^    (get|post|put|patch|delete):`)
+	reOpID      = regexp.MustCompile(`^      operationId:\s*(\S+)`)
+	reOpRole    = regexp.MustCompile(`^      x-hermes-role:\s*(\S+)`)
+	reOpOpen    = regexp.MustCompile(`^      security:\s*\[\]`)
+	reTopKey    = regexp.MustCompile(`^[A-Za-z]`)
+	reCmdName   = regexp.MustCompile(`^        - ([a-z]+\.[a-z_.]+)\s*$`)
+	reTopicName = regexp.MustCompile(`^        - ([a-z]+(\.[a-z_.]+)?)\s*$`)
 )
 
 var operations map[string]Operation
@@ -146,6 +147,49 @@ func Commands() []string {
 	sort.Strings(out)
 	commands = out
 	return out
+}
+
+var topics []string
+
+// Topics returns the hermes.v1 topic names of api-ws.yaml (Topic).
+func Topics() []string {
+	if topics != nil {
+		return topics
+	}
+	in, inEnum := false, false
+	var out []string
+	for _, l := range strings.Split(wsYAML, "\n") {
+		t := strings.TrimSpace(l)
+		if l == "    Topic:" {
+			in = true
+			continue
+		}
+		if !in {
+			continue
+		}
+		if t == "enum:" {
+			inEnum = true
+			continue
+		}
+		if m := reTopicName.FindStringSubmatch(l); inEnum && m != nil {
+			out = append(out, m[1])
+		} else if t != "" && t != "type: string" {
+			break
+		}
+	}
+	sort.Strings(out)
+	topics = out
+	return out
+}
+
+// HasTopic reports whether api-ws.yaml defines the topic.
+func HasTopic(name string) bool {
+	for _, t := range Topics() {
+		if t == name {
+			return true
+		}
+	}
+	return false
 }
 
 // HasCommand reports whether api-ws.yaml defines the command.

@@ -17,7 +17,7 @@ import (
 	"github.com/Rhizomatica/hermes-radio-daemon/api/spec"
 )
 
-// Register adds the radio's operations and commands.
+// Register adds the radio's operations, commands and topics.
 func Register(rt *api.Router) {
 	h := handlers{rt.Radio()}
 	rt.Op("getRadioState", h.getState)
@@ -30,6 +30,9 @@ func Register(rt *api.Router) {
 	rt.Command("radio.set", spec.RoleOperator, h.cmdSet)
 	rt.Command("radio.select_profile", spec.RoleOperator, h.cmdSelect)
 	rt.Command("radio.reset_protection", spec.RoleOperator, h.cmdResetProtection)
+
+	// The same RadioState as getRadioState, pushed as it changes.
+	rt.Topic("radio.state", spec.RoleReadonly, func() (any, error) { return stateOf(h.r.State()), nil })
 }
 
 type handlers struct{ r rad.Radio }
