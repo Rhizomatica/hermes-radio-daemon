@@ -5,7 +5,7 @@ package health
 import (
 	"net/http"
 
-	"github.com/Rhizomatica/hermes-radio-daemon/gui_interface/api/internal/api"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
 )
 
 // Register adds getHealth.

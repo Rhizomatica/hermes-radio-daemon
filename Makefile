@@ -20,7 +20,7 @@ CC      = gcc
 #   common/              configuration and shared-memory helpers
 #   include/             public protocol headers (SHM command set)
 #   utils/               radio_client, ws_client, D-STAR/AMBE tools
-MODULE_INCLUDES = -Iradio -Imodem -Iaudioio -Icontrol_interfaces -Igui_interface \
+MODULE_INCLUDES = -Iradio -Imodem -Iaudioio -Icontrol_interfaces -Igui_interface -Iapi \
                   -Icommon -Ihamlib -Iinclude
 
 # -MMD -MP auto-generates per-object header dependencies (*.d), so editing a
@@ -75,7 +75,7 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   control_interfaces/radio_shm.o \
                   gui_interface/radio_websocket.o \
                   gui_interface/ui_hub.o \
-                  gui_interface/radiod_api.o \
+                  api/radiod_api.o \
                   audioio/audio_bridge.o \
                   dsp/stream_resampler.o \
                   dsp/digi_log.o \
@@ -151,22 +151,21 @@ FT8_TEST_SRCS = $(FT8_LIB_SRCS)
 FT8_TEST_LIBS =
 endif
 
-# ── Go API layer (gui_interface/api), linked in as a C archive ──────
+# ── Go API layer (api), linked in as a C archive ──────
 # The /api/v2 REST API and the hermes.v1 websocket: radiod's C server owns
 # the sockets and calls the Go handlers (docs/API-WRITERS.md).  Built when
 # `go` is on the PATH (go.mod names the toolchain, 1.27.2); without it the
 # daemon builds as before and answers /api/v2 with 503.
 GO          ?= go
-GO_API_DIR   = gui_interface/api
+GO_API_DIR   = api
 GO_API_LIB   = $(GO_API_DIR)/libhermes_api.a
 HAVE_GO_API ?= $(if $(shell command -v $(GO) 2>/dev/null),1,0)
 ifeq ($(HAVE_GO_API),1)
 CFLAGS += -DHAVE_GO_API=1
 GO_API_SRCS := $(shell find $(GO_API_DIR) -name '*.go' -o -name '*.yaml' -o -name go.mod)
-$(GO_API_LIB) $(GO_API_DIR)/libhermes_api.h &: $(GO_API_SRCS) gui_interface/radiod_api.h
+$(GO_API_LIB) $(GO_API_DIR)/libhermes_api.h &: $(GO_API_SRCS) api/radiod_api.h
 	cd $(GO_API_DIR) && CGO_ENABLED=1 CC="$(CC)" $(GO) build -tags radiod -buildmode=c-archive \
 	    -o libhermes_api.a ./cmd/hermesapi
-gui_interface/radio_websocket.o: EXTRA_CPPFLAGS += -I$(GO_API_DIR)
 gui_interface/radio_websocket.o: $(GO_API_DIR)/libhermes_api.h
 endif
 
@@ -176,8 +175,8 @@ RADIOD_GIT_HASH := $(shell git rev-parse --short=8 HEAD 2>/dev/null || echo unkn
 ifneq ($(shell cat .radiod_version 2>/dev/null),$(RADIOD_GIT_HASH))
 $(shell echo $(RADIOD_GIT_HASH) > .radiod_version)
 endif
-gui_interface/radiod_api.o: .radiod_version
-gui_interface/radiod_api.o: EXTRA_CPPFLAGS += -DRADIOD_GIT_HASH=\"$(RADIOD_GIT_HASH)\"
+api/radiod_api.o: .radiod_version
+api/radiod_api.o: EXTRA_CPPFLAGS += -DRADIOD_GIT_HASH=\"$(RADIOD_GIT_HASH)\"
 
 DAEMON_OBJS = $(DAEMON_TOP_OBJS) $(SBITX_OBJS)
 

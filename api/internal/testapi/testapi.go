@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	rad "github.com/Rhizomatica/hermes-radio-daemon/gui_interface/api/cgo/radio"
-	"github.com/Rhizomatica/hermes-radio-daemon/gui_interface/api/internal/api"
-	"github.com/Rhizomatica/hermes-radio-daemon/gui_interface/api/internal/station"
+	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/station"
 )
 
 // Env is a station router over a Stub.

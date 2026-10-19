@@ -16,7 +16,7 @@ What the API looks like is decided in hermes-documentation, not here:
 - the redesign README's **Security** section: roles on every route, transmit rate limits,
   the audit log, no secrets in URLs or logs, over-the-air text treated as untrusted.
 
-A copy of the two YAML files is pinned in [`gui_interface/api/spec/`](../gui_interface/api/spec/)
+A copy of the two YAML files is pinned in [`api/spec/`](../api/spec/)
 with the commit it came from. The router reads it: **you register a handler by
 `operationId`, and its method, path and role come from the spec.** A renamed path needs no
 code change, and `go test` fails if you register something the spec does not have. To change
@@ -37,10 +37,10 @@ ISO 8601 UTC timestamps, RFC 9457 `application/problem+json` errors with a stabl
       |
       |  C calls the Go exports (cmd/hermesapi): HermesHTTP, HermesWSOpen, ...
       v
- Go API layer (gui_interface/api, linked into radiod as a C archive)
+ Go API layer (api/, linked into radiod as a C archive)
       |  your handlers, internal/<domain>
       |
-      |  Go calls the facade (cgo/radio -> gui_interface/radiod_api.h)
+      |  Go calls the facade (cgo/radio -> api/radiod_api.h)
       v
  radiod core (C): the radio, DSP, mercury (the modem), the digi log
 ```
@@ -59,29 +59,29 @@ ports. They are not part of `/api/v2`.
 ```
 hermes-radio-daemon/
 ├── radio_daemon.c          main()
+├── api/                    THE STATION API (this guide): /api/v2 and hermes.v1
 ├── radio/                  the radio core: backends, controls, media, pipeline
 ├── hamlib/  sbitx/         the two backends (Hamlib rigs, the sBitx)
 ├── dsp/                    modes, filters, digi log
 ├── modem/                  modem audio paths; mercury_link.c runs mercury inside radiod
 ├── audioio/                audio bridge, headset
 ├── control_interfaces/     rigctld, CAT, shared memory (legacy, localhost)
-├── gui_interface/
-│   ├── websocket/          the HTTP/WebSocket/TLS server (C)
-│   ├── radio_websocket.c   radiod's legacy protocol; routes /api/v2 to Go
-│   ├── ui_hub.c            module UI traffic (mercury's) for every transport
-│   ├── radiod_api.h/.c     THE FACADE: everything Go may read or change
-│   ├── web/                the demo web client
-│   └── api/                THE GO API LAYER (this guide)
+├── gui_interface/          the transports and the UI: websocket/ (the HTTP/WebSocket/TLS
+│                           server, C, which also carries /api/v2), radio_websocket.c
+│                           (radiod's legacy protocol; routes /api/v2 to api/), ui_hub.c
+│                           (mercury's UI traffic), web/ (the demo web client)
 ├── common/  include/       config, helpers
 ├── vendor/                 vendored C libraries; vendor/mercury is a submodule
 ├── tests/                  C unit tests (Unity), integration tests (Go)
 └── docs/                   this guide
 ```
 
-The Go module, `gui_interface/api` (go.mod: Go 1.27.2):
+The API is not a GUI's: scripts, other stations and the mesh use it as much as any screen. It
+lives in `api/`, a Go module (go.mod: Go 1.27.2) with the one C file it needs beside it:
 
 ```
-gui_interface/api/
+api/
+├── radiod_api.h/.c     THE FACADE (C): everything the API may read or change in radiod
 ├── spec/               pinned api-rest.yaml, api-ws.yaml, and the reader (spec.go)
 ├── cmd/hermesapi/      the C exports; converts C types, nothing else
 ├── cgo/radio/          the Radio interface; facade.go (cgo, build tag `radiod`),
@@ -96,6 +96,9 @@ gui_interface/api/
     └── modem/          mercury's status
 ```
 
+`api/` itself holds no Go package (Go refuses C files beside a package that does not use cgo):
+Go code goes in the subdirectories.
+
 One package per domain, named as the spec's resources and tags name them (`radio`, `digi`,
 `modem`, `messages`, `stations`, `system`, ...). A new domain is a new package with a
 `Register(rt *api.Router)` function, added to `internal/station/station.go`.
@@ -106,7 +109,7 @@ You need Go (the toolchain go.mod names is fetched automatically). You do **not*
 radio, a C compiler or radiod:
 
 ```bash
-cd gui_interface/api
+cd api
 go test ./...              # every handler, against the stub radio
 go test -race ./...        # what CI runs (make go-test)
 ```
@@ -257,7 +260,7 @@ to `user.ini`. Some values are station-wide in radiod (step, SWR threshold, BFO)
 reports them all the same.
 
 **If you need something the interface does not have**, it needs a facade call in C
-(`gui_interface/radiod_api.h/.c`) and its Go side (`cgo/radio/facade.go`), plus the stub
+(`api/radiod_api.h/.c`) and its Go side (`cgo/radio/facade.go`), plus the stub
 (`cgo/radio/stub.go`) so tests keep working without C. Ask for it (open an issue or tell the
 radiod maintainers what you need and why); keep the facade small and typed, never a way into
 radiod's internals.

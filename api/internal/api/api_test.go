@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Rhizomatica/hermes-radio-daemon/gui_interface/api/internal/api"
-	"github.com/Rhizomatica/hermes-radio-daemon/gui_interface/api/internal/testapi"
-	"github.com/Rhizomatica/hermes-radio-daemon/gui_interface/api/spec"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/testapi"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/spec"
 )
 
 // Every registered operation and command is in the contract (Op and

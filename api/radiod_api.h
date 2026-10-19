@@ -1,6 +1,6 @@
 /* radiod_api - what the Go API layer may read and change in radiod
  *
- * The one seam between the Go API handlers (gui_interface/api, built as a
+ * The one seam between the Go API handlers (api, built as a
  * c-archive) and the daemon: plain C types, no radiod internals.  Every
  * call is safe from any thread; the setters change the radio exactly as
  * radiod's own commands do (the same radio_backend_* calls), and the

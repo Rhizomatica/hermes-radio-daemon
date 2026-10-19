@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	rad "github.com/Rhizomatica/hermes-radio-daemon/gui_interface/api/cgo/radio"
-	"github.com/Rhizomatica/hermes-radio-daemon/gui_interface/api/internal/api"
+	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
 )
 
 // Register adds the digital modes' operations.

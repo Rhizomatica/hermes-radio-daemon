@@ -1,4 +1,4 @@
-// Package radio is the Go side of radiod's C facade (gui_interface/radiod_api.h):
+// Package radio is the Go side of radiod's C facade (api/radiod_api.h):
 // what API handlers may read and change in the daemon.
 //
 // Handlers take a Radio. In radiod (build tag `radiod`) Default() is the

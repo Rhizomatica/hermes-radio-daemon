@@ -43,7 +43,7 @@
 #include "radiod_api.h"
 #include "radiod_api_attach.h"
 #ifdef HAVE_GO_API
-#include "libhermes_api.h"        /* gui_interface/api, built as a c-archive */
+#include "libhermes_api.h"        /* api, built as a c-archive */
 #endif
 #include "dsp/sbitx_ft8.h"
 #include "cfg_utils.h"
@@ -1286,7 +1286,7 @@ static const void *asset_lookup(const char *path, size_t *size)
 /* ─────────────────────── /api/v2 (Go) ───────────────────────
  *
  * The REST API and the hermes.v1 websocket, on this same listener: C owns
- * the sockets, the Go layer (gui_interface/api) answers.  hermes.v1
+ * the sockets, the Go layer (api) answers.  hermes.v1
  * connections are class 1, so radiod's legacy broadcasts never reach them. */
 
 #define WS_CLASS_V2 1

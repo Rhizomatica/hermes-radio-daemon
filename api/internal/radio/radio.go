@@ -12,9 +12,9 @@ import (
 	"strconv"
 	"strings"
 
-	rad "github.com/Rhizomatica/hermes-radio-daemon/gui_interface/api/cgo/radio"
-	"github.com/Rhizomatica/hermes-radio-daemon/gui_interface/api/internal/api"
-	"github.com/Rhizomatica/hermes-radio-daemon/gui_interface/api/spec"
+	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/spec"
 )
 
 // Register adds the radio's operations and commands.

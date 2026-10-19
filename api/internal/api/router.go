@@ -14,8 +14,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Rhizomatica/hermes-radio-daemon/gui_interface/api/cgo/radio"
-	"github.com/Rhizomatica/hermes-radio-daemon/gui_interface/api/spec"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/spec"
 )
 
 // Router holds the registered operations and commands.

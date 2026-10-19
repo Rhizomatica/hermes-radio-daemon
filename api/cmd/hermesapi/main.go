@@ -1,11 +1,11 @@
 // Command hermesapi is radiod's Go API layer, built as a C archive
 // (go build -buildmode=c-archive -tags radiod): radiod's C HTTP and
 // websocket server calls these exports, and the handlers reach the daemon
-// through gui_interface/radiod_api.h. Nothing here touches a socket.
+// through api/radiod_api.h. Nothing here touches a socket.
 package main
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../..
+#cgo CFLAGS: -I${SRCDIR}/../..
 #include <stdlib.h>
 #include <string.h>
 #include "radiod_api.h"
@@ -19,9 +19,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/Rhizomatica/hermes-radio-daemon/gui_interface/api/cgo/radio"
-	"github.com/Rhizomatica/hermes-radio-daemon/gui_interface/api/internal/api"
-	"github.com/Rhizomatica/hermes-radio-daemon/gui_interface/api/internal/station"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/station"
 )
 
 var router *api.Router

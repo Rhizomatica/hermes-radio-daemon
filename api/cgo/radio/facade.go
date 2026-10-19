@@ -3,7 +3,7 @@
 package radio
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../..
+#cgo CFLAGS: -I${SRCDIR}/../..
 // The facade's symbols live in radio_daemon, linked after this archive;
 // cgo's own check link must not insist on them.
 #cgo LDFLAGS: -Wl,--unresolved-symbols=ignore-all

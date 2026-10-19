@@ -3,7 +3,7 @@ package modem_test
 import (
 	"testing"
 
-	"github.com/Rhizomatica/hermes-radio-daemon/gui_interface/api/internal/testapi"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/testapi"
 )
 
 func TestModemStatus(t *testing.T) {

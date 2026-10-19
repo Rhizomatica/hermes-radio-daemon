@@ -49,7 +49,7 @@ jobs:
       - name: "Go (before the build: the API layer is linked into radio_daemon)"
         uses: actions/setup-go@v5
         with:
-          go-version-file: gui_interface/api/go.mod
+          go-version-file: api/go.mod
           cache: false
       - name: Build
         run: make -j"$(nproc)" all

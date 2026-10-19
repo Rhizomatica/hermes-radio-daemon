@@ -8,7 +8,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/Rhizomatica/hermes-radio-daemon/gui_interface/api/spec"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/spec"
 )
 
 // hermes.v1 (spec/api-ws.yaml), stage 1: hello, heartbeat, and commands

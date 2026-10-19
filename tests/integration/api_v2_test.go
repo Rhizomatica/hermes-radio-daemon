@@ -1,4 +1,4 @@
-// The /api/v2 REST API and the hermes.v1 websocket (gui_interface/api, Go,
+// The /api/v2 REST API and the hermes.v1 websocket (api, Go,
 // linked into radiod as a C archive) through the real daemon.
 //
 // Copyright (C) 2026 Rhizomatica
