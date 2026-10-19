@@ -883,11 +883,19 @@ run), a `heartbeat` every 5 s, and commands answered by exactly one `reply`:
 | `radio.select_profile` | operator |
 | `radio.reset_protection` | operator |
 
+Topics (`{"type":"subscribe","id":"1","topics":["radio.state"]}`): a snapshot of the whole
+state (`seq` 0, `snapshot: true`), then events with only the fields that changed, at most 10 a
+second, whatever changed them (a command, CAT, rigctl, the front panel).
+
+| Topic | Data | Role |
+|-------|------|------|
+| `radio.state` | the same as `GET /api/v2/radio` | readonly |
+
 ### Not implemented yet
 
-- `hermes.v1` topics (subscribe, snapshot, `seq`) and binary frames: `radio.*`
-  state events, and mercury's `modem.status`, `modem.config`, `modem.chat` and
-  `modem.spectrum.rx`;
+- the other `hermes.v1` topics (`radio.profiles`, `radio.rig`, `digi`, mercury's
+  `modem.status`, `modem.config` and `modem.chat`, ...) and binary frames
+  (`radio.spectrum.*`, `modem.spectrum.rx`);
 - mercury: `getModemConfig`, `updateModemConfig` and the `modem.chat.send` command;
 - logins, sessions and roles (`/api/v2/session`);
 - WebRTC audio (in C, with libdatachannel; signalled over `hermes.v1`);

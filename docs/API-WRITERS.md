@@ -50,9 +50,31 @@ control loops. They are real-time or security-sensitive, and on a 1 GB Raspberry
 must not pay for a garbage collector. Go builds JSON, validates input and decides; C moves
 the bytes.
 
-Legacy interfaces stay as they are, on localhost: radiod's own JSON WebSocket protocol
-(`:8080` default, with mercury's UI on it), rigctld (`4532`), CAT (`4534`), mercury's TNC
-ports. They are not part of `/api/v2`.
+### Two APIs today, one API next
+
+The same listener also speaks radiod's older JSON WebSocket protocol (`{"cmd":...}`, with
+mercury's own `{"command":...}` frames and the binary audio and spectrum frames 0x01-0x04),
+on any WebSocket path except `/api/v2/ws`. It is written in C. `/api/v2` and `hermes.v1` are
+the station API; the older protocol is retired as they cover what it does:
+
+1. **The API's logic lives in Go only.** JSON shapes, validation and roles are Go; a REST
+   operation and the `hermes.v1` command that does the same thing share one function (as
+   `updateProfile` and `radio.set` share `parsePatch`). C does no JSON work for the API: it
+   moves bytes and offers typed functions in the radiod C API.
+2. **Every command of the older protocol gets its spec equivalent in Go:** frequency, mode and
+   power through `radio.set` and the profile operations; PTT through `radio.ptt`; rig controls
+   through `rig.get`, `rig.set` and `rig.watch`; text through `digi.send`; recordings through
+   `recording.start` and `recording.stop`; mercury's settings through `/modem/config` and
+   `modem.chat.send`. What the spec lacks is added to it first.
+3. **State and events are hermes.v1 topics** (section 7): the Go layer reads the state through
+   the radiod C API and sends what changed. radiod's own threads never call into Go. Mercury's
+   frames become the spec's `modem.*` topics, translated rather than passed through.
+4. **Streams stay in C.** Spectrum frames (with the spec's 12-byte header) and WebRTC media are
+   produced and sent by C; Go only decides who may subscribe, and tells C.
+5. **The older protocol is removed** once its clients (the demo web client, mercury's tab in
+   it) use the station API, with no compatibility layer kept beside it.
+
+Also outside `/api/v2`, and staying: rigctld (`4532`), CAT (`4534`) and mercury's TNC ports.
 
 ## 3. Directory organisation
 
@@ -243,12 +265,42 @@ commands run **in order on that connection's own goroutine**, so a slow one (a r
 never stalls other clients, and a client sees its replies in the order it sent its commands.
 The `ctx` is cancelled after 30 s.
 
-The hello (protocol, version, role, the commands the role may run) and the 5 s heartbeat are
-sent for you. **Not there yet:** topics (subscribe, snapshot, events, `seq`), binary spectrum
-frames, and WebRTC signalling (`rtc.offer`). They come next; this guide will say how to publish
-a topic then.
+The hello (protocol, version, role, the topics and commands the role may use) and the 5 s
+heartbeat are sent for you.
 
-## 7. Reaching the radio
+## 7. Publishing a hermes.v1 topic
+
+A topic pushes state to the clients that subscribe to it. The spec's rules are implemented for
+you:
+
+- `{"type":"subscribe","id":"1","topics":["radio.state"]}` gets a `reply`, then one event per
+  topic with the whole state: `seq` 0, `snapshot: true`;
+- after that, an event only when the state changes, carrying only the top-level fields that
+  changed, with the next `seq`; at most 10 events a second per topic;
+- `unsubscribe` stops them; subscribing again starts over with a snapshot;
+- every topic of a subscribe is checked first (in the spec, served here, allowed for the role)
+  and nothing is subscribed if one is refused.
+
+You register a topic the spec's `Topic` list has, with the lowest role that may read it and a
+function that returns its current state:
+
+```go
+// The same RadioState as getRadioState, pushed as it changes.
+rt.Topic("radio.state", spec.RoleReadonly, func() (any, error) { return stateOf(h.r.State()), nil })
+```
+
+The function must marshal to a JSON object whose fields are the spec's event `data`, and be
+cheap: one publisher goroutine calls it every 100 ms while anyone is subscribed, and compares
+the result with what each subscriber last received. That is how a change made anywhere in radiod
+(CAT, rigctl, the front panel, another client) reaches subscribers without radiod's threads
+calling into Go. Use the same function for the REST read of the same data, so the two never
+disagree.
+
+Not there yet: topics that are lists of new entries rather than state (`digi`, `modem.chat`,
+`messages`), which will read by cursor in the same loop; binary topics (`radio.spectrum.*`,
+`modem.spectrum.rx`), sent by C; and WebRTC signalling (`rtc.offer`).
+
+## 8. Reaching the radio
 
 Handlers get a `radio.Radio` (`rt.Radio()`): state, profiles, setters, digi settings and log,
 mercury's status, and sending hermes.v1 frames. Every method is safe from any goroutine and
@@ -265,7 +317,7 @@ radiod C API (`api/radiod_api.h/.c`) and its cgo binding (`cgo/radio/binding.go`
 radiod maintainers what you need and why); keep the C API small and typed, never a way into
 radiod's internals.
 
-## 8. Testing
+## 9. Testing
 
 Unit tests, in your package, against the stub (`internal/testapi`):
 
@@ -283,6 +335,17 @@ func TestUpdateProfile(t *testing.T) {
 }
 ```
 
+A topic, on a connection kept open (`e.Open()`):
+
+```go
+w := e.Open()
+w.Send(`{"type":"subscribe","id":"s","topics":["radio.state"]}`)
+isState := func(m map[string]any) bool { return m["type"] == "event" && m["topic"] == "radio.state" }
+snap := w.Next(isState, time.Second)                      // seq 0, the whole state
+e.Radio.SetTX(true)                                       // a change from elsewhere
+ev := w.Next(isState, time.Second)                        // seq 1, {"tx": true, ...}
+```
+
 Test the refusals as much as the happy path: every 4xx your handler can give, and that a
 refused write changed nothing.
 
@@ -298,7 +361,7 @@ make test               # radiod's C unit tests
 
 CI runs all three on Debian 13, amd64 and arm64, with and without the Go layer.
 
-## 9. Rules
+## 10. Rules
 
 - **The contract first.** No operation, field or code that is not in the spec.
 - **Validate everything, apply nothing until it is all valid.**
@@ -314,12 +377,14 @@ CI runs all three on Debian 13, amd64 and arm64, with and without the Go layer.
 - **cgo:** only `cgo/radio` talks to C, and only through the radiod C API. Don't add `import "C"`
   elsewhere.
 
-## 10. Not there yet
+## 11. Not there yet
 
 - **Logins and sessions** (`/api/v2/session`, the database): until then `/api/v2` is
   loopback-only and every caller is `admin`.
-- **hermes.v1 topics and binary frames**, then **WebRTC** audio (in C, with libdatachannel; the
-  signalling arrives as `rtc.offer` commands).
+- **More topics**: `radio.profiles`, `radio.rig`, the list topics (`digi`, `modem.chat`,
+  `messages`), mercury's `modem.status` and `modem.config`; then **binary frames** (spectrum)
+  and **WebRTC** audio (in C, with libdatachannel; the signalling arrives as `rtc.offer`
+  commands).
 - **Station-wide radio settings** (`/radio/settings`) and a **transmit timeout**: proposed in
   the spec, not in radiod yet.
 - **APIs moving from hermes-api** (messages, users, stations, schedules, ...): each one is a
