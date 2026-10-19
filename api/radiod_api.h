@@ -1,0 +1,124 @@
+/* radiod_api - what the Go API layer may read and change in radiod
+ *
+ * The one seam between the Go API handlers (api, built as a
+ * c-archive) and the daemon: plain C types, no radiod internals.  Every
+ * call is safe from any thread; the setters change the radio exactly as
+ * radiod's own commands do (the same radio_backend_* calls), and the
+ * profile setters mark user.ini to be saved.
+ *
+ * Copyright (C) 2026 Rhizomatica
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+#ifndef RADIOD_API_H
+#define RADIOD_API_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+/* Results of the setters. */
+#define RADIOD_API_OK        0
+#define RADIOD_API_ENOENT   -1    /* no such profile */
+#define RADIOD_API_EINVAL   -2    /* a value the radio does not take */
+#define RADIOD_API_EBUSY    -3    /* refused while transmitting */
+#define RADIOD_API_ENOTSUP  -4    /* not on this radio or build */
+
+/* ── radio ── */
+
+typedef struct {
+    uint32_t active_profile;
+    bool     tx;
+    uint32_t frequency_hz;
+    char     mode[8];             /* LSB, USB, CW, FM, AM, DRM, FT8, RTTY, DSTAR */
+    int      power;               /* percent */
+    /* Meaningful while transmitting; tenths (watts x 10, SWR x 10) as the
+     * backends give them: Go divides, so radiod's -Ofast (x / 10.0 becomes
+     * x * 0.1) cannot turn 0.3 W into 0.30000000000000004. */
+    uint32_t fwd_x10, ref_x10, swr_x10;
+    bool     s_meter_valid;
+    double   s_meter_db;          /* dB relative to S9 */
+    bool     protection;          /* high-SWR protection tripped */
+    int32_t  timeout_s;
+    bool     digital_voice;
+    char     backend[8];          /* sbitx, hamlib */
+} radiod_api_state;
+
+typedef struct {
+    uint32_t profile;
+    uint32_t frequency_hz;
+    char     mode[8];
+    int      power;               /* percent */
+    int      volume;              /* percent */
+    uint32_t step_hz;             /* station-wide in radiod */
+    uint32_t filter_width_hz;     /* 0: the rig's default */
+    int32_t  timeout_s;           /* station-wide in radiod */
+    uint32_t ref_threshold;       /* SWR x 10, station-wide in radiod */
+    int32_t  bfo_hz;              /* station-wide in radiod */
+    bool     digital_voice;
+} radiod_api_profile;
+
+void     radiod_api_state_get(radiod_api_state *out);
+uint32_t radiod_api_profile_count(void);
+int      radiod_api_profile_get(uint32_t profile, radiod_api_profile *out);
+
+int radiod_api_select_profile(uint32_t profile);
+int radiod_api_set_frequency(uint32_t profile, uint32_t hz);
+int radiod_api_set_mode(uint32_t profile, const char *mode);
+int radiod_api_set_power(uint32_t profile, int percent);
+int radiod_api_set_volume(uint32_t profile, int percent);
+int radiod_api_set_filter_width(uint32_t profile, uint32_t hz);
+int radiod_api_set_digital_voice(uint32_t profile, bool on);
+int radiod_api_set_step(uint32_t hz);
+int radiod_api_set_timeout(int32_t seconds);
+int radiod_api_set_ref_threshold(uint32_t swr_x10);
+int radiod_api_set_bfo(int32_t hz);
+void radiod_api_reset_protection(void);
+
+/* ── digital modes ── */
+
+typedef struct {
+    int  cw_wpm, cw_pitch_hz;
+    int  rtty_baud, rtty_shift_hz, rtty_mark_hz;
+    char dstar_mycall[16];
+    bool dstar_encrypt, dstar_denoise, dstar_verbose;
+    char voice_codec[8];          /* RADEV2, DSTAR */
+} radiod_api_digi_settings;
+
+void radiod_api_digi_settings_get(radiod_api_digi_settings *out);
+/* key is radiod's: cw_wpm, cw_pitch, rtty_baud, rtty_mark, rtty_shift,
+ * dstar_verbose, dstar_denoise, dstar_encrypt. */
+int radiod_api_digi_set(const char *key, long value);
+int radiod_api_set_voice_codec(const char *name);
+
+/* The digi log's in-memory ring, oldest first: up to max entries after id
+ * `after`, each a JSON object (digi_log's line format) separated by '\n',
+ * in out (NUL-terminated).  Returns how many. */
+int radiod_api_digi_log(uint64_t after, int max, char *out, size_t out_len);
+
+/* ── modem (mercury linked in) ── */
+
+/* Mercury's last status JSON (its websocket's {"type":"status",...}) into
+ * out; false when mercury is not running or has said nothing yet. */
+bool radiod_api_modem_status(char *out, size_t out_len);
+
+/* ── to clients (hermes.v1), thread-safe, queue only ── */
+
+int radiod_api_ws_send(long conn_id, const char *data, size_t len);
+int radiod_api_ws_broadcast(const char *data, size_t len);
+
+/* ── what Go answers an HTTP request with (HermesHTTP) ──
+ * Every pointer malloc'd by Go (C.CString / C.CBytes), freed by C. */
+typedef struct {
+    int    status;
+    char  *content_type;
+    char  *extra_headers;         /* "Name: value\r\n" lines */
+    char  *body;
+    size_t body_len;
+} radiod_api_http_out;
+
+/* ── station ── */
+
+const char *radiod_api_version(void);
+
+#endif /* RADIOD_API_H */

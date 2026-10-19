@@ -42,7 +42,7 @@ TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
             tests/radio/test_controls tests/radio/test_dv_codec \
             tests/hamlib/test_hamlib_ptt tests/hamlib/test_hamlib_conf \
             tests/control_interfaces/test_rig_server \
-            tests/gui_interface/test_ui_hub \
+            tests/gui_interface/test_ui_hub tests/gui_interface/test_ws_server \
             tests/modem/test_rtp_audio tests/modem/test_modem_audio \
             tests/audioio/test_audio_bridge \
             tests/dsp/test_upsample2 tests/dsp/test_stream_resampler tests/dsp/test_mic_filter \
@@ -66,6 +66,14 @@ test: $(TEST_BINS)
 	done; \
 	if [ -n "$$failed" ]; then echo "FAILED:$$failed"; exit 1; fi; \
 	echo "== all $(words $(TEST_BINS)) test binaries passed"
+
+# The Go API layer's unit tests (api): the stub build, no C,
+# under the race detector.
+# -race needs a 48-bit address space; on a Raspberry Pi kernel (39-bit VMA)
+# run "make go-test GO_TEST_FLAGS=".
+GO_TEST_FLAGS ?= -race
+go-test:
+	cd api && go test $(GO_TEST_FLAGS) -count=1 ./...
 
 # Integration tests (tests/integration, Go): the real radio_daemon on
 # Hamlib's dummy rig, driven over its websocket, rigctl and (with mercury
@@ -117,6 +125,13 @@ tests/control_interfaces/test_rig_server: tests/control_interfaces/test_rig_serv
 # ── gui_interface/ ──────────────────────────────────────────────
 tests/gui_interface/test_ui_hub: tests/gui_interface/test_ui_hub.c gui_interface/ui_hub.c gui_interface/ui_hub.h
 	$(CC) $(TEST_CFLAGS) $< gui_interface/ui_hub.c $(UNITY_SRC) -o $@ -lpthread
+
+WS_SERVER_SRCS = gui_interface/websocket/ws_server.c gui_interface/websocket/ws_frame.c \
+                 gui_interface/websocket/ws_crypto.c gui_interface/websocket/ws_tls.c
+tests/gui_interface/test_ws_server: tests/gui_interface/test_ws_server.c $(WS_SERVER_SRCS) \
+                                    gui_interface/websocket/ws_server.h
+	$(CC) $(TEST_CFLAGS) -DWS_HAVE_OPENSSL=1 -Igui_interface $< $(WS_SERVER_SRCS) $(UNITY_SRC) \
+	      -o $@ -lssl -lcrypto -lpthread
 
 # ── modem/ ──────────────────────────────────────────────────────
 tests/modem/test_rtp_audio: tests/modem/test_rtp_audio.c modem/rtp_audio.c modem/rtp_audio.h \

@@ -53,11 +53,13 @@ hermes-radio-daemon/
 ├── audioio/                 Operator audio: audio_bridge (browser, csdr polyphase), headset
 ├── control_interfaces/      Control servers: CAT emulation (cat_server), rigctld
 │                            (rig_server), SHM command dispatcher (radio_shm)
-├── gui_interface/           User interfaces
-│   ├── radio_websocket.c    ws/wss UI server (one for both backends)
-│   ├── websocket/           In-tree RFC 6455 server + frame codec + TLS (OpenSSL)
-│   ├── web/                 Self-contained demo HTML client (index.html)
-│   └── api/                 Go module (go 1.27.2): REST + websocket APIs over cgo
+├── api/                     The station API (/api/v2 REST, hermes.v1): Go module (go 1.27.2)
+│                            linked in as a C archive, and its C facade (radiod_api.h)
+├── gui_interface/           Transports and user interfaces
+│   ├── radio_websocket.c    ws/wss server: radiod's own protocol; routes /api/v2 to api/
+│   ├── websocket/           In-tree RFC 6455 server + HTTP + frame codec + TLS (OpenSSL)
+│   ├── ui_hub.c             Module UI traffic (mercury's) for every transport
+│   └── web/                 Self-contained demo HTML client (index.html)
 ├── common/                  INI configuration (cfg_utils), shared-memory helpers
 ├── include/                 SHM protocol headers (sbitx_io.h, radio_cmds.h)
 ├── utils/                   radio_client, ws_client, D-STAR/AMBE tools, check_symbols.sh
@@ -168,6 +170,19 @@ thread, and not in one-time setup in `main()` (use `TEST_REQUIRE` there).
 A test that races another thread should share state through atomics or a
 lock: `make test SANITIZE=tsan` checks.  Races inside libraries are
 suppressed, with a reason, in `tests/sanitizer-suppressions/tsan.supp`.
+
+### The Go API layer
+
+`api/` is the station's `/api/v2` REST API and `hermes.v1` WebSocket, written in
+Go and linked into radiod as a C archive when `go` is on the `PATH` (`make`; without Go the
+daemon builds as before and answers `/api/v2` with 503). radiod's C code owns the sockets and
+calls the Go handlers. Turn it on with `main:api_v2_enable = 1`; until logins exist it answers
+only to this machine. How to add operations and commands, the directory layout and the rules:
+**[docs/API-WRITERS.md](docs/API-WRITERS.md)**.
+
+```bash
+make go-test            # the Go layer's unit tests, no radio or C needed
+```
 
 ### Integration tests
 

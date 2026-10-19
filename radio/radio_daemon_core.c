@@ -86,8 +86,11 @@ static void install_signal_handlers(void)
     sa.sa_handler = exit_radio;
     sigemptyset(&sa.sa_mask);
     /* Don't restart syscalls; we want blocking reads/poll to return
-     * EINTR so the worker threads can observe shutdown_ promptly. */
-    sa.sa_flags = 0;
+     * EINTR so the worker threads can observe shutdown_ promptly.
+     * SA_ONSTACK: with the Go API layer linked in, a signal can land on a
+     * Go thread, whose own stack is small; the handler must run on the
+     * alternate signal stack Go gives each thread. */
+    sa.sa_flags = SA_ONSTACK;
     sigaction(SIGINT,  &sa, NULL);
     sigaction(SIGQUIT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);

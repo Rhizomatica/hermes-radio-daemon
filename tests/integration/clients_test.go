@@ -46,46 +46,62 @@ type wsConn struct {
 }
 
 func wsDial(rawURL string) (*wsConn, error) {
+	c, _, err := wsDialProto(rawURL, "")
+	return c, err
+}
+
+// wsDialProto dials asking for a subprotocol ("" for none). On a refused
+// upgrade it returns the HTTP status; on success the accepted subprotocol.
+func wsDialProto(rawURL, proto string) (*wsConn, string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if u.Scheme != "ws" {
-		return nil, fmt.Errorf("only ws:// is supported here, not %q", u.Scheme)
+		return nil, "", fmt.Errorf("only ws:// is supported here, not %q", u.Scheme)
 	}
 	conn, err := net.DialTimeout("tcp", u.Host, 5*time.Second)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		conn.Close()
-		return nil, err
+		return nil, "", err
 	}
 	key := base64.StdEncoding.EncodeToString(nonce[:])
 	path := u.RequestURI()
+	protoHdr := ""
+	if proto != "" {
+		protoHdr = "Sec-WebSocket-Protocol: " + proto + "\r\n"
+	}
 	fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"+
-		"Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n", path, u.Host, key)
+		"Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n%s\r\n", path, u.Host, key, protoHdr)
 
 	r := bufio.NewReader(conn)
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	resp, err := http.ReadResponse(r, &http.Request{Method: "GET"})
 	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("handshake: %w", err)
+		return nil, "", fmt.Errorf("handshake: %w", err)
 	}
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		conn.Close()
-		return nil, fmt.Errorf("handshake: HTTP %d", resp.StatusCode)
+		return nil, "", &httpStatusError{resp.StatusCode}
 	}
 	sum := sha1.Sum([]byte(key + wsGUID))
 	if got, want := resp.Header.Get("Sec-WebSocket-Accept"), base64.StdEncoding.EncodeToString(sum[:]); got != want {
 		conn.Close()
-		return nil, fmt.Errorf("handshake: Sec-WebSocket-Accept %q, want %q", got, want)
+		return nil, "", fmt.Errorf("handshake: Sec-WebSocket-Accept %q, want %q", got, want)
 	}
 	_ = conn.SetReadDeadline(time.Time{})
-	return &wsConn{conn: conn, r: r}, nil
+	return &wsConn{conn: conn, r: r}, resp.Header.Get("Sec-WebSocket-Protocol"), nil
 }
+
+// httpStatusError is a refused upgrade.
+type httpStatusError struct{ status int }
+
+func (e *httpStatusError) Error() string { return fmt.Sprintf("handshake: HTTP %d", e.status) }
 
 func (c *wsConn) writeFrame(op byte, payload []byte) error {
 	hdr := []byte{0x80 | op}

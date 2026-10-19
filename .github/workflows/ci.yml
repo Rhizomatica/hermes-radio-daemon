@@ -5,10 +5,11 @@
 # from tests/ci/install-deps.sh.
 #
 #   build-test   amd64 and arm64 (the stations' architecture), with mercury
-#                linked in (vendor/mercury submodule): make, make test,
-#                make check-symbols, make integration-test
-#   no-mercury   the build without the submodule, which must still work,
-#                with its unit and integration tests
+#                linked in (vendor/mercury submodule) and the Go API layer:
+#                make, make test, make go-test, make check-symbols,
+#                make integration-test
+#   no-mercury   the build without the submodule or the Go layer, which must
+#                still work, with its unit and integration tests
 #   sanitizers   make test under ASan+UBSan and under TSan
 
 name: CI
@@ -45,17 +46,19 @@ jobs:
         run: git config --global --add safe.directory '*'
       - name: Build dependencies
         run: tests/ci/install-deps.sh
-      - name: Build
-        run: make -j"$(nproc)" all
-      - name: Unit tests
-        run: make test
-      - name: Symbol check (daemon vs mercury)
-        run: make check-symbols
-      - name: Go (the toolchain tests/integration/go.mod names)
+      - name: "Go (before the build: the API layer is linked into radio_daemon)"
         uses: actions/setup-go@v5
         with:
-          go-version-file: tests/integration/go.mod
+          go-version-file: api/go.mod
           cache: false
+      - name: Build
+        run: make -j"$(nproc)" all
+      - name: Unit tests (C)
+        run: make test
+      - name: Unit tests (Go API layer)
+        run: make go-test
+      - name: Symbol check (daemon vs mercury and the Go archive)
+        run: make check-symbols
       - name: Integration tests
         run: make integration-test
 
@@ -73,19 +76,19 @@ jobs:
         run: git config --global --add safe.directory '*'
       - name: Build dependencies
         run: tests/ci/install-deps.sh
-      - name: Build
-        run: make -j"$(nproc)" all
-      - name: The daemon has no mercury in it
-        run: "! nm radio_daemon | grep -q ' T mercury_init$'"
+      - name: Build (no mercury, no Go API layer)
+        run: make -j"$(nproc)" HAVE_GO_API=0 all
+      - name: The daemon has neither mercury nor the Go layer in it
+        run: "! nm radio_daemon | grep -qE ' T (mercury_init|HermesHTTP)$'"
       - name: Unit tests
         run: make test
-      - name: Go (the toolchain tests/integration/go.mod names)
+      - name: Go (for the integration harness only)
         uses: actions/setup-go@v5
         with:
           go-version-file: tests/integration/go.mod
           cache: false
-      - name: Integration tests (the mercury test skips)
-        run: make integration-test
+      - name: Integration tests (mercury and Go-layer tests skip; /api/v2 answers 503)
+        run: make HAVE_GO_API=0 integration-test
 
   sanitizers:
     name: Unit tests under ${{ matrix.sanitize }} (Debian 13, amd64)

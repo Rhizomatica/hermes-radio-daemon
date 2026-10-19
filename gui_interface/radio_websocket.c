@@ -40,6 +40,11 @@
 #include "radio_controls.h"
 #include "radio_websocket.h"
 #include "ui_hub.h"
+#include "radiod_api.h"
+#include "radiod_api_attach.h"
+#ifdef HAVE_GO_API
+#include "libhermes_api.h"        /* api, built as a c-archive */
+#endif
 #include "dsp/sbitx_ft8.h"
 #include "cfg_utils.h"
 #include "voice_crypto.h"
@@ -1278,11 +1283,110 @@ static const void *asset_lookup(const char *path, size_t *size)
     return buf;
 }
 
+/* ─────────────────────── /api/v2 (Go) ───────────────────────
+ *
+ * The REST API and the hermes.v1 websocket, on this same listener: C owns
+ * the sockets, the Go layer (api) answers.  hermes.v1
+ * connections are class 1, so radiod's legacy broadcasts never reach them. */
+
+#define WS_CLASS_V2 1
+
+static bool is_api_v2(const char *path)
+{
+    return !strcmp(path, "/api/v2") || !strncmp(path, "/api/v2/", 8);
+}
+
+/* Until sessions exist, /api/v2 answers only to this machine. */
+static bool is_loopback(const char *peer)
+{
+    return !strncmp(peer, "127.", 4) || !strcmp(peer, "::1");
+}
+
+static void api_problem(ws_http_response_t *resp, int status, const char *code, const char *detail)
+{
+    char *b = malloc(320);
+    int n = snprintf(b, 320, "{\"type\":\"https://hermes.radio/problems/%s\",\"title\":\"%s\","
+                     "\"status\":%d,\"code\":\"%s\",\"detail\":\"%s\"}",
+                     code, code, status, code, detail);
+    resp->status = status;
+    resp->content_type = "application/problem+json";
+    resp->body = b;
+    resp->body_len = n > 0 ? (size_t) n : 0;
+}
+
+static bool on_ws_http(ws_conn_t *c, const ws_http_request_t *req, ws_http_response_t *resp,
+                       void *user_data)
+{
+    websocket_ctx *ctx = (websocket_ctx *) user_data;
+    (void) c;
+    if (!is_api_v2(req->path) || !ctx->radio_h->api_v2_enable)
+        return false;                   /* the static pages (404 for /api/v2 when off) */
+    if (!is_loopback(req->peer))
+    {
+        api_problem(resp, 403, "forbidden", "/api/v2 answers only on this machine until logins exist");
+        return true;
+    }
+#ifdef HAVE_GO_API
+    /* Go's strings are copied here and freed: the server sends the reply
+     * after this returns (one thread, so static buffers do). */
+    static char ct[128], extra[1024];
+    radiod_api_http_out out = { 0 };
+    HermesHTTP((char *) req->method, (char *) req->path, (char *) req->query,
+               (char *) req->headers, (char *) req->peer, (char *) req->body,
+               req->body_len, &out);
+    snprintf(ct, sizeof(ct), "%s", out.content_type ? out.content_type : "application/json");
+    snprintf(extra, sizeof(extra), "%s", out.extra_headers ? out.extra_headers : "");
+    free(out.content_type);
+    free(out.extra_headers);
+    resp->status = out.status;
+    resp->content_type = ct[0] ? ct : "application/json";
+    resp->extra_headers = extra;
+    resp->body = out.body;
+    resp->body_len = out.body_len;
+#else
+    api_problem(resp, 503, "not_supported", "this radio_daemon was built without the Go API layer");
+#endif
+    return true;
+}
+
+static int on_ws_upgrade(ws_conn_t *c, const ws_http_request_t *req, unsigned *cls,
+                         char *protocol, size_t protocol_len, void *user_data)
+{
+    websocket_ctx *ctx = (websocket_ctx *) user_data;
+    char want[128] = "";
+
+    if (strcmp(req->path, "/api/v2/ws") != 0)
+        return 0;                       /* radiod's legacy protocol, class 0 */
+    if (!ctx->radio_h->api_v2_enable)
+        return 404;
+    if (!is_loopback(req->peer))
+        return 403;
+    if (!ws_http_header(req, "Sec-WebSocket-Protocol", want, sizeof(want)) ||
+        !strstr(want, "hermes.v1"))
+        return 426;
+#ifdef HAVE_GO_API
+    /* The hello goes out from WSOpen: make sure the facade can send even on
+     * a connection accepted before init published the server. */
+    radiod_api_attach_ws(ws_conn_server(c));
+    int st = HermesWSOpen(ws_conn_id(c), (char *) req->path, (char *) req->headers, (char *) req->peer);
+    if (st != 0)
+        return st;
+    snprintf(protocol, protocol_len, "hermes.v1");
+    *cls = WS_CLASS_V2;
+    return 0;
+#else
+    (void) c; (void) cls; (void) protocol; (void) protocol_len;
+    return 503;
+#endif
+}
+
 /* ─────────────────────── server callbacks ─────────────────────── */
 
 static void on_ws_connect(ws_conn_t *c, void *user_data)
 {
     websocket_ctx *ctx = (websocket_ctx *) user_data;
+    if (ws_conn_class(c) == WS_CLASS_V2)
+        return;                         /* Go sent the hermes.v1 hello */
     char hello[512];
     char status[2048];
     size_t n;
@@ -1311,6 +1415,15 @@ static void on_ws_message(ws_conn_t *c, const void *data, size_t len,
     websocket_ctx *ctx = (websocket_ctx *) user_data;
     const uint8_t *p = (const uint8_t *) data;
 
+    if (ws_conn_class(c) == WS_CLASS_V2)
+    {
+#ifdef HAVE_GO_API
+        if (is_text)
+            HermesWSMessage(ws_conn_id(c), (char *) data, len);
+#endif
+        return;                         /* hermes.v1 has no client binary frames */
+    }
+
     if (is_text)
     {
         /* Null-terminate by copying to a stack buffer — the server does not
@@ -1334,6 +1447,11 @@ static void on_ws_message(ws_conn_t *c, const void *data, size_t len,
 static void on_ws_close(ws_conn_t *c, void *user_data)
 {
     websocket_ctx *ctx = (websocket_ctx *) user_data;
+
+#ifdef HAVE_GO_API
+    if (ws_conn_class(c) == WS_CLASS_V2)
+        HermesWSClose(ws_conn_id(c));
+#endif
 
     /* A push-to-talk client (browser tab, hermes-voice-key) that drops its
      * connection while keyed would otherwise leave the radio in TX. */
@@ -1437,6 +1555,11 @@ static void *websocket_thread(void *ctx_v)
 
 bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid)
 {
+    radiod_api_attach(radio_h);
+#ifdef HAVE_GO_API
+    HermesInit();
+#endif
+
     ws_server_opts_t opts;
     bool tls = false;
     char host[128];
@@ -1469,6 +1592,8 @@ bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid)
     opts.on_connect = on_ws_connect;
     opts.on_message = on_ws_message;
     opts.on_close = on_ws_close;
+    opts.on_http = on_ws_http;
+    opts.on_upgrade = on_ws_upgrade;
     opts.user_data = &ws_ctx;
 
     int rc = ws_server_start(&ws_ctx.server, &opts);
@@ -1496,6 +1621,7 @@ bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid)
         return false;
     }
     ws_ctx.thread_started = true;
+    radiod_api_attach_ws(ws_ctx.server);
     ui_hub_sink sink = { .text = hub_text, .binary = hub_binary, .user = ws_ctx.server };
     s_hub_sink = ui_hub_add_sink(&sink);
     if (s_hub_sink < 0)
@@ -1507,6 +1633,7 @@ void radio_websocket_shutdown(pthread_t *websocket_tid)
 {
     if (!ws_ctx.thread_started) return;
     ui_hub_remove_sink(s_hub_sink);         /* no module broadcast after this */
+    radiod_api_attach_ws(NULL);             /* nor a hermes.v1 message */
     s_hub_sink = -1;
     pthread_join(*websocket_tid, NULL);
     ws_ctx.thread_started = false;

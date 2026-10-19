@@ -20,7 +20,7 @@ CC      = gcc
 #   common/              configuration and shared-memory helpers
 #   include/             public protocol headers (SHM command set)
 #   utils/               radio_client, ws_client, D-STAR/AMBE tools
-MODULE_INCLUDES = -Iradio -Imodem -Iaudioio -Icontrol_interfaces -Igui_interface \
+MODULE_INCLUDES = -Iradio -Imodem -Iaudioio -Icontrol_interfaces -Igui_interface -Iapi \
                   -Icommon -Ihamlib -Iinclude
 
 # -MMD -MP auto-generates per-object header dependencies (*.d), so editing a
@@ -57,7 +57,7 @@ OPUS_DNN_OBJS     = $(OPUS_DNN_SRCS:.c=.o)
 FT8_LIB_OBJS      = $(FT8_LIB_SRCS:.c=.o)
 MM_FSK_OBJS       = $(MM_FSK_SRCS:.c=.o)
 
-.PHONY: all clean install test integration-test check-symbols FORCE
+.PHONY: all clean install test go-test integration-test check-symbols FORCE
 
 all: radio_daemon radio_client
 
@@ -75,6 +75,7 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   control_interfaces/radio_shm.o \
                   gui_interface/radio_websocket.o \
                   gui_interface/ui_hub.o \
+                  api/radiod_api.o \
                   audioio/audio_bridge.o \
                   dsp/stream_resampler.o \
                   dsp/digi_log.o \
@@ -150,11 +151,39 @@ FT8_TEST_SRCS = $(FT8_LIB_SRCS)
 FT8_TEST_LIBS =
 endif
 
+# ── Go API layer (api), linked in as a C archive ──────
+# The /api/v2 REST API and the hermes.v1 websocket: radiod's C server owns
+# the sockets and calls the Go handlers (docs/API-WRITERS.md).  Built when
+# `go` is on the PATH (go.mod names the toolchain, 1.27.2); without it the
+# daemon builds as before and answers /api/v2 with 503.
+GO          ?= go
+GO_API_DIR   = api
+GO_API_LIB   = $(GO_API_DIR)/libhermes_api.a
+HAVE_GO_API ?= $(if $(shell command -v $(GO) 2>/dev/null),1,0)
+ifeq ($(HAVE_GO_API),1)
+CFLAGS += -DHAVE_GO_API=1
+GO_API_SRCS := $(shell find $(GO_API_DIR) -name '*.go' -o -name '*.yaml' -o -name go.mod)
+$(GO_API_LIB) $(GO_API_DIR)/libhermes_api.h &: $(GO_API_SRCS) api/radiod_api.h
+	cd $(GO_API_DIR) && CGO_ENABLED=1 CC="$(CC)" $(GO) build -tags radiod -buildmode=c-archive \
+	    -o libhermes_api.a ./cmd/hermesapi
+gui_interface/radio_websocket.o: $(GO_API_DIR)/libhermes_api.h
+endif
+
+# The facade reports the commit it was built from; the stamp changes only
+# with the commit, so the object is rebuilt then and only then.
+RADIOD_GIT_HASH := $(shell git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)
+ifneq ($(shell cat .radiod_version 2>/dev/null),$(RADIOD_GIT_HASH))
+$(shell echo $(RADIOD_GIT_HASH) > .radiod_version)
+endif
+api/radiod_api.o: .radiod_version
+api/radiod_api.o: EXTRA_CPPFLAGS += -DRADIOD_GIT_HASH=\"$(RADIOD_GIT_HASH)\"
+
 DAEMON_OBJS = $(DAEMON_TOP_OBJS) $(SBITX_OBJS)
 
 # Mercury's archives after the daemon's objects: they use its hermes_shm.
-radio_daemon: $(DAEMON_OBJS) $(if $(filter 1,$(HAVE_MERCURY)),$(MERCURY_LIBS))
-	$(CC) -o radio_daemon $(DAEMON_OBJS) $(if $(filter 1,$(HAVE_MERCURY)),$(MERCURY_LIBS)) $(LDFLAGS)
+DAEMON_LIBS = $(if $(filter 1,$(HAVE_MERCURY)),$(MERCURY_LIBS)) $(if $(filter 1,$(HAVE_GO_API)),$(GO_API_LIB))
+radio_daemon: $(DAEMON_OBJS) $(DAEMON_LIBS)
+	$(CC) -o radio_daemon $(DAEMON_OBJS) $(DAEMON_LIBS) $(LDFLAGS)
 
 # A library linked into the daemon must not define a global the daemon also
 # defines, nor one of the shared-library symbols it uses: neither is a link
@@ -167,8 +196,9 @@ radio_daemon: $(DAEMON_OBJS) $(if $(filter 1,$(HAVE_MERCURY)),$(MERCURY_LIBS))
 # own copy of the headers: the two copies must stay identical, or the ring
 # structs differ with no error at all.
 HERMES_SHM_FILES = ring_buffer_posix.c ring_buffer_posix.h shm_posix.c shm_posix.h
-check-symbols: $(DAEMON_OBJS)
-	utils/check_symbols.sh "$(DAEMON_OBJS)" "$(LDFLAGS)" $(MERCURY_LIBS)
+check-symbols: $(DAEMON_OBJS) $(DAEMON_LIBS)
+	utils/check_symbols.sh "$(DAEMON_OBJS)" "$(LDFLAGS)" $(MERCURY_LIBS) \
+	    $(if $(filter 1,$(HAVE_GO_API)),$(GO_API_LIB))
 ifeq ($(HAVE_MERCURY),1)
 	@for f in $(HERMES_SHM_FILES); do \
 	    cmp -s vendor/hermes_shm/$$f $(MERCURY_DIR)/common/$$f || \
@@ -248,7 +278,8 @@ install: radio_daemon radio_client
 # ── clean ───────────────────────────────────────────────────────
 clean:
 	rm -f radio_daemon radio_client ws_client \
-	      $(DAEMON_OBJS) $(DAEMON_OBJS:.o=.d) $(TEST_BINS) $(TEST_STAMP)
+	      $(DAEMON_OBJS) $(DAEMON_OBJS:.o=.d) $(TEST_BINS) $(TEST_STAMP) \
+	      $(GO_API_LIB) $(GO_API_DIR)/libhermes_api.h .radiod_version
 
 # Auto-generated header dependencies (from -MMD). Hyphen: ignore on first build.
 -include $(DAEMON_OBJS:.o=.d)
