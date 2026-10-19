@@ -227,13 +227,28 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
         headset_started = true;
 
     /* Tell systemd we are up (Type=notify). On the sBitx, wait until the
-     * loopback threads have configured the snd-aloop cables first: the
-     * modem must open them after radiod, which sets the period the codec
-     * timer needs (see loop_check_period). Bounded, so a missing loopback
-     * cannot hold the unit in "activating". */
-    if (radio_h.backend_kind == RADIO_BACKEND_HFSIGNALS && !sound_system_wait_ready(5000))
-        fprintf(stderr, "radio_daemon: loopback devices not configured after 5 s; "
-                        "reporting ready anyway\n");
+     * codec and the snd-aloop cables are configured first: the modem must
+     * open the cables after radiod, which sets the period the codec timer
+     * needs (see loop_check_period). Bounded (past the codec's busy wait),
+     * so a missing loopback cannot hold the unit in "activating"; but a
+     * radio without its codec hears and sends nothing, so that is fatal:
+     * the unit fails where it can be seen, and systemd's restart applies. */
+    if (radio_h.backend_kind == RADIO_BACKEND_HFSIGNALS)
+    {
+        bool codec_ok;
+        bool loop_ok = sound_system_wait_ready(15000, &codec_ok);
+
+        if (!codec_ok)
+        {
+            fprintf(stderr, "radio_daemon: the audio codec could not be opened (see above); "
+                            "a radio without it can neither hear nor transmit. Exiting.\n");
+            shutdown_ = true;
+            goto fail;
+        }
+        if (!loop_ok)
+            fprintf(stderr, "radio_daemon: loopback devices not configured after 15 s; "
+                            "reporting ready anyway\n");
+    }
     notify_systemd_ready();
 
     pthread_join(io_tid, NULL);
