@@ -1,10 +1,10 @@
-// Command hermes_api_check is a self-check for the API layer, not a server.
+// Command hermesapi-check is a self-check for the API layer, not a server.
 // It opens the database, builds the station router and reports, as plain
 // lines, the health and radio state radiod's C server would serve. Run it as:
 //
-//	cd api && go run ./cmd/hermes_api_check
+//	cd api && go run ./cmd/hermesapi-check
 //
-// It lives outside cmd/hermes_api (the C-archive package) so that radiod never
+// It lives outside cmd/hermesapi (the C-archive package) so that radiod never
 // links SQLite in: only this command imports internal/store.
 package main
 

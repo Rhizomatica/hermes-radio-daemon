@@ -35,7 +35,7 @@ ISO 8601 UTC timestamps, RFC 9457 `application/problem+json` errors with a stabl
  radiod (C) --- gui_interface/websocket/ws_server.c: sockets, TLS, HTTP parsing
       |            gui_interface/radio_websocket.c: /api/v2 and /api/v2/ws -> Go
       |
-      |  C calls the Go exports (cmd/hermes_api): HermesHTTP, HermesWSOpen, ...
+      |  C calls the Go exports (cmd/hermesapi): HermesHTTP, HermesWSOpen, ...
       v
  Go API layer (api/, linked into radiod as a C archive)
       |  your handlers, internal/<domain>
@@ -105,8 +105,8 @@ lives in `api/`, a Go module (go.mod: Go 1.27.2) with the one C file it needs be
 api/
 ├── radiod_api.h/.c     THE RADIOD C API: everything the API layer may read or change in radiod
 ├── spec/               pinned api-rest.yaml, api-ws.yaml, and the reader (spec.go)
-├── cmd/hermes_api/      the C exports; converts C types, nothing else
-├── cmd/hermes_api_check/  the self-check (`go run ./cmd/hermes_api_check`); opens the DB, not linked into radiod
+├── cmd/hermesapi/      the C exports; converts C types, nothing else
+├── cmd/hermesapi-check/  the self-check (`go run ./cmd/hermesapi-check`); opens the DB, not linked into radiod
 ├── cgo/radio/          the Radio interface; binding.go (the cgo binding, build tag `radiod`),
 │                       stub.go (an in-memory radio for tests and Go-only work)
 └── internal/
