@@ -38,6 +38,9 @@
 #include "modem_audio.h"
 #include "../dsp/mic_filter.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "alsa"
 char *radio_capture_dev = "hw:0,0";
 char *radio_playback_dev = "hw:0,0";
 char *loop_capture_dev = "hw:2,1";
@@ -123,7 +126,7 @@ static bool read_mic_inject(uint8_t *buffer, uint32_t size)
         if (stat(MIC_INJECT_PATH, &path_st) != 0 || fstat(mic_inject_fd, &fd_st) != 0 ||
             path_st.st_ino != fd_st.st_ino || path_st.st_dev != fd_st.st_dev)
         {
-            fprintf(stderr, "Mic inject ended: %s removed or replaced\n", MIC_INJECT_PATH);
+            HLOGI(LOG_C, "Mic inject ended: %s removed or replaced", MIC_INJECT_PATH);
             close_mic_inject();
         }
     }
@@ -138,7 +141,7 @@ static bool read_mic_inject(uint8_t *buffer, uint32_t size)
             if (mic_inject_fd < 0)
             {
                 if (!mic_inject_missing_logged && errno != ENOENT)
-                    fprintf(stderr, "Could not open mic inject file %s (%s)\n", MIC_INJECT_PATH, strerror(errno));
+                    HLOGE(LOG_C, "Could not open mic inject file %s (%s)", MIC_INJECT_PATH, strerror(errno));
 
                 mic_inject_missing_logged = true;
                 return false;
@@ -146,13 +149,13 @@ static bool read_mic_inject(uint8_t *buffer, uint32_t size)
 
             if (fstat(mic_inject_fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size == 0)
             {
-                fprintf(stderr, "Mic inject file %s is empty\n", MIC_INJECT_PATH);
+                HLOGW(LOG_C, "Mic inject file %s is empty", MIC_INJECT_PATH);
                 close_mic_inject();
                 mic_inject_missing_logged = true;
                 return false;
             }
 
-            fprintf(stderr, "Mic inject active: %s\n", MIC_INJECT_PATH);
+            HLOGI(LOG_C, "Mic inject active: %s", MIC_INJECT_PATH);
             mic_inject_missing_logged = false;
         }
 
@@ -168,12 +171,12 @@ static bool read_mic_inject(uint8_t *buffer, uint32_t size)
             if (lseek(mic_inject_fd, 0, SEEK_SET) >= 0)
                 continue;
 
-            fprintf(stderr, "Mic inject stream ended for %s\n", MIC_INJECT_PATH);
+            HLOGI(LOG_C, "Mic inject stream ended for %s", MIC_INJECT_PATH);
             close_mic_inject();
             return false;
         }
 
-        fprintf(stderr, "Mic inject read failed for %s (%s)\n", MIC_INJECT_PATH, strerror(errno));
+        HLOGE(LOG_C, "Mic inject read failed for %s (%s)", MIC_INJECT_PATH, strerror(errno));
         close_mic_inject();
         return false;
     }
@@ -200,15 +203,15 @@ static void dump_hook(FILE **fp, unsigned *tick, const char *trigger, const char
         {
             *fp = fopen(path, "wb");
             if (!*fp)
-                fprintf(stderr, "Could not open %s dump file %s (%s)\n", name, path, strerror(errno));
+                HLOGE(LOG_C, "Could not open %s dump file %s (%s)", name, path, strerror(errno));
             else
-                fprintf(stderr, "%s dump active: %s\n", name, path);
+                HLOGI(LOG_C, "%s dump active: %s", name, path);
         }
         else if (!on && *fp)
         {
             fclose(*fp);
             *fp = NULL;
-            fprintf(stderr, "%s dump closed: %s\n", name, path);
+            HLOGI(LOG_C, "%s dump closed: %s", name, path);
         }
     }
     if (*fp && buffer && size)
@@ -237,87 +240,87 @@ void show_alsa(snd_pcm_t *handle, snd_pcm_hw_params_t *params)
 
     /* Display information about the PCM interface */
 
-    printf("PCM handle name = '%s'\n", snd_pcm_name(handle));
+    HLOGD(LOG_C, "PCM handle name = '%s'", snd_pcm_name(handle));
 
-    printf("PCM state = %s\n", snd_pcm_state_name(snd_pcm_state(handle)));
+    HLOGD(LOG_C, "PCM state = %s", snd_pcm_state_name(snd_pcm_state(handle)));
 
     snd_pcm_hw_params_get_access(params, (snd_pcm_access_t *) &val);
-    printf("access type = %s\n",snd_pcm_access_name((snd_pcm_access_t)val));
+    HLOGD(LOG_C, "access type = %s",snd_pcm_access_name((snd_pcm_access_t)val));
 
     snd_pcm_hw_params_get_format(params, (snd_pcm_format_t *)&val);
-    printf("format = '%s' (%s)\n",
+    HLOGD(LOG_C, "format = '%s' (%s)",
            snd_pcm_format_name((snd_pcm_format_t)val),
            snd_pcm_format_description(
                (snd_pcm_format_t)val));
 
     snd_pcm_hw_params_get_subformat(params, (snd_pcm_subformat_t *)&val);
-    printf("subformat = '%s' (%s)\n",
+    HLOGD(LOG_C, "subformat = '%s' (%s)",
            snd_pcm_subformat_name((snd_pcm_subformat_t)val),
            snd_pcm_subformat_description(
                (snd_pcm_subformat_t)val));
 
     snd_pcm_hw_params_get_channels(params, &val);
-    printf("channels = %d\n", val);
+    HLOGD(LOG_C, "channels = %d", val);
 
     snd_pcm_hw_params_get_rate(params, &val, &dir);
-    printf("rate = %d Hz\n", val);
+    HLOGD(LOG_C, "rate = %d Hz", val);
 
     snd_pcm_hw_params_get_periods(params, &val, &dir);
-    printf("periods per buffer = %d frames\n", val);
+    HLOGD(LOG_C, "periods per buffer = %d frames", val);
 
     snd_pcm_hw_params_get_period_size(params, &frames, &dir);
-    printf("period size = %d frames\n", (int)frames);
+    HLOGD(LOG_C, "period size = %d frames", (int)frames);
 
     snd_pcm_hw_params_get_buffer_size(params, (snd_pcm_uframes_t *) &val);
-    printf("buffer size = %d frames\n", val);
+    HLOGD(LOG_C, "buffer size = %d frames", val);
 
     snd_pcm_hw_params_get_period_time(params, &val, &dir);
-    printf("period time = %d us\n", val);
+    HLOGD(LOG_C, "period time = %d us", val);
 
     snd_pcm_hw_params_get_buffer_time(params, &val, &dir);
-    printf("buffer time = %d us\n", val);
+    HLOGD(LOG_C, "buffer time = %d us", val);
 
     snd_pcm_hw_params_get_rate_numden(params, &val, &val2);
-    printf("exact rate = %d/%d Hz\n", val, val2);
+    HLOGD(LOG_C, "exact rate = %d/%d Hz", val, val2);
 
     val = snd_pcm_hw_params_get_sbits(params);
-    printf("significant bits = %d\n", val);
+    HLOGD(LOG_C, "significant bits = %d", val);
 
     val = snd_pcm_hw_params_is_batch(params);
-    printf("is batch double buffering = %d\n", val);
+    HLOGD(LOG_C, "is batch double buffering = %d", val);
 
     val = snd_pcm_hw_params_is_block_transfer(params);
-    printf("is block transfer = %d\n", val);
+    HLOGD(LOG_C, "is block transfer = %d", val);
 
     val = snd_pcm_hw_params_is_double(params);
-    printf("is double buffered = %d\n", val);
+    HLOGD(LOG_C, "is double buffered = %d", val);
 
     val = snd_pcm_hw_params_is_half_duplex(params);
-    printf("is half duplex = %d\n", val);
+    HLOGD(LOG_C, "is half duplex = %d", val);
 
     val = snd_pcm_hw_params_is_joint_duplex(params);
-    printf("is joint duplex = %d\n", val);
+    HLOGD(LOG_C, "is joint duplex = %d", val);
 
     val = snd_pcm_hw_params_can_overrange(params);
-    printf("can overrange = %d\n", val);
+    HLOGD(LOG_C, "can overrange = %d", val);
 
     val = snd_pcm_hw_params_can_mmap_sample_resolution(params);
-    printf("can mmap = %d\n", val);
+    HLOGD(LOG_C, "can mmap = %d", val);
 
     val = snd_pcm_hw_params_can_pause(params);
-    printf("can pause = %d\n", val);
+    HLOGD(LOG_C, "can pause = %d", val);
 
     val = snd_pcm_hw_params_can_resume(params);
-    printf("can resume = %d\n", val);
+    HLOGD(LOG_C, "can resume = %d", val);
 
     val = snd_pcm_hw_params_can_sync_start(params);
-    printf("can sync start = %d\n", val);
+    HLOGD(LOG_C, "can sync start = %d", val);
 
     val = snd_pcm_hw_params_get_fifo_size(params);
-    printf("fifo size = %d\n", val);
+    HLOGD(LOG_C, "fifo size = %d", val);
 
     val = snd_pcm_hw_params_is_monotonic(params);
-    printf("is monotonic = %d\n", val);
+    HLOGD(LOG_C, "is monotonic = %d", val);
 
 }
 
@@ -557,7 +560,7 @@ static void play_setup_sw(snd_pcm_t *pcm, snd_pcm_uframes_t period,
         (e = snd_pcm_sw_params_set_silence_threshold(pcm, sw, 0)) < 0 ||
         (e = snd_pcm_sw_params_set_silence_size(pcm, sw, boundary)) < 0 ||
         (e = snd_pcm_sw_params(pcm, sw)) < 0)
-        fprintf(stderr, "%s: sw_params failed (%s)\n", name, snd_strerror(e));
+        HLOGE(LOG_C, "%s: sw_params failed (%s)", name, snd_strerror(e));
 }
 
 static void play_prime(snd_pcm_t *pcm, const uint8_t *silence,
@@ -591,7 +594,7 @@ static snd_pcm_sframes_t play_catch_up(snd_pcm_t *pcm, snd_pcm_uframes_t buffer_
     pending++;
     if ((now.tv_sec - last_log.tv_sec) * 1000 + (now.tv_nsec - last_log.tv_nsec) / 1000000 >= 100)
     {
-        fprintf(stderr, "%s: underrun, %.1f ms played as silence (stream kept running%s)\n",
+        HLOGW(LOG_C, "%s: underrun, %.1f ms played as silence (stream kept running%s)",
                 name, late * 1000.0 / rate,
                 pending > 1 ? ", more in the last 100 ms" : "");
         last_log = now;
@@ -612,12 +615,12 @@ static int pcm_open_wait(snd_pcm_t **pcm, const char *device, snd_pcm_stream_t s
         if (e != -EBUSY || waited_ms >= PCM_BUSY_WAIT_MS || shutdown_)
         {
             if (e == 0 && waited_ms > 0)
-                fprintf(stderr, "audio device %s: free after %d ms\n", device, waited_ms);
+                HLOGI(LOG_C, "audio device %s: free after %d ms", device, waited_ms);
             return e;
         }
         if (waited_ms == 0)
-            fprintf(stderr, "audio device %s is busy (another process has it); "
-                            "waiting up to %d s\n", device, PCM_BUSY_WAIT_MS / 1000);
+            HLOGW(LOG_C, "audio device %s is busy (another process has it); "
+                            "waiting up to %d s", device, PCM_BUSY_WAIT_MS / 1000);
         usleep(250 * 1000);
     }
 }
@@ -634,34 +637,34 @@ static void *radio_capture_thread(void *device_ptr)
 
     if ((e = snd_pcm_hw_params_malloc (&hwparams)) < 0)
     {
-        fprintf (stderr, "Can not allocate hardware parameter structure (%s)\n", snd_strerror (e));
+        HLOGE(LOG_C, "Can not allocate hardware parameter structure (%s)", snd_strerror (e));
         return NULL;
     }
 
     if ((e = pcm_open_wait(&pcm_capture_handle, device, SND_PCM_STREAM_CAPTURE)) < 0)
     {
-        fprintf (stderr, "Can not open audio device %s (%s)\n", device, snd_strerror (e));
+        HLOGE(LOG_C, "Can not open audio device %s (%s)", device, snd_strerror (e));
         return NULL;
     }
 
-    fprintf(stderr, "ALSA Capture device is: %s\n", device);
+    HLOGI(LOG_C, "ALSA Capture device is: %s", device);
 
     if ((e = snd_pcm_hw_params_any(pcm_capture_handle, hwparams)) < 0)
     {
-        fprintf(stderr, "Error setting capture access (%d)\n", e);
+        HLOGE(LOG_C, "Error setting capture access (%d)", e);
         return NULL;
     }
 
     if ((e = snd_pcm_hw_params_set_access(pcm_capture_handle, hwparams, SND_PCM_ACCESS_MMAP_INTERLEAVED)) < 0)
     {
-        fprintf(stderr, "Error setting capture access.\n");
+        HLOGE(LOG_C, "Error setting capture access.");
         return NULL;
     }
 
     e = snd_pcm_hw_params_set_format(pcm_capture_handle, hwparams, format);
     if (e < 0)
     {
-        fprintf(stderr, "Error setting capture format.\n");
+        HLOGE(LOG_C, "Error setting capture format.");
         return NULL;
     }
 
@@ -670,41 +673,41 @@ static void *radio_capture_thread(void *device_ptr)
     e = snd_pcm_hw_params_set_rate_near(pcm_capture_handle, hwparams, &exact_rate, 0);
     if ( e < 0)
     {
-        fprintf(stderr, "Error setting capture rate.\n");
+        HLOGE(LOG_C, "Error setting capture rate.");
         return NULL;
     }
 
     if (hw_rate != exact_rate)
-        fprintf(stderr, "Capture rate %d changed to %d Hz\n", hw_rate, exact_rate);
+        HLOGI(LOG_C, "Capture rate %d changed to %d Hz", hw_rate, exact_rate);
 
     if ((e = snd_pcm_hw_params_set_channels(pcm_capture_handle, hwparams, channels)) < 0)
     {
-        fprintf(stderr, "Error setting capture channels.\n");
+        HLOGE(LOG_C, "Error setting capture channels.");
         return NULL;
     }
 
     if ((e = snd_pcm_hw_params_set_period_size_near(pcm_capture_handle,hwparams, &hw_period_size, 0)) < 0)
     {
-        fprintf (stderr, "Can not set period size (%s)\n",snd_strerror (e));
+        HLOGE(LOG_C, "Can not set period size (%s)",snd_strerror (e));
         return NULL;
     }
 
     if ((e = snd_pcm_hw_params_set_periods(pcm_capture_handle, hwparams, hw_n_periods, 0)) < 0)
     {
-        fprintf(stderr, "Error setting capture periods.\n");
+        HLOGE(LOG_C, "Error setting capture periods.");
         return NULL;
     }
 
     if ((e = snd_pcm_hw_params(pcm_capture_handle, hwparams)) < 0)
     {
-        fprintf(stderr, "Error setting capture HW params.\n");
+        HLOGE(LOG_C, "Error setting capture HW params.");
         return NULL;
     }
 
 #ifdef DEBUG_
-    printf("============= REPORT RADIO CAPTURE DEVICE %s =================\n", device);
+    HLOGD(LOG_C, "============= REPORT RADIO CAPTURE DEVICE %s =================", device);
     show_alsa(pcm_capture_handle, hwparams);
-    printf("==============================================================\n");
+    HLOGD(LOG_C, "==============================================================");
 #endif
 
     int sample_size = snd_pcm_format_width(format) / 8;
@@ -724,17 +727,17 @@ static void *radio_capture_thread(void *device_ptr)
 
         if ((e = snd_pcm_mmap_readi(pcm_capture_handle, buffer, hw_period_size)) != hw_period_size)
         {
-            fprintf (stderr, "read from audio interface %s failed (%s)\n", device, snd_strerror (e));
+            HLOGE(LOG_C, "read from audio interface %s failed (%s)", device, snd_strerror (e));
             if (e == -EPIPE)
             {
-                fprintf(stderr, "overrun\n");
+                HLOGW(LOG_C, "%s: overrun", device);
             }
             else if (e < 0)
             {
-                fprintf(stderr, "error from readi: %s\n", snd_strerror(e));
+                HLOGE(LOG_C, "%s: error from readi: %s", device, snd_strerror(e));
             } else if (e != hw_period_size)
             {
-                fprintf(stderr, "short read, read %d frames\n", e);
+                HLOGW(LOG_C, "%s: short read, read %d frames", device, e);
             }
             snd_pcm_prepare (pcm_capture_handle);
             continue;
@@ -783,34 +786,34 @@ static void *radio_playback_thread(void *device_ptr)
 
     if ((e = snd_pcm_hw_params_malloc (&hwparams)) < 0)
     {
-        fprintf (stderr, "Can not allocate hardware parameter structure (%s)\n", snd_strerror (e));
+        HLOGE(LOG_C, "Can not allocate hardware parameter structure (%s)", snd_strerror (e));
         return NULL;
     }
 
     if ((e = pcm_open_wait(&pcm_play_handle, device, SND_PCM_STREAM_PLAYBACK)) < 0)
     {
-        fprintf (stderr, "Can not open audio device %s (%s)\n", device, snd_strerror (e));
+        HLOGE(LOG_C, "Can not open audio device %s (%s)", device, snd_strerror (e));
         return NULL;
     }
 
 
-    fprintf(stderr, "ALSA Playback device is: %s\n", device);
+    HLOGI(LOG_C, "ALSA Playback device is: %s", device);
 
     if ((e = snd_pcm_hw_params_any(pcm_play_handle, hwparams)) < 0)
     {
-        fprintf(stderr, "Error getting hw playback params (%d)\n", e);
+        HLOGE(LOG_C, "Error getting hw playback params (%d)", e);
         return NULL;
     }
 
     if ((e = snd_pcm_hw_params_set_access(pcm_play_handle, hwparams, SND_PCM_ACCESS_MMAP_INTERLEAVED)) < 0)
     {
-        fprintf(stderr, "Error setting playback access.\n");
+        HLOGE(LOG_C, "Error setting playback access.");
         return NULL;
     }
 
     if ((e = snd_pcm_hw_params_set_format(pcm_play_handle, hwparams, format)) < 0)
     {
-        fprintf(stderr, "Error setting playback format.\n");
+        HLOGE(LOG_C, "Error setting playback format.");
         return NULL;
     }
 
@@ -818,44 +821,44 @@ static void *radio_playback_thread(void *device_ptr)
     e = snd_pcm_hw_params_set_rate_near(pcm_play_handle, hwparams, &exact_rate, 0);
     if ( e < 0)
     {
-        fprintf(stderr, "Error setting playback rate.\n");
+        HLOGE(LOG_C, "Error setting playback rate.");
         return NULL;
     }
 
     if (hw_rate != exact_rate)
-        fprintf(stderr, "Playback rate %d changed to %d Hz\n", hw_rate, exact_rate);
+        HLOGI(LOG_C, "Playback rate %d changed to %d Hz", hw_rate, exact_rate);
 
         /* Set number of channels */
     if ((e = snd_pcm_hw_params_set_channels(pcm_play_handle, hwparams, channels)) < 0)
     {
-        fprintf(stderr, "Error setting playback channels.\n");
+        HLOGE(LOG_C, "Error setting playback channels.");
         return NULL;
     }
 
     /* Set period size. */
     if ((e = snd_pcm_hw_params_set_period_size_near(pcm_play_handle,hwparams, &hw_period_size, 0)) < 0)
     {
-        fprintf (stderr, "Can not set period size (%s)\n", snd_strerror(e));
+        HLOGE(LOG_C, "Can not set period size (%s)", snd_strerror(e));
         return NULL;
     }
 
     /* nr. of periods */
     if ((e = snd_pcm_hw_params_set_periods(pcm_play_handle, hwparams, hw_play_n_periods, 0)) < 0)
     {
-        fprintf(stderr, "Error setting playback periods.\n");
+        HLOGE(LOG_C, "Error setting playback periods.");
         return NULL;
     }
 
     if ((e = snd_pcm_hw_params(pcm_play_handle, hwparams)) < 0)
     {
-        fprintf(stderr, "Error setting playback HW params.\n");
+        HLOGE(LOG_C, "Error setting playback HW params.");
         return NULL;
     }
 
 #ifdef DEBUG_
-    printf("============= REPORT RADIO PLAYBACK DEVICE %s ================\n", device);
+    HLOGD(LOG_C, "============= REPORT RADIO PLAYBACK DEVICE %s ================", device);
     show_alsa(pcm_play_handle, hwparams);
-    printf("==============================================================\n");
+    HLOGD(LOG_C, "==============================================================");
 #endif
 
     int sample_size = snd_pcm_format_width(format) / 8;
@@ -908,17 +911,17 @@ static void *radio_playback_thread(void *device_ptr)
     try_again_radio_play:
         if ((e = snd_pcm_mmap_writei(pcm_play_handle, buffer, hw_period_size)) != hw_period_size)
         {
-            fprintf (stderr, "write to audio interface %s failed (%s)\n", device, snd_strerror (e));
+            HLOGE(LOG_C, "write to audio interface %s failed (%s)", device, snd_strerror (e));
             if (e == -EPIPE)
             {
-                fprintf(stderr, "underrun\n");
+                HLOGW(LOG_C, "%s: underrun", device);
             }
             else if (e < 0)
             {
-                fprintf(stderr, "error from writei: %s\n", snd_strerror(e));
+                HLOGE(LOG_C, "%s: error from writei: %s", device, snd_strerror(e));
             } else if (e != hw_period_size)
             {
-                fprintf(stderr, "short write, wrote %d frames\n", e);
+                HLOGW(LOG_C, "%s: short write, wrote %d frames", device, e);
             }
             /* Only reached if the stream stopped anyway (an error other
              * than the underruns play_catch_up absorbs). */
@@ -944,9 +947,9 @@ static void *radio_playback_thread(void *device_ptr)
 static void loop_check_period(const char *device, snd_pcm_uframes_t period)
 {
     if (period != LOOPBACK_PERIOD)
-        fprintf(stderr, "loopback %s: the cable is already set to %lu-frame periods, not %d "
+        HLOGW(LOG_C, "loopback %s: the cable is already set to %lu-frame periods, not %d "
                         "(the modem opened it first?). It will not run in step with the "
-                        "codec: restart the modem now that radiod is up.\n",
+                        "codec: restart the modem now that radiod is up.",
                 device, (unsigned long) period, LOOPBACK_PERIOD);
 }
 
@@ -1010,79 +1013,79 @@ void *loop_capture_thread(void *device_ptr)
 
     if ((e = snd_pcm_hw_params_malloc (&hloop_params)) < 0)
     {
-        fprintf (stderr, "Can not allocate hardware parameter structure (%s)\n", snd_strerror (e));
+        HLOGE(LOG_C, "Can not allocate hardware parameter structure (%s)", snd_strerror (e));
         return NULL;
     }
 
     if ((e = pcm_open_wait(&loopback_capture_handle, device, SND_PCM_STREAM_CAPTURE)) < 0)
     {
-        fprintf (stderr, "Can not open audio device %s (%s)\n", device, snd_strerror (e));
+        HLOGE(LOG_C, "Can not open audio device %s (%s)", device, snd_strerror (e));
         return NULL;
     }
 
-    fprintf(stderr, "ALSA Loopback Capture device at: %s\n", device);
+    HLOGI(LOG_C, "ALSA Loopback Capture device at: %s", device);
 
     if ((e = snd_pcm_hw_params_any(loopback_capture_handle, hloop_params)) < 0)
     {
-        fprintf(stderr, "Error setting capture access (%d)\n", e);
+        HLOGE(LOG_C, "Error setting capture access (%d)", e);
         return NULL;
     }
 
     if ((e = snd_pcm_hw_params_set_access(loopback_capture_handle, hloop_params, SND_PCM_ACCESS_MMAP_INTERLEAVED)) < 0)
     {
-        fprintf(stderr, "Error setting capture access.\n");
+        HLOGE(LOG_C, "Error setting capture access.");
         return NULL;
     }
 
     /* Set sample format */
     if ((e = snd_pcm_hw_params_set_format(loopback_capture_handle, hloop_params, format)) < 0)
     {
-        fprintf(stderr, "Error setting loopback capture format.\n");
+        HLOGE(LOG_C, "Error setting loopback capture format.");
         return NULL;
     }
 
     exact_rate = loopback_rate;
     if ((e = snd_pcm_hw_params_set_rate_near(loopback_capture_handle, hloop_params, &exact_rate, 0)) < 0)
     {
-        fprintf(stderr, "Error setting loopback capture rate.\n");
+        HLOGE(LOG_C, "Error setting loopback capture rate.");
         return NULL;
     }
 
     if (loopback_rate != exact_rate)
-        fprintf(stderr, "The loopback capture rate set to %d Hz\n", exact_rate);
+        HLOGI(LOG_C, "The loopback capture rate set to %d Hz", exact_rate);
 
     /* Set number of channels */
     if ((e = snd_pcm_hw_params_set_channels(loopback_capture_handle, hloop_params, channels)) < 0)
     {
-        fprintf(stderr, "Error setting loopback capture channels.\n");
+        HLOGE(LOG_C, "Error setting loopback capture channels.");
         return NULL;
     }
 
     /* Set period size. */
     if ((e = snd_pcm_hw_params_set_period_size_near(loopback_capture_handle, hloop_params, &period, 0)) < 0)
     {
-        fprintf (stderr, "cannot set period size (%s)\n",snd_strerror (e));
+        HLOGE(LOG_C, "cannot set period size (%s)",snd_strerror (e));
         return NULL;
     }
 
     if ((e = snd_pcm_hw_params_set_periods(loopback_capture_handle, hloop_params, loopback_n_periods, 0)) < 0) {
-        fprintf(stderr, "*Error setting loopback capture periods.\n");
+        HLOGE(LOG_C, "Error setting loopback capture periods.");
         return NULL;
     }
 
 
     if ((e = snd_pcm_hw_params(loopback_capture_handle, hloop_params)) < 0)
     {
-        fprintf(stderr, "*Error setting capture HW params.\n");
+        HLOGE(LOG_C, "Error setting capture HW params.");
         return NULL;
     }
     loop_check_period(device, period);
     loop_opened();
 
 #ifdef DEBUG_
-    printf("============= REPORT LOOPBACK CAPTURE DEVICE %s ==============\n", device);
+    HLOGD(LOG_C, "============= REPORT LOOPBACK CAPTURE DEVICE %s ==============", device);
     show_alsa(loopback_capture_handle, hloop_params);
-    printf("==============================================================\n");
+    HLOGD(LOG_C, "==============================================================");
 #endif
     // TODO: apply sw parameters... ?
 
@@ -1101,16 +1104,16 @@ void *loop_capture_thread(void *device_ptr)
         if ((e = snd_pcm_mmap_readi(loopback_capture_handle, buffer, period)) != period)
         {
 
-            fprintf (stderr, "read from audio interface %s failed (%s)\n", device, snd_strerror (e));
+            HLOGE(LOG_C, "read from audio interface %s failed (%s)", device, snd_strerror (e));
             if (e == -EPIPE)
             {
-                fprintf(stderr, "overrun\n");
+                HLOGW(LOG_C, "%s: overrun", device);
             }
             else if (e < 0) {
-                fprintf(stderr,"error from readi: %s\n", snd_strerror(e));
+                HLOGE(LOG_C, "%s: error from readi: %s", device, snd_strerror(e));
             } else if (e != period)
             {
-                fprintf(stderr, "short read, read %d frames\n", e);
+                HLOGW(LOG_C, "%s: short read, read %d frames", device, e);
             }
             snd_pcm_prepare (loopback_capture_handle);
             continue;
@@ -1139,81 +1142,81 @@ void *loop_playback_thread(void *device_ptr)
 
     if ((e = snd_pcm_hw_params_malloc (&hloop_params)) < 0)
     {
-        fprintf (stderr, "Can not allocate hardware parameter structure (%s)\n", snd_strerror (e));
+        HLOGE(LOG_C, "Can not allocate hardware parameter structure (%s)", snd_strerror (e));
         return NULL;
     }
 
     if ((e = pcm_open_wait(&loopback_play_handle, device, SND_PCM_STREAM_PLAYBACK)) < 0)
     {
-        fprintf (stderr, "Can not open audio device %s (%s)\n", device, snd_strerror (e));
+        HLOGE(LOG_C, "Can not open audio device %s (%s)", device, snd_strerror (e));
         return NULL;
     }
 
-    fprintf(stderr, "ALSA Loopback Playback device at: %s\n", device);
+    HLOGI(LOG_C, "ALSA Loopback Playback device at: %s", device);
 
     if ((e = snd_pcm_hw_params_any(loopback_play_handle, hloop_params)) < 0)
     {
-        fprintf(stderr, "Error getting loopback playback params (%d)\n", e);
+        HLOGE(LOG_C, "Error getting loopback playback params (%d)", e);
         return NULL;
     }
 
     if ((e = snd_pcm_hw_params_set_access(loopback_play_handle, hloop_params, SND_PCM_ACCESS_MMAP_INTERLEAVED)) < 0)
     {
-        fprintf(stderr, "Error setting loopback access.\n");
+        HLOGE(LOG_C, "Error setting loopback access.");
         return NULL;
     }
 
     /* Set sample format */
     if ((e = snd_pcm_hw_params_set_format(loopback_play_handle, hloop_params, format)) < 0)
     {
-        fprintf(stderr, "Error setting loopback format.\n");
+        HLOGE(LOG_C, "Error setting loopback format.");
         return NULL;
     }
 
     exact_rate = loopback_rate;
     if ((e = snd_pcm_hw_params_set_rate_near(loopback_play_handle, hloop_params, &exact_rate, 0)) < 0)
     {
-        fprintf(stderr, "Error setting playback rate.\n");
+        HLOGE(LOG_C, "Error setting playback rate.");
         return NULL;
     }
 
     if (loopback_rate != exact_rate)
-        fprintf(stderr, "Loopback playback rate %d changed to %d Hz\n", loopback_rate, exact_rate);
+        HLOGI(LOG_C, "Loopback playback rate %d changed to %d Hz", loopback_rate, exact_rate);
 
 
     /* Set number of channels */
     if ((e = snd_pcm_hw_params_set_channels(loopback_play_handle, hloop_params, channels)) < 0)
     {
-        fprintf(stderr, "*Error setting playback channels.\n");
+        HLOGE(LOG_C, "Error setting playback channels.");
         return NULL;
     }
 
     /* Set period size. */
     if ((e = snd_pcm_hw_params_set_period_size_near(loopback_play_handle, hloop_params, &period, 0)) < 0)
     {
-        fprintf (stderr, "cannot set period size (%s)\n",snd_strerror (e));
+        HLOGE(LOG_C, "cannot set period size (%s)",snd_strerror (e));
         return NULL;
     }
 
 
     if ((e = snd_pcm_hw_params_set_periods(loopback_play_handle, hloop_params, loopback_n_periods, 0)) < 0)
     {
-        fprintf(stderr, "*Error setting playback periods.\n");
+        HLOGE(LOG_C, "Error setting playback periods.");
         return NULL;
     }
 
     if ((e = snd_pcm_hw_params(loopback_play_handle, hloop_params)) < 0)
     {
-        fprintf(stderr, "*Error setting loopback playback HW params.\n");
+        HLOGE(LOG_C, "Error setting loopback playback HW params.");
         return NULL;
     }
     loop_check_period(device, period);
     loop_opened();
 
 #ifdef DEBUG_
-    printf("============= REPORT LOOPBACK PLAYBACK DEVICE %s =============\n", device);
+    HLOGD(LOG_C, "============= REPORT LOOPBACK PLAYBACK DEVICE %s =============", device);
     show_alsa(loopback_play_handle, hloop_params);
-    printf("==============================================================\n");
+    HLOGD(LOG_C, "==============================================================");
 #endif
 
     int sample_size = snd_pcm_format_width(format) / 8;
@@ -1247,17 +1250,17 @@ void *loop_playback_thread(void *device_ptr)
     try_again_loop_play:
         if ((e = snd_pcm_mmap_writei(loopback_play_handle, buffer, period)) != period)
         {
-            fprintf (stderr, "write to audio interface %s failed (%s)\n", device, snd_strerror (e));
+            HLOGE(LOG_C, "write to audio interface %s failed (%s)", device, snd_strerror (e));
             if (e == -EPIPE)
             {
-                fprintf(stderr, "overrun\n");
+                HLOGW(LOG_C, "%s: overrun", device);
             }
             else if (e < 0)
             {
-                fprintf(stderr, "error from writei: %s\n", snd_strerror(e));
+                HLOGE(LOG_C, "%s: error from writei: %s", device, snd_strerror(e));
             } else if (e != period)
             {
-                fprintf(stderr, "short write, wrote %d frames\n", e);
+                HLOGW(LOG_C, "%s: short write, wrote %d frames", device, e);
             }
 
             snd_pcm_prepare (loopback_play_handle);
@@ -1282,7 +1285,7 @@ void *control_thread(void *device_ptr)
      * the rx/tx tap (recording + spectrum) and the ring push/pop. */
     audio_bridge bridge;
     if (!audio_bridge_init(&bridge, hw_rate, hw_rate))
-        fprintf(stderr, "sbitx_alsa: audio_bridge_init failed; bridge disabled\n");
+        HLOGE(LOG_C, "audio_bridge_init failed; bridge disabled");
 
     // TODO: DSP with 512 sample window?
     // we have 96 kHz in the radio soundcard, and 48 kHz in the loopback soundcard
@@ -1295,7 +1298,7 @@ void *control_thread(void *device_ptr)
 #if 0
     if (hw_period_size != (LOOPBACK_PERIOD * 2))
     {
-        fprintf(stderr, "Hardware 96 kHz sound period size != (Loopback 48 kHz period size * 2)\n");
+        HLOGE(LOG_C, "Hardware 96 kHz sound period size != (Loopback 48 kHz period size * 2)");
         block_size = hw_period_size;
     }
 #endif
@@ -1341,9 +1344,9 @@ void *control_thread(void *device_ptr)
                 mic_hpf_setup(&mic_filter, hz, 96000);
                 mic_filter_ready = true;
                 if (mic_filter.cutoff_hz)
-                    fprintf(stderr, "mic high-pass: %u Hz, 4th-order Butterworth\n", mic_filter.cutoff_hz);
+                    HLOGI(LOG_C, "mic high-pass: %u Hz, 4th-order Butterworth", mic_filter.cutoff_hz);
                 else
-                    fprintf(stderr, "mic high-pass: off\n");
+                    HLOGI(LOG_C, "mic high-pass: off");
             }
             mic_hpf_run_s32(&mic_filter, (int32_t *) buffer_mic_to_dsp, block_size);
         }
@@ -1374,7 +1377,7 @@ void *control_thread(void *device_ptr)
             }
             else
             {
-                printf("No data from loopback capture device. Skipping.\n");
+                HLOGD(LOG_C, "no data from the loopback capture device; skipping");
                 signal_to_tx = buffer_null;
             }
         }
@@ -1448,19 +1451,19 @@ void *control_thread(void *device_ptr)
             sbitx_buf_write(dsp_to_loopback, output_loopback, buffer_size); // stereo 48 kHz interleaved
         else
         {
-            printf("Buffer full dsp_to_loopback! Cleaning buffer\n");
+            HLOGW(LOG_C, "Buffer full dsp_to_loopback! Cleaning buffer");
             sbitx_buf_clear(dsp_to_loopback);
         }
 
         if (sbitx_buf_free_size(dsp_to_radio) >= buffer_size)
             sbitx_buf_write(dsp_to_radio, output_tx, buffer_size); // mono 96 kHz
         else
-            printf("Buffer full dsp_to_radio!\n");
+            HLOGW(LOG_C, "Buffer full dsp_to_radio!");
 
         if (sbitx_buf_free_size(dsp_to_speaker) >= buffer_size)
             sbitx_buf_write(dsp_to_speaker, output_speaker, buffer_size); // mono 96 kHz
         else
-            printf("Buffer full dsp_to_speaker!\n");
+            HLOGW(LOG_C, "Buffer full dsp_to_speaker!");
     }
 
     free(buffer_null);

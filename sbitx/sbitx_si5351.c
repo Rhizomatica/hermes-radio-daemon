@@ -30,6 +30,9 @@
 #include "sbitx_si5351.h"
 #include "sbitx_core.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "si5351"
 #define SI_CLK0_CONTROL  16      // Register definitions
 #define SI_CLK1_CONTROL 17
 #define SI_CLK2_CONTROL 18
@@ -227,7 +230,7 @@ static void set_freq_fixeddiv(int clk, int pll, uint32_t frequency, int divider,
     int32_t multi = pllfreq / xtal_freq_calibrated;
     int32_t num = ((uint64_t)(pllfreq % xtal_freq_calibrated) * 0x80000)/xtal_freq_calibrated;
 
-    //printf("fixeddiv clk:%d, freq:%d, pll:%d, pllfreq:%d, div: %d\n", clk, frequency, pll, pllfreq, divider);
+    //HLOGI(LOG_C, "fixeddiv clk:%d, freq:%d, pll:%d, pllfreq:%d, div: %d", clk, frequency, pll, pllfreq, divider);
     setup_pll(pll, multi, num, denom);
     setup_multisynth(clk, pll, divider, 0, 1, SI_R_DIV_1, drive_strength);
 }

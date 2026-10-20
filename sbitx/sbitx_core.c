@@ -40,6 +40,9 @@
 #include "radio_backend.h"
 #include "radio_controls.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "sbitx"
 extern _Atomic bool shutdown_;
 extern _Atomic bool tx_starting;
 extern _Atomic bool rx_starting;
@@ -118,7 +121,7 @@ void *hw_thread(void *radio_h_v)
 
     if (res < 0)
     {
-        printf("Fatal error: Start Periodic Timer\n");
+        HLOGE(LOG_C, "Fatal error: Start Periodic Timer");
         shutdown_ = true;
         return false;
     }
@@ -200,7 +203,7 @@ static void set_reflected_threshold(radio *radio_h, uint32_t ref_threshold)
     sprintf(tmp, "%u", radio_h->reflected_threshold);
     int rc = cfg_set(radio_h, radio_h->cfg_radio, "main:reflected_threshold", tmp);
     if (rc != 0)
-        printf("Error modifying config file\n");
+        HLOGE(LOG_C, "Error modifying config file");
 
     radio_h->cfg_radio_dirty = true;
 }
@@ -209,7 +212,7 @@ static void set_power_knob(radio *radio_h, uint16_t power_level, uint32_t profil
 {
     if (profile > radio_h->profiles_count)
     {
-        printf("Error: Profile index out of bounds\n");
+        HLOGE(LOG_C, "Profile index out of bounds");
         return;
     }
 
@@ -230,7 +233,7 @@ static void set_power_knob(radio *radio_h, uint16_t power_level, uint32_t profil
     sprintf(tmp2, "%u", *power_level_percentage);
     int rc = cfg_set(radio_h, radio_h->cfg_user, tmp1, tmp2);
     if (rc != 0)
-        printf("Error modifying config file\n");
+        HLOGE(LOG_C, "Error modifying config file");
 
     radio_h->cfg_user_dirty = true;
 }
@@ -239,7 +242,7 @@ static void set_digital_voice(radio *radio_h, bool digital_voice, uint32_t profi
 {
     if (profile > radio_h->profiles_count)
     {
-        printf("Error: Profile index out of bounds\n");
+        HLOGE(LOG_C, "Profile index out of bounds");
         return;
     }
 
@@ -255,7 +258,7 @@ static void set_digital_voice(radio *radio_h, bool digital_voice, uint32_t profi
     sprintf(tmp2, "%d", digital_voice ? 1 : 0);
     int rc = cfg_set(radio_h, radio_h->cfg_user, tmp1, tmp2);
     if (rc != 0)
-        printf("Error modifying config file\n");
+        HLOGE(LOG_C, "Error modifying config file");
 
     radio_h->cfg_user_dirty = true;
 }
@@ -293,7 +296,7 @@ static void set_profile(radio *radio_h, uint32_t profile)
     sprintf(tmp, "%u", radio_h->profile_active_idx);
     int rc = cfg_set(radio_h, radio_h->cfg_user, "main:current_profile", tmp);
     if (rc != 0)
-        printf("Error modifying config file\n");
+        HLOGE(LOG_C, "Error modifying config file");
 
     radio_h->cfg_user_dirty = true;
 }
@@ -317,7 +320,7 @@ static void set_speaker_volume(radio *radio_h, uint32_t speaker_level, uint32_t 
     sprintf(tmp2, "%u", *volume);
     int rc = cfg_set(radio_h, radio_h->cfg_user, tmp1, tmp2);
     if (rc != 0)
-        printf("Error modifying config file\n");
+        HLOGE(LOG_C, "Error modifying config file");
 
     radio_h->cfg_user_dirty = true;
 }
@@ -333,7 +336,7 @@ static void set_serial(radio *radio_h, uint32_t serial)
     sprintf(tmp, "%u", radio_h->serial_number);
     int rc = cfg_set(radio_h, radio_h->cfg_radio, "main:serial_number", tmp);
     if (rc != 0)
-        printf("Error modifying config file\n");
+        HLOGE(LOG_C, "Error modifying config file");
 
     radio_h->cfg_radio_dirty = true;
 }
@@ -349,7 +352,7 @@ static void set_profile_timeout(radio *radio_h, int32_t timeout)
     sprintf(tmp, "%d", radio_h->profile_timeout);
     int rc = cfg_set(radio_h, radio_h->cfg_user, "main:default_profile_fallback_timeout", tmp);
     if (rc != 0)
-        printf("Error modifying config file\n");
+        HLOGE(LOG_C, "Error modifying config file");
 
     radio_h->cfg_user_dirty = true;
 }
@@ -401,7 +404,7 @@ static void set_frequency(radio *radio_h, uint32_t frequency, uint32_t profile)
     sprintf(tmp2, "%u", *radio_freq);
     int rc = cfg_set(radio_h, radio_h->cfg_user, tmp1, tmp2);
     if (rc != 0)
-        printf("Error modifying config file\n");
+        HLOGE(LOG_C, "Error modifying config file");
 
     radio_h->cfg_user_dirty = true;
 }
@@ -452,7 +455,7 @@ static void set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
     sprintf(tmp1, "profile%u:mode", profile);
     int rc = cfg_set(radio_h, radio_h->cfg_user, tmp1, mode_str);
     if (rc != 0)
-        printf("Error modifying config file\n");
+        HLOGE(LOG_C, "Error modifying config file");
 
     radio_h->cfg_user_dirty = true;
 }
@@ -470,7 +473,7 @@ static void set_bfo(radio *radio_h, uint32_t frequency)
     sprintf(tmp, "%u", radio_h->bfo_frequency);
     int rc = cfg_set(radio_h, radio_h->cfg_radio, "main:bfo", tmp);
     if (rc != 0)
-        printf("Error modifying config file\n");
+        HLOGE(LOG_C, "Error modifying config file");
 
     radio_h->cfg_radio_dirty = true;
 }
@@ -553,14 +556,14 @@ static void tr_switch(radio *radio_h, bool txrx_state)
 
     if (radio_h->swr_protection_enabled)
     {
-        printf("Warning: tx_on trigger with SWR protection on, not turning tx on\n");
+        HLOGW(LOG_C, "tx_on trigger with SWR protection on, not turning tx on");
         return;
     }
 
     // TODO: put down the rx_level on tx
     if (txrx_state == IN_TX)
     {
-        // printf("IN_TX\n");
+        // HLOGI(LOG_C, "IN_TX");
         tx_starting = true;
         radio_h->txrx_state = IN_TX;
 
@@ -580,7 +583,7 @@ static void tr_switch(radio *radio_h, bool txrx_state)
     }
     else
     {
-        // printf("IN_RX\n");
+        // HLOGI(LOG_C, "IN_RX");
 
         // Digital-voice: ask the RADAE TX pipeline to emit its V2
         // end-of-over frame BEFORE we drop PA drive.  Without this the
@@ -630,10 +633,10 @@ static void tr_switch(radio *radio_h, bool txrx_state)
         if (tr_switch_urgent)   /* SWR trip: stop transmitting now */
             tail_ms = 10;
         if (dv_eoo_sent)
-            fprintf(stderr, "RADAE TX: end of over sent (buffer drained in %u ms, then %u ms codec tail)\n",
+            HLOGI(LOG_C, "RADAE TX: end of over sent (buffer drained in %u ms, then %u ms codec tail)",
                     eoo_drain_ms, tail_ms);
         if (dstar_eot_sent)
-            fprintf(stderr, "DSTAR TX: end of transmission sent (modem drained in %u ms, then %u ms codec tail)\n",
+            HLOGI(LOG_C, "DSTAR TX: end of transmission sent (modem drained in %u ms, then %u ms codec tail)",
                     eot_drain_ms, tail_ms);
         usleep(tail_ms * 1000);
 
@@ -777,12 +780,12 @@ void io_tick(radio *radio_h)
     {
 		if (radio_h->knob_a_pressed)
         {
-            printf("Button A pressed\n");
+            HLOGI(LOG_C, "Button A pressed");
             radio_h->knob_a_pressed = 0;
         }
 		if (radio_h->knob_b_pressed)
         {
-            printf("Button B pressed\n");
+            HLOGI(LOG_C, "Button B pressed");
             radio_h->knob_b_pressed = 0;
         }
     }
@@ -930,7 +933,7 @@ static bool sbitx_op_init(radio *radio_h)
     {
         if (!sbitx_bridge_init(radio_h))
         {
-            fprintf(stderr, "sbitx_op_init: sbitx_bridge_init failed\n");
+            HLOGE(LOG_C, "sbitx_op_init: sbitx_bridge_init failed");
             return false;
         }
         hfs_audio_bridge_started = true;
@@ -938,7 +941,7 @@ static bool sbitx_op_init(radio *radio_h)
 
     if (!hw_init(radio_h, hfs_hw_tids))
     {
-        fprintf(stderr, "sbitx_op_init: hw_init failed\n");
+        HLOGE(LOG_C, "sbitx_op_init: hw_init failed");
         return false;
     }
     hfs_hw_started = true;
@@ -1078,7 +1081,7 @@ static void sb_persist_profile_u32(radio *radio_h, uint32_t profile,
     snprintf(key, sizeof(key), "profile%u:%s", profile, field);
     snprintf(val, sizeof(val), "%u", value);
     if (cfg_set(radio_h, radio_h->cfg_user, key, val) != 0)
-        printf("Error modifying config file\n");
+        HLOGE(LOG_C, "Error modifying config file");
 
     radio_h->cfg_user_dirty = true;
 }

@@ -34,6 +34,9 @@
 
 #include "sbitx_gpio.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "gpio"
 // global radio handle pointer used for the callback functions
 static radio *radio_gpio_h;
 
@@ -54,7 +57,7 @@ bool gpio_force_rx(radio *radio_h)
 {
     if (gpiolib_init() <= 0 || gpiolib_mmap())
     {
-        fprintf(stderr, "gpio_force_rx: cannot map the GPIOs\n");
+        HLOGE(LOG_C, "gpio_force_rx: cannot map the GPIOs");
         return false;
     }
 
@@ -82,7 +85,7 @@ void gpio_init(radio *radio_h)
     int ret = gpiolib_init();
     if (ret <= 0)
     {
-        printf("Failed to initialise gpiolib.\n");
+        HLOGE(LOG_C, "Failed to initialise gpiolib.");
         shutdown_ = true;
         return ;
     }
@@ -91,9 +94,9 @@ void gpio_init(radio *radio_h)
     if (ret)
     {
         if (ret == EACCES && geteuid())
-            printf("Must be root\n");
+            HLOGI(LOG_C, "Must be root");
         else
-            printf("Failed to mmap gpiolib - %s\n", strerror(ret));
+            HLOGE(LOG_C, "Failed to mmap gpiolib - %s", strerror(ret));
         shutdown_ = true;
         return ;
     }
@@ -413,7 +416,7 @@ void *do_gpio_poll(void *radio_h_v)
                     knob_b_pressed();
                     break;
                 default:
-                    printf("Wrong GPIO\n");
+                    HLOGI(LOG_C, "Wrong GPIO");
                 }
                 state->level = level;
                 changed = 1;
