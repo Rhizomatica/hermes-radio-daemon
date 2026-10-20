@@ -377,6 +377,16 @@ CI runs all three on Debian 13, amd64 and arm64, with and without the Go layer.
   Page large collections; don't load a whole log.
 - **cgo:** only `cgo/radio` talks to C, and only through the radiod C API. Don't add `import "C"`
   elsewhere.
+- **Logging:** log with `log/slog`, never `fmt.Print` or the `log` package. The API layer's
+  records go to radiod's logger (mercury's `hermes_log`, `internal/logging`), so they come out in
+  the same format, file and levels as radiod's and mercury's lines:
+  `19:32:12.668 [+0.306s] [INF] [api.http] PATCH /api/v2/radio/profiles/0 200 ms=1.2 request_id=...`.
+  Use `rt.Log` (component `api`), or `logging.New(rt.Radio(), "api.<domain>")` for your own
+  component. `slog.Default()` is the same logger. Requests (`api.http`) and `hermes.v1` connections
+  and commands (`api.ws`) are logged for you. The message comes first, then attributes as
+  `key=value`. Which lines are written is the station's `core.ini` (`main:log_level`,
+  `main:log_component_levels`), not your code. In unit tests the stub radio keeps the lines
+  (`Stub.Logs()`).
 
 ## 11. Not there yet
 

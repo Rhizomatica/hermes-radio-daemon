@@ -258,6 +258,19 @@ websocket_url = ws://0.0.0.0:8080
 ; Until logins exist it answers only to this machine (127.0.0.1, ::1).
 api_v2_enable = 0
 
+; Logging: mercury's hermes_log, so radiod's, the Go API's and mercury's
+; lines are one stream in one format:
+;   19:32:12.668 [+0.306s] [INF] [mercury-link] mercury starting (...)
+; to stderr (journald under systemd) and, with log_file, to a file.
+;   log_level             debug | timing | info | warn | error (default info)
+;   log_component_levels  per component, on stderr: "hamlib=debug, api.http=warn"
+;   log_file              also write to this file ("" for none)
+;   log_jsonl             1: the file in JSONL ({"t":...,"lv":"INF","c":...,"m":...})
+log_level = info
+log_component_levels =
+log_file =
+log_jsonl = 0
+
 ; Audio bridge (works with both backends — hfsignals taps the
 ; embedded ALSA path; hamlib opens capture_device/playback_device
 ; as the rig USB codec and pumps audio through audio_bridge.c).
