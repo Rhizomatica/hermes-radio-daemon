@@ -15,6 +15,7 @@
 #include "radiod_api_attach.h"
 #include "radio.h"
 #include "radio_backend.h"
+#include "radio_controls.h"
 #include "cfg_utils.h"
 #include "dsp/digi_log.h"
 #include "websocket/ws_server.h"
@@ -285,6 +286,91 @@ void radiod_api_reset_protection(void)
 {
     if (s_radio)
         s_radio->swr_protection_enabled = false;
+}
+
+/* ── rig controls ── */
+
+static int ctrl_rc(int rc)
+{
+    switch (rc)
+    {
+    case RADIO_CTRL_OK:      return RADIOD_API_OK;
+    case RADIO_CTRL_EINVAL:  return RADIOD_API_EINVAL;
+    case RADIO_CTRL_EIO:     return RADIOD_API_EIO;
+    default:                 return RADIOD_API_ENOTSUP;
+    }
+}
+
+int radiod_api_controls(radiod_api_control *out, int max)
+{
+    static radio_ctrl_info all[RADIO_CTRL_MAX];
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    int n = 0;
+
+    if (!s_radio || max <= 0)
+        return 0;
+    pthread_mutex_lock(&lock);            /* all[] is too big for a stack */
+    size_t got = radio_controls_enumerate(s_radio, all, RADIO_CTRL_MAX);
+    for (size_t i = 0; i < got && n < max; i++, n++)
+    {
+        radiod_api_control *c = &out[n];
+        memset(c, 0, sizeof(*c));
+        memcpy(c->name, all[i].name, sizeof(c->name) - 1);   /* both RADIO_CTRL_NAME_MAX */
+        c->kind = all[i].kind == RADIO_CTRL_FUNC ? RADIOD_API_CTRL_FUNC
+                : all[i].kind == RADIO_CTRL_PARM ? RADIOD_API_CTRL_PARM : RADIOD_API_CTRL_LEVEL;
+        c->is_float = all[i].is_float;
+        c->can_get = all[i].can_get;
+        c->can_set = all[i].can_set;
+        c->min = all[i].min;
+        c->max = all[i].max;
+        c->step = all[i].step;
+    }
+    pthread_mutex_unlock(&lock);
+    return n;
+}
+
+int radiod_api_control_get(const char *name, int *kind, double *value)
+{
+    radio_ctrl_info info;
+    int rc;
+
+    if (!s_radio || !name || !radio_controls_find(s_radio, name, &info) || !info.can_get)
+        return RADIOD_API_ENOTSUP;
+    if (info.kind == RADIO_CTRL_FUNC)
+    {
+        int on = 0;
+        rc = radio_backend_get_func(s_radio, name, &on);
+        *value = on ? 1.0 : 0.0;
+        *kind = RADIOD_API_CTRL_FUNC;
+    }
+    else if (info.kind == RADIO_CTRL_PARM)
+    {
+        rc = radio_backend_get_parm(s_radio, name, value);
+        *kind = RADIOD_API_CTRL_PARM;
+    }
+    else
+    {
+        rc = radio_backend_get_level(s_radio, name, value);
+        *kind = RADIOD_API_CTRL_LEVEL;
+    }
+    if (rc == RADIO_CTRL_OK && !radio_controls_value_ok(*value))
+        return RADIOD_API_EIO;               /* a garbled reply: not a number */
+    return ctrl_rc(rc);
+}
+
+int radiod_api_control_set(const char *name, double value)
+{
+    radio_ctrl_info info;
+
+    if (!s_radio || !name || !radio_controls_find(s_radio, name, &info) || !info.can_set)
+        return RADIOD_API_ENOTSUP;
+    if (info.kind == RADIO_CTRL_FUNC)
+        return ctrl_rc(radio_backend_set_func(s_radio, name, value != 0.0));
+    if (info.max > info.min && (value < info.min || value > info.max))
+        return RADIOD_API_EINVAL;
+    if (info.kind == RADIO_CTRL_PARM)
+        return ctrl_rc(radio_backend_set_parm(s_radio, name, value));
+    return ctrl_rc(radio_backend_set_level(s_radio, name, value));
 }
 
 /* ── digital modes ── */
