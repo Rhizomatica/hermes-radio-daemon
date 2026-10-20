@@ -1,7 +1,6 @@
 // Command hermes_api_check is a self-check for the API layer, not a server.
-// It loads radiod's configuration (core.ini), opens the database, builds the
-// station router and logs the health radiod's C server would serve, alongside
-// radiod's listener and the radio state. Run it as:
+// It opens the database, builds the station router and reports, as plain
+// lines, the health and radio state radiod's C server would serve. Run it as:
 //
 //	cd api && go run ./cmd/hermes_api_check
 //
@@ -12,7 +11,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strings"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
@@ -21,14 +19,10 @@ import (
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/store"
 )
 
-func main() {
-	run()
-}
+func main() { run() }
 
 func run() {
 	cfg := config.Load()
-
-	rt := station.NewRouter(radio.Default())
 
 	// The database is optional at this stage; report it, do not fail on it.
 	dbStatus := "ok"
@@ -43,6 +37,7 @@ func run() {
 	}
 
 	// Ask the router itself, exactly as radiod's C server would, for /health.
+	rt := station.NewRouter(radio.Default())
 	status, _, _, body := rt.ServeRaw("GET", "/api/v2/health", "", "Host: localhost\r\n", "", nil)
 
 	r := rt.Radio()
@@ -53,54 +48,9 @@ func run() {
 		modem = "ok"
 	}
 
-	healthy := "ok"
-	if status != http.StatusOK || dbStatus != "ok" {
-		healthy = "degraded"
-	}
-
-	var banner strings.Builder
-
-	fmt.Fprintf(&banner, `
-___________________________________________________________________
-
-HERMES GO API SELF-CHECK
-___________________________________________________________________
-
-  api rest         : %s
-  api websocket    : %s   (core.ini main:websocket_url)
-  api port         : %s
-  database         : %s
-  database status  : %s
-  modem            : %s
-___________________________________________________________________
-
-  radio frequency  : %v Hz
-  radio mode       : %v
-  radio profile    : %v
-  radio backend    : %v
-___________________________________________________________________
-
-  health status    : %v
-  health body      : %s
-  version          : %s
-  status           : %s
-___________________________________________________________________
-`,
-		cfg.RESTURL(),
-		cfg.WSURL(),
-		cfg.Port(),
-		cfg.DatabasePath,
-		dbStatus,
-		modem,
-		state.FrequencyHz,
-		state.Mode,
-		state.ActiveProfile,
-		state.Backend,
-		status,
-		strings.TrimSpace(string(body)),
-		r.Version(),
-		healthy,
-	)
-
-	fmt.Println(banner.String())
+	fmt.Printf("database: %s (%s)\n", dbStatus, cfg.DatabasePath)
+	fmt.Printf("health: %d %s\n", status, strings.TrimSpace(string(body)))
+	fmt.Printf("radio: %d Hz %s, profile %d, %s\n", state.FrequencyHz, state.Mode, state.ActiveProfile, state.Backend)
+	fmt.Printf("modem: %s\n", modem)
+	fmt.Printf("version: %s\n", r.Version())
 }
