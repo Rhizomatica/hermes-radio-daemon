@@ -21,7 +21,7 @@ import (
 // startMercuryDaemon starts radiod with mercury linked in, on ALSA's null
 // device, its TNC on free ports.  Returns the daemon and the TNC control
 // address.
-func startMercuryDaemon(t *testing.T) (*Daemon, string) {
+func startMercuryDaemon(t *testing.T, core ...string) (*Daemon, string) {
 	t.Helper()
 	if !hasMercury(t) {
 		t.Skip("radio_daemon was built without mercury (vendor/mercury not checked out)")
@@ -40,12 +40,12 @@ method = none
 enabled = false
 `, ctl, bcast))
 
-	d := startDaemon(t, daemonOpts{core: []string{
+	d := startDaemon(t, daemonOpts{core: append([]string{
 		"enable_mercury = 1",
 		"mercury_config = " + ini,
 		"capture_device = null",
 		"playback_device = null",
-	}})
+	}, core...)})
 	addr := fmt.Sprintf("127.0.0.1:%d", ctl)
 	if err := d.waitPort(addr, 15*time.Second); err != nil {
 		t.Fatalf("mercury's TNC: %v\n--- daemon log ---\n%s", err, d.Log())

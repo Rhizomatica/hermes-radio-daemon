@@ -905,12 +905,13 @@ second, whatever changed them (a command, CAT, rigctl, the front panel).
 | Topic | Data | Role |
 |-------|------|------|
 | `radio.state` | the same as `GET /api/v2/radio` | readonly |
+| `modem.status` | the same as `GET /api/v2/modem`; offered only while mercury runs | readonly |
 
 ### Not implemented yet
 
 - the other `hermes.v1` topics (`radio.profiles`, `radio.rig`, `digi`, mercury's
-  `modem.status`, `modem.config` and `modem.chat`, ...) and binary frames
-  (`radio.spectrum.*`, `modem.spectrum.rx`);
+  `modem.config` and `modem.chat`, ...) and binary frames (`radio.spectrum.*`,
+  `modem.spectrum.rx`);
 - mercury: `getModemConfig`, `updateModemConfig` and the `modem.chat.send` command;
 - logins, sessions and roles (`/api/v2/session`);
 - WebRTC audio (in C, with libdatachannel; signalled over `hermes.v1`);

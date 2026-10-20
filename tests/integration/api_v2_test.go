@@ -7,6 +7,7 @@
 package integration
 
 import (
+	"bufio"
 	"debug/elf"
 	"encoding/json"
 	"errors"
@@ -338,5 +339,61 @@ func TestAPIv2LogsThroughRadiod(t *testing.T) {
 		if !strings.Contains(log, want) {
 			t.Errorf("daemon log lacks %q\n--- daemon log ---\n%s", want, log)
 		}
+	}
+}
+
+// modem.status through the real daemon with mercury inside: subscribe once
+// mercury has published a status, then change the callsign on mercury's TNC
+// port and see it in an event.
+func TestHermesV1ModemStatusTopic(t *testing.T) {
+	needGoAPI(t)
+	d, tnc := startMercuryDaemon(t, "api_v2_enable = 1")
+	ws, _, err := wsDialProto(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	next := func(match func(map[string]any) bool) map[string]any {
+		for {
+			if f := readFrame(t, ws, 10*time.Second); match(f) {
+				return f
+			}
+		}
+	}
+	isStatus := func(f map[string]any) bool { return f["type"] == "event" && f["topic"] == "modem.status" }
+
+	// mercury publishes its first status within about a second of starting
+	var snap map[string]any
+	for i := 0; snap == nil; i++ {
+		id := fmt.Sprintf("s%d", i)
+		_ = ws.writeFrame(opText, []byte(`{"type":"subscribe","id":"`+id+`","topics":["modem.status"]}`))
+		r := next(func(f map[string]any) bool { return f["type"] == "reply" && f["id"] == id })
+		if r["ok"] == true {
+			snap = next(isStatus)
+			break
+		}
+		if i == 20 {
+			t.Fatalf("modem.status never became available: %v\n--- daemon log ---\n%s", r, d.Log())
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if data, _ := snap["data"].(map[string]any); snap["snapshot"] != true || data["link"] == nil || data["audio_ok"] == nil {
+		t.Fatalf("snapshot = %v", snap)
+	}
+
+	conn, err := net.DialTimeout("tcp", tnc, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if got := tncCommand(t, conn, bufio.NewReader(conn), "MYCALL N0CALL"); got != "OK" {
+		t.Fatalf("TNC MYCALL = %q", got)
+	}
+	ev := next(func(f map[string]any) bool {
+		data, _ := f["data"].(map[string]any)
+		return isStatus(f) && data["my_call"] != nil
+	})
+	if data := ev["data"].(map[string]any); data["my_call"] != "N0CALL" || ev["seq"] == 0.0 {
+		t.Errorf("event after MYCALL = %v", ev)
 	}
 }
