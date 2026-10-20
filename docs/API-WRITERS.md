@@ -106,6 +106,7 @@ api/
 ├── radiod_api.h/.c     THE RADIOD C API: everything the API layer may read or change in radiod
 ├── spec/               pinned api-rest.yaml, api-ws.yaml, and the reader (spec.go)
 ├── cmd/hermesapi/      the C exports; converts C types, nothing else
+├── cmd/hermesapi-check/  the self-check (`go run ./cmd/hermesapi-check`); opens the DB, not linked into radiod
 ├── cgo/radio/          the Radio interface; binding.go (the cgo binding, build tag `radiod`),
 │                       stub.go (an in-memory radio for tests and Go-only work)
 └── internal/
