@@ -8,8 +8,8 @@ only through the radiod C API beside this file, `radiod_api.h`.
 ```
 radiod_api.h/.c   the radiod C API
 spec/             the pinned contract and its reader
-cmd/hermesapi/    the C exports
-cmd/hermesapi-check/  the self-check (go run ./cmd/hermesapi-check); opens the DB, not linked into radiod
+cmd/hermes_api/    the C exports
+cmd/hermes_api_check/  the self-check (go run ./cmd/hermes_api_check); opens the DB, not linked into radiod
 cgo/radio/        the Radio interface: the cgo binding (tag radiod) or a stub
 internal/api/     the common library: router, problem details, JSON, pagination, hermes.v1
 internal/<domain> the handlers, one package per API domain

@@ -1,4 +1,4 @@
-// Command hermesapi is radiod's Go API layer, built as a C archive
+// Command hermes_api is radiod's Go API layer, built as a C archive
 // (go build -buildmode=c-archive -tags radiod): radiod's C HTTP and
 // websocket server calls these exports, and the handlers reach the daemon
 // through api/radiod_api.h. Nothing here touches a socket.
@@ -6,7 +6,7 @@
 // This package must not import internal/store (or anything that pulls SQLite
 // in): radiod never opens a database, and linking modernc.org/sqlite would
 // bloat radiod for nothing. The standalone self-check lives in
-// cmd/hermesapi-check.
+// cmd/hermes_api_check.
 package main
 
 /*
@@ -96,5 +96,5 @@ func HermesWSClose(conn C.long) {
 
 // main exists only because a c-archive must be a main package. radiod's C
 // server drives the Hermes* exports above, so main is never called there;
-// the standalone self-check lives in cmd/hermesapi-check.
+// the standalone self-check lives in cmd/hermes_api_check.
 func main() {}

@@ -13,7 +13,7 @@ import (
 
 // The C side of radiod hands a request over as plain strings (its HTTP
 // server parsed it): these turn them into an *http.Request and record the
-// handler's answer, so cmd/hermesapi only converts C types.
+// handler's answer, so cmd/hermes_api only converts C types.
 
 // RequestFromRaw builds a request from radiod's parts: rawHeaders is the
 // header block ("Name: value\r\n" lines).
