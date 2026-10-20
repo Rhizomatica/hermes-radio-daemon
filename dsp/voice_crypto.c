@@ -19,6 +19,9 @@
 
 #include "voice_crypto.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "crypto"
 /* The key lives here, process-private -- deliberately not in the radio
  * struct, which other processes can see through the status/SHM surfaces. */
 static uint8_t         g_key[VOICE_KEY_BYTES];
@@ -67,14 +70,14 @@ bool voice_crypto_load_key_file(const char *path)
 
     FILE *f = fopen(path, "rb");
     if (f == NULL) {
-        fprintf(stderr, "voice_crypto: cannot open key file %s: %s\n", path, strerror(errno));
+        HLOGE(LOG_C, "cannot open key file %s: %s", path, strerror(errno));
         return false;
     }
 
     struct stat st;
     if (fstat(fileno(f), &st) == 0 && (st.st_mode & (S_IRWXG | S_IRWXO)))
-        fprintf(stderr, "voice_crypto: WARNING: key file %s is accessible by group/others "
-                        "(mode %03o); chmod 600 it\n", path, (unsigned) (st.st_mode & 0777));
+        HLOGW(LOG_C, "WARNING: key file %s is accessible by group/others "
+                        "(mode %03o); chmod 600 it", path, (unsigned) (st.st_mode & 0777));
 
     size_t n = fread(buf, 1, sizeof(buf), f);
     fclose(f);
@@ -100,9 +103,9 @@ bool voice_crypto_load_key_file(const char *path)
 
     if (ok) {
         voice_crypto_set_key(key);
-        fprintf(stderr, "voice_crypto: voice key loaded from %s\n", path);
+        HLOGI(LOG_C, "voice key loaded from %s", path);
     } else {
-        fprintf(stderr, "voice_crypto: %s is not a 32-byte raw or 64-hex-digit key\n", path);
+        HLOGI(LOG_C, "%s is not a 32-byte raw or 64-hex-digit key", path);
     }
     OPENSSL_cleanse(buf, sizeof(buf));
     OPENSSL_cleanse(key, sizeof(key));

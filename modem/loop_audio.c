@@ -26,6 +26,9 @@
 #include "radio_media.h"
 #include "modem_audio.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "loop"
 extern _Atomic bool shutdown_;
 
 #define LOOP_CHANNELS    2
@@ -53,7 +56,7 @@ static snd_pcm_t *loop_open(const char *dev, snd_pcm_stream_t stream, unsigned r
     int err = snd_pcm_open(&pcm, dev, stream, 0);
     if (err < 0)
     {
-        fprintf(stderr, "loop_audio: snd_pcm_open(%s) failed: %s\n", dev, snd_strerror(err));
+        HLOGE(LOG_C, "snd_pcm_open(%s) failed: %s", dev, snd_strerror(err));
         return NULL;
     }
     snd_pcm_hw_params_t *hw;
@@ -70,7 +73,7 @@ static snd_pcm_t *loop_open(const char *dev, snd_pcm_stream_t stream, unsigned r
         (err = snd_pcm_hw_params_set_periods_near(pcm, hw, &periods, 0)) < 0 ||
         (err = snd_pcm_hw_params(pcm, hw)) < 0)
     {
-        fprintf(stderr, "loop_audio: hw_params(%s) failed: %s\n", dev, snd_strerror(err));
+        HLOGE(LOG_C, "hw_params(%s) failed: %s", dev, snd_strerror(err));
         snd_pcm_close(pcm);
         return NULL;
     }
@@ -85,7 +88,7 @@ static snd_pcm_t *loop_open(const char *dev, snd_pcm_stream_t stream, unsigned r
             (err = snd_pcm_sw_params_set_start_threshold(pcm, sw, 2 * period)) < 0 ||
             (err = snd_pcm_sw_params_set_avail_min(pcm, sw, period)) < 0 ||
             (err = snd_pcm_sw_params(pcm, sw)) < 0)
-            fprintf(stderr, "loop_audio: sw_params(%s) failed: %s\n", dev, snd_strerror(err));
+            HLOGE(LOG_C, "sw_params(%s) failed: %s", dev, snd_strerror(err));
     }
     snd_pcm_prepare(pcm);
     return pcm;
@@ -177,7 +180,7 @@ static void *rx_thread(void *arg)
         if (now - xruns_since >= 60)
         {
             if (xruns)
-                fprintf(stderr, "loop_audio: %u RX playback underrun(s) in the last %ld s\n",
+                HLOGW(LOG_C, "%u RX playback underrun(s) in the last %ld s",
                         xruns, (long) (now - xruns_since));
             xruns = 0;
             xruns_since = now;
@@ -226,7 +229,7 @@ bool loop_audio_init(radio *radio_h)
 
     if (!radio_h->loop_playback_device[0] || !radio_h->loop_capture_device[0])
     {
-        fprintf(stderr, "loop_audio: loop devices not configured\n");
+        HLOGW(LOG_C, "loop devices not configured");
         return false;
     }
 
@@ -245,7 +248,7 @@ bool loop_audio_init(radio *radio_h)
     if (pthread_create(&s_rx_tid, NULL, rx_thread, NULL) != 0 ||
         pthread_create(&s_tx_tid, NULL, tx_thread, NULL) != 0)
     {
-        fprintf(stderr, "loop_audio: failed to start threads\n");
+        HLOGE(LOG_C, "failed to start threads");
         s_run = false;
         snd_pcm_close(s_play); snd_pcm_close(s_cap);
         s_play = s_cap = NULL;
@@ -253,7 +256,7 @@ bool loop_audio_init(radio *radio_h)
     }
 
     s_started = true;
-    fprintf(stderr, "loop_audio: bridge up (RX->%s, TX<-%s, stereo S32 @ %u Hz)\n",
+    HLOGI(LOG_C, "bridge up (RX->%s, TX<-%s, stereo S32 @ %u Hz)",
             radio_h->loop_playback_device, radio_h->loop_capture_device, s_rate);
     return true;
 }

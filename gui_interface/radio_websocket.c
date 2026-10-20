@@ -52,6 +52,9 @@
 #include "radio_pipeline.h"
 #include "dsp/digi_log.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "ws"
 extern _Atomic bool shutdown_;
 
 #define WS_RX_CHUNK_SAMPLES   256
@@ -1576,7 +1579,7 @@ bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid)
                                     : "ws://0.0.0.0:8080";
     if (!parse_ws_url(url, &tls, host, sizeof(host), &port))
     {
-        fprintf(stderr, "radio_websocket: bad websocket_url \"%s\"\n", url);
+        HLOGI(LOG_C, "bad websocket_url \"%s\"", url);
         return false;
     }
 
@@ -1602,15 +1605,15 @@ bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid)
         /* A missing or expired certificate must not take the radio, or its
          * web control, down with it: serve plain ws:// on the same address
          * and port instead, and say so loudly. */
-        fprintf(stderr, "radio_websocket: WARNING: cannot set up TLS for %s "
-                "with %s / %s; falling back to UNENCRYPTED ws://\n",
+        HLOGE(LOG_C, "WARNING: cannot set up TLS for %s "
+                "with %s / %s; falling back to UNENCRYPTED ws://",
                 url, CFG_SSL_CERT, CFG_SSL_KEY);
         opts.tls_enabled = false;
         rc = ws_server_start(&ws_ctx.server, &opts);
     }
     if (rc != 0)
     {
-        fprintf(stderr, "radio_websocket: cannot listen on %s\n", url);
+        HLOGE(LOG_C, "cannot listen on %s", url);
         return false;
     }
 
@@ -1625,7 +1628,7 @@ bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid)
     ui_hub_sink sink = { .text = hub_text, .binary = hub_binary, .user = ws_ctx.server };
     s_hub_sink = ui_hub_add_sink(&sink);
     if (s_hub_sink < 0)
-        fprintf(stderr, "radio_websocket: no ui_hub sink left; module traffic stays off\n");
+        HLOGI(LOG_C, "no ui_hub sink left; module traffic stays off");
     return true;
 }
 

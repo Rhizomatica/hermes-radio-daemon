@@ -25,6 +25,9 @@
 #include "sbitx_drm.h"
 #include "stream_resampler.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "drm"
 static pid_t dream_pid = -1;
 static FILE *dream_in = NULL;
 static FILE *dream_out = NULL;
@@ -60,20 +63,20 @@ bool sbitx_drm_init(const char *dream_path, uint32_t sigsrate, uint32_t audsrate
 
     if (!dream_path || !dream_path[0])
     {
-        fprintf(stderr, "DRM: dream_path not set, DRM disabled\n");
+        HLOGW(LOG_C, "dream_path not set, DRM disabled");
         return false;
     }
 
     if (pipe(pipe_stdin) < 0 || pipe(pipe_stdout) < 0)
     {
-        fprintf(stderr, "DRM: pipe failed: %s\n", strerror(errno));
+        HLOGE(LOG_C, "pipe failed: %s", strerror(errno));
         return false;
     }
 
     dream_pid = fork();
     if (dream_pid < 0)
     {
-        fprintf(stderr, "DRM: fork failed: %s\n", strerror(errno));
+        HLOGE(LOG_C, "fork failed: %s", strerror(errno));
         close(pipe_stdin[0]); close(pipe_stdin[1]);
         close(pipe_stdout[0]); close(pipe_stdout[1]);
         return false;
@@ -101,7 +104,7 @@ bool sbitx_drm_init(const char *dream_path, uint32_t sigsrate, uint32_t audsrate
                "--audsrate", audsrate_str,
                (char *) NULL);
 
-        fprintf(stderr, "DRM: exec dream failed: %s\n", strerror(errno));
+        HLOGE(LOG_C, "exec dream failed: %s", strerror(errno));
         _exit(1);
     }
 
@@ -112,14 +115,14 @@ bool sbitx_drm_init(const char *dream_path, uint32_t sigsrate, uint32_t audsrate
     dream_out = fdopen(pipe_stdout[0], "r");
     if (!dream_in || !dream_out)
     {
-        fprintf(stderr, "DRM: fdopen failed\n");
+        HLOGE(LOG_C, "fdopen failed");
         sbitx_drm_shutdown();
         return false;
     }
 
     init_resamplers();
 
-    fprintf(stderr, "DRM: Dream subprocess started (pid=%d, sig=%u aud=%u)\n",
+    HLOGI(LOG_C, "Dream subprocess started (pid=%d, sig=%u aud=%u)",
             dream_pid, sigsrate, audsrate);
     return true;
 }
@@ -153,7 +156,7 @@ void sbitx_drm_shutdown(void)
     rs_ready = false;
     audio_fifo_n = 0;
 
-    fprintf(stderr, "DRM: shutdown complete\n");
+    HLOGI(LOG_C, "shutdown complete");
 }
 
 void sbitx_drm_process(const float *iq_i, const float *iq_q, int n,

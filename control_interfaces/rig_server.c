@@ -30,6 +30,9 @@
 #include "radio_controls.h"
 #include "rig_server.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "rig"
 #define RIG_SERVER_DEFAULT_PORT  4532
 #define RIG_SERVER_MAX_CLIENTS   8
 #define RIG_SERVER_BUF_SIZE      1024
@@ -835,7 +838,7 @@ bool rig_server_start(radio *radio_h)
 
     if (bind(rig_listen_fd, (struct sockaddr *) &addr, sizeof(addr)) < 0)
     {
-        fprintf(stderr, "rig_server: bind on port %d failed: %s\n",
+        HLOGE(LOG_C, "bind on port %d failed: %s",
                 port, strerror(errno));
         close(rig_listen_fd);
         rig_listen_fd = -1;
@@ -844,7 +847,7 @@ bool rig_server_start(radio *radio_h)
 
     if (listen(rig_listen_fd, 5) < 0)
     {
-        fprintf(stderr, "rig_server: listen failed: %s\n", strerror(errno));
+        HLOGE(LOG_C, "listen failed: %s", strerror(errno));
         close(rig_listen_fd);
         rig_listen_fd = -1;
         return false;
@@ -855,7 +858,7 @@ bool rig_server_start(radio *radio_h)
 
     if (pthread_create(&rig_thread, NULL, rig_server_thread, radio_h) != 0)
     {
-        fprintf(stderr, "rig_server: pthread_create failed\n");
+        HLOGE(LOG_C, "pthread_create failed");
         close(rig_listen_fd);
         rig_listen_fd = -1;
         rig_running = false;
@@ -863,7 +866,7 @@ bool rig_server_start(radio *radio_h)
     }
     rig_thread_started = true;
 
-    fprintf(stderr, "rig_server: listening on port %d\n", port);
+    HLOGI(LOG_C, "listening on port %d", port);
     return true;
 }
 

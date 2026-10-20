@@ -60,6 +60,9 @@
 #include "sbitx_dstar.h"
 #include "dstar_voice.h"
 #include "digi_log.h"
+#include "radiod_log.h"
+
+#define LOG_C "dsp"
 #include <sys/time.h>
 #include <mbelib-neo/mbelib.h>
 
@@ -229,11 +232,11 @@ static FILE *dump_follow_trigger(FILE *fp, const char *trigger, const char *path
     if (fp == NULL && want) {
         fp = fopen(path, "wb");
         if (fp)
-            fprintf(stderr, "%s dump: writing %s\n", name, path);
+            HLOGI(LOG_C, "%s dump: writing %s", name, path);
     } else if (fp != NULL && !want) {
         fclose(fp);
         fp = NULL;
-        fprintf(stderr, "%s dump closed\n", name);
+        HLOGI(LOG_C, "%s dump closed", name);
     }
     return fp;
 }
@@ -796,8 +799,8 @@ static void dstar_rx_data_cb(void *user, const uint8_t *frame)
         mbe_processAmbe2400Data(pcm, &res, ambe_d, &dstar_rx_cur, &dstar_rx_prev, &dstar_rx_enh);
 
     if (radio_h_dsp->dstar_verbose) {
-        fprintf(stderr, "DSTAR data #%ld: ambe %02x %02x %02x %02x %02x %02x %02x %02x %02x"
-                        " slow %02x%02x%02x fec_errs=%d crypto=%d\n",
+        HLOGI(LOG_C, "DSTAR data #%ld: ambe %02x %02x %02x %02x %02x %02x %02x %02x %02x"
+                        " slow %02x%02x%02x fec_errs=%d crypto=%d",
                 dstar_rx_frame_count, frame[0], frame[1], frame[2], frame[3], frame[4],
                 frame[5], frame[6], frame[7], frame[8], frame[9], frame[10], frame[11],
                 res.total_errors, (int) dstar_vrx.status);
@@ -868,7 +871,7 @@ static void dstar_rx_header_cb(void *user, const uint8_t *header)
     }
 
     if (radio_h_dsp->dstar_verbose) {
-        fprintf(stderr, "DSTAR header: flags=0x%02x%02x%02x rpt1=%s rpt2=%s ur=%s my=%s suf=%s\n",
+        HLOGI(LOG_C, "DSTAR header: flags=0x%02x%02x%02x rpt1=%s rpt2=%s ur=%s my=%s suf=%s",
                 header[0], header[1], header[2],
                 radio_h_dsp->dstar_rx_rpt1, radio_h_dsp->dstar_rx_rpt2,
                 radio_h_dsp->dstar_rx_urcall, radio_h_dsp->dstar_rx_mycall,
@@ -907,7 +910,7 @@ static void dstar_rx_burst_debug_cb(void *user, const uint8_t *h, bool crc_ok, b
     char hex[2 * SBITX_DSTAR_HEADER_BYTES + 1];
     for (int i = 0; i < SBITX_DSTAR_HEADER_BYTES; i++)
         snprintf(hex + 2 * i, 3, "%02x", h[i]);
-    fprintf(stderr, "DSTAR header burst: crc=%s via=%s frame_corr=%d fixed_field_bit_errs=%s bytes=%s\n",
+    HLOGI(LOG_C, "DSTAR header burst: crc=%s via=%s frame_corr=%d fixed_field_bit_errs=%s bytes=%s",
             crc_ok ? "ok" : "BAD", crc_ok ? (soft ? "soft" : "hard") : "-", (int) corr, fixed, hex);
     if (crc_ok) {
         memcpy(dstar_hdr_ref, h, sizeof(dstar_hdr_ref));
@@ -923,8 +926,8 @@ static void dstar_log_over_stats(void)
     sbitx_dstar_rx_stats st;
     sbitx_dstar_rx_get_stats(dstar_rx, &st);
     if (radio_h_dsp->dstar_verbose)
-        fprintf(stderr, "DSTAR over headers: bursts=%u ok=%u (soft %u) bad=%u, "
-                "locked via data sync=%u, slow-data headers=%u\n",
+        HLOGI(LOG_C, "DSTAR over headers: bursts=%u ok=%u (soft %u) bad=%u, "
+                "locked via data sync=%u, slow-data headers=%u",
                 st.frame_sync - dstar_stats_prev.frame_sync,
                 st.header_ok - dstar_stats_prev.header_ok,
                 st.header_soft_ok - dstar_stats_prev.header_soft_ok,
@@ -938,7 +941,7 @@ static void dstar_rx_lost_cb(void *user)
 {
     (void)user;
     if (radio_h_dsp->dstar_verbose)
-        fprintf(stderr, "DSTAR: lost sync (got %ld frames)%s\n", dstar_rx_frame_count,
+        HLOGI(LOG_C, "DSTAR: lost sync (got %ld frames)%s", dstar_rx_frame_count,
                 dstar_rx_confirmed ? "" : " -- never confirmed, muted (false sync on noise)");
     dstar_log_over_stats();
     dstar_rx_unconfirm();
@@ -953,7 +956,7 @@ static void dstar_rx_eot_cb(void *user)
 {
     (void)user;
     if (radio_h_dsp->dstar_verbose)
-        fprintf(stderr, "DSTAR: end of transmission (rx'd %ld frames)\n", dstar_rx_frame_count);
+        HLOGI(LOG_C, "DSTAR: end of transmission (rx'd %ld frames)", dstar_rx_frame_count);
     dstar_log_over_stats();
     dstar_rx_unconfirm();
     dstar_voice_rx_reset(&dstar_vrx);
@@ -981,9 +984,8 @@ static void dsp_dstar_init(void)
     static bool dstar_cfg_logged = false;
     if (!dstar_cfg_logged) {
         dstar_cfg_logged = true;
-        fprintf(stderr,
-                "DSTAR: polarity=%+.0f deviation=%u Hz clock_ppm=%+d rx_gain=%.2f "
-                "af_gain=%.2f tx_gain=%.2f verbose=%u denoise=%u mycall=%s urcall=%s\n",
+        HLOGI(LOG_C, "DSTAR: polarity=%+.0f deviation=%u Hz clock_ppm=%+d rx_gain=%.2f "
+                "af_gain=%.2f tx_gain=%.2f verbose=%u denoise=%u mycall=%s urcall=%s",
                 radio_h_dsp->dstar_rx_polarity,
                 (unsigned) radio_h_dsp->dstar_deviation,
                 (int) radio_h_dsp->dstar_clock_ppm,
@@ -1010,7 +1012,7 @@ static void dsp_dstar_init(void)
         dstar_tx = sbitx_dstar_tx_new();
         dstar_tx_enc = mbe_ambe2400EncoderAlloc();
         if (dstar_tx_enc == NULL)
-            fprintf(stderr, "DSTAR: cannot allocate the AMBE encoder; TX will be silent\n");
+            HLOGE(LOG_C, "DSTAR: cannot allocate the AMBE encoder; TX will be silent");
         dsp_dstar_tx_reset_encoder();
     }
 }
@@ -1042,7 +1044,7 @@ static void dsp_dstar_tx_send_header(void)
                           dstar_vtx.encrypt, true);
     dstar_tx_frame_count = 0;
     if (radio_h_dsp->dstar_verbose)
-        fprintf(stderr, "DSTAR tx: header queued (my=%.8s ur=%.8s encrypted=%d)\n",
+        HLOGI(LOG_C, "DSTAR tx: header queued (my=%.8s ur=%.8s encrypted=%d)",
                 radio_h_dsp->dstar_mycall, radio_h_dsp->dstar_urcall, (int) dstar_vtx.encrypt);
 }
 
@@ -1089,7 +1091,7 @@ static void dsp_dstar_tx_encode_frame(const float *mic8k)
     mbe_moveMbeParms(&dstar_tx_cur, &dstar_tx_prev);
 
     if (radio_h_dsp->dstar_verbose && (dstar_tx_frame_count % 25) == 0)
-        fprintf(stderr, "DSTAR tx: frame #%ld (denoise=%d, gamma=%.2f)\n",
+        HLOGI(LOG_C, "DSTAR tx: frame #%ld (denoise=%d, gamma=%.2f)",
                 dstar_tx_frame_count, radio_h_dsp->dstar_denoise, dstar_tx_cur.gamma);
     dstar_tx_frame_count++;
 }
@@ -1106,7 +1108,7 @@ bool dsp_dstar_tx_emit_eot_if_active(void)
     dstar_tx_keyed = false;
     dstar_tx_eot_latched = true;
     if (radio_h_dsp->dstar_verbose)
-        fprintf(stderr, "DSTAR tx: EOT queued (%ld frames sent)\n", dstar_tx_frame_count);
+        HLOGI(LOG_C, "DSTAR tx: EOT queued (%ld frames sent)", dstar_tx_frame_count);
     return true;
 }
 
@@ -1275,10 +1277,10 @@ static void dsp_radae_follow_profile(void)
 
     if (dv && !radae_ctx.initialized && !init_failed)
     {
-        printf("Starting RADAE digital voice (digital-voice profile active)\n");
+        HLOGI(LOG_C, "Starting RADAE digital voice (digital-voice profile active)");
         if (!radae_init(&radae_ctx, radio_h_dsp))
         {
-            fprintf(stderr, "Warning: RADAE initialization failed, digital voice will not be available\n");
+            HLOGE(LOG_C, "RADAE initialization failed, digital voice will not be available");
             init_failed = true;
             return;
         }
@@ -1286,7 +1288,7 @@ static void dsp_radae_follow_profile(void)
     }
     else if (!dv && radae_ctx.initialized)
     {
-        printf("Stopping RADAE digital voice (no digital-voice profile active)\n");
+        HLOGI(LOG_C, "Stopping RADAE digital voice (no digital-voice profile active)");
         radae_shutdown(&radae_ctx);
         radae_tx_active = false;
         init_failed = false;
@@ -1341,11 +1343,11 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
                 bool want = access("/tmp/dstar_raw_dump", F_OK) == 0;
                 if (rawdump == NULL && want) {
                     rawdump = fopen("/tmp/dstar_raw.s32", "wb");
-                    fprintf(stderr, "DSTAR raw input dump active\n");
+                    HLOGI(LOG_C, "DSTAR raw input dump active");
                 } else if (rawdump != NULL && !want) {
                     fclose(rawdump);
                     rawdump = NULL;
-                    fprintf(stderr, "DSTAR raw input dump closed\n");
+                    HLOGI(LOG_C, "DSTAR raw input dump closed");
                 }
             }
             if (rawdump != NULL)
@@ -1356,14 +1358,14 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
         if (max_i_sample < i_sample)
         {
             max_i_sample = i_sample;
-            printf("input_rx %d\n", input_rx[j]);
-            printf("max_i_sample %f\n\n", max_i_sample);
+            HLOGI(LOG_C, "input_rx %d", input_rx[j]);
+            HLOGI(LOG_C, "max_i_sample %f\n", max_i_sample);
         }
         if (min_i_sample > i_sample)
         {
             min_i_sample = i_sample;
-            printf("input_rx %d\n", input_rx[j]);
-            printf("min_i_sample %f\n\n", min_i_sample);
+            HLOGI(LOG_C, "input_rx %d", input_rx[j]);
+            HLOGI(LOG_C, "min_i_sample %f\n", min_i_sample);
         }
 #endif
 
@@ -1688,11 +1690,11 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
                 bool want = access("/tmp/dstar_rx24_dump", F_OK) == 0;
                 if (dbgf == NULL && want) {
                     dbgf = fopen("/tmp/dstar_rx24.f32", "wb");
-                    fprintf(stderr, "DSTAR rx24 dump active\n");
+                    HLOGI(LOG_C, "DSTAR rx24 dump active");
                 } else if (dbgf != NULL && !want) {
                     fclose(dbgf);
                     dbgf = NULL;
-                    fprintf(stderr, "DSTAR rx24 dump closed\n");
+                    HLOGI(LOG_C, "DSTAR rx24 dump closed");
                 }
                 if (dbgf != NULL)
                     fwrite(rx24, sizeof(float), (size_t) n24, dbgf);
@@ -1734,7 +1736,7 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
                  * a timing discontinuity costs more than the error it
                  * corrects. */
                 if (radio_h_dsp->dstar_verbose && dstar_rx_frame_count != trk_last_frames)
-                    fprintf(stderr, "DSTAR: baud line reads %+.0f ppm (clock held at %+.0f)\n",
+                    HLOGI(LOG_C, "DSTAR: baud line reads %+.0f ppm (clock held at %+.0f)",
                             trk_ppm, dstar_clock_track);
                 trk_last_frames = dstar_rx_frame_count;
             }
@@ -1852,7 +1854,7 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
                 if (v > dbg_peak) dbg_peak = v;
             }
             if (++dbg_blocks >= 94 && (pcm_avail > 0 || dstar_playing || dbg_peak > 0.0f)) {
-                fprintf(stderr, "DSTAR audio: ring=%d playing=%d pcm_pos=%.1f peak=%.4f af_gain=%.2f\n",
+                HLOGI(LOG_C, "DSTAR audio: ring=%d playing=%d pcm_pos=%.1f peak=%.4f af_gain=%.2f",
                         pcm_avail, (int) dstar_playing, pcm_pos, dbg_peak,
                         radio_h_dsp->dstar_af_gain);
                 dbg_blocks = 0;
@@ -2097,7 +2099,7 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
 
     if (block_size != 1024)
     {
-        fprintf(stderr, "This code uses 1024 samples for the fft\n");
+        HLOGI(LOG_C, "This code uses 1024 samples for the fft");
         shutdown_ = true;
         return;
     }
@@ -2264,7 +2266,7 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
                     /* Not encodable (free text is at most 13 characters
                      * of A-Z 0-9 space + - . / ?): send and log nothing
                      * rather than a "tx" line for a message never sent. */
-                    fprintf(stderr, "FT8 tx: cannot encode \"%s\"\n", text);
+                    HLOGE(LOG_C, "FT8 tx: cannot encode \"%s\"", text);
                     n12 = 0;
                 }
 
@@ -2439,11 +2441,11 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             bool want8k = access("/tmp/dstar_tx8k_dump", F_OK) == 0;
             if (tx8kf == NULL && want8k) {
                 tx8kf = fopen("/tmp/dstar_tx8k.f32", "wb");
-                fprintf(stderr, "DSTAR tx8k dump active\n");
+                HLOGI(LOG_C, "DSTAR tx8k dump active");
             } else if (tx8kf != NULL && !want8k) {
                 fclose(tx8kf);
                 tx8kf = NULL;
-                fprintf(stderr, "DSTAR tx8k dump closed\n");
+                HLOGI(LOG_C, "DSTAR tx8k dump closed");
             }
             if (tx8kf != NULL && n8 > 0)
                 fwrite(mic8k_buf, sizeof(float), (size_t) n8, tx8kf);
@@ -2658,14 +2660,14 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             if (max_i_sample < i_sample)
             {
                 max_i_sample = i_sample;
-                printf("input_tx %d\n", signal_input_int[j]);
-                printf("max_tx_sample %f\n\n", max_i_sample);
+                HLOGI(LOG_C, "input_tx %d", signal_input_int[j]);
+                HLOGI(LOG_C, "max_tx_sample %f\n", max_i_sample);
             }
             if (min_i_sample > i_sample)
             {
                 min_i_sample = i_sample;
-                printf("input_tx %d\n", signal_input_int[j]);
-                printf("min_tx_sample %f\n\n", min_i_sample);
+                HLOGI(LOG_C, "input_tx %d", signal_input_int[j]);
+                HLOGI(LOG_C, "min_tx_sample %f\n", min_i_sample);
             }
 #endif
 
@@ -2762,7 +2764,7 @@ double get_band_multiplier()
 
         if (multiplier == 0)
         {
-            fprintf(stderr, "Error finding band gain!\n");
+            HLOGE(LOG_C, "Error finding band gain!");
         }
     }
 
@@ -2802,7 +2804,7 @@ void dsp_init(radio *radio_h)
 
     fft_reset_m_bins();
 
-    printf("Creating signal FFT plans\n");
+    HLOGI(LOG_C, "Creating signal FFT plans");
     plan_rev = fftw_plan_dft_1d(MAX_BINS, fft_freq, fft_time, FFTW_BACKWARD, FFTW_MEASURE);
     plan_fwd = fftw_plan_dft_1d(MAX_BINS, fft_in, fft_out, FFTW_FORWARD, FFTW_MEASURE);
 
@@ -2811,7 +2813,7 @@ void dsp_init(radio *radio_h)
     rx_filter = filter_new(1024, 1025);
     tx_filter = filter_new(1024, 1025);
 
-    printf("Creating filters FFT plans\n");
+    HLOGI(LOG_C, "Creating filters FFT plans");
     dsp_set_filters();
 
     // init vfo for tone generation
@@ -2994,10 +2996,10 @@ int filter_tune(struct filter *f, double const low, double const high, double co
 
 void filter_print(struct filter *f)
 {
-    printf("#Filter windowed FIR frequency coefficients\n");
+    HLOGI(LOG_C, "#Filter windowed FIR frequency coefficients");
     for(int n = 0; n < f->N; n++)
     {
-        printf("%d,%.17f,%.17f\n", n, crealf(f->fir_coeff[n]), cimagf(f->fir_coeff[n]));
+        HLOGI(LOG_C, "%d,%.17f,%.17f", n, crealf(f->fir_coeff[n]), cimagf(f->fir_coeff[n]));
     }
 }
 
@@ -3012,7 +3014,7 @@ int window_filter(int const L,int const M,complex double * const response,double
     {
         if (last_N != 0)
         {
-            printf("Re-creating filters FFT plans\n");
+            HLOGI(LOG_C, "Re-creating filters FFT plans");
             fftw_destroy_plan(rev_filter_plan);
             fftw_destroy_plan(fwd_filter_plan);
             fftw_free(buffer_filter);
