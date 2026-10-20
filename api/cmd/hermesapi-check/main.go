@@ -1,7 +1,7 @@
 // Command hermesapi-check is a self-check for the API layer, not a server.
-// It loads the environment configuration, opens the database, builds the
+// It loads radiod's configuration (core.ini), opens the database, builds the
 // station router and logs the health radiod's C server would serve, alongside
-// the configured address and the radio state. Run it as:
+// radiod's listener and the radio state. Run it as:
 //
 //	cd api && go run ./cmd/hermesapi-check
 //
@@ -13,7 +13,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
@@ -23,17 +22,11 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "hermesapi-check:", err)
-		os.Exit(1)
-	}
+	run()
 }
 
-func run() error {
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
+func run() {
+	cfg := config.Load()
 
 	rt := station.NewRouter(radio.Default())
 
@@ -70,34 +63,34 @@ func run() error {
 	fmt.Fprintf(&banner, `
 ___________________________________________________________________
 
-💡👾 HERMES GO API RUNNING 👾💡
+HERMES GO API SELF-CHECK
 ___________________________________________________________________
 
-  Server           : %s
-  Port             : %v
-  Database         : %s
-  Database Status  : %v
-  Log Level        : %s
-  Modem            : %v
+  api rest         : %s
+  api websocket    : %s   (core.ini main:websocket_url)
+  api port         : %s
+  database         : %s
+  database status  : %s
+  modem            : %s
 ___________________________________________________________________
 
-  Radio Frequency  : %v Hz
-  Radio Mode       : %v
-  Radio Profile    : %v
-  Radio Backend    : %v
+  radio frequency  : %v Hz
+  radio mode       : %v
+  radio profile    : %v
+  radio backend    : %v
 ___________________________________________________________________
 
-  Health Status    : %v
-  Health Body      : %s
-  Version          : %s
-  Status           : %v
+  health status    : %v
+  health body      : %s
+  version          : %s
+  status           : %s
 ___________________________________________________________________
 `,
-		cfg.Addr(),
-		cfg.Port,
+		cfg.RESTURL(),
+		cfg.WSURL(),
+		cfg.Port(),
 		cfg.DatabasePath,
 		dbStatus,
-		cfg.LogLevel,
 		modem,
 		state.FrequencyHz,
 		state.Mode,
@@ -110,6 +103,4 @@ ___________________________________________________________________
 	)
 
 	fmt.Println(banner.String())
-
-	return nil
 }
