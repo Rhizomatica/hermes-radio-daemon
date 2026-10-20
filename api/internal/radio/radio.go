@@ -35,6 +35,8 @@ func Register(rt *api.Router) {
 
 	// The same RadioState as getRadioState, pushed as it changes.
 	rt.Topic("radio.state", spec.RoleReadonly, func() (any, error) { return stateOf(h.r.State()), nil })
+
+	registerControls(rt)
 }
 
 type handlers struct{ r rad.Radio }

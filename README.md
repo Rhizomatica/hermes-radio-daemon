@@ -897,6 +897,15 @@ run), a `heartbeat` every 5 s, and commands answered by exactly one `reply`:
 | `radio.set` | operator |
 | `radio.select_profile` | operator |
 | `radio.reset_protection` | operator |
+| `rig.get` (`{"names":["AF","NB"]}`: read the rig's controls now) | operator |
+| `rig.set` (`{"name":"AF","value":0.5}`; a function takes `true`/`false`) | operator |
+| `rig.watch` (`{"names":["AF"],"interval_ms":1000}`: what `radio.rig` carries for this client) | operator |
+
+The controls are the radio's own, as its backend lists them (the sBitx's, a
+CAT rig's), named in radiod's control vocabulary (see
+[Radio Controls](#radio-controls)); a name the radio does not have, a value
+out of its range, or a radio that does not answer (`rig_timeout`) is refused
+before anything else is read or set.
 
 Topics (`{"type":"subscribe","id":"1","topics":["radio.state"]}`): a snapshot of the whole
 state (`seq` 0, `snapshot: true`), then events with only the fields that changed, at most 10 a
@@ -906,10 +915,11 @@ second, whatever changed them (a command, CAT, rigctl, the front panel).
 |-------|------|------|
 | `radio.state` | the same as `GET /api/v2/radio` | readonly |
 | `modem.status` | the same as `GET /api/v2/modem`; offered only while mercury runs | readonly |
+| `radio.rig` | `{levels, funcs, parms}`: the controls this client watches (`rig.watch`), read at its interval (250 ms at least) | readonly |
 
 ### Not implemented yet
 
-- the other `hermes.v1` topics (`radio.profiles`, `radio.rig`, `digi`, mercury's
+- the other `hermes.v1` topics (`radio.profiles`, `digi`, mercury's
   `modem.config` and `modem.chat`, ...) and binary frames (`radio.spectrum.*`,
   `modem.spectrum.rx`);
 - mercury: `getModemConfig`, `updateModemConfig` and the `modem.chat.send` command;

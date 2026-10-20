@@ -397,3 +397,54 @@ func TestHermesV1ModemStatusTopic(t *testing.T) {
 		t.Errorf("event after MYCALL = %v", ev)
 	}
 }
+
+// The radio's controls through the real daemon (the harness's dummy rig): rig.set
+// reaches the rig as rigctl sees it, rig.get reads it back, and rig.watch
+// gives radio.rig events.
+func TestHermesV1RigControls(t *testing.T) {
+	needGoAPI(t)
+	d := startAPIDaemon(t)
+	ws, _, err := wsDialProto(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	if h := readFrame(t, ws, 5*time.Second); !strings.Contains(fmt.Sprint(h["topics"]), "radio.rig") {
+		t.Fatalf("hello topics = %v", h["topics"])
+	}
+	cmd := func(id, frame string) map[string]any {
+		if err := ws.writeFrame(opText, []byte(frame)); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			if f := readFrame(t, ws, 5*time.Second); f["type"] == "reply" && f["id"] == id {
+				return f
+			}
+		}
+	}
+	if r := cmd("s", `{"type":"cmd","id":"s","cmd":"rig.set","args":{"name":"AF","value":0.25}}`); r["ok"] != true {
+		t.Fatalf("rig.set AF = %v", r)
+	}
+	if got := dialRigctl(t, d).cmd("l AF"); !strings.HasPrefix(got, "0.25") {
+		t.Errorf("rigctl l AF after rig.set = %q", got)
+	}
+	r := cmd("g", `{"type":"cmd","id":"g","cmd":"rig.get","args":{"names":["AF"]}}`)
+	if lv, _ := r["data"].(map[string]any)["levels"].(map[string]any); r["ok"] != true || lv["AF"] != 0.25 {
+		t.Fatalf("rig.get AF = %v", r)
+	}
+
+	cmd("sub", `{"type":"subscribe","id":"sub","topics":["radio.rig"]}`)
+	cmd("w", `{"type":"cmd","id":"w","cmd":"rig.watch","args":{"names":["AF"],"interval_ms":250}}`)
+	if got := dialRigctl(t, d).cmd("L AF 0.75"); got != "RPRT 0" {
+		t.Fatalf("rigctl L AF = %q", got)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		f := readFrame(t, ws, time.Until(deadline))
+		if f["type"] != "event" || f["topic"] != "radio.rig" {
+			continue
+		}
+		if lv, _ := f["data"].(map[string]any)["levels"].(map[string]any); lv["AF"] == 0.75 {
+			break
+		}
+	}
+}

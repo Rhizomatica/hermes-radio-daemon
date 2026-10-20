@@ -86,6 +86,37 @@ func (binding) SetDigitalVoice(n int, on bool) error {
 }
 func (binding) ResetProtection() { C.radiod_api_reset_protection() }
 
+func (binding) Controls() []Control {
+	var cs [192]C.radiod_api_control
+	n := int(C.radiod_api_controls(&cs[0], C.int(len(cs))))
+	out := make([]Control, 0, n)
+	for _, c := range cs[:n] {
+		out = append(out, Control{
+			Name: cstr(c.name[:]), Kind: ControlKind(c.kind), Float: bool(c.is_float),
+			CanGet: bool(c.can_get), CanSet: bool(c.can_set),
+			Min: float64(c.min), Max: float64(c.max), Step: float64(c.step),
+		})
+	}
+	return out
+}
+
+func (binding) GetControl(name string) (ControlKind, float64, error) {
+	cs := C.CString(name)
+	defer C.free(unsafe.Pointer(cs))
+	var kind C.int
+	var v C.double
+	if err := codeErr(int(C.radiod_api_control_get(cs, &kind, &v))); err != nil {
+		return 0, 0, err
+	}
+	return ControlKind(kind), float64(v), nil
+}
+
+func (binding) SetControl(name string, value float64) error {
+	cs := C.CString(name)
+	defer C.free(unsafe.Pointer(cs))
+	return codeErr(int(C.radiod_api_control_set(cs, C.double(value))))
+}
+
 func (binding) Settings() Settings {
 	var s C.radiod_api_settings
 	C.radiod_api_settings_get(&s)

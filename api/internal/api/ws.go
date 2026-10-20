@@ -29,6 +29,7 @@ const (
 	CodeForbidden    = "forbidden"
 	CodeBusy         = "busy"
 	CodeNotSupported = "not_supported"
+	CodeRigTimeout   = "rig_timeout"
 	CodeQueueFull    = "queue_full"
 	CodeInternal     = "internal"
 )
@@ -121,6 +122,10 @@ func (rt *Router) WSOpen(id int64, r *http.Request) int {
 	go c.run()
 	return 0
 }
+
+// Done is closed when the connection closes: a domain's goroutine for this
+// connection (a rig.watch poller) stops on it.
+func (c *Conn) Done() <-chan struct{} { return c.done }
 
 // WSMessage takes one text frame from the socket thread; it never blocks.
 func (rt *Router) WSMessage(id int64, frame []byte) {
