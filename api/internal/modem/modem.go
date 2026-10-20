@@ -1,19 +1,44 @@
 // Package modem serves mercury's REST operations (api-rest.yaml, tag
-// modem), from the status mercury publishes inside radiod.
+// modem) and hermes.v1 topics, from the status mercury publishes inside
+// radiod.
 package modem
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 
 	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/spec"
 )
 
-// Register adds mercury's operations.
+// Register adds mercury's operations and topics.
 func Register(rt *api.Router) {
 	h := handlers{rt.Radio()}
 	rt.Op("getModemStatus", h.getStatus)
+
+	// The same ModemStatus as getModemStatus, pushed as it changes; not
+	// offered while mercury is not running.
+	rt.Topic("modem.status", spec.RoleReadonly, func() (any, error) { return h.status() })
+}
+
+// errNotRunning: radiod has no mercury status (built without mercury, not
+// enabled, or still starting).
+var errNotRunning = errors.New("mercury is not running in this daemon")
+
+// status reads mercury's last status as ModemStatus.
+func (h handlers) status() (Status, error) {
+	raw, ok := h.r.ModemStatus()
+	if !ok {
+		return Status{}, errNotRunning
+	}
+	var m mercuryStatus
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return Status{}, fmt.Errorf("mercury's status: %w", err)
+	}
+	return statusOf(m), nil
 }
 
 type handlers struct{ r rad.Radio }
@@ -96,16 +121,13 @@ func statusOf(m mercuryStatus) Status {
 }
 
 func (h handlers) getStatus(w http.ResponseWriter, r *http.Request) {
-	raw, ok := h.r.ModemStatus()
-	if !ok {
-		api.Problem(w, r, http.StatusServiceUnavailable, "not_running",
-			"mercury is not running in this daemon", nil)
-		return
+	s, err := h.status()
+	switch {
+	case errors.Is(err, errNotRunning):
+		api.Problem(w, r, http.StatusServiceUnavailable, "not_running", err.Error(), nil)
+	case err != nil:
+		api.Problem(w, r, http.StatusInternalServerError, "internal", err.Error(), nil)
+	default:
+		api.JSON(w, http.StatusOK, s)
 	}
-	var m mercuryStatus
-	if err := json.Unmarshal(raw, &m); err != nil {
-		api.Problem(w, r, http.StatusInternalServerError, "internal", "mercury's status: "+err.Error(), nil)
-		return
-	}
-	api.JSON(w, http.StatusOK, statusOf(m))
 }
