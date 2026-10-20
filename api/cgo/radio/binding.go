@@ -16,6 +16,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"unsafe"
+
+	"github.com/Rhizomatica/hermes-radio-daemon/api/cgo/hermeslog"
 )
 
 // Default is the cgo binding to the radiod C API.
@@ -181,3 +183,8 @@ func (binding) WSBroadcast(f []byte) error {
 }
 
 func (binding) Version() string { return C.GoString(C.radiod_api_version()) }
+
+// Log goes to radiod's logger through the hermes_log binding.
+func (binding) Log(level LogLevel, component, message string) {
+	hermeslog.Log(hermeslog.Level(level), component, message)
+}

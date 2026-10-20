@@ -112,7 +112,8 @@ func TestMercuryTNCAnswers(t *testing.T) {
 
 	conn.Close()
 	d.Stop()
-	for _, want := range []string{"mercury_link: mercury starting", "mercury_link: mercury stopped"} {
+	// radiod's lines are hermes_log's, as mercury's are: "[INF] [component] message".
+	for _, want := range []string{"[INF] [mercury-link] mercury starting", "[INF] [mercury-link] mercury stopped"} {
 		if !strings.Contains(d.Log(), want) {
 			t.Errorf("daemon log lacks %q\n--- daemon log ---\n%s", want, d.Log())
 		}

@@ -50,6 +50,7 @@ const char *radiod_api_version(void)
     return RADIOD_GIT_HASH;
 }
 
+
 /* ── radio ── */
 
 static const char *mode_name(uint16_t m)

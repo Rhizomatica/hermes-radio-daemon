@@ -65,6 +65,18 @@ type DigiSettings struct {
 	VoiceCodec                               string // RADEV2, DSTAR
 }
 
+// LogLevel is radiod's logger's level: hermes_log's, as cgo/hermeslog.Level
+// (this package's stub build has no cgo, so it keeps its own type).
+type LogLevel int
+
+const (
+	LogDebug  LogLevel = 0
+	LogTiming LogLevel = 1
+	LogInfo   LogLevel = 2
+	LogWarn   LogLevel = 3
+	LogError  LogLevel = 4
+)
+
 // Radio is what the API layer may do with the daemon. Every method is safe
 // from any goroutine.
 type Radio interface {
@@ -104,6 +116,9 @@ type Radio interface {
 	// WSBroadcast for every hermes.v1 connection.
 	WSSend(conn int64, frame []byte) error
 	WSBroadcast(frame []byte) error
+
+	// Log writes one line to radiod's logger: its format, file and levels.
+	Log(level LogLevel, component, message string)
 
 	Version() string
 }

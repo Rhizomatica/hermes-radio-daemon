@@ -9,12 +9,15 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/logging"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/spec"
 )
 
@@ -31,6 +34,12 @@ type Router struct {
 	// on loopback until then (main:api_v2_enable).
 	RoleOf func(r *http.Request) spec.Role
 
+	// Log is the API layer's logger: radiod's (internal/logging), component
+	// "api". Requests are logged as "api.http", hermes.v1 as "api.ws".
+	Log     *slog.Logger
+	httpLog *slog.Logger
+	wsLog   *slog.Logger
+
 	conns   sync.Map // int64 -> *Conn (hermes.v1)
 	hbStart sync.Once
 }
@@ -44,6 +53,9 @@ func NewRouter(r radio.Radio) *Router {
 		commands: map[string]command{},
 		topics:   map[string]topic{},
 		RoleOf:   func(*http.Request) spec.Role { return spec.RoleAdmin },
+		Log:      logging.New(r, "api"),
+		httpLog:  logging.New(r, "api.http"),
+		wsLog:    logging.New(r, "api.ws"),
 	}
 	return rt
 }
@@ -91,7 +103,58 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id := requestID(r.Header.Get("X-Request-Id"))
 	w.Header().Set("X-Request-Id", id)
 	r = r.WithContext(context.WithValue(r.Context(), ctxRequestID{}, id))
+	start := time.Now()
+	sw := &statusWriter{ResponseWriter: w}
+	rt.serve(sw, r)
+	rt.logRequest(r, sw.code(), time.Since(start))
+}
 
+// statusWriter keeps the status a handler wrote, for the request's log line.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *statusWriter) code() int {
+	if w.status == 0 {
+		return http.StatusOK
+	}
+	return w.status
+}
+
+// logRequest writes one line per request: debug for reads that worked, info
+// for writes and refusals, error for the station's own failures.
+func (rt *Router) logRequest(r *http.Request, status int, took time.Duration) {
+	level := slog.LevelInfo
+	switch {
+	case status >= 500:
+		level = slog.LevelError
+	case status < 400 && (r.Method == http.MethodGet || r.Method == http.MethodHead):
+		level = slog.LevelDebug
+	}
+	target := r.URL.Path
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	rt.httpLog.Log(r.Context(), level, fmt.Sprintf("%s %s %d", r.Method, target, status),
+		"ms", float64(took.Microseconds())/1000, "request_id", RequestID(r))
+}
+
+func (rt *Router) serve(w http.ResponseWriter, r *http.Request) {
 	if _, pattern := rt.mux.Handler(r); pattern == "" {
 		var allow []string
 		for _, m := range methods {

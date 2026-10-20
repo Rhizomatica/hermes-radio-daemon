@@ -14,6 +14,7 @@ import "C"
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"runtime/debug"
 	"time"
@@ -36,6 +37,7 @@ func HermesInit() {
 		debug.SetMemoryLimit(64 << 20)
 	}
 	router = station.NewRouter(radio.Default())
+	slog.SetDefault(router.Log) // any slog use in the layer goes to radiod's logger
 }
 
 // HermesHTTP answers one request under /api/v2. Every string is C memory,

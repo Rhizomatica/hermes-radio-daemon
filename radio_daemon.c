@@ -28,6 +28,7 @@
 
 #include "radio.h"
 #include "radio_backend.h"
+#include "radiod_log.h"
 
 _Atomic bool shutdown_ = false;
 
@@ -86,19 +87,25 @@ int main(int argc, char *argv[])
         }
     }
 
+    /* From here on everything logs through the logger, mercury's included;
+     * core.ini's log settings are applied once it is read. */
+    radiod_log_start();
+    int rc;
     if (!radio_backend_detect(cfg_radio_path, &backend_selection))
     {
-        fprintf(stderr, "Failed to resolve radio backend. Exiting.\n");
-        return EXIT_FAILURE;
+        HLOGE("radiod", "cannot tell the radio backend from %s; exiting", cfg_radio_path);
+        rc = EXIT_FAILURE;
     }
-
-    if (ptt_off_only)
-        return radio_backend_force_ptt_off(&backend_selection, cfg_radio_path) == 0
-               ? EXIT_SUCCESS : EXIT_FAILURE;
-
-    runtime.cfg_radio_path = cfg_radio_path;
-    runtime.cfg_user_path = cfg_user_path;
-    runtime.cpu_nr = cpu_nr;
-
-    return radio_backend_run(&backend_selection, &runtime);
+    else if (ptt_off_only)
+        rc = radio_backend_force_ptt_off(&backend_selection, cfg_radio_path) == 0
+             ? EXIT_SUCCESS : EXIT_FAILURE;
+    else
+    {
+        runtime.cfg_radio_path = cfg_radio_path;
+        runtime.cfg_user_path = cfg_user_path;
+        runtime.cpu_nr = cpu_nr;
+        rc = radio_backend_run(&backend_selection, &runtime);
+    }
+    radiod_log_stop();
+    return rc;
 }

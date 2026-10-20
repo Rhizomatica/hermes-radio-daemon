@@ -20,7 +20,7 @@ CC      = gcc
 #   common/              configuration and shared-memory helpers
 #   include/             public protocol headers (SHM command set)
 #   utils/               radio_client, ws_client, D-STAR/AMBE tools
-MODULE_INCLUDES = -Iradio -Imodem -Iaudioio -Icontrol_interfaces -Igui_interface -Iapi \
+MODULE_INCLUDES = -Iradio -Imodem -Iaudioio -Icontrol_interfaces -Igui_interface -Iapi -Ivendor/hermes_log \
                   -Icommon -Ihamlib -Iinclude
 
 # -MMD -MP auto-generates per-object header dependencies (*.d), so editing a
@@ -88,6 +88,7 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   vendor/hermes_shm/shm_posix.o \
                   common/cfg_utils.o \
                   common/shm_utils.o \
+                  common/radiod_log.o \
                   gui_interface/websocket/ws_server.o \
                   gui_interface/websocket/ws_frame.o \
                   gui_interface/websocket/ws_crypto.o \
@@ -149,6 +150,9 @@ $(MERCURY_LIBS) &: FORCE
 else
 FT8_TEST_SRCS = $(FT8_LIB_SRCS)
 FT8_TEST_LIBS =
+# The logger is mercury's hermes_log. With mercury linked in, its archive
+# has it; without, the identical copy in vendor/hermes_log.
+DAEMON_TOP_OBJS += vendor/hermes_log/hermes_log.o
 endif
 
 # ── Go API layer (api), linked in as a C archive ──────
@@ -162,8 +166,8 @@ GO_API_LIB   = $(GO_API_DIR)/libhermes_api.a
 HAVE_GO_API ?= $(if $(shell command -v $(GO) 2>/dev/null),1,0)
 ifeq ($(HAVE_GO_API),1)
 CFLAGS += -DHAVE_GO_API=1
-GO_API_SRCS := $(shell find $(GO_API_DIR) -name '*.go' -o -name '*.yaml' -o -name go.mod)
-$(GO_API_LIB) $(GO_API_DIR)/libhermes_api.h &: $(GO_API_SRCS) api/radiod_api.h
+GO_API_SRCS := $(shell find $(GO_API_DIR) -name '*.go' -o -name '*.c' -o -name '*.yaml' -o -name go.mod)
+$(GO_API_LIB) $(GO_API_DIR)/libhermes_api.h &: $(GO_API_SRCS) api/radiod_api.h vendor/hermes_log/hermes_log.h
 	cd $(GO_API_DIR) && CGO_ENABLED=1 CC="$(CC)" $(GO) build -tags radiod -buildmode=c-archive \
 	    -o libhermes_api.a ./cmd/hermesapi
 gui_interface/radio_websocket.o: $(GO_API_DIR)/libhermes_api.h
@@ -196,6 +200,9 @@ radio_daemon: $(DAEMON_OBJS) $(DAEMON_LIBS)
 # own copy of the headers: the two copies must stay identical, or the ring
 # structs differ with no error at all.
 HERMES_SHM_FILES = ring_buffer_posix.c ring_buffer_posix.h shm_posix.c shm_posix.h
+# Likewise the logger: radiod compiles against vendor/hermes_log/hermes_log.h
+# and, with mercury, links mercury's hermes_log.o, so the copies must match.
+HERMES_LOG_FILES = hermes_log.c hermes_log.h
 check-symbols: $(DAEMON_OBJS) $(DAEMON_LIBS)
 	utils/check_symbols.sh "$(DAEMON_OBJS)" "$(LDFLAGS)" $(MERCURY_LIBS) \
 	    $(if $(filter 1,$(HAVE_GO_API)),$(GO_API_LIB))
@@ -204,6 +211,10 @@ ifeq ($(HAVE_MERCURY),1)
 	    cmp -s vendor/hermes_shm/$$f $(MERCURY_DIR)/common/$$f || \
 	        { echo "check-symbols: vendor/hermes_shm/$$f differs from $(MERCURY_DIR)/common/$$f" >&2; exit 1; }; \
 	done; echo "check-symbols: hermes_shm matches mercury's"
+	@for f in $(HERMES_LOG_FILES); do \
+	    cmp -s vendor/hermes_log/$$f $(MERCURY_DIR)/common/$$f || \
+	        { echo "check-symbols: vendor/hermes_log/$$f differs from $(MERCURY_DIR)/common/$$f" >&2; exit 1; }; \
+	done; echo "check-symbols: hermes_log matches mercury's"
 endif
 
 # RADE: rade_c and the Opus DNN subset it runs on (LPCNet features, FARGAN)
