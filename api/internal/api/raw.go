@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/textproto"
 	"net/url"
@@ -73,6 +74,8 @@ func (rt *Router) ServeRaw(method, path, query, rawHeaders, peer string, body []
 		func() {
 			defer func() { // one bad handler must not take the daemon down
 				if p := recover(); p != nil {
+					rt.httpLog.Error(fmt.Sprintf("%s %s: the handler panicked", r.Method, r.URL.Path),
+						"panic", fmt.Sprint(p), "request_id", RequestID(r))
 					rec = &Recorder{}
 					Problem(rec, r, http.StatusInternalServerError, "internal", "the handler failed", nil)
 				}

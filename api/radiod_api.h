@@ -130,4 +130,11 @@ typedef struct {
 
 const char *radiod_api_version(void);
 
+/* ── logging ── */
+
+/* One line to radiod's logger (mercury's hermes_log: the same format, file
+ * and levels as radiod's own lines). level is hermes_log's: 0 debug,
+ * 1 timing, 2 info, 3 warn, 4 error; message is logged as is. */
+void radiod_api_log(int level, const char *component, const char *message);
+
 #endif /* RADIOD_API_H */

@@ -17,6 +17,7 @@ type Stub struct {
 	digi     DigiSettings
 	log      []json.RawMessage
 	modem    json.RawMessage
+	logs     []string
 	Sent     map[int64][][]byte // frames by connection; 0 = broadcast
 }
 
@@ -329,3 +330,24 @@ func (s *Stub) Frames(conn int64) [][]byte {
 }
 
 func (s *Stub) Version() string { return "stub" }
+
+var logLevelNames = [...]string{"DBG", "TMG", "INF", "WRN", "ERR"}
+
+// Log records the line as "[LVL] [component] message", the part of
+// hermes_log's format after the clock (Logs returns them).
+func (s *Stub) Log(level LogLevel, component, message string) {
+	name := "INF"
+	if level >= LogDebug && int(level) < len(logLevelNames) {
+		name = logLevelNames[level]
+	}
+	s.mu.Lock()
+	s.logs = append(s.logs, "["+name+"] ["+component+"] "+message)
+	s.mu.Unlock()
+}
+
+// Logs returns a copy of the lines logged so far.
+func (s *Stub) Logs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.logs...)
+}

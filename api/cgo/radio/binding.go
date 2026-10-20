@@ -181,3 +181,10 @@ func (binding) WSBroadcast(f []byte) error {
 }
 
 func (binding) Version() string { return C.GoString(C.radiod_api_version()) }
+
+func (binding) Log(level LogLevel, component, message string) {
+	cc, cm := C.CString(component), C.CString(message)
+	C.radiod_api_log(C.int(level), cc, cm)
+	C.free(unsafe.Pointer(cc))
+	C.free(unsafe.Pointer(cm))
+}

@@ -104,6 +104,7 @@ const (
 func (rt *Router) WSOpen(id int64, r *http.Request) int {
 	role := rt.RoleOf(r)
 	if roleRank[role] == 0 {
+		rt.wsLog.Info("refused: no session", "conn", id, "peer", r.RemoteAddr)
 		return http.StatusUnauthorized
 	}
 	c := &Conn{ID: id, Role: role, rt: rt, in: make(chan []byte, connQueue), done: make(chan struct{}),
@@ -116,6 +117,7 @@ func (rt *Router) WSOpen(id int64, r *http.Request) int {
 	})
 	rt.conns.Store(id, c)
 	rt.hbStart.Do(func() { go rt.heartbeat(); go rt.publish() })
+	rt.wsLog.Info("open", "conn", id, "role", string(role), "peer", r.RemoteAddr)
 	go c.run()
 	return 0
 }
@@ -142,6 +144,7 @@ func (rt *Router) WSMessage(id int64, frame []byte) {
 func (rt *Router) WSClose(id int64) {
 	if v, ok := rt.conns.LoadAndDelete(id); ok {
 		close(v.(*Conn).done)
+		rt.wsLog.Info("closed", "conn", id)
 	}
 }
 
@@ -244,8 +247,16 @@ func (c *Conn) handle(frame []byte) {
 		if len(f.Args) == 0 || string(f.Args) == "null" {
 			f.Args = json.RawMessage("{}")
 		}
-		data, cerr := c.safeRun(cmd.h, f.Args)
+		start := time.Now()
+		data, cerr := c.safeRun(f.Cmd, cmd.h, f.Args)
 		c.reply(f.ID, data, cerr)
+		if cerr != nil {
+			c.rt.wsLog.Debug("cmd "+f.Cmd, "conn", c.ID, "id", f.ID, "ok", false, "code", cerr.Code,
+				"ms", float64(time.Since(start).Microseconds())/1000)
+		} else {
+			c.rt.wsLog.Debug("cmd "+f.Cmd, "conn", c.ID, "id", f.ID, "ok", true,
+				"ms", float64(time.Since(start).Microseconds())/1000)
+		}
 	case "subscribe":
 		c.subscribe(f.ID, f.Topics)
 	case "unsubscribe":
@@ -257,9 +268,10 @@ func (c *Conn) handle(frame []byte) {
 
 // safeRun turns a handler's panic into an internal error, so one bad
 // handler cannot take the daemon (and the radio) down with it.
-func (c *Conn) safeRun(h CommandFunc, args json.RawMessage) (data any, cerr *CmdError) {
+func (c *Conn) safeRun(name string, h CommandFunc, args json.RawMessage) (data any, cerr *CmdError) {
 	defer func() {
 		if p := recover(); p != nil {
+			c.rt.wsLog.Error("cmd "+name+": the command panicked", "conn", c.ID, "panic", fmt.Sprint(p))
 			data, cerr = nil, Errf(CodeInternal, "command failed")
 		}
 	}()
