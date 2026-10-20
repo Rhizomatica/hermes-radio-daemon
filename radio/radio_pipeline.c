@@ -12,6 +12,9 @@
 
 #include "radio_pipeline.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "radio"
 static const radio_pipeline_descriptor pipeline_registry[] = {
     {
         .name = "hamlib-analog",
@@ -185,8 +188,7 @@ void radio_pipeline_refresh(radio *radio_h)
 
     if (previous != pipeline && pipeline)
     {
-        fprintf(stderr,
-                "radio_pipeline: active=%s mode=%s media=%s runtime=%s\n",
+        HLOGI(LOG_C, "active=%s mode=%s media=%s runtime=%s",
                 pipeline->name,
                 pipeline_domain_name_from_descriptor(pipeline),
                 pipeline_media_owner_name_from_descriptor(pipeline),

@@ -17,6 +17,9 @@
 #include "rig_server.h"
 #include "cat_server.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "radio"
 /* Timer reset flag — defined by hamlib/radio_hamlib.c (used only by hamlib's
  * profile-timeout io thread; harmless when hfsignals backend is selected). */
 extern _Atomic bool timer_reset;
@@ -96,7 +99,7 @@ int radio_backend_force_ptt_off(const radio_backend_selection *selection,
 
     bool ok = selection->ops->force_ptt_off(&radio_h);
     close_config_radio(&radio_h);
-    printf("radio_daemon: PTT off %s\n", ok ? "sent" : "FAILED");
+    HLOGI(LOG_C, "PTT off %s", ok ? "sent" : "FAILED");
     return ok ? 0 : -1;
 }
 
@@ -187,7 +190,7 @@ void radio_backend_set_ptt(radio *radio_h, bool txrx_state,
         ptt_owner_id = 0;
     }
     if (src != PTT_SRC_INTERNAL)
-        printf("radio: PTT %s by %s %ld\n",
+        HLOGI(LOG_C, "PTT %s by %s %ld",
                txrx_state == IN_TX ? "ON" : "OFF", ptt_source_name(src), id);
     ptt_apply(radio_h, txrx_state);
     pthread_mutex_unlock(&ptt_lock);
@@ -200,7 +203,7 @@ void radio_backend_end_ptt(radio *radio_h, ptt_source src, long id)
     {
         ptt_owner_src = PTT_SRC_NONE;
         ptt_owner_id = 0;
-        printf("radio: PTT OFF by %s %ld\n", ptt_source_name(src), id);
+        HLOGI(LOG_C, "PTT OFF by %s %ld", ptt_source_name(src), id);
         ptt_apply(radio_h, IN_RX);
     }
     pthread_mutex_unlock(&ptt_lock);
@@ -216,7 +219,7 @@ bool radio_backend_release_ptt(radio *radio_h, ptt_source src, long id,
     {
         ptt_owner_src = PTT_SRC_NONE;
         ptt_owner_id = 0;
-        printf("radio: PTT OFF, %s %ld %s while keyed\n",
+        HLOGI(LOG_C, "PTT OFF, %s %ld %s while keyed",
                ptt_source_name(src), id, why);
         ptt_apply(radio_h, IN_RX);
         released = true;
@@ -318,7 +321,7 @@ bool radio_backend_set_digital_voice(radio *radio_h, bool digital_voice, uint32_
      * preamble or header), and RADEv2 would start mid-transmission. */
     if (radio_h->txrx_state == IN_TX)
     {
-        fprintf(stderr, "set_digital_voice: refused while transmitting\n");
+        HLOGE(LOG_C, "set_digital_voice: refused while transmitting");
         return false;
     }
 
@@ -366,7 +369,7 @@ bool radio_backend_set_digital_voice_codec(radio *radio_h, uint16_t codec)
         return true;
     if (radio_h->txrx_state == IN_TX)
     {
-        fprintf(stderr, "digital_voice_codec: refused while transmitting\n");
+        HLOGE(LOG_C, "digital_voice_codec: refused while transmitting");
         return false;
     }
 

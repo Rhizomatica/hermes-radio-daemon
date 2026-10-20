@@ -9,6 +9,9 @@
 #include "radio_media.h"
 #include "vendor/hermes_shm/ring_buffer_posix.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "shm-audio"
 /* Must match mercury common/defines_modem.h exactly. */
 #define SIGNAL_BUFFER_SIZE 12288000
 #define SIGNAL_INPUT       "/signal-radio2modem"   /* daemon -> modem (RX) */
@@ -58,7 +61,7 @@ bool shm_audio_init(radio *radio_h)
     s_tx_ring = circular_buf_init_shm(SIGNAL_BUFFER_SIZE, (char *) SIGNAL_OUTPUT);
     if (!s_rx_ring || !s_tx_ring)
     {
-        fprintf(stderr, "shm_audio: failed to create SHM rings\n");
+        HLOGE(LOG_C, "failed to create SHM rings");
         return false;
     }
     clear_buffer(s_rx_ring);
@@ -67,13 +70,13 @@ bool shm_audio_init(radio *radio_h)
     s_run = true;
     if (pthread_create(&s_tx_tid, NULL, tx_thread, NULL) != 0)
     {
-        fprintf(stderr, "shm_audio: failed to start TX thread\n");
+        HLOGE(LOG_C, "failed to start TX thread");
         s_run = false;
         return false;
     }
 
     s_started = true;
-    fprintf(stderr, "shm_audio: bridge up (%s / %s, 8 kHz int32 mono)\n",
+    HLOGI(LOG_C, "bridge up (%s / %s, 8 kHz int32 mono)",
             SIGNAL_INPUT, SIGNAL_OUTPUT);
     return true;
 }

@@ -37,6 +37,9 @@
 #include "loop_audio.h"
 #include "modem_audio.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "media"
 extern _Atomic bool shutdown_;
 
 #define DEFAULT_PERIOD_FRAMES 160
@@ -99,7 +102,7 @@ static bool ensure_directory(const char *path)
     if (mkdir(path, 0775) == 0 || errno == EEXIST)
         return true;
 
-    fprintf(stderr, "radio_media: mkdir(%s) failed: %s\n", path, strerror(errno));
+    HLOGE(LOG_C, "mkdir(%s) failed: %s", path, strerror(errno));
     return false;
 }
 
@@ -214,7 +217,7 @@ static bool recording_open(wav_recording *rec, const char *dir_path, const char 
     rec->fp = fopen(rec->path, "wb");
     if (!rec->fp)
     {
-        fprintf(stderr, "radio_media: cannot open %s: %s\n", rec->path, strerror(errno));
+        HLOGE(LOG_C, "cannot open %s: %s", rec->path, strerror(errno));
         rec->path[0] = '\0';
         pthread_mutex_unlock(&rec->mutex);
         return false;
@@ -253,7 +256,7 @@ static snd_pcm_t *open_pcm_device(const char *device, snd_pcm_stream_t stream,
     int err = snd_pcm_open(&pcm, device, stream, 0);
     if (err < 0)
     {
-        fprintf(stderr, "radio_media: snd_pcm_open(%s) failed: %s\n",
+        HLOGE(LOG_C, "snd_pcm_open(%s) failed: %s",
                 device, snd_strerror(err));
         return NULL;
     }
@@ -290,7 +293,7 @@ static snd_pcm_t *open_pcm_device(const char *device, snd_pcm_stream_t stream,
         (err = snd_pcm_hw_params_set_buffer_time_near(pcm, hw, &buffer_time, 0)) < 0 ||
         (err = snd_pcm_hw_params(pcm, hw)) < 0)
     {
-        fprintf(stderr, "radio_media: hw_params(%s) failed: %s\n",
+        HLOGE(LOG_C, "hw_params(%s) failed: %s",
                 device, snd_strerror(err));
         snd_pcm_close(pcm);
         return NULL;
@@ -443,13 +446,13 @@ static void *capture_thread(void *ctx_v)
         return NULL;
 
     if (!audio_bridge_init(&bridge, native_rate, ring_rate)) {
-        fprintf(stderr, "radio_media: audio_bridge_init(capture) failed\n");
+        HLOGE(LOG_C, "audio_bridge_init(capture) failed");
         free(buffer);
         return NULL;
     }
 
     pcm = NULL;   /* opened lazily below: half-duplex owns the codec only in RX */
-    fprintf(stderr, "radio_media: capture %s @ %u Hz -> ring @ %u Hz (half-duplex=%d)\n",
+    HLOGI(LOG_C, "capture %s @ %u Hz -> ring @ %u Hz (half-duplex=%d)",
             radio_h->capture_device, native_rate, ring_rate,
             (int) radio_h->audio_half_duplex);
 
@@ -494,8 +497,8 @@ static void *capture_thread(void *ctx_v)
                 if (hard_errors < 1000)
                     hard_errors++;
                 if (hard_errors <= MEDIA_REOPEN_MAX_ATTEMPTS)
-                    fprintf(stderr, "radio_media: capture open %s failed "
-                            "(attempt %d)\n", radio_h->capture_device, hard_errors);
+                    HLOGE(LOG_C, "capture open %s failed "
+                            "(attempt %d)", radio_h->capture_device, hard_errors);
                 continue;
             }
             radio_h->media_capture_holds_codec = true;
@@ -529,8 +532,8 @@ static void *capture_thread(void *ctx_v)
             if (hard_errors < 1000)
                 hard_errors++;
             if (hard_errors <= MEDIA_REOPEN_MAX_ATTEMPTS)
-                fprintf(stderr, "radio_media: capture read failed: %s — reopening %s "
-                        "(attempt %d)\n", snd_strerror((int) got),
+                HLOGE(LOG_C, "capture read failed: %s — reopening %s "
+                        "(attempt %d)", snd_strerror((int) got),
                         radio_h->capture_device, hard_errors);
             close_pcm_bus(radio_h, pcm);
             pcm = NULL;
@@ -570,13 +573,13 @@ static void *playback_thread(void *ctx_v)
         return NULL;
 
     if (!audio_bridge_init(&bridge, native_rate, ring_rate)) {
-        fprintf(stderr, "radio_media: audio_bridge_init(playback) failed\n");
+        HLOGE(LOG_C, "audio_bridge_init(playback) failed");
         free(buffer);
         return NULL;
     }
 
     pcm = NULL;   /* opened lazily below: half-duplex owns the codec only in TX */
-    fprintf(stderr, "radio_media: playback %s @ %u Hz <- ring @ %u Hz (half-duplex=%d)\n",
+    HLOGI(LOG_C, "playback %s @ %u Hz <- ring @ %u Hz (half-duplex=%d)",
             radio_h->playback_device, native_rate, ring_rate,
             (int) radio_h->audio_half_duplex);
 
@@ -623,8 +626,8 @@ static void *playback_thread(void *ctx_v)
                 if (hard_errors < 1000)
                     hard_errors++;
                 if (hard_errors <= MEDIA_REOPEN_MAX_ATTEMPTS)
-                    fprintf(stderr, "radio_media: playback open %s failed "
-                            "(attempt %d)\n", radio_h->playback_device, hard_errors);
+                    HLOGE(LOG_C, "playback open %s failed "
+                            "(attempt %d)", radio_h->playback_device, hard_errors);
                 continue;
             }
             radio_h->media_playback_holds_codec = true;
@@ -708,8 +711,8 @@ static void *playback_thread(void *ctx_v)
             if (hard_errors < 1000)
                 hard_errors++;
             if (hard_errors <= MEDIA_REOPEN_MAX_ATTEMPTS)
-                fprintf(stderr, "radio_media: playback write failed: %s — reopening %s "
-                        "(attempt %d)\n", snd_strerror((int) wrote),
+                HLOGE(LOG_C, "playback write failed: %s — reopening %s "
+                        "(attempt %d)", snd_strerror((int) wrote),
                         radio_h->playback_device, hard_errors);
             close_pcm_bus(radio_h, pcm);
             pcm = NULL;
@@ -743,9 +746,8 @@ static bool daemon_audio_bridge_enabled(radio *radio_h)
 
     if (!radio_pipeline_has_capability(radio_h, RADIO_PIPELINE_CAP_DAEMON_AUDIO_BRIDGE))
     {
-        fprintf(stderr,
-                "radio_media: ignoring audio bridge for pipeline %s; "
-                "media remains on the %s path.\n",
+        HLOGI(LOG_C, "ignoring audio bridge for pipeline %s; "
+                "media remains on the %s path.",
                 radio_pipeline_name(radio_h),
                 radio_pipeline_media_owner_name(radio_h));
         return false;
@@ -799,7 +801,7 @@ bool radio_media_init(radio *radio_h, pthread_t *capture_tid, pthread_t *playbac
     }
     pthread_mutex_unlock(&g_spectrum_plan_mutex);
     if (!g_spectrum_plan_ready)
-        fprintf(stderr, "radio_media: warning: spectrum FFT plan unavailable\n");
+        HLOGW(LOG_C, "warning: spectrum FFT plan unavailable");
 
     if (!ring_init(&radio_h->rx_audio_ring, queue_samples) ||
         !ring_init(&radio_h->tx_audio_ring, queue_samples) ||
@@ -811,7 +813,7 @@ bool radio_media_init(radio *radio_h, pthread_t *capture_tid, pthread_t *playbac
                    (radio_h->audio_sample_rate ? radio_h->audio_sample_rate : 48000) * 2) ||
         !ring_init(&radio_h->tx_dstar_ring, queue_samples))
     {
-        fprintf(stderr, "radio_media: failed to allocate audio queues\n");
+        HLOGE(LOG_C, "failed to allocate audio queues");
         return false;
     }
 
@@ -825,12 +827,12 @@ bool radio_media_init(radio *radio_h, pthread_t *capture_tid, pthread_t *playbac
 
     if (pthread_create(capture_tid, NULL, capture_thread, &capture_ctx) != 0)
     {
-        fprintf(stderr, "radio_media: cannot start capture thread\n");
+        HLOGE(LOG_C, "cannot start capture thread");
         return false;
     }
     if (pthread_create(playback_tid, NULL, playback_thread, &playback_ctx) != 0)
     {
-        fprintf(stderr, "radio_media: cannot start playback thread\n");
+        HLOGE(LOG_C, "cannot start playback thread");
         shutdown_ = true;
         pthread_join(*capture_tid, NULL);
         return false;

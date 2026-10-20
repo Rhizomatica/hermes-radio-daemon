@@ -40,6 +40,9 @@
 #include "include/sbitx_io.h"
 #include "include/radio_cmds.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "shm"
 extern _Atomic bool shutdown_;
 
 static controller_conn *connector_local;
@@ -107,8 +110,8 @@ static void shm_keyer_watch(pid_t pid)
     shm_keyer_forget();
     if (pid <= 0)
     {
-        fprintf(stderr, "radio_shm: PTT ON from an unknown client; "
-                        "it will not be released if the client dies\n");
+        HLOGI(LOG_C, "PTT ON from an unknown client; "
+                        "it will not be released if the client dies");
         return;
     }
 
@@ -124,7 +127,7 @@ static void shm_keyer_watch(pid_t pid)
 
     if (shm_client_is_one_shot(comm))
     {
-        printf("radio_shm: PTT ON from %s (pid %d), latched until PTT off\n",
+        HLOGI(LOG_C, "PTT ON from %s (pid %d), latched until PTT off",
                comm, (int) pid);
         return;
     }
@@ -133,7 +136,7 @@ static void shm_keyer_watch(pid_t pid)
     static pid_t last_named = 0;
     if (pid != last_named)
     {
-        printf("radio_shm: PTT keyed by pid %d (%s)\n", (int) pid, comm);
+        HLOGI(LOG_C, "PTT keyed by pid %d (%s)", (int) pid, comm);
         last_named = pid;
     }
 
@@ -628,7 +631,7 @@ static void *process_radio_command_thread(void *arg)
         if (conn->service_command[4] == CMD_RADIO_RESET)
         {
             shutdown_ = true;
-            fprintf(stderr, "\nReset command. Exiting\n");
+            HLOGE(LOG_C, "\nReset command. Exiting");
             break;
         }
 
@@ -663,12 +666,12 @@ static bool initialize_connector(controller_conn *connector)
     return true;
 
 err_mutexattr:
-    perror("initialize_connector (mutex)");
+    HLOGE(LOG_C, "%s: %s", "initialize_connector (mutex)", strerror(errno));
     pthread_mutexattr_destroy(&attr);
     return false;
 
 err_condattr:
-    perror("initialize_connector (cond)");
+    HLOGE(LOG_C, "%s: %s", "initialize_connector (cond)", strerror(errno));
     pthread_condattr_destroy(&cond_attr);
     return false;
 }
@@ -690,8 +693,8 @@ void shm_controller_init(radio *radio_h, pthread_t *shm_tid)
         connector = shm_attach(SYSV_SHM_CONTROLLER_KEY_STR, sizeof(controller_conn));
         if (connector)
         {
-            fprintf(stderr, "Connector SHM already exists – reusing "
-                            "(keeps attached clients alive).\n");
+            HLOGI(LOG_C, "Connector SHM already exists – reusing "
+                            "(keeps attached clients alive).");
             /* Drop any half-written stale command from a previous run; the
              * worker treats a nonzero opcode as pending work. */
             connector->service_command[4] = 0;
@@ -701,7 +704,7 @@ void shm_controller_init(radio *radio_h, pthread_t *shm_tid)
         {
             /* Attach failed: stale segment from an incompatible (smaller)
              * layout. Size 0 matches whatever segment holds the key. */
-            fprintf(stderr, "Connector SHM exists but is unusable – recreating.\n");
+            HLOGI(LOG_C, "Connector SHM exists but is unusable – recreating.");
             shm_destroy(SYSV_SHM_CONTROLLER_KEY_STR, 0);
         }
     }
