@@ -17,7 +17,6 @@
 #include "radio_backend.h"
 #include "cfg_utils.h"
 #include "dsp/digi_log.h"
-#include "hermes_log.h"
 #include "websocket/ws_server.h"
 #ifdef HAVE_MERCURY
 #include "mercury_link.h"
@@ -51,14 +50,6 @@ const char *radiod_api_version(void)
     return RADIOD_GIT_HASH;
 }
 
-void radiod_api_log(int level, const char *component, const char *message)
-{
-    if (level < HERMES_LOG_LEVEL_DEBUG)
-        level = HERMES_LOG_LEVEL_DEBUG;
-    if (level > HERMES_LOG_LEVEL_ERROR)
-        level = HERMES_LOG_LEVEL_ERROR;
-    hermes_logf((hermes_log_level_t) level, component, "%s", message ? message : "");
-}
 
 /* ── radio ── */
 

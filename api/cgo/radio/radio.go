@@ -65,7 +65,8 @@ type DigiSettings struct {
 	VoiceCodec                               string // RADEV2, DSTAR
 }
 
-// LogLevel is radiod's logger's level (mercury's hermes_log).
+// LogLevel is radiod's logger's level: hermes_log's, as cgo/hermeslog.Level
+// (this package's stub build has no cgo, so it keeps its own type).
 type LogLevel int
 
 const (

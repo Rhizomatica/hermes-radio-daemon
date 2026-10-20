@@ -10,6 +10,7 @@ radiod_api.h/.c   the radiod C API
 spec/             the pinned contract and its reader
 cmd/hermesapi/    the C exports
 cgo/radio/        the Radio interface: the cgo binding (tag radiod) or a stub
+cgo/hermeslog/    the Go binding of hermes_log, mercury's and radiod's logger
 internal/api/     the common library: router, problem details, JSON, pagination, hermes.v1
 internal/<domain> the handlers, one package per API domain
 ```

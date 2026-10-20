@@ -106,6 +106,7 @@ api/
 ├── radiod_api.h/.c     THE RADIOD C API: everything the API layer may read or change in radiod
 ├── spec/               pinned api-rest.yaml, api-ws.yaml, and the reader (spec.go)
 ├── cmd/hermesapi/      the C exports; converts C types, nothing else
+├── cgo/hermeslog/      the Go binding of hermes_log, the logger radiod and mercury share
 ├── cgo/radio/          the Radio interface; binding.go (the cgo binding, build tag `radiod`),
 │                       stub.go (an in-memory radio for tests and Go-only work)
 └── internal/
@@ -375,8 +376,8 @@ CI runs all three on Debian 13, amd64 and arm64, with and without the Go layer.
   blocks only that request. Don't start goroutines that outlive their request or connection.
 - **Memory:** the Go heap has a soft 64 MB limit (`GOMEMLIMIT` overrides it) for the 1 GB Pi.
   Page large collections; don't load a whole log.
-- **cgo:** only `cgo/radio` talks to C, and only through the radiod C API. Don't add `import "C"`
-  elsewhere.
+- **cgo:** only `cgo/radio` (the radiod C API) and `cgo/hermeslog` (the logger) talk to C.
+  Don't add `import "C"` elsewhere.
 - **Logging:** log with `log/slog`, never `fmt.Print` or the `log` package. The API layer's
   records go to radiod's logger (mercury's `hermes_log`, `internal/logging`), so they come out in
   the same format, file and levels as radiod's and mercury's lines:
@@ -387,6 +388,13 @@ CI runs all three on Debian 13, amd64 and arm64, with and without the Go layer.
   `key=value`. Which lines are written is the station's `core.ini` (`main:log_level`,
   `main:log_component_levels`), not your code. In unit tests the stub radio keeps the lines
   (`Stub.Logs()`).
+
+  `cgo/hermeslog` is the binding underneath: `Log`/`Logf` with hermes_log's levels (`Debug`,
+  `Timing`, `Info`, `Warn`, `Error`), and for a standalone Go program (a command-line tool, not
+  radiod) `Init`, `SetLevel`, `SetComponentLevel`, `SetFile` and `Shutdown`. Inside radiod the
+  logger is radiod's, already started and configured; outside, the package compiles the
+  vendored `hermes_log.c`, so a tool's lines are the same as the daemon's. It needs cgo; the API
+  layer's other packages and their tests do not.
 
 ## 11. Not there yet
 
