@@ -306,6 +306,14 @@ again:
 rt.Topic("modem.status", spec.RoleReadonly, func() (any, error) { return h.status() })
 ```
 
+A topic whose data depends on what each client asked for is registered with `rt.TopicConn`: its
+function gets the connection (`nil` asks only whether the topic is offered). `radio.rig` is one:
+`rig.watch` starts a goroutine for the connection that reads the watched controls at the client's
+interval and keeps the latest values; the topic function returns them, and stops when
+`c.Done()` closes. Slow I/O (a CAT read) goes in such a goroutine, never in the topic function,
+which the publisher calls every 100 ms. Nested objects are compared inside, so a `radio.rig`
+event carries only the controls that changed (`{"levels":{"AF":0.6}}`).
+
 Not there yet: topics that are lists of new entries rather than state (`digi`, `modem.chat`,
 `messages`), which will read by cursor in the same loop; binary topics (`radio.spectrum.*`,
 `modem.spectrum.rx`), sent by C; and WebRTC signalling (`rtc.offer`).
@@ -409,7 +417,7 @@ CI runs all three on Debian 13, amd64 and arm64, with and without the Go layer.
 
 - **Logins and sessions** (`/api/v2/session`, the database): until then `/api/v2` is
   loopback-only and every caller is `admin`.
-- **More topics**: `radio.profiles`, `radio.rig`, the list topics (`digi`, `modem.chat`,
+- **More topics**: `radio.profiles`, the list topics (`digi`, `modem.chat`,
   `messages`), mercury's `modem.config`; then **binary frames** (spectrum)
   and **WebRTC** audio (in C, with libdatachannel; the signalling arrives as `rtc.offer`
   commands).
