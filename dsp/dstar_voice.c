@@ -12,6 +12,9 @@
 
 #include "dstar_voice.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "dstar"
 /* The fixed pattern D-STAR scrambles every frame's slow-data bytes with. */
 static const uint8_t SLOW_SCRAMBLE[3] = {0x70U, 0x4FU, 0x93U};
 /* Data sync, sent unscrambled in the slow-data field of slot 0. */
@@ -122,8 +125,8 @@ void dstar_voice_tx_begin(dstar_voice_tx *t, const char *mycall8, const char *ur
             t->encrypt = true;
         } else {
             t->fail_closed = true;
-            fprintf(stderr, "DSTAR tx: encryption requested but no voice key is loaded -- "
-                            "sending silence, not clear voice\n");
+            HLOGI(LOG_C, "DSTAR tx: encryption requested but no voice key is loaded -- "
+                            "sending silence, not clear voice");
         }
     }
 

@@ -6,6 +6,9 @@
 
 #include "digi_log.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "digi"
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
@@ -339,8 +342,8 @@ void digi_log_add(const digi_log_entry *e)
     if (!known(e->mode, g_modes) || !known(e->dir, g_dirs)) {
         static bool warned;
         if (!warned) {
-            fprintf(stderr, "digi_log: refusing an entry with mode \"%s\" dir \"%s\" "
-                    "(not one the log schema defines)\n",
+            HLOGE(LOG_C, "refusing an entry with mode \"%s\" dir \"%s\" "
+                    "(not one the log schema defines)",
                     e->mode ? e->mode : "(null)", e->dir ? e->dir : "(null)");
             warned = true;
         }
