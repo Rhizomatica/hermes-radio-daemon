@@ -1,4 +1,4 @@
-// Package store provides the SQLite persistence layer for hermesd.
+// Package store provides the station API's SQLite persistence layer.
 //
 // It owns the single write connection (ADR-001 §R-1) and the embedded
 // migration runner. Every connection is configured for WAL journaling,
@@ -15,7 +15,7 @@ import (
 	_ "modernc.org/sqlite" // registers the "sqlite" database/sql driver
 )
 
-// Store wraps the hermesd SQLite database. Use Open to construct one.
+// Store wraps the station API's SQLite database. Use Open to construct one.
 type Store struct {
 	db *sql.DB
 }
@@ -67,7 +67,7 @@ func (s *Store) PingContext(ctx context.Context) error {
 }
 
 // dsn builds the modernc.org/sqlite DSN with the per-connection pragmas
-// hermesd relies on. Each _pragma value is executed as "PRAGMA <value>" when a
+// the station API relies on. Each _pragma value is executed as "PRAGMA <value>" when a
 // connection opens, so the settings survive connection re-establishment. The
 // driver applies busy_timeout first regardless of order here.
 func dsn(path string) string {
