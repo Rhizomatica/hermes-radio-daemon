@@ -43,6 +43,7 @@ static void test_level_names(void)
 {
     hermes_log_level_t l;
     const struct { const char *name; hermes_log_level_t want; } ok[] = {
+        { "trace", HERMES_LOG_LEVEL_TRACE },
         { "debug", HERMES_LOG_LEVEL_DEBUG }, { "TIMING", HERMES_LOG_LEVEL_TIMING },
         { "Info", HERMES_LOG_LEVEL_INFO },   { "warn", HERMES_LOG_LEVEL_WARN },
         { "error", HERMES_LOG_LEVEL_ERROR },

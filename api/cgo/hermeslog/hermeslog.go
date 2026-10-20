@@ -26,6 +26,7 @@ import (
 type Level int
 
 const (
+	Trace  Level = C.HERMES_LOG_LEVEL_TRACE  // raw decoded bytes, the most verbose internals
 	Debug  Level = C.HERMES_LOG_LEVEL_DEBUG  // verbose internals
 	Timing Level = C.HERMES_LOG_LEVEL_TIMING // protocol timing events
 	Info   Level = C.HERMES_LOG_LEVEL_INFO   // general status
@@ -33,29 +34,30 @@ const (
 	Error  Level = C.HERMES_LOG_LEVEL_ERROR
 )
 
-var names = [...]string{"debug", "timing", "info", "warn", "error"}
+// names, from Trace (-1) up.
+var names = [...]string{"trace", "debug", "timing", "info", "warn", "error"}
 
 func (l Level) String() string {
-	if l >= Debug && l <= Error {
-		return names[l]
+	if l >= Trace && l <= Error {
+		return names[l-Trace]
 	}
 	return fmt.Sprintf("Level(%d)", int(l))
 }
 
-// ParseLevel reads "debug", "timing", "info", "warn" or "error", as radiod's
-// main:log_level.
+// ParseLevel reads "trace", "debug", "timing", "info", "warn" or "error", as
+// radiod's main:log_level.
 func ParseLevel(s string) (Level, error) {
 	for i, n := range names {
 		if s == n {
-			return Level(i), nil
+			return Level(i) + Trace, nil
 		}
 	}
-	return Info, fmt.Errorf("hermeslog: %q is not debug, timing, info, warn or error", s)
+	return Info, fmt.Errorf("hermeslog: %q is not trace, debug, timing, info, warn or error", s)
 }
 
 func clamp(l Level) C.int {
-	if l < Debug {
-		l = Debug
+	if l < Trace {
+		l = Trace
 	}
 	if l > Error {
 		l = Error

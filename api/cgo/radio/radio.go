@@ -90,6 +90,7 @@ type DigiSettings struct {
 type LogLevel int
 
 const (
+	LogTrace  LogLevel = -1
 	LogDebug  LogLevel = 0
 	LogTiming LogLevel = 1
 	LogInfo   LogLevel = 2

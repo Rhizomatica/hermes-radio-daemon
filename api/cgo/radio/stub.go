@@ -406,14 +406,14 @@ func (s *Stub) Frames(conn int64) [][]byte {
 
 func (s *Stub) Version() string { return "stub" }
 
-var logLevelNames = [...]string{"DBG", "TMG", "INF", "WRN", "ERR"}
+var logLevelNames = [...]string{"TRC", "DBG", "TMG", "INF", "WRN", "ERR"} // from LogTrace
 
 // Log records the line as "[LVL] [component] message", the part of
 // hermes_log's format after the clock (Logs returns them).
 func (s *Stub) Log(level LogLevel, component, message string) {
 	name := "INF"
-	if level >= LogDebug && int(level) < len(logLevelNames) {
-		name = logLevelNames[level]
+	if i := int(level - LogTrace); i >= 0 && i < len(logLevelNames) {
+		name = logLevelNames[i]
 	}
 	s.mu.Lock()
 	s.logs = append(s.logs, "["+name+"] ["+component+"] "+message)

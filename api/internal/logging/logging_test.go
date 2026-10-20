@@ -47,11 +47,13 @@ func TestGroupsAndLevels(t *testing.T) {
 	l := logging.New(s, "api")
 	l.Info("x", slog.Group("req", "method", "GET", slog.Group("hdr", "n", 2)))
 	l.Log(context.Background(), slog.LevelInfo+2, "between info and warn")
-	l.Log(context.Background(), slog.LevelDebug-4, "below debug")
+	l.Log(context.Background(), slog.LevelDebug-2, "below debug")
+	l.Log(context.Background(), logging.LevelTrace, "trace")
 	want := []string{
 		"[INF] [api] x req.method=GET req.hdr.n=2",
 		"[INF] [api] between info and warn",
 		"[DBG] [api] below debug",
+		"[TRC] [api] trace",
 	}
 	got := s.Logs()
 	for i := range want {

@@ -28,7 +28,8 @@ void radiod_log_configure(const radio *radio_h);
 /* Write out what is queued and stop the logger. Last thing in main. */
 void radiod_log_stop(void);
 
-/* "debug", "timing", "info", "warn" or "error" (any case); false otherwise. */
+/* "trace", "debug", "timing", "info", "warn" or "error" (any case); false
+ * otherwise. */
 bool radiod_log_level(const char *name, hermes_log_level_t *out);
 
 /* Parse "component=level, component=level" and call set() for each pair.
