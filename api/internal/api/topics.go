@@ -22,7 +22,10 @@ import (
 // never call into Go: the API layer reads, C does not push.
 
 // StateFunc returns a topic's current state: a struct or map that marshals
-// to a JSON object (the event's data).
+// to a JSON object (the event's data). An error means the topic has no state
+// now (mercury is not running, say): it is left out of hello, a subscribe to
+// it is refused with not_supported, and its subscribers get no events until
+// it has state again.
 type StateFunc func() (any, error)
 
 type topic struct {
@@ -50,11 +53,15 @@ func (rt *Router) Topic(name string, role spec.Role, state StateFunc) {
 	rt.topics[name] = topic{role, state}
 }
 
-// Topics lists the registered topics a role may subscribe to, sorted.
+// Topics lists the topics a role may subscribe to now, sorted: registered,
+// allowed for the role, and with state.
 func (rt *Router) Topics(role spec.Role) []string {
 	out := []string{}
 	for name, t := range rt.topics {
-		if AtLeast(role, t.role) {
+		if !AtLeast(role, t.role) {
+			continue
+		}
+		if _, err := t.state(); err == nil {
 			out = append(out, name)
 		}
 	}
@@ -92,14 +99,15 @@ func fields(t topic) (map[string]json.RawMessage, error) {
 }
 
 // subscribe handles a subscribe frame on the connection's goroutine: every
-// topic is checked before any is subscribed; then the reply, then one
-// snapshot per topic.
+// topic is checked, and its state read, before any is subscribed; then the
+// reply, then one snapshot per topic.
 func (c *Conn) subscribe(id string, names []string) {
 	if len(names) == 0 {
 		c.reply(id, nil, Errf(CodeMissingArg, "topics"))
 		return
 	}
-	for _, name := range names {
+	snaps := make([]map[string]json.RawMessage, len(names))
+	for i, name := range names {
 		t, ok := c.rt.topics[name]
 		switch {
 		case !spec.HasTopic(name):
@@ -112,19 +120,21 @@ func (c *Conn) subscribe(id string, names []string) {
 			c.reply(id, nil, Errf(CodeForbidden, "%s needs the %s role", name, t.role))
 			return
 		}
+		m, err := fields(t)
+		if err != nil {
+			c.reply(id, nil, Errf(CodeNotSupported, "%s: %v", name, err))
+			return
+		}
+		snaps[i] = m
 	}
 	c.reply(id, nil, nil)
-	for _, name := range names {
-		c.snapshot(name)
+	for i, name := range names {
+		c.snapshot(name, snaps[i])
 	}
 }
 
-// snapshot (re)starts a subscription: the whole state, seq 0.
-func (c *Conn) snapshot(name string) {
-	m, err := fields(c.rt.topics[name])
-	if err != nil {
-		m = map[string]json.RawMessage{}
-	}
+// snapshot (re)starts a subscription: the whole state m, seq 0.
+func (c *Conn) snapshot(name string, m map[string]json.RawMessage) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.subs[name] = &subscription{seq: 0, last: m}

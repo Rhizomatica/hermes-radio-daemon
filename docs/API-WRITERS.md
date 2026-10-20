@@ -296,6 +296,15 @@ the result with what each subscriber last received. That is how a change made an
 calling into Go. Use the same function for the REST read of the same data, so the two never
 disagree.
 
+When the topic has no state now, return an error: `modem.status` does while mercury is not
+running. The topic is then left out of `hello`, a subscribe naming it is refused with
+`not_supported` (and subscribes nothing), and its subscribers get no events until it has state
+again:
+
+```go
+rt.Topic("modem.status", spec.RoleReadonly, func() (any, error) { return h.status() })
+```
+
 Not there yet: topics that are lists of new entries rather than state (`digi`, `modem.chat`,
 `messages`), which will read by cursor in the same loop; binary topics (`radio.spectrum.*`,
 `modem.spectrum.rx`), sent by C; and WebRTC signalling (`rtc.offer`).
@@ -383,7 +392,7 @@ CI runs all three on Debian 13, amd64 and arm64, with and without the Go layer.
 - **Logins and sessions** (`/api/v2/session`, the database): until then `/api/v2` is
   loopback-only and every caller is `admin`.
 - **More topics**: `radio.profiles`, `radio.rig`, the list topics (`digi`, `modem.chat`,
-  `messages`), mercury's `modem.status` and `modem.config`; then **binary frames** (spectrum)
+  `messages`), mercury's `modem.config`; then **binary frames** (spectrum)
   and **WebRTC** audio (in C, with libdatachannel; the signalling arrives as `rtc.offer`
   commands).
 - **A transmit timeout** (`tx_timeout_s` in `/radio/settings`): in the spec, not in radiod
