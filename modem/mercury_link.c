@@ -12,8 +12,11 @@
 #include "mercury_link.h"
 #include "modem_audio.h"
 #include "radio_backend.h"
+#include "radiod_log.h"
 #include "ui_hub.h"
 #include "mercury_host.h"     /* host API and lifecycle (vendor/mercury/host) */
+
+#define LOG_C "mercury-link"
 
 #define MAX_ARGS 32
 
@@ -199,11 +202,24 @@ static void ui_detach(void)
 /* mercury_init returns once the engine is up, or blocks until shutdown in
  * its test modes (-t / -r), so it runs on a thread of its own; the engine's
  * threads inherit this thread's CPU mask. */
+/* radiod owns the logger mercury logs through, but mercury treats it as its
+ * own: mercury_init sets the level and file sink from its options, and its
+ * failure paths and mercury_shutdown shut the logger down. Until mercury
+ * leaves the logger to its host, take it back after each: start it again if
+ * it is down, and put radiod's settings back. Lines logged while it was
+ * down are lost, and its uptime counter restarts. */
+static void logger_back(void)
+{
+    radiod_log_start();
+    radiod_log_configure(s_radio);
+}
+
 static void *launcher(void *arg)
 {
     (void) arg;
     int rc = mercury_init(s_argc, s_argv, s_radio->mercury_config, NULL);
     s_init_rc = rc;
+    logger_back();
     /* mercury opens its TNC ports before it sets its UI hooks, and returns
      * from mercury_init only after both: a UI client that connected in
      * between got no history or initial state. Give it them now (to every
@@ -212,10 +228,9 @@ static void *launcher(void *arg)
     if (rc == 0)
         mercury_host_ui_client_connected();
     if (rc == MERCURY_INIT_CONFIG_ERROR)
-        fprintf(stderr, "mercury_link: cannot read %s; the radio runs without mercury\n",
-                s_radio->mercury_config);
+        HLOGE(LOG_C, "cannot read %s; the radio runs without mercury", s_radio->mercury_config);
     else if (rc != 0)
-        fprintf(stderr, "mercury_link: mercury did not start (%d); the radio runs without it\n", rc);
+        HLOGE(LOG_C, "mercury did not start (%d); the radio runs without it", rc);
     return NULL;
 }
 
@@ -248,11 +263,11 @@ bool mercury_link_start(radio *radio_h, const cpu_set_t *cpus)
                                    .broadcast_binary = ui_broadcast_binary, .user = NULL };
     mercury_host_set_ui(&ui_ops);
     if (!ui_hub_register_module(&s_ui_module))
-        fprintf(stderr, "mercury_link: cannot register with ui_hub; mercury's UI is off\n");
+        HLOGW(LOG_C, "cannot register with ui_hub; mercury's UI is off");
 
     if (!modem_audio_init(radio_h) || !modem_audio_add_rx_sink(rx_sink, NULL))
     {
-        fprintf(stderr, "mercury_link: no modem audio path\n");
+        HLOGE(LOG_C, "no modem audio path; the radio runs without mercury");
         ui_detach();
         mercury_host_set_radio(NULL);
         return false;
@@ -277,7 +292,7 @@ bool mercury_link_start(radio *radio_h, const cpu_set_t *cpus)
     pthread_attr_destroy(&attr);
     if (err != 0)
     {
-        fprintf(stderr, "mercury_link: pthread_create: %s\n", strerror(err));
+        HLOGE(LOG_C, "cannot start mercury's threads: %s", strerror(err));
         modem_audio_remove_rx_sink(rx_sink, NULL);
         ui_detach();
         mercury_host_set_radio(NULL);
@@ -285,8 +300,8 @@ bool mercury_link_start(radio *radio_h, const cpu_set_t *cpus)
     }
 
     s_started = true;
-    fprintf(stderr, "mercury_link: mercury starting (-C %s%s%s)\n", radio_h->mercury_config,
-            radio_h->mercury_args[0] ? " " : "", radio_h->mercury_args);
+    HLOGI(LOG_C, "mercury starting (-C %s%s%s)", radio_h->mercury_config,
+          radio_h->mercury_args[0] ? " " : "", radio_h->mercury_args);
     return true;
 }
 
@@ -304,6 +319,7 @@ void mercury_link_stop(void)
     mercury_request_shutdown();                  /* ends a blocking test mode */
     pthread_join(s_launcher, NULL);
     mercury_shutdown();                          /* no-op if it never started */
+    logger_back();
 
     if (modem_audio_tx_keyed_by(MERCURY_LINK_PTT_ID))
         modem_audio_tx_unkey("unkeyed at shutdown");
@@ -312,5 +328,5 @@ void mercury_link_stop(void)
     pthread_mutex_lock(&s_status_lock);
     s_status[0] = '\0';
     pthread_mutex_unlock(&s_status_lock);
-    fprintf(stderr, "mercury_link: mercury stopped\n");
+    HLOGI(LOG_C, "mercury stopped");
 }

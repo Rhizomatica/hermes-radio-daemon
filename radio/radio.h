@@ -387,6 +387,13 @@ typedef struct {
     bool api_v2_enable;
     char mercury_config[256];
     char mercury_args[256];
+    /* Logging (common/radiod_log.c, mercury's hermes_log): main:log_level,
+     * main:log_component_levels ("hamlib=debug, ws=warn"), main:log_file
+     * ("" for none) and main:log_jsonl for the file's format. */
+    char log_level[16];
+    char log_component_levels[256];
+    char log_file[256];
+    bool log_jsonl;
     /* Optional operator-side headset (hardware) audio path. When both
      * device names are non-empty, the daemon spawns capture+playback threads
      * that mirror the websocket browser audio path onto a local ALSA device. */

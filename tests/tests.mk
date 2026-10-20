@@ -48,7 +48,8 @@ TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
             tests/dsp/test_upsample2 tests/dsp/test_stream_resampler tests/dsp/test_mic_filter \
             tests/dsp/test_digi_modes tests/dsp/test_digi_log tests/dsp/test_dstar_voice \
             tests/dsp/test_radae_vocoder \
-            tests/sbitx/test_sbitx_buffer
+            tests/sbitx/test_sbitx_buffer \
+            tests/common/test_radiod_log
 
 $(TEST_BINS): $(UNITY_SRC) tests/unity/unity.h tests/test_util.h $(TEST_STAMP)
 
@@ -162,6 +163,12 @@ tests/dsp/test_digi_modes: tests/dsp/test_digi_modes.c dsp/stream_resampler.c ds
 	      $< dsp/stream_resampler.c dsp/sbitx_cw.c dsp/sbitx_rtty.c dsp/sbitx_ft8.c dsp/digi_log.c \
 	      $(FT8_TEST_SRCS) $(MM_FSK_SRCS) $(FT8_TEST_LIBS) $(UNITY_SRC) \
 	      -o $@ -lcsdr -lfftw3f -lfftw3 -lcw -lpthread -lm
+
+# The logger: mercury's hermes_log (vendor/hermes_log) as core.ini sets it up.
+LOG_SRCS = common/radiod_log.c vendor/hermes_log/hermes_log.c
+tests/common/test_radiod_log: tests/common/test_radiod_log.c $(LOG_SRCS) common/radiod_log.h \
+                              vendor/hermes_log/hermes_log.h
+	$(CC) $(TEST_CFLAGS) $< $(LOG_SRCS) $(UNITY_SRC) -o $@ -lpthread
 
 tests/dsp/test_digi_log: tests/dsp/test_digi_log.c dsp/digi_log.c dsp/digi_log.h
 	$(CC) $(TEST_CFLAGS) -Idsp $< dsp/digi_log.c $(UNITY_SRC) -o $@ -lpthread -lm

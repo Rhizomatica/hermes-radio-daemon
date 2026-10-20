@@ -467,6 +467,15 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     s = iniparser_getstring(ini, "main:mercury_args", "");
     snprintf(radio_h->mercury_args, sizeof(radio_h->mercury_args), "%s", s);
 
+    s = iniparser_getstring(ini, "main:log_level", "info");
+    snprintf(radio_h->log_level, sizeof(radio_h->log_level), "%s", s);
+    s = iniparser_getstring(ini, "main:log_component_levels", "");
+    snprintf(radio_h->log_component_levels, sizeof(radio_h->log_component_levels), "%s", s);
+    s = iniparser_getstring(ini, "main:log_file", "");
+    snprintf(radio_h->log_file, sizeof(radio_h->log_file), "%s", s);
+    b = iniparser_getboolean(ini, "main:log_jsonl", 0);
+    radio_h->log_jsonl = (bool) b;
+
     s = iniparser_getstring(ini, "main:capture_device", "default");
     snprintf(radio_h->capture_device, sizeof(radio_h->capture_device), "%s", s);
 
