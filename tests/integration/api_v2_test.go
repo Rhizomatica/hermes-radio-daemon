@@ -316,3 +316,27 @@ func TestAPIv2RadioSettings(t *testing.T) {
 		t.Errorf("BFO on a Hamlib radio = %d %s", r.status, r.raw)
 	}
 }
+
+// The Go layer logs through radiod's logger: its lines and radiod's share
+// one stream, in hermes_log's format. With main:log_level = debug, a read is
+// logged too.
+func TestAPIv2LogsThroughRadiod(t *testing.T) {
+	needGoAPI(t)
+	d := startAPIDaemon(t, "log_level = debug")
+	base := apiBase(d)
+	call(t, "GET", base+"/radio", "")
+	r := call(t, "PATCH", base+"/radio/profiles/0", `{"power":20}`)
+	d.Stop()
+
+	log := d.Log()
+	for _, want := range []string{
+		"[DBG] [api.http] GET /api/v2/radio 200 ms=",
+		"[INF] [api.http] PATCH /api/v2/radio/profiles/0 200 ms=",
+		"request_id=" + r.header.Get("X-Request-Id"),
+		"[INF] [radiod] clean shutdown complete",
+	} {
+		if !strings.Contains(log, want) {
+			t.Errorf("daemon log lacks %q\n--- daemon log ---\n%s", want, log)
+		}
+	}
+}
