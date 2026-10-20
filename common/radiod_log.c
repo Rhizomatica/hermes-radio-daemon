@@ -27,7 +27,8 @@ void radiod_log_stop(void)
 bool radiod_log_level(const char *name, hermes_log_level_t *out)
 {
     static const struct { const char *name; hermes_log_level_t level; } levels[] = {
-        { "debug", HERMES_LOG_LEVEL_DEBUG }, { "timing", HERMES_LOG_LEVEL_TIMING },
+        { "trace", HERMES_LOG_LEVEL_TRACE }, { "debug", HERMES_LOG_LEVEL_DEBUG },
+        { "timing", HERMES_LOG_LEVEL_TIMING },
         { "info", HERMES_LOG_LEVEL_INFO },   { "warn", HERMES_LOG_LEVEL_WARN },
         { "error", HERMES_LOG_LEVEL_ERROR },
     };
@@ -96,7 +97,7 @@ void radiod_log_configure(const radio *radio_h)
     hermes_log_level_t level = HERMES_LOG_LEVEL_INFO;
 
     if (!radiod_log_level(radio_h->log_level, &level))
-        HLOGW(LOG_C, "main:log_level = %s is not debug, timing, info, warn or error; using info",
+        HLOGW(LOG_C, "main:log_level = %s is not trace, debug, timing, info, warn or error; using info",
               radio_h->log_level);
     hermes_log_set_level(level);
 

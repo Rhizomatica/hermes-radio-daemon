@@ -21,8 +21,12 @@ import (
 	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 )
 
-// LevelTiming is hermes_log's TIMING level, between Debug and Info.
-const LevelTiming = slog.Level(-2)
+// LevelTiming is hermes_log's TIMING level, between Debug and Info, and
+// LevelTrace its TRACE level, below Debug.
+const (
+	LevelTiming = slog.Level(-2)
+	LevelTrace  = slog.Level(-8)
+)
 
 // Sink takes finished lines: the radio (radiod's logger), or a test's stub.
 type Sink interface {
@@ -78,6 +82,8 @@ func (h *handler) WithGroup(name string) slog.Handler {
 
 func level(l slog.Level) rad.LogLevel {
 	switch {
+	case l <= LevelTrace:
+		return rad.LogTrace
 	case l < LevelTiming:
 		return rad.LogDebug
 	case l < slog.LevelInfo:

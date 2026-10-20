@@ -44,6 +44,7 @@ func TestTextLines(t *testing.T) {
 		hermeslog.Log(hermeslog.Debug, "test.sub", "detail")
 		hermeslog.Log(hermeslog.Timing, "test", "tick")
 		hermeslog.Log(hermeslog.Error, "test", "bad")
+		hermeslog.Log(hermeslog.Trace, "test", "bytes")
 	})
 	want := []string{"[INF] [test] hello", "[WRN] [test] n=3 x", "[DBG] [test.sub] detail",
 		"[TMG] [test] tick", "[ERR] [test] bad"}
@@ -98,9 +99,9 @@ func TestSetFileError(t *testing.T) {
 }
 
 func TestLevels(t *testing.T) {
-	for i, s := range []string{"debug", "timing", "info", "warn", "error"} {
+	for i, s := range []string{"trace", "debug", "timing", "info", "warn", "error"} {
 		l, err := hermeslog.ParseLevel(s)
-		if err != nil || int(l) != i || l.String() != s {
+		if err != nil || int(l) != i-1 || l.String() != s {
 			t.Errorf("ParseLevel(%q) = %v, %v", s, l, err)
 		}
 	}
