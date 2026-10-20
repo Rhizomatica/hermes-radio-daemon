@@ -28,9 +28,16 @@ import (
 // it has state again.
 type StateFunc func() (any, error)
 
+// ConnStateFunc returns a topic's state for one connection, for topics whose
+// data depends on what the client asked for (radio.rig: the controls it
+// watches). With c == nil it reports whether the topic is available at all:
+// an error leaves it out of hello.
+type ConnStateFunc func(c *Conn) (any, error)
+
 type topic struct {
 	role  spec.Role
-	state StateFunc
+	state ConnStateFunc
+	each  bool // per connection: read for each subscriber
 }
 
 // subscription is one topic on one connection: what it last received.
@@ -50,7 +57,15 @@ func (rt *Router) Topic(name string, role spec.Role, state StateFunc) {
 	if _, dup := rt.topics[name]; dup {
 		panic(fmt.Sprintf("api: topic %s registered twice", name))
 	}
-	rt.topics[name] = topic{role, state}
+	rt.topics[name] = topic{role: role, state: func(*Conn) (any, error) { return state() }}
+}
+
+// TopicConn registers a topic whose state is per connection. Its function
+// is read once per subscriber each publishing cycle, so it should return
+// what the domain keeps (a cache), not do slow I/O itself.
+func (rt *Router) TopicConn(name string, role spec.Role, state ConnStateFunc) {
+	rt.Topic(name, role, func() (any, error) { return nil, nil })
+	rt.topics[name] = topic{role: role, state: state, each: true}
 }
 
 // Topics lists the topics a role may subscribe to now, sorted: registered,
@@ -61,7 +76,7 @@ func (rt *Router) Topics(role spec.Role) []string {
 		if !AtLeast(role, t.role) {
 			continue
 		}
-		if _, err := t.state(); err == nil {
+		if _, err := t.state(nil); err == nil {
 			out = append(out, name)
 		}
 	}
@@ -81,9 +96,9 @@ type event struct {
 
 func stamp(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
 
-// fields reads a topic's state as its top-level JSON fields.
-func fields(t topic) (map[string]json.RawMessage, error) {
-	v, err := t.state()
+// fields reads a topic's state (for connection c) as its top-level JSON fields.
+func fields(t topic, c *Conn) (map[string]json.RawMessage, error) {
+	v, err := t.state(c)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +135,7 @@ func (c *Conn) subscribe(id string, names []string) {
 			c.reply(id, nil, Errf(CodeForbidden, "%s needs the %s role", name, t.role))
 			return
 		}
-		m, err := fields(t)
+		m, err := fields(t, c)
 		if err != nil {
 			c.reply(id, nil, Errf(CodeNotSupported, "%s: %v", name, err))
 			return
@@ -177,11 +192,22 @@ func (rt *Router) publishOnce(now time.Time) {
 		return true
 	})
 	for name, conns := range wanted {
-		m, err := fields(rt.topics[name])
-		if err != nil {
-			continue
+		t := rt.topics[name]
+		var shared map[string]json.RawMessage
+		if !t.each {
+			var err error
+			if shared, err = fields(t, nil); err != nil {
+				continue
+			}
 		}
 		for _, c := range conns {
+			m := shared
+			if t.each {
+				var err error
+				if m, err = fields(t, c); err != nil {
+					continue
+				}
+			}
 			c.mu.Lock()
 			if s, ok := c.subs[name]; ok {
 				if diff := changed(s.last, m); len(diff) > 0 {
@@ -196,12 +222,29 @@ func (rt *Router) publishOnce(now time.Time) {
 }
 
 // changed returns the fields of cur that differ from (or are not in) last.
+// A field that is a JSON object in both is compared inside, so an event
+// carries only the entries that changed ({"levels":{"AF":0.6}}).
 func changed(last, cur map[string]json.RawMessage) map[string]json.RawMessage {
 	diff := map[string]json.RawMessage{}
 	for k, v := range cur {
-		if old, ok := last[k]; !ok || !bytes.Equal(old, v) {
-			diff[k] = v
+		old, ok := last[k]
+		if ok && bytes.Equal(old, v) {
+			continue
 		}
+		var o, n map[string]json.RawMessage
+		if ok && isObject(old) && isObject(v) && json.Unmarshal(old, &o) == nil && json.Unmarshal(v, &n) == nil {
+			if d := changed(o, n); len(d) > 0 {
+				b, _ := json.Marshal(d)
+				diff[k] = b
+			}
+			continue
+		}
+		diff[k] = v
 	}
 	return diff
+}
+
+func isObject(b json.RawMessage) bool {
+	b = bytes.TrimSpace(b)
+	return len(b) > 0 && b[0] == '{'
 }
