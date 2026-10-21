@@ -275,8 +275,9 @@ heartbeat are sent for you.
 A topic pushes state to the clients that subscribe to it. The spec's rules are implemented for
 you:
 
-- `{"type":"subscribe","id":"1","topics":["radio.state"]}` gets a `reply`, then one event per
-  topic with the whole state: `seq` 0, `snapshot: true`;
+- `{"type":"subscribe","id":"1","topics":["radio.state"]}` gets one event per topic with the
+  whole state (`seq` 0, `snapshot: true`), then the `reply`, so the client knows the snapshot
+  is complete;
 - after that, an event only when the state changes, carrying only the top-level fields that
   changed, with the next `seq`; at most 10 events a second per topic;
 - `unsubscribe` stops them; subscribing again starts over with a snapshot;
@@ -315,16 +316,30 @@ interval and keeps the latest values; the topic function returns them, and stops
 which the publisher calls every 100 ms. Nested objects are compared inside, so a `radio.rig`
 event carries only the controls that changed (`{"levels":{"AF":0.6}}`).
 
-Not there yet: topics that are lists of new entries rather than state (`digi`, `modem.chat`,
-`messages`), which will read by cursor in the same loop; binary topics (`radio.spectrum.*`,
-`modem.spectrum.rx`), sent by C; and WebRTC signalling (`rtc.offer`).
+A topic that is a list of new entries rather than state (`modem.chat`; later `digi` and
+`messages`) is a stream, registered with `rt.Stream`. Its function reads the items after a
+cursor and returns them with the cursor after the last; cursor 0 is the snapshot, as much
+history as the topic offers. Each item is one event, never a diff: on subscribe the history goes
+as events marked `snapshot` (seq 0, 1, ..., none with no history) before the reply, then the publisher reads each subscriber's cursor
+every 100 ms and sends what came. Subscribers that keep up share one read:
+
+```go
+rt.Stream("modem.chat", spec.RoleReadonly, func(after uint64) ([]any, uint64, error) {
+	lines, next, err := h.r.ChatSince(after) // mercury's seq is the cursor
+	...
+	return items, next, nil
+})
+```
+
+Not there yet: binary topics (`radio.spectrum.*`, `modem.spectrum.rx`), sent by C; and WebRTC
+signalling (`rtc.offer`).
 
 ## 8. Reaching the radio
 
 Handlers get a `radio.Radio` (`rt.Radio()`): state, profiles, setters, digi settings and log,
 mercury's status, and sending hermes.v1 frames. Every method is safe from any goroutine and
-returns plain Go values; errors are `radio.ErrNoProfile`, `ErrInvalid`, `ErrBusy`,
-`ErrNotSupported`.
+returns plain Go values; errors are `radio.ErrNoProfile`, `ErrInvalid`, `ErrBusy`, `ErrIO`,
+`ErrNotSupported`, and for mercury's chat `ErrNoLink` and `ErrTooLong`.
 
 The setters change the radio exactly as radiod's own commands do, and profile changes are saved
 to the configuration. Values radiod keeps once for the station (the default profile and its

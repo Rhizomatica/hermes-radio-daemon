@@ -1,6 +1,7 @@
 // Package modem serves mercury's REST operations (api-rest.yaml, tag
-// modem) and hermes.v1 topics, from the status mercury publishes inside
-// radiod.
+// modem) and hermes.v1 topics and commands: its status as mercury
+// publishes it inside radiod, and its configuration, listen mode and chat
+// through mercury's host API.
 package modem
 
 import (
@@ -18,10 +19,18 @@ import (
 func Register(rt *api.Router) {
 	h := handlers{rt.Radio()}
 	rt.Op("getModemStatus", h.getStatus)
+	rt.Op("getModemConfig", h.getConfig)
+	rt.Op("updateModemConfig", h.updateConfig)
 
 	// The same ModemStatus as getModemStatus, pushed as it changes; not
-	// offered while mercury is not running.
+	// offered while mercury is not running. Likewise ModemConfig.
 	rt.Topic("modem.status", spec.RoleReadonly, func() (any, error) { return h.status() })
+	rt.Topic("modem.config", spec.RoleOperator, func() (any, error) { return h.config() })
+
+	// Mercury's chat, both planes: the last chatSnapshot lines it holds on
+	// subscribe, then each line as it is stored (sent or received).
+	rt.Stream("modem.chat", spec.RoleReadonly, h.chat)
+	rt.Command("modem.chat.send", spec.RoleUser, h.cmdChatSend)
 }
 
 // errNotRunning: radiod has no mercury status (built without mercury, not
@@ -62,6 +71,14 @@ type mercuryStatus struct {
 	ArqRxMode    string   `json:"arq_rx_mode"`
 	PeerSNR      float64  `json:"peer_snr"`
 	PeerSNRValid bool     `json:"peer_snr_valid"`
+	Waterfall    bool     `json:"waterfall"`
+	ListenMode   string   `json:"listen_mode_name"`
+	Broadcast    *struct {
+		State       string `json:"state"` // idle sending stopped_by_arq stopped done error
+		Cycle       int    `json:"cycle"`
+		CyclesTotal int    `json:"cycles_total"`
+		FramesSent  int64  `json:"frames_sent"`
+	} `json:"broadcast"`
 }
 
 // Status is ModemStatus.
@@ -81,8 +98,59 @@ type Status struct {
 	ArqRxMode        *string  `json:"arq_rx_mode"`
 	SessionTransport *string  `json:"session_transport"`
 	ListenMode       *string  `json:"listen_mode"`
+	Broadcast        Plane    `json:"broadcast"`
 	AudioOK          bool     `json:"audio_ok"`
 	AudioError       *string  `json:"audio_error"`
+}
+
+// Plane is ModemStatus.broadcast: mercury's carousel. radiod has no
+// broadcast messages yet, so message_id and frames_total are null.
+type Plane struct {
+	State       string  `json:"state"` // idle, sending, preempted
+	MessageID   *int64  `json:"message_id"`
+	Mode        *string `json:"mode"`
+	Cycle       *int    `json:"cycle"`
+	CyclesTotal *int    `json:"cycles_total"`
+	FramesSent  *int64  `json:"frames_sent"`
+	FramesTotal *int64  `json:"frames_total"`
+}
+
+// listenModes are api-rest.yaml's BroadcastMode: the modes mercury can
+// switch to at run time.
+var listenModes = map[string]bool{"DATAC1": true, "DATAC3": true, "DATAC4": true, "DATAC15": true,
+	"DATAC17": true, "QAM16C2": true, "MFSK": true, "MFSK500": true}
+
+// listenMode is mercury's listen mode as a BroadcastMode, or null.
+func listenMode(name string) *string {
+	if !listenModes[name] {
+		return nil
+	}
+	return &name
+}
+
+// planeOf maps mercury's carousel onto ModemStatus.broadcast. Mercury sends
+// at its listen mode; a carousel an ARQ session stopped is preempted until
+// radiod sends it again; one stopped, done or failed leaves the plane idle.
+func planeOf(m mercuryStatus) Plane {
+	p := Plane{State: "idle"}
+	b := m.Broadcast
+	if b == nil {
+		return p
+	}
+	switch b.State {
+	case "sending":
+		p.State = "sending"
+	case "stopped_by_arq":
+		p.State = "preempted"
+	default:
+		return p
+	}
+	cycle, total, sent := b.Cycle, b.CyclesTotal, b.FramesSent
+	p.Mode, p.Cycle, p.FramesSent = listenMode(m.ListenMode), &cycle, &sent
+	if total > 0 { // 0: until stopped
+		p.CyclesTotal = &total
+	}
+	return p
 }
 
 func str(s string) *string {
@@ -103,6 +171,7 @@ func statusOf(m mercuryStatus) Status {
 		Direction: m.Direction, BytesTx: m.BytesTx, BytesRx: m.BytesRx,
 		TxGainDB: m.TxGainDB, TxPeakDBFS: m.TxPeakDBFS,
 		ArqTxMode: str(m.ArqTxMode), ArqRxMode: str(m.ArqRxMode),
+		ListenMode: listenMode(m.ListenMode), Broadcast: planeOf(m),
 		AudioOK: m.AudioOK, AudioError: str(m.AudioError),
 	}
 	if m.Sync && m.DestCallsign != "" {

@@ -95,6 +95,7 @@ func TestRigWatch(t *testing.T) {
 	if b, _ := json.Marshal(snap["data"]); string(b) != `{"funcs":{},"levels":{},"parms":{}}` {
 		t.Fatalf("snapshot without a watch = %s", b)
 	}
+	w.Next(testapi.Type("reply"), time.Second) // the subscribe's, after the snapshot
 
 	w.Send(`{"type":"cmd","id":"w","cmd":"rig.watch","args":{"names":["NB","AF"],"interval_ms":250}}`)
 	r := w.Next(testapi.Type("reply"), time.Second)

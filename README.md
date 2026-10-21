@@ -340,6 +340,9 @@ default_profile = 0
 default_profile_fallback_timeout = -1   ; seconds, -1 = disabled
 step_size = 100                         ; frequency knob step in Hz
 tone_generation = 0
+; mercury_listen_mode = DATAC3          ; mercury's listen mode, as the API last
+;                                       ; set it (PATCH /api/v2/modem/config);
+;                                       ; unset: mercury's own (-m in mercury_args)
 
 ; ── profile0: SSB voice (full DSP) ──
 [profile0]
@@ -842,11 +845,12 @@ any transport: modules (mercury, via `modem/mercury_link.c`) publish to it
 and take commands from it, routed by JSON key and binary type byte; this
 websocket is one transport of it.
 
-Mercury's protocol above is available only here. In the
-[Station API](#station-api-apiv2-hermesv1) mercury is so far a read-only status
-(`GET /api/v2/modem`); its configuration, chat, live status and spectrum
-are specified there as `modem.*` operations and topics, in the API's own format,
-and are not implemented yet.
+Mercury's protocol above is available only here. The
+[Station API](#station-api-apiv2-hermesv1) has mercury in the API's own format:
+its status with the listen mode and the broadcast plane (`GET /api/v2/modem`,
+`modem.status`), its configuration (`/api/v2/modem/config`, `modem.config`) and
+its chat (`modem.chat`, `modem.chat.send`), through mercury's host API
+(`vendor/mercury/host/mercury_host.h`). Its spectrum there is still to come.
 
 ## Station API (`/api/v2`, `hermes.v1`)
 
@@ -890,7 +894,9 @@ curl -X PATCH -H 'Content-Type: application/json' \
 | `getDigiSettings` | `GET /api/v2/radio/digi` | readonly |
 | `updateDigiSettings` | `PATCH /api/v2/radio/digi` | operator |
 | `getDigiLog` | `GET /api/v2/digi/log` (cursor pagination) | readonly |
-| `getModemStatus` | `GET /api/v2/modem` (mercury's last status; 503 without mercury) | readonly |
+| `getModemStatus` | `GET /api/v2/modem` (mercury's last status, its listen mode and broadcast plane; 503 without mercury) | readonly |
+| `getModemConfig` | `GET /api/v2/modem/config` (TX gain, waterfall, listen mode) | operator |
+| `updateModemConfig` | `PATCH /api/v2/modem/config`; the listen mode is saved in user.ini (`main:mercury_listen_mode`), 409 `busy` while an ARQ link or a broadcast holds the modem | admin |
 
 `hermes.v1` at `/api/v2/ws` (the WebSocket subprotocol `hermes.v1` is required;
 426 without it): a `hello` (protocol, version, role, the commands the role may
@@ -909,6 +915,7 @@ run), a `heartbeat` every 5 s, and commands answered by exactly one `reply`:
 | `rig.get` (`{"names":["AF","NB"]}`: read the rig's controls now) | operator |
 | `rig.set` (`{"name":"AF","value":0.5}`; a function takes `true`/`false`) | operator |
 | `rig.watch` (`{"names":["AF"],"interval_ms":1000}`: what `radio.rig` carries for this client) | operator |
+| `modem.chat.send` (`{"plane":"broadcast","text":"CQ"}`; plane `arq` needs a session up; a broadcast line is one frame in the listen mode) | user |
 
 The controls are the radio's own, as its backend lists them (the sBitx's, a
 CAT rig's), named in radiod's control vocabulary (see
@@ -925,13 +932,16 @@ second, whatever changed them (a command, CAT, rigctl, the front panel).
 | `radio.state` | the same as `GET /api/v2/radio` | readonly |
 | `modem.status` | the same as `GET /api/v2/modem`; offered only while mercury runs | readonly |
 | `radio.rig` | `{levels, funcs, parms}`: the controls this client watches (`rig.watch`), read at its interval (250 ms at least) | readonly |
+| `modem.config` | the same as `GET /api/v2/modem/config` | operator |
+| `modem.chat` | one event per chat line, either plane, sent or received (`{plane, dir, peer, text, at}`); the snapshot is the last 100 lines, one event each, all `snapshot: true` | readonly |
 
 ### Not implemented yet
 
-- the other `hermes.v1` topics (`radio.profiles`, `digi`, mercury's
-  `modem.config` and `modem.chat`, ...) and binary frames (`radio.spectrum.*`,
-  `modem.spectrum.rx`);
-- mercury: `getModemConfig`, `updateModemConfig` and the `modem.chat.send` command;
+- the other `hermes.v1` topics (`radio.profiles`, `digi`, ...) and binary
+  frames (`radio.spectrum.*`, `modem.spectrum.rx`);
+- broadcast messages (`/messages` with `broadcast`, `/areas`): mercury's
+  carousel and what its broadcast plane receives are in its host API, for
+  radiod's messaging layer, which does not exist yet;
 - logins, sessions and roles (`/api/v2/session`);
 - WebRTC audio (in C, with libdatachannel; signalled over `hermes.v1`);
 - the APIs moving from hermes-api (messages, users, stations, schedules, ...);
