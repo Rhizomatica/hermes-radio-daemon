@@ -290,8 +290,11 @@ static void handle_text(const char *buf)
         return;
     }
     {
+        /* the reply names the command sent, which for digi_set_config is
+         * the daemon's digi_config */
+        const char *sent = strcmp(g_cmd, "digi_set_config") ? g_cmd : "digi_config";
         char want[80];
-        snprintf(want, sizeof(want), "\"cmd\":\"%s\"", g_cmd);
+        snprintf(want, sizeof(want), "\"cmd\":\"%s\"", sent);
         if (strstr(buf, "\"cmd\":\"") && !strstr(buf, want))
             return;
     }

@@ -59,6 +59,10 @@ static const int16_t RX_LLR[9] = { -52, -20, 11, 43, 75, 107, 130, 140, 150 };
 /* The sync-block type byte, allowing one flipped bit (0x55, the header
  * type, is three bits away). */
 #define RX_TYPE_MAX_BITS 1
+/* A type byte this many bits or more from the sync block's says "clear"
+ * (D-STAR's own types are 3 or more away). Between the two, a superframe
+ * decides nothing. */
+#define RX_TYPE_CLEAR_BITS 3
 /* A clear over sends 0x66 filler where an encrypted one sends the sync
  * block: unit 8's last four bytes and unit 9's five, 72 bits. Within this
  * many bits of the filler they are a clear over's, whatever the type byte
@@ -270,7 +274,9 @@ void dstar_voice_rx_header(dstar_voice_rx *r, const uint8_t header[SBITX_DSTAR_H
     /* A header that says "clear" means a clear over began: never keep
      * decrypting it with an earlier over's keystream. A header that says
      * "encrypted" keeps the sync -- this over's sync blocks correct the
-     * nonce if it is in fact a new over. */
+     * nonce if it is in fact a new over. Only a header whose CRC checks
+     * shows the over is clear: a corrupt one's flag may be wrong. */
+    r->clear_known = !r->hdr_enc && hdr_crc_ok(header);
     if (!r->hdr_enc) {
         r->synced = false;
         r->enc_seen = false;
@@ -339,8 +345,11 @@ static bool bad_key_evidence(dstar_voice_rx *r)
 
 static void rx_status_unsynced(dstar_voice_rx *r)
 {
+    /* No encryption seen is not enough to play: after a lock in the middle
+     * of an encrypted over, without its header, the first sync block may be
+     * corrupt, and its superframe would play ciphertext as noise. */
     if (!r->hdr_enc && !r->enc_seen)
-        r->status = DSTAR_VC_CLEAR;
+        r->status = r->clear_known ? DSTAR_VC_CLEAR : DSTAR_VC_ACQUIRING;
     else if (!voice_crypto_have_key())
         r->status = DSTAR_VC_NO_KEY;
     else if (bad_key_evidence(r))
@@ -422,14 +431,23 @@ static void rx_try_sync(dstar_voice_rx *r)
     if (filler <= RX_FILLER_MAX_BITS) {
         /* A clear over's filler. Unless a header said "encrypted", it also
          * takes back an earlier false sighting. */
-        if (!r->hdr_enc && !r->synced)
+        if (!r->hdr_enc && !r->synced) {
             r->enc_seen = false;
+            r->clear_known = true;
+        }
         return;
     }
-    if (popc8((uint8_t) (ub[0] ^ DSTAR_VC_SLOW_TYPE)) > RX_TYPE_MAX_BITS)
+    const int type_bits = popc8((uint8_t) (ub[0] ^ DSTAR_VC_SLOW_TYPE));
+    if (type_bits > RX_TYPE_MAX_BITS) {
+        /* Another slow-data type: a clear over's, unless the over is known
+         * to be encrypted. */
+        if (type_bits >= RX_TYPE_CLEAR_BITS && !r->hdr_enc && !r->synced && !r->enc_seen)
+            r->clear_known = true;
         return;
+    }
 
     r->enc_seen = true;
+    r->clear_known = false;
     r->miss = 0;
     memcpy(sync, ua + 2, 4);
     memcpy(sync + 4, ub + 1, 5);
