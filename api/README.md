@@ -17,3 +17,5 @@ internal/<domain> the handlers, one package per API domain
 
 How to add an operation or a command: [docs/API-WRITERS.md](../docs/API-WRITERS.md).
 `go test ./...` here needs no C toolchain and no radio.
+
+How to run it: the top-level [README](../README.md) ("Station API") and [docs/ONBOARDING.md](../docs/ONBOARDING.md).

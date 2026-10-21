@@ -168,7 +168,7 @@ GO_API_LIB   = $(GO_API_DIR)/libhermes_api.a
 HAVE_GO_API ?= $(if $(shell command -v $(GO) 2>/dev/null),1,0)
 ifeq ($(HAVE_GO_API),1)
 CFLAGS += -DHAVE_GO_API=1
-GO_API_SRCS := $(shell find $(GO_API_DIR) -name '*.go' -o -name '*.c' -o -name '*.yaml' -o -name go.mod)
+GO_API_SRCS := $(shell find $(GO_API_DIR) -name '*.go' -o -name '*.yaml' -o -name '*.sql' -o -name go.mod -o -name go.sum)
 $(GO_API_LIB) $(GO_API_DIR)/libhermes_api.h &: $(GO_API_SRCS) api/radiod_api.h vendor/hermes_log/hermes_log.h
 	cd $(GO_API_DIR) && CGO_ENABLED=1 CC="$(CC)" $(GO) build -tags radiod -buildmode=c-archive \
 	    -o libhermes_api.a ./cmd/hermesapi
