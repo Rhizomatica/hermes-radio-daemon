@@ -147,7 +147,8 @@ static void test_clear_type_flip(void)
         for (int late = 0; late < 2; late++) {
             const int join = late ? DSTAR_VOICE_SF_FRAMES : 0;
             rx_result r = receive(join, !late, -1);
-            const int want = NFRAMES - join;
+            /* joined late, the first superframe's slow data shows it clear */
+            const int want = NFRAMES - join - (late ? DSTAR_VOICE_SF_FRAMES - 1 : 0);
             TEST_ASSERT_EQUAL_INT64_MESSAGE(want, r.played, test_msg("clear over, type byte flipped, %s, %s: played %d of %d", what[keyed], late ? "late" : "with header", r.played, want));
             TEST_ASSERT_EQUAL_INT64_MESSAGE(DSTAR_VC_CLEAR, r.status, test_msg("clear over, type byte flipped, %s: status %d", what[keyed], r.status));
         }
@@ -180,13 +181,13 @@ static void test_encrypted(void)
     do { TEST_ASSERT_EQUAL_INT64_MESSAGE(0, r.muted, test_msg("start of over: muted %d played %d match %d", r.muted, r.played, r.match)); TEST_ASSERT_EQUAL_INT64_MESSAGE(NFRAMES, r.played, test_msg("start of over: muted %d played %d match %d", r.muted, r.played, r.match)); TEST_ASSERT_EQUAL_INT64_MESSAGE(NFRAMES, r.match, test_msg("start of over: muted %d played %d match %d", r.muted, r.played, r.match)); } while (0);
     TEST_ASSERT_EQUAL_INT64_MESSAGE(DSTAR_VC_DECRYPTING, r.status, test_msg("status %d, want decrypting", r.status));
 
-    /* Late entry at superframe 5, no header yet: the first 20 frames can't be
-     * told from a clear over and play as-is (garbage, not speech); from the
-     * first sync block the over is known to be encrypted and mutes; from
-     * the confirming block (superframe 6), exact. */
+    /* Late entry at superframe 5, no header yet: muted until the first sync
+     * block shows the over encrypted, then until the confirming block
+     * (superframe 6); from there, exact. Nothing else plays. */
     r = receive(5 * 21, false, -1);
     TEST_ASSERT_TRUE_MESSAGE(r.first_match == 6 * 21 + 20, test_msg("late entry decrypt starts at %d", r.first_match));
     TEST_ASSERT_TRUE_MESSAGE(r.match == NFRAMES - (6 * 21 + 20), test_msg("late entry match %d", r.match));
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(r.match, r.played, test_msg("late entry played %d, match %d", r.played, r.match));
 
     /* A missed data sync (fc runs to 41) keeps the frame count right. */
     r = receive(0, true, 4);
@@ -304,6 +305,28 @@ static void test_corrupt_sync(void)
     do { TEST_ASSERT_EQUAL_INT64_MESSAGE(0, r.first_match, test_msg("corrupt sync, header: starts at %d match %d", r.first_match, r.match)); TEST_ASSERT_EQUAL_INT64_MESSAGE(NFRAMES, r.match, test_msg("corrupt sync, header: starts at %d match %d", r.first_match, r.match)); } while (0);
     /* Joined mid-over (superframe 0 is before the join, so its corrupt
      * block is not seen): superframes 1 and 2 confirm each other. */
+}
+
+/* A lock in the middle of an encrypted over, without its header, whose
+ * first sync block has its type byte two bits off: that superframe says
+ * neither "encrypted" nor "clear". It used to read clear, and the next
+ * superframe played as noise until its own block came. */
+static void test_relock_corrupt_sync(void)
+{
+    voice_crypto_set_key(KEY_A);
+    transmit(true);
+    wire[5 * 21 + 19][9] ^= 0x03;   /* superframe 5's type byte */
+    for (int keyed = 0; keyed < 2; keyed++) {
+        if (!keyed)
+            voice_crypto_clear_key();
+        rx_result r = receive(5 * 21, false, -1);
+        TEST_ASSERT_EQUAL_INT64_MESSAGE(r.match, r.played, test_msg("relock, corrupt first block, %s: played %d, match %d", keyed ? "keyed" : "no key", r.played, r.match));
+        if (keyed)
+            TEST_ASSERT_TRUE_MESSAGE(r.match > 0, "relock, corrupt first block: never decrypted");
+        else
+            TEST_ASSERT_EQUAL_INT64_MESSAGE(DSTAR_VC_NO_KEY, r.status, test_msg("relock, no key: status %d", r.status));
+        voice_crypto_set_key(KEY_A);
+    }
 }
 
 /* Slow data has no FEC. At a few percent bit errors most 72-bit sync
@@ -599,6 +622,7 @@ int main(void)
     RUN_TEST(test_late_header);
     RUN_TEST(test_key_lost_mid_over);
     RUN_TEST(test_corrupt_sync);
+    RUN_TEST(test_relock_corrupt_sync);
     RUN_TEST(test_fail_closed);
     RUN_TEST(test_key_files);
     RUN_TEST(test_modem_e2e);
