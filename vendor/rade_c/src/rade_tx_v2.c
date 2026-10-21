@@ -91,6 +91,9 @@ int rade_tx_v2_process(rade_tx_v2_state *tx, RADE_COMP *tx_out, const float *fea
     float z[RADE_V2_LATENT_DIM];
     rade_core_encoder_v2(&tx->enc_state, &tx->enc_model, z, enc_features, arch);
 
+    if (tx->latent_hook)
+        tx->latent_hook(tx->latent_hook_user, z, RADE_V2_LATENT_DIM);
+
     /* Modulate: z -> IQ samples */
     int n_out = rade_v2_ofdm_mod_frame(&tx->ofdm, tx_out, z);
 

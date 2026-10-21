@@ -67,6 +67,7 @@ dkms.conf
 /radio_daemon
 /radio_client
 /ws_client
+/rade_crypt_sim
 /utils/ambe_params
 /utils/ambe_roundtrip
 /utils/dstar_ambe_test

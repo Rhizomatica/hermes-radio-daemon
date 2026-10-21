@@ -61,6 +61,10 @@ extern "C" {
 #define RADE_V2_NEOO        (RADE_V2_N_EOO_SYMS * RADE_V2_SYM_LEN)  /* 960 */
 
 #define RADE_V2_NB_TOTAL_FEATURES  36
+
+/* Latent hook: called in place on one modem frame's latent vector, n =
+   RADE_V2_LATENT_DIM floats, symbol s carrier c at z[(s*Nc + c)*2] (re, im). */
+typedef void (*rade_v2_latent_hook)(void *user, float *z, int n);
 #define RADE_V2_NUM_USED_FEATURES  20
 
 /*---------------------------------------------------------------------------*\

@@ -273,6 +273,9 @@ static int update_frame_sync_decode(rade_rx_v2_state *rx,
                                     int sig_det, int sine_det) {
     int arch = 0;
 
+    if (rx->latent_hook)
+        rx->latent_hook(rx->latent_hook_user, rx->az_hat, RADE_V2_LATENT_DIM);
+
     float metric = rade_frame_sync(&rx->sync_model, rx->az_hat, arch);
 
     int winning = 0;

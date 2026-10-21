@@ -51,6 +51,8 @@ typedef struct {
     rade_v2_ofdm   ofdm;
     float          data_symbol;  /* BPSK data symbol (+1.0 or -1.0), default -1.0 */
     int            bpf_en;
+    rade_v2_latent_hook latent_hook;   /* after the encoder, before the modulator */
+    void          *latent_hook_user;
     rade_bpf       bpf;          /* SSB BPF state, continuous across rade_tx_v2_process()
                                      and rade_tx_v2_eoo() calls -- matches radae_v2.py's
                                      RADEv2Transmitter, which filters data and EOO through

@@ -19,7 +19,7 @@ CC      = gcc
 #   gui_interface/       websocket UI (radio_websocket + websocket/ server), web/
 #   common/              configuration and shared-memory helpers
 #   include/             public protocol headers (SHM command set)
-#   utils/               radio_client, ws_client, D-STAR/AMBE tools
+#   utils/               radio_client, ws_client, D-STAR/AMBE and RADE tools
 MODULE_INCLUDES = -Iradio -Imodem -Iaudioio -Icontrol_interfaces -Igui_interface -Iapi -Ivendor/hermes_log \
                   -Icommon -Ihamlib -Iinclude
 
@@ -246,6 +246,15 @@ WS_CLIENT_SRCS = utils/ws_client.c gui_interface/websocket/ws_frame.c gui_interf
 ws_client: $(WS_CLIENT_SRCS) gui_interface/websocket/ws_frame.h gui_interface/websocket/ws_crypto.h
 	$(CC) $(CFLAGS) $(WS_CLIENT_SRCS) -o ws_client -lssl -lcrypto
 
+# ── RADE V2 voice scrambling over a simulated HF channel, a testing aid
+# (not built by "all"): utils/rade_crypt_sim.c ──
+RADE_CRYPT_SIM_OBJS = utils/rade_crypt_sim.o dsp/rade_voice.o dsp/voice_crypto.o \
+                      dsp/radae_vocoder.o $(RADE_C_EMBED_OBJS) $(OPUS_DNN_OBJS) \
+                      vendor/hermes_log/hermes_log.o
+utils/rade_crypt_sim.o: EXTRA_CPPFLAGS := $(RADE_C_EMBED_CPPFLAGS) $(OPUS_DNN_CPPFLAGS)
+rade_crypt_sim: $(RADE_CRYPT_SIM_OBJS)
+	$(CC) $(CFLAGS) $(RADE_CRYPT_SIM_OBJS) -o $@ -lcrypto -lpthread -lm
+
 # ── unit tests (tests/tests.mk: make test, make test SANITIZE=asan|tsan) ──
 include tests/tests.mk
 
@@ -288,7 +297,7 @@ install: radio_daemon radio_client
 
 # ── clean ───────────────────────────────────────────────────────
 clean:
-	rm -f radio_daemon radio_client ws_client \
+	rm -f radio_daemon radio_client ws_client rade_crypt_sim utils/rade_crypt_sim.[od] \
 	      $(DAEMON_OBJS) $(DAEMON_OBJS:.o=.d) $(TEST_BINS) $(TEST_STAMP) \
 	      $(GO_API_LIB) $(GO_API_DIR)/libhermes_api.h .radiod_version
 
