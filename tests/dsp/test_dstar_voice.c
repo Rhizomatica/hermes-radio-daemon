@@ -127,6 +127,33 @@ static void test_clear(void)
     do { TEST_ASSERT_EQUAL_INT64_MESSAGE(NFRAMES, r.played, test_msg("clear over, keyed rx: played %d match %d", r.played, r.match)); TEST_ASSERT_EQUAL_INT64_MESSAGE(NFRAMES, r.match, test_msg("clear over, keyed rx: played %d match %d", r.played, r.match)); } while (0);
 }
 
+/* Two flipped bits turn a clear over's slow-data type byte (0x55) into the
+ * sync block's (0xE5, one bit allowed). On air under fading that marked
+ * clear overs encrypted and muted the rest of them; the 0x66 filler around
+ * it says "clear". Worst case here: the byte reads exactly 0xE5 in three
+ * superframes. */
+static void test_clear_type_flip(void)
+{
+    transmit(false);
+    for (int sf = 1; sf <= 3; sf++)
+        wire[sf * DSTAR_VOICE_SF_FRAMES + 19][9] ^= 0xB0;   /* unit 9's type byte */
+
+    const char *what[2] = {"no key", "keyed rx"};
+    for (int keyed = 0; keyed < 2; keyed++) {
+        if (keyed)
+            voice_crypto_set_key(KEY_A);
+        else
+            voice_crypto_clear_key();
+        for (int late = 0; late < 2; late++) {
+            const int join = late ? DSTAR_VOICE_SF_FRAMES : 0;
+            rx_result r = receive(join, !late, -1);
+            const int want = NFRAMES - join;
+            TEST_ASSERT_EQUAL_INT64_MESSAGE(want, r.played, test_msg("clear over, type byte flipped, %s, %s: played %d of %d", what[keyed], late ? "late" : "with header", r.played, want));
+            TEST_ASSERT_EQUAL_INT64_MESSAGE(DSTAR_VC_CLEAR, r.status, test_msg("clear over, type byte flipped, %s: status %d", what[keyed], r.status));
+        }
+    }
+}
+
 static void test_encrypted(void)
 {
     voice_crypto_set_key(KEY_A);
@@ -563,6 +590,7 @@ int main(void)
     make_plain();
     UNITY_BEGIN();
     RUN_TEST(test_clear);
+    RUN_TEST(test_clear_type_flip);
     RUN_TEST(test_encrypted);
     RUN_TEST(test_wrong_and_no_key);
     RUN_TEST(test_wrong_key_false_check);

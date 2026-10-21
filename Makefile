@@ -247,6 +247,13 @@ WS_CLIENT_SRCS = utils/ws_client.c gui_interface/websocket/ws_frame.c gui_interf
 ws_client: $(WS_CLIENT_SRCS) gui_interface/websocket/ws_frame.h gui_interface/websocket/ws_crypto.h
 	$(CC) $(CFLAGS) $(WS_CLIENT_SRCS) -o ws_client -lssl -lcrypto
 
+# ── D-STAR voice encryption through the GMSK modem and a simulated FM
+# channel, a testing aid (not built by "all"): utils/dstar_crypt_sim.c ──
+DSTAR_CRYPT_SIM_OBJS = utils/dstar_crypt_sim.o dsp/dstar_voice.o dsp/voice_crypto.o \
+                       dsp/sbitx_dstar.o vendor/hermes_log/hermes_log.o
+dstar_crypt_sim: $(DSTAR_CRYPT_SIM_OBJS)
+	$(CC) $(CFLAGS) $(DSTAR_CRYPT_SIM_OBJS) -o $@ -lmbe-neo -lcrypto -lpthread -lm
+
 # ── RADE V2 voice scrambling over a simulated HF channel, a testing aid
 # (not built by "all"): utils/rade_crypt_sim.c ──
 RADE_CRYPT_SIM_OBJS = utils/rade_crypt_sim.o dsp/rade_voice.o dsp/voice_crypto.o \
@@ -298,9 +305,10 @@ install: radio_daemon radio_client
 
 # ── clean ───────────────────────────────────────────────────────
 clean:
-	rm -f radio_daemon radio_client ws_client rade_crypt_sim utils/rade_crypt_sim.[od] \
+	rm -f radio_daemon radio_client ws_client dstar_crypt_sim rade_crypt_sim \
+	      utils/dstar_crypt_sim.[od] utils/rade_crypt_sim.[od] \
 	      $(DAEMON_OBJS) $(DAEMON_OBJS:.o=.d) $(TEST_BINS) $(TEST_STAMP) \
 	      $(GO_API_LIB) $(GO_API_DIR)/libhermes_api.h .radiod_version
 
 # Auto-generated header dependencies (from -MMD). Hyphen: ignore on first build.
--include $(DAEMON_OBJS:.o=.d) $(RADE_CRYPT_SIM_OBJS:.o=.d)
+-include $(DAEMON_OBJS:.o=.d) $(RADE_CRYPT_SIM_OBJS:.o=.d) $(DSTAR_CRYPT_SIM_OBJS:.o=.d)
