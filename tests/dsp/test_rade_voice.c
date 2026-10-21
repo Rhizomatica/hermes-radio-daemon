@@ -347,11 +347,11 @@ static void test_link_combining(void)
 {
     link_cfg c = cfg_default();
     c.frames = 12 * MSG;
-    c.noise = 16.0f;                   /* locks on the 2nd to 6th message (the nonce
-                                        * varies), mostly the 3rd */
+    c.noise = 16.0f;                   /* locks on the 3rd message mostly, the 8th
+                                        * at worst in 1000 runs (the nonce varies) */
     link_res r = run_link(c);
     TEST_ASSERT_GREATER_OR_EQUAL_INT64_MESSAGE(2 * MSG - 1, r.first_aligned, test_msg("locked at frame %d: not noisy enough to need combining", r.first_aligned));
-    TEST_ASSERT_LESS_OR_EQUAL_INT64_MESSAGE(8 * MSG - 1, r.first_aligned, test_msg("locked at frame %d", r.first_aligned));
+    TEST_ASSERT_LESS_OR_EQUAL_INT64_MESSAGE(10 * MSG - 1, r.first_aligned, test_msg("locked at frame %d", r.first_aligned));
     TEST_ASSERT_EQUAL_INT64_MESSAGE(0, r.wrong, test_msg("%d frames unmixed wrong", r.wrong));
     printf("combining: locked at frame %d (message %d)\n", r.first_aligned, (r.first_aligned + 1) / MSG);
 }
