@@ -6,6 +6,7 @@ import (
 	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/digi"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/gps"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/health"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/modem"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/radio"
@@ -19,5 +20,6 @@ func NewRouter(r rad.Radio) *api.Router {
 	radio.Register(rt)
 	digi.Register(rt)
 	modem.Register(rt)
+	gps.Register(rt)
 	return rt
 }

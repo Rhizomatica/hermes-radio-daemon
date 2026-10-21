@@ -89,6 +89,7 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   common/cfg_utils.o \
                   common/shm_utils.o \
                   common/radiod_log.o \
+                  gps/gps.o \
                   gui_interface/websocket/ws_server.o \
                   gui_interface/websocket/ws_frame.o \
                   gui_interface/websocket/ws_crypto.o \
@@ -172,6 +173,15 @@ $(GO_API_LIB) $(GO_API_DIR)/libhermes_api.h &: $(GO_API_SRCS) api/radiod_api.h v
 	cd $(GO_API_DIR) && CGO_ENABLED=1 CC="$(CC)" $(GO) build -tags radiod -buildmode=c-archive \
 	    -o libhermes_api.a ./cmd/hermesapi
 gui_interface/radio_websocket.o: $(GO_API_DIR)/libhermes_api.h
+endif
+
+# ── GPS (gps/gps.c): read the station's fix from gpsd through libgps ──
+# Without libgps the daemon builds as before and the API reports no fix;
+# the GPS settings still work.
+HAVE_GPS ?= $(if $(shell pkg-config --exists libgps && echo 1),1,0)
+ifeq ($(HAVE_GPS),1)
+CFLAGS  += -DHAVE_GPS=1
+LDFLAGS += -lgps
 endif
 
 # The C API reports the commit it was built from; the stamp changes only

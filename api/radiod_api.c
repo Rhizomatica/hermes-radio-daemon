@@ -18,6 +18,7 @@
 #include "radio_controls.h"
 #include "cfg_utils.h"
 #include "dsp/digi_log.h"
+#include "gps/gps.h"
 #include "websocket/ws_server.h"
 #ifdef HAVE_MERCURY
 #include "mercury_link.h"
@@ -37,6 +38,7 @@ static ws_server_t    *s_ws;
 void radiod_api_attach(void *radio_h)
 {
     s_radio = (radio *) radio_h;
+    gps_init(s_radio);
 }
 
 void radiod_api_attach_ws(void *server)
@@ -472,6 +474,18 @@ bool radiod_api_modem_status(char *out, size_t out_len)
     (void) out; (void) out_len;
     return false;
 #endif
+}
+
+/* ── gps ── */
+
+void radiod_api_gps_get(radiod_api_gps *out)
+{
+    gps_latest(out);
+}
+
+int radiod_api_gps_settings_set(const radiod_api_gps_settings *s)
+{
+    return gps_settings_apply(s);
 }
 
 /* ── to hermes.v1 clients ── */

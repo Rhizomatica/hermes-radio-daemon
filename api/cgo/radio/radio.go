@@ -86,6 +86,33 @@ type DigiSettings struct {
 	VoiceCodec                               string // RADEV2, DSTAR
 }
 
+// Gps is the station's own position and fix (Gps in api-rest.yaml). At is an
+// ISO 8601 UTC timestamp, nil while there is no fix.
+type Gps struct {
+	Fix       string // none, 2d, 3d
+	Latitude  *float64
+	Longitude *float64
+	AltitudeM *float64
+	At        *string
+	Settings  GpsSettings
+}
+
+// GpsSettings are the station's GPS logging and reporting settings
+// (GpsSettings in api-rest.yaml). Email is nil when none is set.
+type GpsSettings struct {
+	Logging         bool
+	SampleIntervalS int
+	FilePeriodS     int
+	Email           *string
+	Report          GpsReport
+}
+
+// GpsReport is the periodic over-the-air position report.
+type GpsReport struct {
+	Enabled   bool
+	IntervalS int
+}
+
 // LogLevel is radiod's logger's level: hermes_log's, as cgo/hermeslog.Level
 // (this package's stub build has no cgo, so it keeps its own type).
 type LogLevel int
@@ -139,6 +166,12 @@ type Radio interface {
 	// DigiLog returns up to max entries after id `after`, oldest first,
 	// each one JSON object in digi_log's line format.
 	DigiLog(after uint64, max int) []json.RawMessage
+
+	// Gps is the station's own position and fix, and its GPS settings.
+	Gps() Gps
+	// SetGpsSettings applies the whole GPS settings (already validated by
+	// the handler). ErrInvalid outside the spec's ranges.
+	SetGpsSettings(GpsSettings) error
 
 	// ModemStatus is mercury's last status JSON; false without mercury.
 	ModemStatus() (json.RawMessage, bool)

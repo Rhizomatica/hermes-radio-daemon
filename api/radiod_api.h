@@ -142,6 +142,47 @@ int radiod_api_digi_log(uint64_t after, int max, char *out, size_t out_len);
  * out; false when mercury is not running or has said nothing yet. */
 bool radiod_api_modem_status(char *out, size_t out_len);
 
+/* ── gps ── */
+
+/* The station's own position and fix, read from gpsd through libgps when
+ * main:gps_enable is set (see gps/gps.h).  fix is the spec's code: 0 none,
+ * 2 2-D, 3 3-D.  latitude/longitude are valid only when has_position,
+ * altitude only when has_altitude, time (unix seconds, UTC) only when
+ * has_time. */
+typedef struct {
+    int      fix;             /* 0 none, 2 2d, 3 3d */
+    bool     has_position;
+    double   latitude, longitude;
+    bool     has_altitude;
+    double   altitude_m;
+    bool     has_time;
+    double   time;            /* unix seconds (UTC) */
+} radiod_api_gps_fix;
+
+/* The station's GPS logging and reporting settings (GpsSettings in
+ * api-rest.yaml).  email is set only when has_email. */
+typedef struct {
+    bool     logging;
+    int32_t  sample_interval_s;  /* >= 1 */
+    int32_t  file_period_s;      /* >= 60 */
+    bool     has_email;
+    char     email[128];
+    bool     report_enabled;     /* broadcast this position over the air */
+    int32_t  report_interval_s;  /* >= 60 */
+} radiod_api_gps_settings;
+
+typedef struct {
+    radiod_api_gps_fix      fix;
+    radiod_api_gps_settings settings;
+} radiod_api_gps;
+
+/* The latest fix and the settings; never blocks on gpsd. */
+void radiod_api_gps_get(radiod_api_gps *out);
+
+/* Apply the whole settings (all fields), validate the spec's ranges and
+ * save to the configuration.  EINVAL outside the ranges. */
+int radiod_api_gps_settings_set(const radiod_api_gps_settings *s);
+
 /* ── to clients (hermes.v1), thread-safe, queue only ── */
 
 int radiod_api_ws_send(long conn_id, const char *data, size_t len);

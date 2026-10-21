@@ -15,6 +15,7 @@ import "C"
 import (
 	"bytes"
 	"encoding/json"
+	"time"
 	"unsafe"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/cgo/hermeslog"
@@ -188,6 +189,65 @@ func (binding) ModemStatus() (json.RawMessage, bool) {
 		return nil, false
 	}
 	return json.RawMessage(C.GoString((*C.char)(buf))), true
+}
+
+// isoTime turns gpsd's unix seconds into the API's ISO 8601 UTC timestamp.
+func isoTime(sec float64) string {
+	nsec := int64((sec - float64(int64(sec))) * 1e9)
+	return time.Unix(int64(sec), nsec).UTC().Format(time.RFC3339)
+}
+
+func (binding) Gps() Gps {
+	var g C.radiod_api_gps
+	C.radiod_api_gps_get(&g)
+	out := Gps{Settings: GpsSettings{
+		Logging:         bool(g.settings.logging),
+		SampleIntervalS: int(g.settings.sample_interval_s),
+		FilePeriodS:     int(g.settings.file_period_s),
+		Report:          GpsReport{Enabled: bool(g.settings.report_enabled), IntervalS: int(g.settings.report_interval_s)},
+	}}
+	switch g.fix.fix {
+	case 2:
+		out.Fix = "2d"
+	case 3:
+		out.Fix = "3d"
+	default:
+		out.Fix = "none"
+	}
+	if bool(g.fix.has_position) {
+		lat, lon := float64(g.fix.latitude), float64(g.fix.longitude)
+		out.Latitude, out.Longitude = &lat, &lon
+	}
+	if bool(g.fix.has_altitude) {
+		a := float64(g.fix.altitude_m)
+		out.AltitudeM = &a
+	}
+	if bool(g.fix.has_time) {
+		t := isoTime(float64(g.fix.time))
+		out.At = &t
+	}
+	if bool(g.settings.has_email) {
+		e := cstr(g.settings.email[:])
+		out.Settings.Email = &e
+	}
+	return out
+}
+
+func (binding) SetGpsSettings(s GpsSettings) error {
+	var cs C.radiod_api_gps_settings
+	cs.logging = C.bool(s.Logging)
+	cs.sample_interval_s = C.int32_t(s.SampleIntervalS)
+	cs.file_period_s = C.int32_t(s.FilePeriodS)
+	cs.report_enabled = C.bool(s.Report.Enabled)
+	cs.report_interval_s = C.int32_t(s.Report.IntervalS)
+	if s.Email != nil {
+		cs.has_email = true
+		// cs is zero-initialised, so the rest of the buffer stays NUL.
+		for i := 0; i < len(cs.email)-1 && i < len(*s.Email); i++ {
+			cs.email[i] = C.char((*s.Email)[i])
+		}
+	}
+	return codeErr(int(C.radiod_api_gps_settings_set(&cs)))
 }
 
 func (binding) WSSend(conn int64, f []byte) error {
