@@ -15,7 +15,7 @@
 
 void radiod_log_start(void)
 {
-    if (hermes_log_init(1024) != 0)
+    if (hermes_log_init(1024) < 0)
         fprintf(stderr, "radiod: the logger did not start; log lines are lost\n");
 }
 
