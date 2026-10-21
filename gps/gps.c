@@ -89,12 +89,16 @@ static void gps_apply_fix(const struct gps_data_t *g)
         s_gps.fix.latitude  = g->fix.latitude;
         s_gps.fix.longitude = g->fix.longitude;
     }
-    s_gps.fix.has_altitude = isfinite(g->fix.altitude);
+    /* gpsd 3.x: the MSL altitude is altMSL (altitude is deprecated and
+     * always NaN), and the fix time is a timespec_t (struct timespec). */
+    s_gps.fix.has_altitude = isfinite(g->fix.altMSL);
     if (s_gps.fix.has_altitude)
-        s_gps.fix.altitude_m = g->fix.altitude;
-    s_gps.fix.has_time = !isnan(g->fix.time);
+        s_gps.fix.altitude_m = g->fix.altMSL;
+    s_gps.fix.has_time =
+        (g->fix.time.tv_sec != 0 || g->fix.time.tv_nsec != 0);
     if (s_gps.fix.has_time)
-        s_gps.fix.time = g->fix.time;
+        s_gps.fix.time =
+            (double) g->fix.time.tv_sec + (double) g->fix.time.tv_nsec / 1e9;
     pthread_mutex_unlock(&s_mutex);
 }
 
