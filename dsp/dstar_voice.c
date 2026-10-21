@@ -59,6 +59,14 @@ static const int16_t RX_LLR[9] = { -52, -20, 11, 43, 75, 107, 130, 140, 150 };
 /* The sync-block type byte, allowing one flipped bit (0x55, the header
  * type, is three bits away). */
 #define RX_TYPE_MAX_BITS 1
+/* A clear over sends 0x66 filler where an encrypted one sends the sync
+ * block: unit 8's last four bytes and unit 9's five, 72 bits. Within this
+ * many bits of the filler they are a clear over's, whatever the type byte
+ * says: a clear over at 10% bit errors is ~7 bits off, a sync block's
+ * random bytes ~36 (16 or fewer once in ~10^6). Two flipped bits make the
+ * clear type byte read as 0xE5, which on its own marked a clear over
+ * encrypted and muted the rest of it. */
+#define RX_FILLER_MAX_BITS 16
 
 static bool keystream_xor(const uint8_t r[VOICE_NONCE_RAND_BYTES], uint32_t frame_idx,
                           char ambe_d[DSTAR_VOICE_AMBE_BITS])
@@ -406,6 +414,18 @@ static void rx_try_sync(dstar_voice_rx *r)
     memcpy(ua, r->slow[0], 3); memcpy(ua + 3, r->slow[1], 3);
     memcpy(ub, r->slow[2], 3); memcpy(ub + 3, r->slow[3], 3);
 
+    int filler = 0;
+    for (int i = 2; i < 6; i++)
+        filler += popc8((uint8_t) (ua[i] ^ 0x66U));
+    for (int i = 1; i < 6; i++)
+        filler += popc8((uint8_t) (ub[i] ^ 0x66U));
+    if (filler <= RX_FILLER_MAX_BITS) {
+        /* A clear over's filler. Unless a header said "encrypted", it also
+         * takes back an earlier false sighting. */
+        if (!r->hdr_enc && !r->synced)
+            r->enc_seen = false;
+        return;
+    }
     if (popc8((uint8_t) (ub[0] ^ DSTAR_VC_SLOW_TYPE)) > RX_TYPE_MAX_BITS)
         return;
 
