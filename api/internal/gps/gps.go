@@ -1,5 +1,5 @@
 // Package gps serves the station's GPS REST operations (api-rest.yaml, tag
-// gps) and the hermes.v1 gps topic, from the fix radiod reads through libgps.
+// gps) and the hermes.v1 gps topic, from the fix radiod reads from gpsd.
 package gps
 
 import (

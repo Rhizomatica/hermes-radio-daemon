@@ -20,7 +20,7 @@ CC      = gcc
 #   common/              configuration and shared-memory helpers
 #   include/             public protocol headers (SHM command set)
 #   utils/               radio_client, ws_client, D-STAR/AMBE and RADE tools
-MODULE_INCLUDES = -Iradio -Imodem -Iaudioio -Icontrol_interfaces -Igui_interface -Iapi -Ivendor/hermes_log \
+MODULE_INCLUDES = -Iradio -Imodem -Iaudioio -Icontrol_interfaces -Igui_interface -Iapi -Igps -Ivendor/hermes_log \
                   -Icommon -Ihamlib -Iinclude
 
 # -MMD -MP auto-generates per-object header dependencies (*.d), so editing a
@@ -173,15 +173,6 @@ $(GO_API_LIB) $(GO_API_DIR)/libhermes_api.h &: $(GO_API_SRCS) api/radiod_api.h v
 	cd $(GO_API_DIR) && CGO_ENABLED=1 CC="$(CC)" $(GO) build -tags radiod -buildmode=c-archive \
 	    -o libhermes_api.a ./cmd/hermesapi
 gui_interface/radio_websocket.o: $(GO_API_DIR)/libhermes_api.h
-endif
-
-# ── GPS (gps/gps.c): read the station's fix from gpsd through libgps ──
-# Without libgps the daemon builds as before and the API reports no fix;
-# the GPS settings still work.
-HAVE_GPS ?= $(if $(shell pkg-config --exists libgps && echo 1),1,0)
-ifeq ($(HAVE_GPS),1)
-CFLAGS  += -DHAVE_GPS=1
-LDFLAGS += -lgps
 endif
 
 # The C API reports the commit it was built from; the stamp changes only

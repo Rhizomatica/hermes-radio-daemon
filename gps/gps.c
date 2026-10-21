@@ -6,17 +6,21 @@
 
 #include "gps.h"
 
+#include <errno.h>
 #include <math.h>
+#include <netdb.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #include "cfg_utils.h"
 #include "radiod_log.h"
-
-#ifdef HAVE_GPS
-#include <gps.h>
-#endif
 
 /* The ranges api-rest.yaml gives GpsSettings (GpsSettings in the contract). */
 #define GPS_SAMPLE_INTERVAL_MIN 1
@@ -27,12 +31,10 @@ static radio           *s_radio;
 static pthread_mutex_t  s_mutex = PTHREAD_MUTEX_INITIALIZER;
 static radiod_api_gps   s_gps;
 
-#ifdef HAVE_GPS
 static pthread_t s_thread;
 static bool      s_thread_running;
 static char      s_host[64] = "127.0.0.1";
 static char      s_port[16] = "2947";
-#endif
 
 /* The defaults, the spec's (and hermes-sensors'). */
 static void settings_default(radiod_api_gps_settings *s)
@@ -71,64 +73,274 @@ static void settings_load(radiod_api_gps_settings *s)
         s->has_email = true;
     }
 }
-#ifdef HAVE_GPS
-static void gps_apply_fix(const struct gps_data_t *g)
-{
-    int fix = 0;
-    if (g->fix.mode == MODE_2D)
-        fix = 2;
-    else if (g->fix.mode == MODE_3D)
-        fix = 3;
+/* ── the reader: a gpsd JSON-socket client ────────────────────────────────
+ * gpsd serves the fix as newline-delimited JSON objects; hermes-sensors
+ * reads the same socket through gps3.  We ask for JSON streaming and take
+ * the TPV objects.  No libgps: the C struct it exposes is not stable across
+ * gpsd releases, but this JSON is. */
 
+/* Days since 1970-01-01 of a Gregorian date (Howard Hinnant's algorithm). */
+static int64_t days_from_civil(int y, int m, int d)
+{
+    y -= m <= 2;
+    int64_t era = (y >= 0 ? y : y - 399) / 400;
+    unsigned yoe = (unsigned) (y - era * 400);
+    unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + (int64_t) doe - 719468;
+}
+
+/* gpsd's TPV time is ISO 8601 UTC ("2026-10-21T12:34:56.123Z"): to Unix
+ * seconds, the fractional part preserved. */
+static double iso8601_to_unix(const char *s)
+{
+    int y, mo, d, h, mi, sec;
+    double frac = 0.0;
+    int n = 0;
+    if (sscanf(s, "%d-%d-%dT%d:%d:%d%n", &y, &mo, &d, &h, &mi, &sec, &n) < 6)
+        return NAN;
+    const char *p = s + n;
+    if (*p == '.')
+    {
+        p++;
+        double scale = 0.1;
+        while (*p >= '0' && *p <= '9')
+        {
+            frac += (*p - '0') * scale;
+            scale *= 0.1;
+            p++;
+        }
+    }
+    return (double) days_from_civil(y, mo, d) * 86400.0
+        + h * 3600.0 + mi * 60.0 + sec + frac;
+}
+
+/* The value of "key" in a flat JSON object at [json, json+len): a pointer to
+ * its first byte, or NULL when the key is absent.  gpsd's objects are flat,
+ * so a flat scan is enough. */
+static const char *json_value(const char *json, size_t len, const char *key)
+{
+    char pat[64];
+    int n = snprintf(pat, sizeof(pat), "\"%s\"", key);
+    if (n < 0 || (size_t) n >= sizeof(pat))
+        return NULL;
+    const char *end = json + len;
+    for (const char *p = json; p + n <= end; p++)
+    {
+        if (memcmp(p, pat, (size_t) n) != 0)
+            continue;
+        const char *q = p + n;
+        while (q < end && (*q == ' ' || *q == '\t'))
+            q++;
+        if (q >= end || *q != ':')
+            continue;
+        q++;
+        while (q < end && (*q == ' ' || *q == '\t'))
+            q++;
+        return q < end ? q : NULL;
+    }
+    return NULL;
+}
+
+/* The string value of "key" (quotes removed; escapes not resolved, as the
+ * fields read here have none). */
+static bool json_string(const char *json, size_t len, const char *key,
+                        char *out, size_t out_len)
+{
+    const char *v = json_value(json, len, key);
+    if (!v || *v != '"')
+        return false;
+    v++;
+    size_t o = 0;
+    const char *end = json + len;
+    while (v < end && *v != '"')
+    {
+        if (*v == '\\' && v + 1 < end)
+            v++;
+        if (o + 1 < out_len)
+            out[o++] = *v;
+        v++;
+    }
+    if (v >= end)
+        return false;
+    out[o] = '\0';
+    return true;
+}
+
+/* The number value of "key", or false when absent or not a number. */
+static bool json_number(const char *json, size_t len, const char *key,
+                        double *out)
+{
+    const char *v = json_value(json, len, key);
+    if (!v)
+        return false;
+    char *endp = NULL;
+    double d = strtod(v, &endp);
+    if (endp == v)
+        return false;
+    *out = d;
+    return true;
+}
+
+static void gps_set_fix(int fix, double lat, double lon, double alt,
+                        bool has_alt, double time, bool has_time)
+{
     pthread_mutex_lock(&s_mutex);
     s_gps.fix.fix = fix;
-    s_gps.fix.has_position =
-        fix != 0 && isfinite(g->fix.latitude) && isfinite(g->fix.longitude);
+    s_gps.fix.has_position = fix != 0 && isfinite(lat) && isfinite(lon);
     if (s_gps.fix.has_position)
     {
-        s_gps.fix.latitude  = g->fix.latitude;
-        s_gps.fix.longitude = g->fix.longitude;
+        s_gps.fix.latitude  = lat;
+        s_gps.fix.longitude = lon;
     }
-    /* gpsd 3.x: the MSL altitude is altMSL (altitude is deprecated and
-     * always NaN), and the fix time is a timespec_t (struct timespec). */
-    s_gps.fix.has_altitude = isfinite(g->fix.altMSL);
+    s_gps.fix.has_altitude = has_alt && isfinite(alt);
     if (s_gps.fix.has_altitude)
-        s_gps.fix.altitude_m = g->fix.altMSL;
-    s_gps.fix.has_time =
-        (g->fix.time.tv_sec != 0 || g->fix.time.tv_nsec != 0);
+        s_gps.fix.altitude_m = alt;
+    s_gps.fix.has_time = has_time && !isnan(time);
     if (s_gps.fix.has_time)
-        s_gps.fix.time =
-            (double) g->fix.time.tv_sec + (double) g->fix.time.tv_nsec / 1e9;
+        s_gps.fix.time = time;
     pthread_mutex_unlock(&s_mutex);
+}
+
+/* One newline-terminated gpsd JSON object: a TPV becomes the fix. */
+static void gps_handle_line(char *line)
+{
+    size_t len = strlen(line);
+    char cls[16];
+    if (!json_string(line, len, "class", cls, sizeof(cls)) || strcmp(cls, "TPV") != 0)
+        return;
+
+    int fix = 0;
+    double mode = 0;
+    if (json_number(line, len, "mode", &mode))
+    {
+        if ((int) mode == 2)
+            fix = 2;
+        else if ((int) mode == 3)
+            fix = 3;
+    }
+
+    double lat = NAN, lon = NAN;
+    (void) json_number(line, len, "lat", &lat);
+    (void) json_number(line, len, "lon", &lon);
+
+    double alt = NAN;
+    bool has_alt = json_number(line, len, "altMSL", &alt) ||
+                   json_number(line, len, "alt", &alt);
+
+    double time = NAN;
+    bool has_time = false;
+    char t[48];
+    if (json_string(line, len, "time", t, sizeof(t)))
+    {
+        time = iso8601_to_unix(t);
+        has_time = !isnan(time);
+    }
+    else if (json_number(line, len, "time", &time))
+        has_time = true;
+
+    gps_set_fix(fix, lat, lon, alt, has_alt, time, has_time);
+}
+
+/* Connect to gpsd at s_host:s_port; -1 on failure. */
+static int gps_connect(void)
+{
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family   = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(s_host, s_port, &hints, &res) != 0)
+        return -1;
+
+    int fd = -1;
+    for (struct addrinfo *ai = res; ai; ai = ai->ai_next)
+    {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0)
+            continue;
+        if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0)
+            break;
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(res);
+    return fd;
+}
+
+/* Sleep up to ms milliseconds, waking early while the reader is stopping. */
+static void gps_sleep_ms(int ms)
+{
+    for (int i = 0; i < ms && s_thread_running; i += 50)
+        usleep(50 * 1000);
 }
 
 static void *gps_thread(void *arg)
 {
     (void) arg;
-    struct gps_data_t gps;
-    memset(&gps, 0, sizeof(gps));
-    if (gps_open(s_host, s_port, &gps) != 0)
-    {
-        HLOGW("gps", "cannot open gpsd at %s:%s; no fix", s_host, s_port);
-        s_thread_running = false;
-        return NULL;
-    }
-    gps_stream(&gps, WATCH_ENABLE | WATCH_JSON, NULL);
+    char buf[1024];
+    size_t used = 0;
+
     while (s_thread_running)
     {
-        /* 500 ms, so a shutdown is noticed promptly; gps_read below then
-         * returns immediately with the data that was waiting. */
-        if (!gps_waiting(&gps, 500000))
+        int fd = gps_connect();
+        if (fd < 0)
+        {
+            HLOGW("gps", "cannot connect to gpsd at %s:%s; retrying", s_host, s_port);
+            gps_sleep_ms(1000);
             continue;
-        if (gps_read(&gps, NULL, 0) == -1)
-            break;
-        gps_apply_fix(&gps);
+        }
+
+        /* A 500 ms read timeout: a shutdown (or a silent gpsd) is noticed
+         * promptly instead of blocking in read() until the socket closes. */
+        struct timeval tv = { .tv_sec = 0, .tv_usec = 500000 };
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+        static const char watch[] = "?WATCH={\"enable\":true,\"json\":true}\n";
+        if (write(fd, watch, sizeof(watch) - 1) < 0)
+        {
+            close(fd);
+            gps_sleep_ms(1000);
+            continue;
+        }
+        HLOGI("gps", "reading the fix from gpsd at %s:%s", s_host, s_port);
+
+        used = 0;
+        while (s_thread_running)
+        {
+            ssize_t n = read(fd, buf + used, sizeof(buf) - 1 - used);
+            if (n == 0)
+                break; /* EOF: reconnect */
+            if (n < 0)
+            {
+                if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+                    continue; /* timeout: re-check s_thread_running */
+                break;        /* error: reconnect */
+            }
+            used += (size_t) n;
+            buf[used] = '\0';
+
+            char *line = buf;
+            while (s_thread_running)
+            {
+                char *nl = memchr(line, '\n', (buf + used) - line);
+                if (!nl)
+                    break;
+                *nl = '\0';
+                gps_handle_line(line);
+                line = nl + 1;
+            }
+            size_t rem = (buf + used) - line;
+            if (rem >= sizeof(buf) - 1)
+                rem = 0; /* a line longer than the buffer: drop it */
+            memmove(buf, line, rem);
+            used = rem;
+        }
+        close(fd);
+        if (s_thread_running)
+            HLOGW("gps", "gpsd connection lost; reconnecting");
     }
-    gps_stream(&gps, WATCH_DISABLE, NULL);
-    gps_close(&gps);
     return NULL;
 }
-#endif /* HAVE_GPS */
 
 void gps_init(radio *radio_h)
 {
@@ -137,7 +349,6 @@ void gps_init(radio *radio_h)
     settings_load(&s_gps.settings);
     pthread_mutex_unlock(&s_mutex);
 
-#ifdef HAVE_GPS
     if (!s_radio || !s_radio->cfg_radio)
         return;
     if (!iniparser_getboolean(s_radio->cfg_radio, "main:gps_enable", 0))
@@ -152,18 +363,15 @@ void gps_init(radio *radio_h)
         s_thread_running = false;
         HLOGE("gps", "cannot start the gpsd reader thread");
     }
-#endif
 }
 
 void gps_shutdown(void)
 {
-#ifdef HAVE_GPS
     if (s_thread_running)
     {
         s_thread_running = false;
         pthread_join(s_thread, NULL);
     }
-#endif
 }
 
 void gps_latest(radiod_api_gps *out)

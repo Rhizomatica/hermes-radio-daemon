@@ -144,7 +144,7 @@ bool radiod_api_modem_status(char *out, size_t out_len);
 
 /* ── gps ── */
 
-/* The station's own position and fix, read from gpsd through libgps when
+/* The station's own position and fix, read from gpsd's JSON socket when
  * main:gps_enable is set (see gps/gps.h).  fix is the spec's code: 0 none,
  * 2 2-D, 3 3-D.  latitude/longitude are valid only when has_position,
  * altitude only when has_altitude, time (unix seconds, UTC) only when

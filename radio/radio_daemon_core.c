@@ -36,6 +36,7 @@
 #include "mercury_link.h"
 #endif
 #include "voice_crypto.h"
+#include "gps.h"
 #include "sbitx/sbitx_alsa.h"
 
 #define LOG_C "radiod"
@@ -264,6 +265,8 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     pthread_join(io_tid, NULL);
     io_started = false;
 
+    gps_shutdown();
+
     if (headset_started)
         audio_headset_shutdown(&radio_h);
     if (shm_started)
@@ -295,6 +298,7 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
 fail:
     if (io_started)
         pthread_join(io_tid, NULL);
+    gps_shutdown();
     if (headset_started)
         audio_headset_shutdown(&radio_h);
     if (shm_started)

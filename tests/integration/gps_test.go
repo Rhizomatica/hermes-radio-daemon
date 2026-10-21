@@ -1,6 +1,6 @@
 // The station's GPS through the real daemon: GET /gps and PATCH
 // /gps/settings (the Go API layer over the radiod C API), the hermes.v1 gps
-// topic, and the fix read from gpsd (libgps) when it is linked in.
+// topic, and the fix read from gpsd's JSON socket.
 //
 // Copyright (C) 2026 Rhizomatica
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -9,7 +9,6 @@ package integration
 
 import (
 	"bufio"
-	"debug/elf"
 	"fmt"
 	"net"
 	"os"
@@ -18,28 +17,6 @@ import (
 	"testing"
 	"time"
 )
-
-// hasGps reports whether radio_daemon has the gpsd reader linked in
-// (HAVE_GPS, libgps). gps_open comes from libgps, so it shows as an
-// undefined symbol in the binary, unlike mercury's own symbols.
-func hasGps(t *testing.T) bool {
-	t.Helper()
-	f, err := elf.Open(radiodBin)
-	if err != nil {
-		t.Fatalf("open %s: %v", radiodBin, err)
-	}
-	defer f.Close()
-	syms, err := f.Symbols()
-	if err != nil {
-		t.Fatalf("symbols of %s: %v", radiodBin, err)
-	}
-	for _, s := range syms {
-		if s.Name == "gps_open" && s.Section == elf.SHN_UNDEF {
-			return true
-		}
-	}
-	return false
-}
 
 // Off by default (gps_enable = 0): GET /gps is the spec's defaults with no
 // fix; PATCH /gps/settings applies, answers and persists to core.ini; a bad
@@ -157,13 +134,10 @@ func TestGPSTopicSnapshot(t *testing.T) {
 	}
 }
 
-// With gps_enable and a fake gpsd, GET /gps reports the fix libgps read.
-// Skipped when the daemon was built without libgps.
+// With gps_enable and a fake gpsd, GET /gps reports the fix read from gpsd's
+// JSON socket.
 func TestGPSFixFromGpsd(t *testing.T) {
 	needGoAPI(t)
-	if !hasGps(t) {
-		t.Skip("radio_daemon was built without libgps (HAVE_GPS off)")
-	}
 	_, port, _ := net.SplitHostPort(startFakeGpsd(t))
 	d := startDaemon(t, daemonOpts{core: []string{
 		"api_v2_enable = 1",
@@ -190,8 +164,8 @@ func TestGPSFixFromGpsd(t *testing.T) {
 	}
 }
 
-// startFakeGpsd runs a minimal gpsd on 127.0.0.1: it greets libgps and then
-// streams a fixed 3-D TPV, so the daemon's gps_read always has a fix waiting.
+// startFakeGpsd runs a minimal gpsd on 127.0.0.1: it greets the reader and
+// then streams a fixed 3-D TPV, so the daemon always has a fix waiting.
 func startFakeGpsd(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -213,7 +187,7 @@ func startFakeGpsd(t *testing.T) string {
 
 func serveFakeGpsd(conn net.Conn) {
 	defer conn.Close()
-	// libgps's ?WATCH is fire-and-forget; drain it so the socket stays clear.
+	// The client's ?WATCH is fire-and-forget; drain it so the socket stays clear.
 	go func() {
 		br := bufio.NewReader(conn)
 		for {

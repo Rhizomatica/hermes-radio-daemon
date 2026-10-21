@@ -28,7 +28,7 @@ apt-get update
 apt-get install -y --no-install-recommends \
     ca-certificates curl gnupg git build-essential pkg-config cmake \
     libhamlib-dev libiniparser-dev libasound2-dev libfftw3-dev libssl-dev \
-    libi2c-dev libsndfile1-dev libcw-dev libgps-dev
+    libi2c-dev libsndfile1-dev libcw-dev
 
 # csdr from the HERMES repository.  The key comes over plain http (the
 # server's TLS certificate does not verify), so it is accepted only if its
