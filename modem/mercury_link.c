@@ -201,25 +201,14 @@ static void ui_detach(void)
 
 /* mercury_init returns once the engine is up, or blocks until shutdown in
  * its test modes (-t / -r), so it runs on a thread of its own; the engine's
- * threads inherit this thread's CPU mask. */
-/* radiod owns the logger mercury logs through, but mercury treats it as its
- * own: mercury_init sets the level and file sink from its options, and its
- * failure paths and mercury_shutdown shut the logger down. Until mercury
- * leaves the logger to its host, take it back after each: start it again if
- * it is down, and put radiod's settings back. Lines logged while it was
- * down are lost, and its uptime counter restarts. */
-static void logger_back(void)
-{
-    radiod_log_start();
-    radiod_log_configure(s_radio);
-}
-
+ * threads inherit this thread's CPU mask. radiod started hermes_log first
+ * thing in main, so mercury leaves its level, file and shutdown to radiod
+ * (mercury_host.h). */
 static void *launcher(void *arg)
 {
     (void) arg;
     int rc = mercury_init(s_argc, s_argv, s_radio->mercury_config, NULL);
     s_init_rc = rc;
-    logger_back();
     /* mercury opens its TNC ports before it sets its UI hooks, and returns
      * from mercury_init only after both: a UI client that connected in
      * between got no history or initial state. Give it them now (to every
@@ -319,7 +308,6 @@ void mercury_link_stop(void)
     mercury_request_shutdown();                  /* ends a blocking test mode */
     pthread_join(s_launcher, NULL);
     mercury_shutdown();                          /* no-op if it never started */
-    logger_back();
 
     if (modem_audio_tx_keyed_by(MERCURY_LINK_PTT_ID))
         modem_audio_tx_unkey("unkeyed at shutdown");

@@ -72,7 +72,7 @@ func Init(capacity int) error {
 	if capacity < 0 {
 		capacity = 0
 	}
-	if C.hermes_log_init(C.size_t(capacity)) != 0 {
+	if C.hermes_log_init(C.size_t(capacity)) < 0 {
 		return errors.New("hermeslog: the logger did not start")
 	}
 	return nil
