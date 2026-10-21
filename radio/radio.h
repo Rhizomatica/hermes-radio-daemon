@@ -387,6 +387,10 @@ typedef struct {
     bool api_v2_enable;
     char mercury_config[256];
     char mercury_args[256];
+    /* Mercury's listen mode (its -m, the MODE command): the BroadcastMode
+     * name the API last set, user.ini's main:mercury_listen_mode, applied
+     * once mercury is up; "" leaves mercury's own (-m in mercury_args). */
+    char mercury_listen_mode[16];
     /* Logging (common/radiod_log.c, mercury's hermes_log): main:log_level,
      * main:log_component_levels ("hamlib=debug, ws=warn"), main:log_file
      * ("" for none) and main:log_jsonl for the file's format. */

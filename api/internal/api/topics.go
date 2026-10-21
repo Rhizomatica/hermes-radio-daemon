@@ -34,16 +34,25 @@ type StateFunc func() (any, error)
 // an error leaves it out of hello.
 type ConnStateFunc func(c *Conn) (any, error)
 
+// StreamFunc reads a stream topic (modem.chat): the items after cursor
+// after, oldest first, each one event's data, and the cursor after the last.
+// after 0 is the snapshot: the stored history, as much as the topic offers.
+// An error means the topic has no state now, as for a StateFunc.
+type StreamFunc func(after uint64) (items []any, next uint64, err error)
+
 type topic struct {
-	role  spec.Role
-	state ConnStateFunc
-	each  bool // per connection: read for each subscriber
+	role   spec.Role
+	state  ConnStateFunc
+	each   bool       // per connection: read for each subscriber
+	stream StreamFunc // a stream topic: items, not state
 }
 
-// subscription is one topic on one connection: what it last received.
+// subscription is one topic on one connection: what it last received, or
+// for a stream topic how far it has got.
 type subscription struct {
-	seq  uint64
-	last map[string]json.RawMessage
+	seq    uint64
+	last   map[string]json.RawMessage
+	cursor uint64
 }
 
 const publishPeriod = 100 * time.Millisecond // 10 events a second at most
@@ -66,6 +75,17 @@ func (rt *Router) Topic(name string, role spec.Role, state StateFunc) {
 func (rt *Router) TopicConn(name string, role spec.Role, state ConnStateFunc) {
 	rt.Topic(name, role, func() (any, error) { return nil, nil })
 	rt.topics[name] = topic{role: role, state: state, each: true}
+}
+
+// Stream registers a stream topic, readable by role and above: one event
+// per item, never a diff. Subscribing sends the stored history as events
+// marked snapshot (seq 0, 1, ...), and then each new item as it comes.
+func (rt *Router) Stream(name string, role spec.Role, read StreamFunc) {
+	rt.Topic(name, role, func() (any, error) { return nil, nil })
+	rt.topics[name] = topic{role: role, stream: read, state: func(*Conn) (any, error) {
+		_, _, err := read(^uint64(0)) // available: nothing after the end
+		return struct{}{}, err
+	}}
 }
 
 // Topics lists the topics a role may subscribe to now, sorted: registered,
@@ -122,6 +142,11 @@ func (c *Conn) subscribe(id string, names []string) {
 		return
 	}
 	snaps := make([]map[string]json.RawMessage, len(names))
+	type history struct {
+		items []map[string]json.RawMessage
+		next  uint64
+	}
+	hists := make([]*history, len(names))
 	for i, name := range names {
 		t, ok := c.rt.topics[name]
 		switch {
@@ -135,6 +160,26 @@ func (c *Conn) subscribe(id string, names []string) {
 			c.reply(id, nil, Errf(CodeForbidden, "%s needs the %s role", name, t.role))
 			return
 		}
+		if t.stream != nil {
+			items, next, err := t.stream(0)
+			if err == nil {
+				var h history
+				h.next = next
+				for _, it := range items {
+					var m map[string]json.RawMessage
+					if m, err = object(it); err != nil {
+						break
+					}
+					h.items = append(h.items, m)
+				}
+				hists[i] = &h
+			}
+			if err != nil {
+				c.reply(id, nil, Errf(CodeNotSupported, "%s: %v", name, err))
+				return
+			}
+			continue
+		}
 		m, err := fields(t, c)
 		if err != nil {
 			c.reply(id, nil, Errf(CodeNotSupported, "%s: %v", name, err))
@@ -144,7 +189,43 @@ func (c *Conn) subscribe(id string, names []string) {
 	}
 	c.reply(id, nil, nil)
 	for i, name := range names {
+		if h := hists[i]; h != nil {
+			c.streamSnapshot(name, h.items, h.next)
+			continue
+		}
 		c.snapshot(name, snaps[i])
+	}
+}
+
+// object marshals v as a JSON object's fields.
+func object(v any) (map[string]json.RawMessage, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, fmt.Errorf("topic item is not a JSON object: %w", err)
+	}
+	return m, nil
+}
+
+// streamSnapshot (re)starts a stream subscription: the history, one event
+// per item from seq 0, all marked snapshot; then new items from next.
+func (c *Conn) streamSnapshot(name string, items []map[string]json.RawMessage, next uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := &subscription{cursor: next}
+	c.subs[name] = s
+	now := stamp(time.Now())
+	for i, m := range items {
+		if i > 0 {
+			s.seq++
+		}
+		c.send(event{Type: "event", Topic: name, Seq: s.seq, TS: now, Snapshot: true, Data: m})
+	}
+	if len(items) > 0 {
+		s.seq++ // the next event's
 	}
 }
 
@@ -193,6 +274,10 @@ func (rt *Router) publishOnce(now time.Time) {
 	})
 	for name, conns := range wanted {
 		t := rt.topics[name]
+		if t.stream != nil {
+			rt.publishStream(name, t, conns, now)
+			continue
+		}
 		var shared map[string]json.RawMessage
 		if !t.each {
 			var err error
@@ -218,6 +303,56 @@ func (rt *Router) publishOnce(now time.Time) {
 			}
 			c.mu.Unlock()
 		}
+	}
+}
+
+// publishStream sends each subscriber of a stream topic the items after its
+// cursor: one read per cursor, as subscribers that keep up share one.
+func (rt *Router) publishStream(name string, t topic, conns []*Conn, now time.Time) {
+	type batch struct {
+		items []map[string]json.RawMessage
+		next  uint64
+		err   error
+	}
+	reads := map[uint64]*batch{}
+	for _, c := range conns {
+		c.mu.Lock()
+		s, ok := c.subs[name]
+		var after uint64
+		if ok {
+			after = s.cursor
+		}
+		c.mu.Unlock()
+		if !ok {
+			continue
+		}
+		b := reads[after]
+		if b == nil {
+			b = &batch{}
+			var items []any
+			items, b.next, b.err = t.stream(after)
+			for _, it := range items {
+				m, err := object(it)
+				if err != nil {
+					b.err = err
+					break
+				}
+				b.items = append(b.items, m)
+			}
+			reads[after] = b
+		}
+		if b.err != nil || len(b.items) == 0 {
+			continue
+		}
+		c.mu.Lock()
+		if s, ok := c.subs[name]; ok && s.cursor == after {
+			for _, m := range b.items {
+				c.send(event{Type: "event", Topic: name, Seq: s.seq, TS: stamp(now), Data: m})
+				s.seq++
+			}
+			s.cursor = b.next
+		}
+		c.mu.Unlock()
 	}
 }
 

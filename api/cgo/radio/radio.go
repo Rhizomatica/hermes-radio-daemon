@@ -18,6 +18,8 @@ var (
 	ErrBusy         = errors.New("refused while transmitting")
 	ErrNotSupported = errors.New("not on this radio or build")
 	ErrIO           = errors.New("the rig refused or did not answer")
+	ErrNoLink       = errors.New("the modem has no ARQ session up")
+	ErrTooLong      = errors.New("too long for one broadcast frame")
 )
 
 // ControlKind is a control's kind in radiod's control vocabulary
@@ -86,6 +88,18 @@ type DigiSettings struct {
 	VoiceCodec                               string // RADEV2, DSTAR
 }
 
+// ChatLine is one of mercury's chat lines as it stores them (its
+// message_store), sent or received on either plane.
+type ChatLine struct {
+	Seq   uint64 `json:"seq"`
+	TS    int64  `json:"ts"` // Unix seconds
+	MS    int    `json:"ms"`
+	Plane string `json:"plane"` // "arq" or "bcast"
+	Dir   string `json:"dir"`   // "rx" or "tx"
+	Peer  string `json:"peer"`
+	Text  string `json:"text"`
+}
+
 // LogLevel is radiod's logger's level: hermes_log's, as cgo/hermeslog.Level
 // (this package's stub build has no cgo, so it keeps its own type).
 type LogLevel int
@@ -143,6 +157,28 @@ type Radio interface {
 	// ModemStatus is mercury's last status JSON; false without mercury.
 	ModemStatus() (json.RawMessage, bool)
 
+	// Mercury's listen mode, its broadcast plane and chat (its host API).
+	// ErrNotSupported while mercury is not running.
+	//
+	// ListenMode is the mode's name ("DATAC3"). SetListenMode sets and
+	// saves it: ErrInvalid for a mode mercury cannot switch to at run time,
+	// ErrBusy while an ARQ session or a broadcast holds the modem (ModemBusy
+	// says which: "arq", "broadcast", or "").
+	ListenMode() (string, error)
+	SetListenMode(name string) error
+	ModemBusy() (string, error)
+	// SetModemTxGain (dB, -20 to 20) and SetModemWaterfall, as mercury's UI
+	// commands; mercury saves them.
+	SetModemTxGain(db float64) error
+	SetModemWaterfall(on bool) error
+	// ChatSince returns the chat lines after seq after (0: all mercury
+	// holds), oldest first, and the seq of the last.
+	ChatSince(after uint64) ([]ChatLine, uint64, error)
+	// ChatSend sends one line on plane "arq" (ErrNoLink with no session
+	// up, ErrBusy while its queue is full) or "broadcast" (one frame in the
+	// listen mode: ErrTooLong when it does not fit).
+	ChatSend(plane, text string) error
+
 	// WSSend queues a hermes.v1 text frame for one connection;
 	// WSBroadcast for every hermes.v1 connection.
 	WSSend(conn int64, frame []byte) error
@@ -166,6 +202,10 @@ func codeErr(rc int) error {
 		return ErrBusy
 	case -5:
 		return ErrIO
+	case -6:
+		return ErrNoLink
+	case -7:
+		return ErrTooLong
 	default:
 		return ErrNotSupported
 	}

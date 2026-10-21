@@ -21,6 +21,7 @@
 #include "websocket/ws_server.h"
 #ifdef HAVE_MERCURY
 #include "mercury_link.h"
+#include "mercury_host.h"
 #endif
 
 #ifndef RADIOD_GIT_HASH
@@ -471,6 +472,125 @@ bool radiod_api_modem_status(char *out, size_t out_len)
 #else
     (void) out; (void) out_len;
     return false;
+#endif
+}
+
+#ifdef HAVE_MERCURY
+static int modem_rc(int rc)
+{
+    switch (rc)
+    {
+    case MERCURY_HOST_OK:       return RADIOD_API_OK;
+    case MERCURY_HOST_BUSY:     return RADIOD_API_EBUSY;
+    case MERCURY_HOST_NO_LINK:  return RADIOD_API_ENOLINK;
+    case MERCURY_HOST_TOO_LONG: return RADIOD_API_E2BIG;
+    case MERCURY_HOST_FULL:     return RADIOD_API_EBUSY;
+    case MERCURY_LINK_DOWN:     return RADIOD_API_ENOTSUP;
+    default:                    return RADIOD_API_EINVAL;
+    }
+}
+#endif
+
+int radiod_api_modem_listen_mode(char *out, size_t out_len)
+{
+#ifdef HAVE_MERCURY
+    if (!out || !out_len)
+        return RADIOD_API_EINVAL;
+    return modem_rc(mercury_link_listen_mode(out, out_len));
+#else
+    (void) out; (void) out_len;
+    return RADIOD_API_ENOTSUP;
+#endif
+}
+
+int radiod_api_modem_set_listen_mode(const char *name)
+{
+#ifdef HAVE_MERCURY
+    if (!s_radio || !name || strlen(name) >= sizeof(s_radio->mercury_listen_mode))
+        return RADIOD_API_EINVAL;
+    int rc = modem_rc(mercury_link_set_listen_mode(name));
+    if (rc == RADIOD_API_OK && strcmp(s_radio->mercury_listen_mode, name) != 0)
+    {
+        pthread_mutex_lock(&s_radio->cfg_mutex);
+        snprintf(s_radio->mercury_listen_mode, sizeof(s_radio->mercury_listen_mode), "%s", name);
+        pthread_mutex_unlock(&s_radio->cfg_mutex);
+        cfg_set(s_radio, s_radio->cfg_user, "main:mercury_listen_mode", name);
+        s_radio->cfg_user_dirty = true;
+    }
+    return rc;
+#else
+    (void) name;
+    return RADIOD_API_ENOTSUP;
+#endif
+}
+
+int radiod_api_modem_busy(char *out, size_t out_len)
+{
+#ifdef HAVE_MERCURY
+    if (!out || !out_len)
+        return RADIOD_API_EINVAL;
+    return modem_rc(mercury_link_busy(out, out_len));
+#else
+    (void) out; (void) out_len;
+    return RADIOD_API_ENOTSUP;
+#endif
+}
+
+int radiod_api_modem_set_tx_gain(double db)
+{
+#ifdef HAVE_MERCURY
+    if (!(db >= -20.0 && db <= 20.0))
+        return RADIOD_API_EINVAL;
+    char json[96];
+    snprintf(json, sizeof(json), "{\"command\":\"set_tx_gain\",\"value\":\"%.1f\"}", db);
+    int rc = mercury_link_command(json);
+    return rc == MERCURY_LINK_DOWN ? RADIOD_API_ENOTSUP : rc == 0 ? RADIOD_API_OK : RADIOD_API_EINVAL;
+#else
+    (void) db;
+    return RADIOD_API_ENOTSUP;
+#endif
+}
+
+int radiod_api_modem_set_waterfall(bool on)
+{
+#ifdef HAVE_MERCURY
+    char json[64];
+    snprintf(json, sizeof(json), "{\"command\":\"set_waterfall\",\"value\":\"%s\"}", on ? "on" : "off");
+    int rc = mercury_link_command(json);
+    return rc == MERCURY_LINK_DOWN ? RADIOD_API_ENOTSUP : rc == 0 ? RADIOD_API_OK : RADIOD_API_EINVAL;
+#else
+    (void) on;
+    return RADIOD_API_ENOTSUP;
+#endif
+}
+
+long radiod_api_modem_chat_since(uint64_t after, char *out, size_t out_len, uint64_t *last)
+{
+#ifdef HAVE_MERCURY
+    if (!out || !out_len || !last)
+        return RADIOD_API_EINVAL;
+    size_t n = 0;
+    int rc = mercury_link_chat_since(after, out, out_len, &n, last);
+    return rc == MERCURY_HOST_OK ? (long) n : modem_rc(rc);
+#else
+    (void) after; (void) out; (void) out_len; (void) last;
+    return RADIOD_API_ENOTSUP;
+#endif
+}
+
+int radiod_api_modem_chat_send(const char *plane, const char *text)
+{
+#ifdef HAVE_MERCURY
+    if (!plane || !text)
+        return RADIOD_API_EINVAL;
+    /* The API's plane names; mercury's message_store says "bcast". */
+    const char *p = !strcmp(plane, "arq") ? "arq" : !strcmp(plane, "broadcast") ? "bcast" : NULL;
+    if (!p)
+        return RADIOD_API_EINVAL;
+    return modem_rc(mercury_link_chat_send(p, text));
+#else
+    (void) plane; (void) text;
+    return RADIOD_API_ENOTSUP;
 #endif
 }
 

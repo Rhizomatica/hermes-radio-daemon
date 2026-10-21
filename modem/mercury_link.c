@@ -38,6 +38,10 @@ static pthread_mutex_t s_exchange_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic int64_t s_last_rx_ms;
 static pthread_t       s_clock;
 static _Atomic bool    s_clock_run;
+/* Held to read while calling into the running engine (the chat and listen
+ * mode calls), and to write when it comes up and before it stops. */
+static pthread_rwlock_t s_engine_lock = PTHREAD_RWLOCK_INITIALIZER;
+static bool             s_engine_up;
 
 static int64_t now_ms(void)
 {
@@ -197,6 +201,111 @@ static void ui_detach(void)
     mercury_host_set_ui(NULL);
 }
 
+/* ── the running engine (mercury_link.h) ── */
+
+/* Takes the engine for a call: false (nothing to release) if it is down. */
+static bool engine_get(void)
+{
+    pthread_rwlock_rdlock(&s_engine_lock);
+    if (s_engine_up)
+        return true;
+    pthread_rwlock_unlock(&s_engine_lock);
+    return false;
+}
+
+static void engine_put(void)
+{
+    pthread_rwlock_unlock(&s_engine_lock);
+}
+
+static int mode_index(const char *name)
+{
+    for (int i = 0; i < mercury_host_mode_count(); i++)
+    {
+        const char *n = mercury_host_mode_name(i);
+        if (n && strcmp(n, name) == 0)
+            return i;
+    }
+    return -1;
+}
+
+int mercury_link_listen_mode(char *out, size_t out_len)
+{
+    if (!engine_get())
+        return MERCURY_LINK_DOWN;
+    const char *n = mercury_host_mode_name(mercury_host_listen_mode());
+    snprintf(out, out_len, "%s", n ? n : "");
+    engine_put();
+    return n ? MERCURY_HOST_OK : MERCURY_HOST_BAD;
+}
+
+int mercury_link_set_listen_mode(const char *name)
+{
+    if (!engine_get())
+        return MERCURY_LINK_DOWN;
+    int i = name ? mode_index(name) : -1;
+    int rc = i >= 0 && mercury_host_mode_switchable(i) ? mercury_host_set_listen_mode(i)
+                                                       : MERCURY_HOST_BAD;
+    engine_put();
+    return rc;
+}
+
+int mercury_link_busy(char *out, size_t out_len)
+{
+    if (!engine_get())
+        return MERCURY_LINK_DOWN;
+    const char *why = mercury_host_busy_reason();
+    snprintf(out, out_len, "%s", why ? why : "");
+    engine_put();
+    return MERCURY_HOST_OK;
+}
+
+int mercury_link_chat_since(uint64_t after, char *out, size_t out_len, size_t *len, uint64_t *last)
+{
+    if (!engine_get())
+        return MERCURY_LINK_DOWN;
+    size_t n = out_len > 1 ? mercury_host_chat_since(after, out, out_len - 1, last) : 0;
+    if (out_len)
+        out[n] = '\0';
+    *len = n;
+    engine_put();
+    return MERCURY_HOST_OK;
+}
+
+int mercury_link_chat_send(const char *plane, const char *text)
+{
+    if (!engine_get())
+        return MERCURY_LINK_DOWN;
+    int rc = mercury_host_chat_send(plane, text);
+    engine_put();
+    return rc;
+}
+
+int mercury_link_command(const char *json)
+{
+    if (!engine_get())
+        return MERCURY_LINK_DOWN;
+    int rc = mercury_host_ui_command_json(json, strlen(json));
+    engine_put();
+    return rc;
+}
+
+/* The listen mode the API last set (user.ini), once the engine is up. */
+static void apply_listen_mode(void)
+{
+    char name[sizeof(s_radio->mercury_listen_mode)];
+    pthread_mutex_lock(&s_radio->cfg_mutex);
+    snprintf(name, sizeof(name), "%s", s_radio->mercury_listen_mode);
+    pthread_mutex_unlock(&s_radio->cfg_mutex);
+    if (!name[0])
+        return;
+    int rc = mercury_link_set_listen_mode(name);
+    if (rc == MERCURY_HOST_OK)
+        HLOGI(LOG_C, "listen mode %s", name);
+    else
+        HLOGW(LOG_C, "cannot set the listen mode to %s (%d); mercury keeps its own", name, rc);
+}
+
 /* ── lifecycle ── */
 
 /* mercury_init returns once the engine is up, or blocks until shutdown in
@@ -209,6 +318,13 @@ static void *launcher(void *arg)
     (void) arg;
     int rc = mercury_init(s_argc, s_argv, s_radio->mercury_config, NULL);
     s_init_rc = rc;
+    if (rc == 0)
+    {
+        pthread_rwlock_wrlock(&s_engine_lock);
+        s_engine_up = true;
+        pthread_rwlock_unlock(&s_engine_lock);
+        apply_listen_mode();
+    }
     /* mercury opens its TNC ports before it sets its UI hooks, and returns
      * from mercury_init only after both: a UI client that connected in
      * between got no history or initial state. Give it them now (to every
@@ -307,6 +423,11 @@ void mercury_link_stop(void)
     pthread_join(s_clock, NULL);
     mercury_request_shutdown();                  /* ends a blocking test mode */
     pthread_join(s_launcher, NULL);
+    /* After the launcher, which sets it: no API call into the engine from
+     * here on, and none still in flight. */
+    pthread_rwlock_wrlock(&s_engine_lock);
+    s_engine_up = false;
+    pthread_rwlock_unlock(&s_engine_lock);
     mercury_shutdown();                          /* no-op if it never started */
 
     if (modem_audio_tx_keyed_by(MERCURY_LINK_PTT_ID))

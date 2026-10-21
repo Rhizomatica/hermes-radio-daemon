@@ -15,6 +15,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -446,5 +448,104 @@ func TestHermesV1RigControls(t *testing.T) {
 		if lv, _ := f["data"].(map[string]any)["levels"].(map[string]any); lv["AF"] == 0.75 {
 			break
 		}
+	}
+}
+
+// waitModem polls GET path until mercury inside the daemon has published a
+// status (503 until then).
+func waitModem(t *testing.T, d *Daemon, path string) httpResult {
+	t.Helper()
+	for i := 0; ; i++ {
+		r := call(t, "GET", apiBase(d)+path, "")
+		if r.status == 200 {
+			return r
+		}
+		if i == 40 {
+			t.Fatalf("GET %s = %d %s\n--- daemon log ---\n%s", path, r.status, r.raw, d.Log())
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// The listen mode through the real daemon: PATCH /modem/config sets it in
+// mercury and saves it in user.ini, and a daemon started with it saved
+// sets it again.
+func TestAPIv2ModemListenMode(t *testing.T) {
+	needGoAPI(t)
+	d, _ := startMercuryDaemon(t, "api_v2_enable = 1")
+	if c := waitModem(t, d, "/modem/config"); c.body["listen_mode"] == nil {
+		t.Errorf("GET /modem/config = %s", c.raw)
+	}
+	if r := call(t, "PATCH", apiBase(d)+"/modem/config", `{"listen_mode":"DATAC0"}`); r.status != 422 {
+		t.Errorf("PATCH DATAC0 = %d %s", r.status, r.raw)
+	}
+	r := call(t, "PATCH", apiBase(d)+"/modem/config", `{"listen_mode":"DATAC1"}`)
+	if r.status != 200 || r.body["listen_mode"] != "DATAC1" {
+		t.Fatalf("PATCH DATAC1 = %d %s\n--- daemon log ---\n%s", r.status, r.raw, d.Log())
+	}
+	// mercury's status says it within a second or so
+	for i := 0; ; i++ {
+		if s := call(t, "GET", apiBase(d)+"/modem", ""); s.body["listen_mode"] == "DATAC1" {
+			break
+		} else if i == 20 {
+			t.Fatalf("GET /modem listen_mode = %v after the PATCH", s.body["listen_mode"])
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	d.Stop() // writes user.ini
+	if b, _ := os.ReadFile(d.UserINI); !regexp.MustCompile(`(?m)^mercury_listen_mode\s*=\s*"?DATAC1"?$`).Match(b) {
+		t.Errorf("user.ini lacks mercury_listen_mode = DATAC1:\n%s", b)
+	}
+
+	d2, _ := startMercuryDaemonOpts(t, daemonOpts{core: []string{"api_v2_enable = 1"},
+		userMain: []string{"mercury_listen_mode = DATAC4"}})
+	if c := waitModem(t, d2, "/modem/config"); c.body["listen_mode"] != "DATAC4" {
+		t.Errorf("listen mode from user.ini = %v\n--- daemon log ---\n%s", c.body["listen_mode"], d2.Log())
+	}
+	if !strings.Contains(d2.Log(), "[mercury-link] listen mode DATAC4") {
+		t.Errorf("daemon log lacks the listen mode\n%s", d2.Log())
+	}
+}
+
+// Mercury's chat through the real daemon: a broadcast line sent with
+// modem.chat.send comes back on modem.chat as sent; an ARQ line with no
+// session is refused.
+func TestHermesV1ModemChat(t *testing.T) {
+	needGoAPI(t)
+	d, _ := startMercuryDaemon(t, "api_v2_enable = 1")
+	waitModem(t, d, "/modem")
+	ws, _, err := wsDialProto(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	next := func(match func(map[string]any) bool) map[string]any {
+		// the heartbeat keeps frames coming: give up on the match itself
+		for end := time.Now().Add(10 * time.Second); time.Now().Before(end); {
+			if f := readFrame(t, ws, 10*time.Second); match(f) {
+				return f
+			}
+		}
+		t.Fatalf("no such frame in 10 s\n--- daemon log ---\n%s", d.Log())
+		return nil
+	}
+	reply := func(id string) func(map[string]any) bool {
+		return func(f map[string]any) bool { return f["type"] == "reply" && f["id"] == id }
+	}
+	_ = ws.writeFrame(opText, []byte(`{"type":"subscribe","id":"s","topics":["modem.chat"]}`))
+	if r := next(reply("s")); r["ok"] != true {
+		t.Fatalf("subscribe = %v", r)
+	}
+	_ = ws.writeFrame(opText, []byte(`{"type":"cmd","id":"c1","cmd":"modem.chat.send","args":{"plane":"broadcast","text":"CQ test"}}`))
+	if r := next(reply("c1")); r["ok"] != true {
+		t.Fatalf("send = %v\n--- daemon log ---\n%s", r, d.Log())
+	}
+	ev := next(func(f map[string]any) bool { return f["type"] == "event" && f["topic"] == "modem.chat" })
+	if data := ev["data"].(map[string]any); data["text"] != "CQ test" || data["dir"] != "tx" || data["plane"] != "broadcast" {
+		t.Errorf("chat event = %v", ev)
+	}
+	_ = ws.writeFrame(opText, []byte(`{"type":"cmd","id":"c2","cmd":"modem.chat.send","args":{"plane":"arq","text":"x"}}`))
+	if r := next(reply("c2")); r["ok"] != false {
+		t.Errorf("ARQ send with no session = %v", r)
 	}
 }
