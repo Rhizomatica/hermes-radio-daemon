@@ -401,6 +401,15 @@ static int rx_soft(const rade_voice_rx *r, uint32_t end, float soft[CODED_BITS])
     return have;
 }
 
+/* A message ends at sym: an encrypted over, and where its messages end. */
+static void rx_message_at(rade_voice_rx *r, uint32_t sym)
+{
+    r->enc_seen = true;
+    r->msgs++;
+    r->align_sym = sym;
+    r->aligned = true;
+}
+
 /* A decoded message: CRC, then whether its j fits the combining it was
  * decoded with (t[n]: the gray bit flipped between messages j-n and j-n-1,
  * n < ncomb), then the key. Returns true when it locked. */
@@ -419,21 +428,31 @@ static bool rx_accept(rade_voice_rx *r, const uint8_t msg[MSG_BYTES], uint32_t s
         if (j < (uint32_t) n + 1 || tz(j - (uint32_t) n) != t[n])
             return false;                /* not the combining it was decoded with */
 
-    r->enc_seen = true;                  /* a message: an encrypted over */
-    r->msgs++;
-    r->align_sym = sym;                  /* where messages end, from now on */
-    r->aligned = true;
     uint32_t want;
-    if (!msg_check(msg, &want))
-        return false;                    /* no key: the status says so */
+    if (!msg_check(msg, &want)) {
+        rx_message_at(r, sym);           /* no key: the status says so */
+        return false;
+    }
     if (want != ((uint32_t) (msg[7] & 0xFU) << 16 | (uint32_t) msg[8] << 8 | msg[9])) {
+        /* Another key, or a false decode: the combining search tries a few
+         * hundred patterns at every symbol, so now and then one passes the
+         * CRC by chance. That one must not move the alignment, or the
+         * search keeps to the wrong symbols for the rest of the over. Two
+         * a message apart are another key's. */
         r->msgs_bad++;
-        if (++r->bad_checks >= 2) {
+        if (r->bad_checks > 0 && ((sym - r->bad_sym) % MSG_SYMS) == 0)
+            r->bad_checks++;
+        else
+            r->bad_checks = 1;
+        r->bad_sym = sym;
+        if (r->bad_checks >= 2) {
             r->bad_key = true;
             r->locked = false;
+            rx_message_at(r, sym);
         }
         return false;
     }
+    rx_message_at(r, sym);
     r->bad_checks = 0;
     r->bad_key = false;
     r->hold = false;
@@ -653,8 +672,19 @@ int rade_voice_rx_symbol(rade_voice_rx *r, float z[RADE_VOICE_LATENT],
         }
         if (r->locked && ((sym - r->ref_sym - TRACK_SPAN) % MSG_SYMS) == 0)
             rx_track(r, sym);
-    } else if (r->enc_seen && (!r->aligned || ((sym - r->align_sym) % MSG_SYMS) == 0)) {
+    } else if (r->enc_seen && !r->aligned) {
         rx_try_message(r, sym);
+    } else if (r->enc_seen && ((sym - r->align_sym) % MSG_SYMS) == 0) {
+        /* where the messages ended; after TRACK_LOST with none there (a
+         * new over, at other symbols), search everywhere again */
+        const uint32_t seen = r->msgs + r->msgs_bad;
+        rx_try_message(r, sym);
+        if (r->msgs + r->msgs_bad != seen)
+            r->align_miss = 0;
+        else if (++r->align_miss >= TRACK_LOST && !r->locked) {
+            r->aligned = false;
+            r->align_miss = 0;
+        }
     }
     rx_status(r);
 

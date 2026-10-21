@@ -122,16 +122,18 @@ typedef struct {
     bool     aux_on;         /* the aux carriers carry power (with hysteresis) */
     bool     enc_seen;       /* aux_on, or a message came (then for the over) */
     uint8_t  n_sym;          /* symbols seen, up to 255 */
-    bool     aligned;        /* a CRC-good message was seen: where they end */
+    bool     aligned;        /* a message was seen: where they end */
     uint32_t align_sym;
+    int      align_miss;     /* aligned, unlocked: message ends with none, in a row */
     bool     locked;
     uint8_t  r[VOICE_NONCE_RAND_BYTES];
     uint32_t ref_sym, ref_k; /* symbol ref_sym is frame ref_k's second one */
     int      track_miss;     /* locked: expected messages missing in a row */
     bool     hold;           /* locked, but the last expected message was absent: muted */
-    int      bad_checks;     /* consecutive CRC-good messages failing the check */
+    int      bad_checks;     /* CRC-good messages failing the check, a message apart */
+    uint32_t bad_sym;        /* where the last of them ended */
     bool     bad_key;
-    uint32_t msgs, msgs_bad; /* messages decoded, and failing the check */
+    uint32_t msgs, msgs_bad; /* messages taken; CRC-good ones failing the check */
     rade_vc_status status;
 } rade_voice_rx;
 

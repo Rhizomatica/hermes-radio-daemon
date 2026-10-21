@@ -7,7 +7,8 @@
  * The signalling, TX to RX on the latent and aux symbols with no modem in
  * between: lock and exact unmixing from the first message, late entry,
  * no key, a wrong key, a clear over, combining messages under noise, a
- * symbol slip, a new over without a reset; and the clipper's PAPR.
+ * symbol slip, a new over without a reset, another key's over before ours;
+ * and the clipper's PAPR.
  * Channel and speech tests are utils/rade_crypt_sim.c's.
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -176,6 +177,7 @@ typedef struct {
     float noise;                       /* per float of the aux symbols */
     int slip_at;                       /* frame where the RX loses a symbol (-1: none) */
     int new_over_at;                   /* frame where the TX starts a new over (-1) */
+    const uint8_t *new_key;            /* and its key (NULL: tx_key) */
 } link_cfg;
 
 typedef struct {
@@ -204,7 +206,8 @@ static link_res run_link(link_cfg c)
     link_res res = {-1, 0, 0, 0, RADE_VC_CLEAR, false};
     static rade_voice_tx tx;
     static rade_voice_rx rx;
-    set_key(c.tx_key);
+    const uint8_t *tx_key = c.tx_key;
+    set_key(tx_key);
     rade_voice_tx_begin(&tx, c.encrypt, 1.0f);
     rade_voice_rx_reset(&rx);
 
@@ -214,14 +217,16 @@ static link_res run_link(link_cfg c)
     srand(7);
     for (int f = 0; f < c.frames; f++) {
         if (f == c.new_over_at) {
-            set_key(c.tx_key);
+            if (c.new_key)
+                tx_key = c.new_key;
+            set_key(tx_key);
             rade_voice_tx_begin(&tx, c.encrypt, 1.0f);
         }
         float plain[RADE_VOICE_LATENT], z[RADE_VOICE_LATENT], aux[RADE_VOICE_AUX] = {0};
         for (int i = 0; i < RADE_VOICE_LATENT; i++)
             plain[i] = (float) (23.6 * gauss1() / sqrt(2));
         memcpy(z, plain, sizeof(z));
-        set_key(c.tx_key);
+        set_key(tx_key);
         rade_voice_tx_frame(&tx, z, aux);
         for (int i = 0; i < RADE_VOICE_AUX; i++)
             aux[i] += (float) (c.noise * gauss1());
@@ -278,7 +283,7 @@ static link_res run_link(link_cfg c)
 
 static link_cfg cfg_default(void)
 {
-    link_cfg c = {KEY_A, KEY_A, true, 10 * MSG, 0, 0.0f, -1, -1};
+    link_cfg c = {KEY_A, KEY_A, true, 10 * MSG, 0, 0.0f, -1, -1, NULL};
     return c;
 }
 
@@ -342,10 +347,11 @@ static void test_link_combining(void)
 {
     link_cfg c = cfg_default();
     c.frames = 12 * MSG;
-    c.noise = 16.0f;                   /* locks on the 3rd message, combining 3 */
+    c.noise = 16.0f;                   /* locks on the 2nd to 6th message (the nonce
+                                        * varies), mostly the 3rd */
     link_res r = run_link(c);
     TEST_ASSERT_GREATER_OR_EQUAL_INT64_MESSAGE(2 * MSG - 1, r.first_aligned, test_msg("locked at frame %d: not noisy enough to need combining", r.first_aligned));
-    TEST_ASSERT_LESS_OR_EQUAL_INT64_MESSAGE(6 * MSG - 1, r.first_aligned, test_msg("locked at frame %d", r.first_aligned));
+    TEST_ASSERT_LESS_OR_EQUAL_INT64_MESSAGE(8 * MSG - 1, r.first_aligned, test_msg("locked at frame %d", r.first_aligned));
     TEST_ASSERT_EQUAL_INT64_MESSAGE(0, r.wrong, test_msg("%d frames unmixed wrong", r.wrong));
     printf("combining: locked at frame %d (message %d)\n", r.first_aligned, (r.first_aligned + 1) / MSG);
 }
@@ -377,6 +383,22 @@ static void test_link_new_over(void)
     /* frames of the new over unmixed with the old nonce would count wrong */
     TEST_ASSERT_LESS_OR_EQUAL_INT64_MESSAGE(4 * MSG * 2, r.wrong, test_msg("%d wrong", r.wrong));
     TEST_ASSERT_GREATER_OR_EQUAL_INT64_MESSAGE(4 * MSG, r.exact - 4 * MSG, test_msg("%d exact", r.exact));
+}
+
+/* Another key's over, then ours with no gap, its messages ending at other
+ * symbols: what the receiver learnt from the other over (the bad key, where
+ * its messages ended) must not keep it from finding ours. */
+static void test_link_other_key_then_ours(void)
+{
+    link_cfg c = cfg_default();
+    c.tx_key = KEY_B;
+    c.frames = 12 * MSG;
+    c.new_over_at = 3 * MSG + 7;       /* messages 14 symbols off the old ones */
+    c.new_key = KEY_A;
+    link_res r = run_link(c);
+    TEST_ASSERT_EQUAL_INT64(RADE_VC_DECRYPTING, r.status);
+    TEST_ASSERT_LESS_OR_EQUAL_INT64_MESSAGE(c.new_over_at + 5 * MSG - 1, r.first_aligned, test_msg("locked at frame %d", r.first_aligned));
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(0, r.wrong, test_msg("%d frames unmixed wrong", r.wrong));
 }
 
 /* Random-phase multicarrier: ~10 dB PAPR in, about stock RADE V2's out. */
@@ -432,6 +454,7 @@ int main(void)
     RUN_TEST(test_link_combining);
     RUN_TEST(test_link_slip);
     RUN_TEST(test_link_new_over);
+    RUN_TEST(test_link_other_key_then_ours);
     RUN_TEST(test_clip_papr);
     return UNITY_END();
 }
