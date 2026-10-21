@@ -17,7 +17,7 @@
 
 typedef enum {
     RADIO_PIPELINE_DOMAIN_ANALOG = 0,
-    RADIO_PIPELINE_DOMAIN_RADEV2 = 1,
+    RADIO_PIPELINE_DOMAIN_DIGITAL_VOICE = 1,   /* the codec is main:digital_voice_codec */
 } radio_pipeline_domain;
 
 typedef enum {
