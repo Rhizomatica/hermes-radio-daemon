@@ -23,6 +23,7 @@
 #define RADIOD_API_EINVAL   -2    /* a value the radio does not take */
 #define RADIOD_API_EBUSY    -3    /* refused while transmitting */
 #define RADIOD_API_ENOTSUP  -4    /* not on this radio or build */
+#define RADIOD_API_EIO      -5    /* the rig refused or did not answer (CAT) */
 
 /* ── radio ── */
 
@@ -84,6 +85,35 @@ int radiod_api_set_swr_limit(uint32_t swr_x10);                  /* >= 10 */
 int radiod_api_set_bfo(uint32_t hz);                             /* ENOTSUP on Hamlib */
 void radiod_api_reset_protection(void);
 
+/* ── radio controls: levels, functions and parameters, in radiod's control
+ *    vocabulary (radio/radio_controls.h), from whichever backend drives the
+ *    radio (the sBitx, a CAT rig) ── */
+
+#define RADIOD_API_CTRL_LEVEL 0   /* a value: AF, RF, RFPOWER, PREAMP, ... */
+#define RADIOD_API_CTRL_FUNC  1   /* on/off: NB, COMP, VOX, ... */
+#define RADIOD_API_CTRL_PARM  2   /* rig-wide: BACKLIGHT, ANN, ... */
+
+typedef struct {
+    char   name[24];              /* as radio_controls.h names it */
+    int    kind;                  /* RADIOD_API_CTRL_* */
+    bool   is_float;              /* else an integer (dB, an index, Hz) */
+    bool   can_get, can_set;
+    double min, max, step;        /* max <= min: the rig gives no range */
+} radiod_api_control;
+
+/* The controls this rig has, from its capabilities (no CAT traffic).
+ * Returns how many were written, at most max. */
+int radiod_api_controls(radiod_api_control *out, int max);
+
+/* Read one control from the rig (one CAT read): its kind and value (0 or 1
+ * for a function). ENOTSUP when the rig has no such readable control, EIO
+ * when the rig does not answer. */
+int radiod_api_control_get(const char *name, int *kind, double *value);
+
+/* Set one control (a function: value != 0 is on). EINVAL outside the
+ * control's range when the rig gives one; ENOTSUP, EIO as for get. */
+int radiod_api_control_set(const char *name, double value);
+
 /* ── digital modes ── */
 
 typedef struct {
@@ -91,12 +121,13 @@ typedef struct {
     int  rtty_baud, rtty_shift_hz, rtty_mark_hz;
     char dstar_mycall[16];
     bool dstar_encrypt, dstar_denoise, dstar_verbose;
+    bool rade_encrypt;
     char voice_codec[8];          /* RADEV2, DSTAR */
 } radiod_api_digi_settings;
 
 void radiod_api_digi_settings_get(radiod_api_digi_settings *out);
 /* key is radiod's: cw_wpm, cw_pitch, rtty_baud, rtty_mark, rtty_shift,
- * dstar_verbose, dstar_denoise, dstar_encrypt. */
+ * dstar_verbose, dstar_denoise, dstar_encrypt, rade_encrypt. */
 int radiod_api_digi_set(const char *key, long value);
 int radiod_api_set_voice_codec(const char *name);
 

@@ -2,6 +2,8 @@ package api_test
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"testing"
@@ -182,4 +184,42 @@ func TestTopicRegistration(t *testing.T) {
 	mustPanic("a topic the spec does not have", func() { rt.Topic("radio.nonsense", spec.RoleReadonly, none) })
 	rt.Topic("radio.state", spec.RoleReadonly, none)
 	mustPanic("a second registration", func() { rt.Topic("radio.state", spec.RoleReadonly, none) })
+}
+
+// A topic without state (its source is not running) is not offered, and a
+// subscribe naming it subscribes nothing; once it has state it is served.
+func TestTopicWithoutState(t *testing.T) {
+	stub := rad.NewStub()
+	rt := api.NewRouter(stub)
+	var mu sync.Mutex
+	up := false
+	rt.Topic("radio.state", spec.RoleReadonly, func() (any, error) { return map[string]any{"a": 1}, nil })
+	rt.Topic("modem.status", spec.RoleReadonly, func() (any, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !up {
+			return nil, errors.New("not running")
+		}
+		return map[string]any{"link": "idle"}, nil
+	})
+	e := &testapi.Env{T: t, Radio: stub, R: rt}
+
+	w := e.Open()
+	if h := w.Next(testapi.Type("hello"), time.Second); fmt.Sprint(h["topics"]) != "[radio.state]" {
+		t.Errorf("hello topics = %v, want [radio.state]", h["topics"])
+	}
+	w.Send(`{"type":"subscribe","id":"s","topics":["radio.state","modem.status"]}`)
+	r := w.Next(testapi.Type("reply"), time.Second)
+	if er, _ := r["error"].(map[string]any); r["ok"] != false || er["code"] != "not_supported" {
+		t.Fatalf("subscribe = %v, want not_supported", r)
+	}
+	w.None(event("radio.state"), 200*time.Millisecond) // all or nothing
+
+	mu.Lock()
+	up = true
+	mu.Unlock()
+	w.Send(`{"type":"subscribe","id":"s2","topics":["modem.status"]}`)
+	if snap := w.Next(event("modem.status"), time.Second); snap["snapshot"] != true {
+		t.Errorf("snapshot once running = %v", snap)
+	}
 }

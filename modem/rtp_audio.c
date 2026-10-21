@@ -20,6 +20,9 @@
 #include "modem_audio.h"
 #include "radio_backend.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "rtp"
 /* ka9q-radio status.h type codes (only those we send). */
 enum {
     TLV_EOL = 0,
@@ -157,7 +160,7 @@ static void send_status(void)
 
     if (sendto(s_fd, pkt, (size_t) (bp - pkt), 0,
                (struct sockaddr *) &s_status_addr, sizeof(s_status_addr)) < 0)
-        fprintf(stderr, "rtp_audio: status send: %s\n", strerror(errno));
+        HLOGI(LOG_C, "status send: %s", strerror(errno));
 }
 
 static void send_frame(const int16_t *pcm, uint32_t skipped)
@@ -186,7 +189,7 @@ static void send_frame(const int16_t *pcm, uint32_t skipped)
     if (sendto(s_fd, pkt, sizeof(pkt), 0,
                (struct sockaddr *) &s_data_addr, sizeof(s_data_addr)) < 0
         && errno != EAGAIN && errno != ENOBUFS)
-        fprintf(stderr, "rtp_audio: send: %s\n", strerror(errno));
+        HLOGI(LOG_C, "send: %s", strerror(errno));
 
     pthread_mutex_lock(&s_mutex);
     s_snap_ns = now_ns(CLOCK_REALTIME);
@@ -292,7 +295,7 @@ static int open_output(const struct sockaddr_in *group, const char *iface, int t
     mreqn.imr_address.s_addr = htonl(loopback ? INADDR_LOOPBACK : INADDR_ANY);
     if (!mreqn.imr_ifindex)
     {
-        fprintf(stderr, "rtp_audio: no interface %s\n", loopback ? "lo" : iface);
+        HLOGI(LOG_C, "no interface %s", loopback ? "lo" : iface);
         close(fd);
         return -1;
     }
@@ -300,7 +303,7 @@ static int open_output(const struct sockaddr_in *group, const char *iface, int t
         || setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop)) < 0
         || setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, &mreqn, sizeof(mreqn)) < 0)
     {
-        fprintf(stderr, "rtp_audio: multicast setup on %s: %s\n",
+        HLOGI(LOG_C, "multicast setup on %s: %s",
                 loopback ? "lo" : iface, strerror(errno));
         close(fd);
         return -1;
@@ -391,7 +394,7 @@ static void *tx_thread(void *arg)
                         continue;           /* bad TX rate, or another modem holds PTT */
                     s_tx_ssrc = ssrc;
                     s_tx_have_ssrc = true;
-                    fprintf(stderr, "rtp_audio: TX from ssrc %u keyed\n", ssrc);
+                    HLOGI(LOG_C, "TX from ssrc %u keyed", ssrc);
                 }
                 if (we_hold_ptt())
                 {
@@ -436,7 +439,7 @@ static int open_input(const struct sockaddr_in *group, const char *iface, int tt
     if (bind(fd, (const struct sockaddr *) group, sizeof(*group)) < 0
         || setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &m, sizeof(m)) < 0)
     {
-        fprintf(stderr, "rtp_audio: listen on TX group: %s\n", strerror(errno));
+        HLOGI(LOG_C, "listen on TX group: %s", strerror(errno));
         close(fd);
         return -1;
     }
@@ -448,7 +451,7 @@ static bool tx_start(radio *radio_h)
     struct sockaddr_in tx_addr;
     if (!parse_group(radio_h->rtp_tx_group, RTP_AUDIO_DATA_PORT, &tx_addr))
     {
-        fprintf(stderr, "rtp_audio: rtp_tx_group '%s' is not an IPv4 multicast address\n",
+        HLOGI(LOG_C, "rtp_tx_group '%s' is not an IPv4 multicast address",
                 radio_h->rtp_tx_group);
         return false;
     }
@@ -465,7 +468,7 @@ static bool tx_start(radio *radio_h)
         return false;
     }
     s_tx_started = true;
-    fprintf(stderr, "rtp_audio: TX stream from %s:%d\n", radio_h->rtp_tx_group, RTP_AUDIO_DATA_PORT);
+    HLOGI(LOG_C, "TX stream from %s:%d", radio_h->rtp_tx_group, RTP_AUDIO_DATA_PORT);
     return true;
 }
 
@@ -487,7 +490,7 @@ bool rtp_audio_init(radio *radio_h)
 
     if (!parse_group(radio_h->rtp_rx_group, RTP_AUDIO_DATA_PORT, &s_data_addr))
     {
-        fprintf(stderr, "rtp_audio: rtp_rx_group '%s' is not an IPv4 multicast address\n",
+        HLOGI(LOG_C, "rtp_rx_group '%s' is not an IPv4 multicast address",
                 radio_h->rtp_rx_group);
         return false;
     }
@@ -517,7 +520,7 @@ bool rtp_audio_init(radio *radio_h)
     s_run = true;
     if (pthread_create(&s_tid, NULL, sender_thread, NULL) != 0)
     {
-        perror("rtp_audio: pthread_create");
+        HLOGE(LOG_C, "%s: %s", "rtp_audio: pthread_create", strerror(errno));
         s_run = false;
         close(s_fd);
         s_fd = -1;
@@ -530,7 +533,7 @@ bool rtp_audio_init(radio *radio_h)
         rtp_audio_shutdown();
         return false;
     }
-    fprintf(stderr, "rtp_audio: RX stream to %s:%d (status :%d), ssrc %u, iface %s ttl %d\n",
+    HLOGI(LOG_C, "RX stream to %s:%d (status :%d), ssrc %u, iface %s ttl %d",
             radio_h->rtp_rx_group, RTP_AUDIO_DATA_PORT, RTP_AUDIO_STATUS_PORT, s_ssrc,
             radio_h->rtp_ttl <= 0 || !radio_h->rtp_iface[0] ? "lo" : radio_h->rtp_iface,
             radio_h->rtp_ttl);

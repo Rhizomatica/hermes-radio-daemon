@@ -19,6 +19,9 @@
 #include "audio_headset.h"
 #include "audio_bridge.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "headset"
 extern _Atomic bool shutdown_;
 
 static pthread_t hs_capture_tid;
@@ -32,7 +35,7 @@ static snd_pcm_t *headset_open(const char *device, snd_pcm_stream_t stream,
     snd_pcm_t *pcm = NULL;
     int err = snd_pcm_open(&pcm, device, stream, 0);
     if (err < 0) {
-        fprintf(stderr, "audio_headset: snd_pcm_open(%s, %s) failed: %s\n",
+        HLOGE(LOG_C, "snd_pcm_open(%s, %s) failed: %s",
                 device, stream == SND_PCM_STREAM_CAPTURE ? "capture" : "playback",
                 snd_strerror(err));
         return NULL;
@@ -42,7 +45,7 @@ static snd_pcm_t *headset_open(const char *device, snd_pcm_stream_t stream,
                              SND_PCM_ACCESS_RW_INTERLEAVED,
                              1, rate, 1, 100000);
     if (err < 0) {
-        fprintf(stderr, "audio_headset: snd_pcm_set_params failed: %s\n",
+        HLOGE(LOG_C, "snd_pcm_set_params failed: %s",
                 snd_strerror(err));
         snd_pcm_close(pcm);
         return NULL;
@@ -77,7 +80,7 @@ static void *headset_capture_thread(void *radio_h_v)
         return NULL;
     }
 
-    fprintf(stderr, "audio_headset: capture %s @ %u Hz -> tx_audio_ring @ %u Hz\n",
+    HLOGI(LOG_C, "capture %s @ %u Hz -> tx_audio_ring @ %u Hz",
             radio_h->headset_capture_device, native_rate, ring_rate);
 
     while (!shutdown_) {
@@ -131,7 +134,7 @@ static void *headset_playback_thread(void *radio_h_v)
         return NULL;
     }
 
-    fprintf(stderr, "audio_headset: playback %s @ %u Hz <- rx_audio_ring @ %u Hz\n",
+    HLOGI(LOG_C, "playback %s @ %u Hz <- rx_audio_ring @ %u Hz",
             radio_h->headset_playback_device, native_rate, ring_rate);
 
     while (!shutdown_) {
@@ -172,13 +175,13 @@ bool audio_headset_init(radio *radio_h)
         return false;
 
     if (pthread_create(&hs_capture_tid, NULL, headset_capture_thread, radio_h) != 0) {
-        fprintf(stderr, "audio_headset: cannot start capture thread\n");
+        HLOGE(LOG_C, "cannot start capture thread");
         return false;
     }
     hs_capture_started = true;
 
     if (pthread_create(&hs_playback_tid, NULL, headset_playback_thread, radio_h) != 0) {
-        fprintf(stderr, "audio_headset: cannot start playback thread\n");
+        HLOGE(LOG_C, "cannot start playback thread");
         return true; /* capture is still useful on its own */
     }
     hs_playback_started = true;

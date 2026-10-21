@@ -54,6 +54,9 @@
 #include "radio_backend.h"
 #include "radio_controls.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "cat"
 #define CAT_SERVER_DEFAULT_PORT 4534
 #define CAT_SERVER_MAX_CLIENTS  4
 #define CAT_SERVER_BUF_SIZE     512
@@ -578,9 +581,8 @@ bool cat_server_start(radio *radio_h)
 
     if (cat_mode == CAT_SERVER_MODE_PASSTHROUGH && !have_raw)
     {
-        fprintf(stderr,
-                "cat_server: cat_server_mode=passthrough but the %s backend has no CAT rig; "
-                "falling back to TS-2000 emulation\n",
+        HLOGW(LOG_C, "cat_server_mode=passthrough but the %s backend has no CAT rig; "
+                "falling back to TS-2000 emulation",
                 radio_h->backend_ops ? radio_h->backend_ops->name : "active");
         cat_effective = CAT_SERVER_MODE_EMULATE;
     }
@@ -600,7 +602,7 @@ bool cat_server_start(radio *radio_h)
     cat_listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (cat_listen_fd < 0)
     {
-        perror("cat_server: socket");
+        HLOGE(LOG_C, "%s: %s", "cat_server: socket", strerror(errno));
         return false;
     }
 
@@ -615,7 +617,7 @@ bool cat_server_start(radio *radio_h)
     {
         if (inet_pton(AF_INET, radio_h->cat_server_bind, &addr.sin_addr) != 1)
         {
-            fprintf(stderr, "cat_server: bad cat_server_bind \"%s\"\n",
+            HLOGI(LOG_C, "bad cat_server_bind \"%s\"",
                     radio_h->cat_server_bind);
             close(cat_listen_fd);
             cat_listen_fd = -1;
@@ -629,7 +631,7 @@ bool cat_server_start(radio *radio_h)
 
     if (bind(cat_listen_fd, (struct sockaddr *) &addr, sizeof(addr)) < 0)
     {
-        perror("cat_server: bind");
+        HLOGE(LOG_C, "%s: %s", "cat_server: bind", strerror(errno));
         close(cat_listen_fd);
         cat_listen_fd = -1;
         return false;
@@ -637,7 +639,7 @@ bool cat_server_start(radio *radio_h)
 
     if (listen(cat_listen_fd, CAT_SERVER_MAX_CLIENTS) < 0)
     {
-        perror("cat_server: listen");
+        HLOGE(LOG_C, "%s: %s", "cat_server: listen", strerror(errno));
         close(cat_listen_fd);
         cat_listen_fd = -1;
         return false;
@@ -648,7 +650,7 @@ bool cat_server_start(radio *radio_h)
     cat_running = true;
     if (pthread_create(&cat_thread, NULL, cat_server_thread, radio_h) != 0)
     {
-        perror("cat_server: pthread_create");
+        HLOGE(LOG_C, "%s: %s", "cat_server: pthread_create", strerror(errno));
         cat_running = false;
         close(cat_listen_fd);
         cat_listen_fd = -1;
@@ -656,7 +658,7 @@ bool cat_server_start(radio *radio_h)
     }
 
     cat_thread_started = true;
-    fprintf(stderr, "cat_server: listening on %s:%d (%s)\n",
+    HLOGI(LOG_C, "listening on %s:%d (%s)",
             radio_h->cat_server_bind[0] ? radio_h->cat_server_bind : "0.0.0.0",
             radio_h->cat_server_port > 0 ? radio_h->cat_server_port : CAT_SERVER_DEFAULT_PORT,
             cat_server_active_mode_name());

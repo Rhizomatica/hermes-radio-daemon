@@ -45,8 +45,9 @@
 #include "ws_server.h"
 #include "ws_tls.h"
 
-#define WS_LOG(...) do { fprintf(stderr, "radio_websocket: " __VA_ARGS__); \
-                         fputc('\n', stderr); } while (0)
+#include "hermes_log.h"
+
+#define LOG_C "ws-server"
 
 /* RFC 6455 section 1.3. */
 #define WS_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -322,7 +323,7 @@ static int conn_queue(ws_conn_t *c, const void *data, size_t len, bool droppable
 
     if (pending + len > WS_WBUF_HARD_MAX)
     {
-        WS_LOG("client is not reading (%zu bytes queued), dropping it", pending);
+        HLOGW(LOG_C, "client is not reading (%zu bytes queued), dropping it", pending);
         c->dead = true;
         return -1;
     }
@@ -837,7 +838,7 @@ static int conn_handle_request(ws_conn_t *c, const char *req, size_t req_len,
 
         c->is_ws = true;
         c->cls = cls;
-        WS_LOG("client connected (fd %d)", c->fd);
+        HLOGI(LOG_C, "client connected (fd %d)", c->fd);
 
         if (s->opts.on_connect != NULL)
             s->opts.on_connect(c, s->opts.user_data);
@@ -1036,10 +1037,10 @@ static void server_drop_conn(ws_server_t *s, ws_conn_t *c)
     if (c->is_ws)
     {
         if (c->dropped > 0)
-            WS_LOG("client disconnected (fd %d, %zu frames dropped)",
+            HLOGI(LOG_C, "client disconnected (fd %d, %zu frames dropped)",
                    c->fd, c->dropped);
         else
-            WS_LOG("client disconnected (fd %d)", c->fd);
+            HLOGI(LOG_C, "client disconnected (fd %d)", c->fd);
 
         if (s->opts.on_close != NULL)
             s->opts.on_close(c, s->opts.user_data);
@@ -1062,7 +1063,7 @@ static void server_accept(ws_server_t *s)
 
         if (s->nconns >= WS_MAX_CONNS)
         {
-            WS_LOG("refusing connection: %d already open", WS_MAX_CONNS);
+            HLOGW(LOG_C, "refusing connection: %d already open", WS_MAX_CONNS);
             close(fd);
             continue;
         }
@@ -1103,7 +1104,7 @@ static void server_accept(ws_server_t *s)
             c->tls = ws_tls_new(s->tls_ctx, fd);
             if (c->tls == NULL)
             {
-                WS_LOG("cannot start TLS: %s", ws_tls_last_error());
+                HLOGE(LOG_C, "cannot start TLS: %s", ws_tls_last_error());
                 conn_free(c);
                 continue;
             }
@@ -1256,7 +1257,7 @@ static void *ws_server_thread(void *arg)
         rc = poll(pfds, nfds, WS_POLL_INTERVAL_MS);
         if (rc < 0 && errno != EINTR)
         {
-            WS_LOG("poll failed (%d)", errno);
+            HLOGE(LOG_C, "poll failed (%d)", errno);
             usleep(100000);
         }
 
@@ -1304,7 +1305,7 @@ static void *ws_server_thread(void *arg)
                 }
                 else
                 {
-                    WS_LOG("TLS handshake failed: %s", ws_tls_last_error());
+                    HLOGW(LOG_C, "TLS handshake failed: %s", ws_tls_last_error());
                     c->dead = true;
                     continue;
                 }
@@ -1355,7 +1356,7 @@ static void *ws_server_thread(void *arg)
 
     server_free_queue(s);
 
-    WS_LOG("server thread stopped");
+    HLOGI(LOG_C, "server thread stopped");
     return NULL;
 }
 
@@ -1386,7 +1387,7 @@ static int open_listener(const char *bind_addr, uint16_t port)
     rc = getaddrinfo(bind_addr, service, &hints, &res);
     if (rc != 0)
     {
-        WS_LOG("bad bind address \"%s\": %s",
+        HLOGE(LOG_C, "bad bind address \"%s\": %s",
                bind_addr ? bind_addr : "", gai_strerror(rc));
         return -1;
     }
@@ -1456,7 +1457,7 @@ int ws_server_start(ws_server_t **out, const ws_server_opts_t *opts)
     {
         if (!ws_tls_available())
         {
-            WS_LOG("wss:// requested but this build has no TLS support; "
+            HLOGW(LOG_C, "wss:// requested but this build has no TLS support; "
                    "rebuild with OpenSSL or use a ws:// URL");
             pthread_mutex_destroy(&s->qlock);
             free(s);
@@ -1466,7 +1467,7 @@ int ws_server_start(ws_server_t **out, const ws_server_opts_t *opts)
         s->tls_ctx = ws_tls_ctx_new(opts->tls_cert_path, opts->tls_key_path);
         if (s->tls_ctx == NULL)
         {
-            WS_LOG("cannot enable TLS: %s", ws_tls_last_error());
+            HLOGE(LOG_C, "cannot enable TLS: %s", ws_tls_last_error());
             pthread_mutex_destroy(&s->qlock);
             free(s);
             return WS_SERVER_ERR_TLS;
@@ -1476,7 +1477,7 @@ int ws_server_start(ws_server_t **out, const ws_server_opts_t *opts)
     s->listen_fd = open_listener(opts->bind_addr, opts->port);
     if (s->listen_fd < 0)
     {
-        WS_LOG("cannot listen on port %u", (unsigned) opts->port);
+        HLOGE(LOG_C, "cannot listen on port %u", (unsigned) opts->port);
         ws_tls_ctx_free(s->tls_ctx);
         pthread_mutex_destroy(&s->qlock);
         free(s);
@@ -1486,7 +1487,7 @@ int ws_server_start(ws_server_t **out, const ws_server_opts_t *opts)
     s->running = true;
     if (pthread_create(&s->tid, NULL, ws_server_thread, s) != 0)
     {
-        WS_LOG("cannot start server thread");
+        HLOGE(LOG_C, "cannot start server thread");
         s->running = false;
         close(s->listen_fd);
         ws_tls_ctx_free(s->tls_ctx);
@@ -1501,7 +1502,7 @@ int ws_server_start(ws_server_t **out, const ws_server_opts_t *opts)
                          ? opts->bind_addr : "*";
         bool v6 = strchr(host, ':') != NULL;
 
-        WS_LOG("listening on %s://%s%s%s:%u",
+        HLOGI(LOG_C, "listening on %s://%s%s%s:%u",
                opts->tls_enabled ? "wss" : "ws",
                v6 ? "[" : "", host, v6 ? "]" : "", (unsigned) opts->port);
     }

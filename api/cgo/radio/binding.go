@@ -16,6 +16,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"unsafe"
+
+	"github.com/Rhizomatica/hermes-radio-daemon/api/cgo/hermeslog"
 )
 
 // Default is the cgo binding to the radiod C API.
@@ -84,6 +86,37 @@ func (binding) SetDigitalVoice(n int, on bool) error {
 }
 func (binding) ResetProtection() { C.radiod_api_reset_protection() }
 
+func (binding) Controls() []Control {
+	var cs [192]C.radiod_api_control
+	n := int(C.radiod_api_controls(&cs[0], C.int(len(cs))))
+	out := make([]Control, 0, n)
+	for _, c := range cs[:n] {
+		out = append(out, Control{
+			Name: cstr(c.name[:]), Kind: ControlKind(c.kind), Float: bool(c.is_float),
+			CanGet: bool(c.can_get), CanSet: bool(c.can_set),
+			Min: float64(c.min), Max: float64(c.max), Step: float64(c.step),
+		})
+	}
+	return out
+}
+
+func (binding) GetControl(name string) (ControlKind, float64, error) {
+	cs := C.CString(name)
+	defer C.free(unsafe.Pointer(cs))
+	var kind C.int
+	var v C.double
+	if err := codeErr(int(C.radiod_api_control_get(cs, &kind, &v))); err != nil {
+		return 0, 0, err
+	}
+	return ControlKind(kind), float64(v), nil
+}
+
+func (binding) SetControl(name string, value float64) error {
+	cs := C.CString(name)
+	defer C.free(unsafe.Pointer(cs))
+	return codeErr(int(C.radiod_api_control_set(cs, C.double(value))))
+}
+
 func (binding) Settings() Settings {
 	var s C.radiod_api_settings
 	C.radiod_api_settings_get(&s)
@@ -113,6 +146,7 @@ func (binding) DigiSettings() DigiSettings {
 		CWWPM: int(d.cw_wpm), CWPitchHz: int(d.cw_pitch_hz), RTTYBaud: int(d.rtty_baud),
 		RTTYShiftHz: int(d.rtty_shift_hz), RTTYMarkHz: int(d.rtty_mark_hz),
 		DstarMycall: cstr(d.dstar_mycall[:]), DstarEncrypt: bool(d.dstar_encrypt),
+		RadeEncrypt:  bool(d.rade_encrypt),
 		DstarDenoise: bool(d.dstar_denoise), DstarVerbose: bool(d.dstar_verbose),
 		VoiceCodec: cstr(d.voice_codec[:]),
 	}
@@ -181,3 +215,8 @@ func (binding) WSBroadcast(f []byte) error {
 }
 
 func (binding) Version() string { return C.GoString(C.radiod_api_version()) }
+
+// Log goes to radiod's logger through the hermes_log binding.
+func (binding) Log(level LogLevel, component, message string) {
+	hermeslog.Log(hermeslog.Level(level), component, message)
+}

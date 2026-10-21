@@ -56,6 +56,9 @@
 #include "radio_controls.h"
 #include "hamlib_digi.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "hamlib"
 _Atomic bool timer_reset = true;
 _Atomic time_t timeout_counter = 0;
 
@@ -123,7 +126,7 @@ static void hamlib_set_conf(RIG *rig, const char *name, const char *val)
 {
     int ret = rig_set_conf(rig, rig_token_lookup(rig, name), val);
     if (ret != RIG_OK)
-        fprintf(stderr, "hamlib_configure_ports: set_conf %s=\"%s\" failed: %s\n",
+        HLOGE(LOG_C, "hamlib_configure_ports: set_conf %s=\"%s\" failed: %s",
                 name, val, rigerror(ret));
 }
 
@@ -143,14 +146,14 @@ static void hamlib_conf_apply_cb(const char *key, const char *value, void *ctx)
 
     if (tok == RIG_CONF_END)
     {
-        fprintf(stderr, "hamlib_conf: '%s' is not a Hamlib setting for this rig\n", key);
+        HLOGI(LOG_C, "hamlib_conf: '%s' is not a Hamlib setting for this rig", key);
         return;
     }
     int ret = rig_set_conf(rig, tok, value);
     if (ret != RIG_OK)
-        fprintf(stderr, "hamlib_conf: %s=%s refused: %s\n", key, value, rigerror(ret));
+        HLOGE(LOG_C, "hamlib_conf: %s=%s refused: %s", key, value, rigerror(ret));
     else
-        fprintf(stderr, "hamlib_conf: %s=%s\n", key, value);
+        HLOGI(LOG_C, "hamlib_conf: %s=%s", key, value);
 }
 
 /* The current value of a Hamlib setting, or "" if it cannot be read.
@@ -197,7 +200,7 @@ static int hamlib_configure_ports(RIG *rig, const radio *radio_h)
      * A malformed string applies nothing. */
     if (radio_h->hamlib_conf[0] &&
         hamlib_conf_pairs(radio_h->hamlib_conf, hamlib_conf_apply_cb, rig) < 0)
-        fprintf(stderr, "hamlib_conf \"%s\" ignored: use key=value[,key=value...]\n",
+        HLOGW(LOG_C, "hamlib_conf \"%s\" ignored: use key=value[,key=value...]",
                 radio_h->hamlib_conf);
 
     if (!rig->caps || rig->caps->port_type != RIG_PORT_SERIAL)
@@ -231,13 +234,13 @@ static int hamlib_configure_ports(RIG *rig, const radio *radio_h)
             continue;
         int ret = rig_set_conf(rig, rig_token_lookup(rig, lines[i].key), "OFF");
         if (ret != RIG_OK)
-            fprintf(stderr, "hamlib_configure_ports: %s=OFF failed: %s\n",
+            HLOGE(LOG_C, "hamlib_configure_ports: %s=OFF failed: %s",
                     lines[i].key, rigerror(ret));
         else
             defaulted |= 1 << i;
     }
     if (defaulted)
-        fprintf(stderr, "hamlib: CAT port RTS and DTR held low unless PTT or hamlib_conf uses them\n");
+        HLOGI(LOG_C, "CAT port RTS and DTR held low unless PTT or hamlib_conf uses them");
     return defaulted;
 }
 
@@ -251,8 +254,8 @@ static int hamlib_open(RIG *rig, int defaulted)
 
     if (ret != RIG_OK && defaulted)
     {
-        fprintf(stderr, "hamlib: rig_open failed (%s) holding RTS/DTR low; "
-                        "retrying with the lines as the port leaves them\n", rigerror(ret));
+        HLOGE(LOG_C, "rig_open failed (%s) holding RTS/DTR low; "
+                        "retrying with the lines as the port leaves them", rigerror(ret));
         if (defaulted & 1)
             rig_set_conf(rig, rig_token_lookup(rig, "rts_state"), "Unset");
         if (defaulted & 2)
@@ -315,7 +318,7 @@ static bool hamlib_set_level_float(RIG *rig,
     ret = rig_set_level(rig, RIG_VFO_CURR, level, val);
     RIG_UNLOCK();
     if (ret != RIG_OK)
-        fprintf(stderr, "%s: rig_set_level failed: %s\n",
+        HLOGE(LOG_C, "%s: rig_set_level failed: %s",
                 label ? label : "hamlib_set_level_float",
                 rigerror(ret));
 
@@ -442,13 +445,13 @@ static void hamlib_apply_profile(radio *radio_h, uint32_t profile)
         ret = rig_set_mode(rig, RIG_VFO_CURR, hm,
                            mode_passband(hm, &radio_h->profiles[profile]));
         if (ret != RIG_OK)
-            fprintf(stderr, "hamlib_apply_profile: rig_set_mode failed: %s\n",
+            HLOGE(LOG_C, "hamlib_apply_profile: rig_set_mode failed: %s",
                     rigerror(ret));
     }
 
     ret = rig_set_freq(rig, RIG_VFO_CURR, (freq_t) radio_h->profiles[profile].freq);
     if (ret != RIG_OK)
-        fprintf(stderr, "hamlib_apply_profile: rig_set_freq failed: %s\n",
+        HLOGE(LOG_C, "hamlib_apply_profile: rig_set_freq failed: %s",
                 rigerror(ret));
 
     hamlib_set_level_float(rig,
@@ -587,7 +590,7 @@ static bool radio_hamlib_init(radio *radio_h)
     rig = rig_init(radio_h->hamlib_model);
     if (!rig)
     {
-        fprintf(stderr, "radio_hamlib_init: rig_init failed for model %d\n",
+        HLOGE(LOG_C, "radio_hamlib_init: rig_init failed for model %d",
                 radio_h->hamlib_model);
         return false;
     }
@@ -603,7 +606,7 @@ static bool radio_hamlib_init(radio *radio_h)
     int ret = hamlib_open(rig, defaulted);
     if (ret != RIG_OK)
     {
-        fprintf(stderr, "radio_hamlib_init: rig_open failed: %s\n",
+        HLOGE(LOG_C, "radio_hamlib_init: rig_open failed: %s",
                 rigerror(ret));
         rig_cleanup(rig);
         return false;
@@ -614,7 +617,7 @@ static bool radio_hamlib_init(radio *radio_h)
      * keyed, and nothing else would ever release it. */
     ret = rig_set_ptt(rig, RIG_VFO_CURR, RIG_PTT_OFF);
     if (ret != RIG_OK)
-        fprintf(stderr, "radio_hamlib_init: PTT off failed: %s\n",
+        HLOGE(LOG_C, "radio_hamlib_init: PTT off failed: %s",
                 rigerror(ret));
 
     radio_h->rig = (void *) rig;
@@ -643,7 +646,7 @@ static bool radio_hamlib_init(radio *radio_h)
     hamlib_sync_txrx_state(radio_h, IN_RX);
     hamlib_update_measurements(radio_h);
 
-    printf("radio_hamlib_init: rig model %d opened successfully\n",
+    HLOGI(LOG_C, "radio_hamlib_init: rig model %d opened successfully",
            radio_h->hamlib_model);
 
     /* FT8 / CW / RTTY pump (text-mode encoders + decoders against the
@@ -666,7 +669,7 @@ static bool radio_hamlib_force_ptt_off(radio *radio_h)
     int ret = hamlib_open(rig, defaulted);
     if (ret != RIG_OK)
     {
-        fprintf(stderr, "radio_hamlib_force_ptt_off: rig_open failed: %s\n",
+        HLOGE(LOG_C, "radio_hamlib_force_ptt_off: rig_open failed: %s",
                 rigerror(ret));
         rig_cleanup(rig);
         return false;
@@ -674,7 +677,7 @@ static bool radio_hamlib_force_ptt_off(radio *radio_h)
 
     ret = rig_set_ptt(rig, RIG_VFO_CURR, RIG_PTT_OFF);
     if (ret != RIG_OK)
-        fprintf(stderr, "radio_hamlib_force_ptt_off: rig_set_ptt failed: %s\n",
+        HLOGE(LOG_C, "radio_hamlib_force_ptt_off: rig_set_ptt failed: %s",
                 rigerror(ret));
 
     rig_close(rig);
@@ -696,7 +699,7 @@ static void radio_hamlib_shutdown(radio *radio_h)
     RIG_LOCK();
     int ret = rig_set_ptt(rig, RIG_VFO_CURR, RIG_PTT_OFF);
     if (ret != RIG_OK)
-        fprintf(stderr, "radio_hamlib_shutdown: PTT off failed: %s\n",
+        HLOGE(LOG_C, "radio_hamlib_shutdown: PTT off failed: %s",
                 rigerror(ret));
 
     rig_close(rig);
@@ -725,7 +728,7 @@ static void set_frequency(radio *radio_h, uint32_t frequency, uint32_t profile)
         int ret = rig_set_freq(rig, RIG_VFO_CURR, (freq_t) frequency);
         RIG_UNLOCK();
         if (ret != RIG_OK)
-            fprintf(stderr, "set_frequency: rig_set_freq failed: %s\n",
+            HLOGE(LOG_C, "set_frequency: rig_set_freq failed: %s",
                     rigerror(ret));
     }
 
@@ -762,7 +765,7 @@ static void set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
         int ret = rig_set_mode(rig, RIG_VFO_CURR, hmode,
                                mode_passband(hmode, &radio_h->profiles[profile]));
         if (ret != RIG_OK)
-            fprintf(stderr, "set_mode: rig_set_mode failed: %s\n",
+            HLOGE(LOG_C, "set_mode: rig_set_mode failed: %s",
                     rigerror(ret));
         /* The FT-710 shifts the displayed carrier (~1.4 kHz) on a mode change,
          * so a bare USB<->LSB toggle moves the dial. Re-assert the profile's
@@ -771,7 +774,7 @@ static void set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
         ret = rig_set_freq(rig, RIG_VFO_CURR,
                            (freq_t) radio_h->profiles[profile].freq);
         if (ret != RIG_OK)
-            fprintf(stderr, "set_mode: rig_set_freq failed: %s\n",
+            HLOGE(LOG_C, "set_mode: rig_set_freq failed: %s",
                     rigerror(ret));
         RIG_UNLOCK();
     }
@@ -795,11 +798,11 @@ static void tr_switch(radio *radio_h, bool txrx_state)
         return;
 
     if (txrx_state == IN_RX && radio_h->txrx_state == IN_RX)
-        printf("tr_switch: PTT off while already in RX, sending it anyway\n");
+        HLOGI(LOG_C, "tr_switch: PTT off while already in RX, sending it anyway");
 
     if (radio_h->swr_protection_enabled && txrx_state == IN_TX)
     {
-        printf("tr_switch: TX blocked – SWR protection active\n");
+        HLOGI(LOG_C, "tr_switch: TX blocked – SWR protection active");
         return;
     }
 
@@ -815,7 +818,7 @@ static void tr_switch(radio *radio_h, bool txrx_state)
         RIG_UNLOCK();
         if (ret != RIG_OK)
         {
-            fprintf(stderr, "tr_switch: rig_set_ptt(%s) failed: %s\n",
+            HLOGE(LOG_C, "tr_switch: rig_set_ptt(%s) failed: %s",
                     txrx_state == IN_TX ? "ON" : "OFF", rigerror(ret));
             return;
         }
@@ -945,7 +948,7 @@ static void set_digital_voice(radio *radio_h, bool digital_voice, uint32_t profi
                                mode_passband(hmode, &radio_h->profiles[profile]));
         RIG_UNLOCK();
         if (ret != RIG_OK)
-            fprintf(stderr, "set_digital_voice: rig_set_mode failed: %s\n",
+            HLOGE(LOG_C, "set_digital_voice: rig_set_mode failed: %s",
                     rigerror(ret));
     }
 
@@ -1135,7 +1138,7 @@ static void *radio_io_thread(void *radio_h_v)
     int res = start_periodic_timer(100000); /* 100 ms period */
     if (res < 0)
     {
-        fprintf(stderr, "radio_io_thread: start_periodic_timer failed\n");
+        HLOGE(LOG_C, "radio_io_thread: start_periodic_timer failed");
         shutdown_ = true;
         return NULL;
     }

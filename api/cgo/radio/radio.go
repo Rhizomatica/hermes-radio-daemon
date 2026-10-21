@@ -17,7 +17,27 @@ var (
 	ErrInvalid      = errors.New("a value the radio does not take")
 	ErrBusy         = errors.New("refused while transmitting")
 	ErrNotSupported = errors.New("not on this radio or build")
+	ErrIO           = errors.New("the rig refused or did not answer")
 )
+
+// ControlKind is a control's kind in radiod's control vocabulary
+// (radio/radio_controls.h), whichever backend drives the radio.
+type ControlKind int
+
+const (
+	Level ControlKind = 0 // a value: AF, RF, RFPOWER, PREAMP, ...
+	Func  ControlKind = 1 // on/off: NB, COMP, VOX, ...
+	Parm  ControlKind = 2 // rig-wide: BACKLIGHT, ANN, ...
+)
+
+// Control is one of the rig's controls, as its capabilities describe it.
+type Control struct {
+	Name           string // as radio/radio_controls.h names it
+	Kind           ControlKind
+	Float          bool // else an integer (dB, an index, Hz)
+	CanGet, CanSet bool
+	Min, Max, Step float64 // Max <= Min: the rig gives no range
+}
 
 // State is the radio's live state.
 type State struct {
@@ -62,8 +82,22 @@ type DigiSettings struct {
 	RTTYBaud, RTTYShiftHz, RTTYMarkHz        int
 	DstarMycall                              string
 	DstarEncrypt, DstarDenoise, DstarVerbose bool
+	RadeEncrypt                              bool
 	VoiceCodec                               string // RADEV2, DSTAR
 }
+
+// LogLevel is radiod's logger's level: hermes_log's, as cgo/hermeslog.Level
+// (this package's stub build has no cgo, so it keeps its own type).
+type LogLevel int
+
+const (
+	LogTrace  LogLevel = -1
+	LogDebug  LogLevel = 0
+	LogTiming LogLevel = 1
+	LogInfo   LogLevel = 2
+	LogWarn   LogLevel = 3
+	LogError  LogLevel = 4
+)
 
 // Radio is what the API layer may do with the daemon. Every method is safe
 // from any goroutine.
@@ -88,9 +122,18 @@ type Radio interface {
 	SetSWRLimit(swrX10 uint32) error
 	SetBfo(hz uint32) error // ErrNotSupported on Hamlib radios
 
+	// Controls lists the rig's controls (capabilities, no CAT traffic).
+	Controls() []Control
+	// GetControl reads one control from the rig (a CAT read): its kind and
+	// value (0 or 1 for a Func). ErrNotSupported, ErrIO.
+	GetControl(name string) (ControlKind, float64, error)
+	// SetControl sets one control (a Func: value != 0 is on). ErrInvalid
+	// outside its range, ErrNotSupported, ErrIO.
+	SetControl(name string, value float64) error
+
 	DigiSettings() DigiSettings
 	// SetDigi takes radiod's keys: cw_wpm, cw_pitch, rtty_baud, rtty_mark,
-	// rtty_shift, dstar_verbose, dstar_denoise, dstar_encrypt.
+	// rtty_shift, dstar_verbose, dstar_denoise, dstar_encrypt, rade_encrypt.
 	SetDigi(key string, value int) error
 	SetVoiceCodec(name string) error
 	// DigiLog returns up to max entries after id `after`, oldest first,
@@ -105,6 +148,9 @@ type Radio interface {
 	WSSend(conn int64, frame []byte) error
 	WSBroadcast(frame []byte) error
 
+	// Log writes one line to radiod's logger: its format, file and levels.
+	Log(level LogLevel, component, message string)
+
 	Version() string
 }
 
@@ -118,6 +164,8 @@ func codeErr(rc int) error {
 		return ErrInvalid
 	case -3:
 		return ErrBusy
+	case -5:
+		return ErrIO
 	default:
 		return ErrNotSupported
 	}

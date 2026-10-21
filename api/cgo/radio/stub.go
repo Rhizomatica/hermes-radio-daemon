@@ -14,9 +14,14 @@ type Stub struct {
 	state    State
 	profiles []Profile
 	settings Settings
+	controls []Control
+	values   map[string]float64
+	rigDown  bool
+	reads    int
 	digi     DigiSettings
 	log      []json.RawMessage
 	modem    json.RawMessage
+	logs     []string
 	Sent     map[int64][][]byte // frames by connection; 0 = broadcast
 }
 
@@ -29,6 +34,16 @@ func NewStub() *Stub {
 			{Profile: 1, FrequencyHz: 14200000, Mode: "USB", Power: 100, Volume: 50},
 		},
 		settings: Settings{DefaultProfile: 0, DefaultProfileFallback: -1, StepHz: 100, SWRLimitX10: 25},
+		controls: []Control{
+			{Name: "AF", Kind: Level, Float: true, CanGet: true, CanSet: true, Min: 0, Max: 1, Step: 0.01},
+			{Name: "RF", Kind: Level, Float: true, CanGet: true, CanSet: true, Min: 0, Max: 1, Step: 0.01},
+			{Name: "PREAMP", Kind: Level, CanGet: true, CanSet: true, Min: 0, Max: 20, Step: 10},
+			{Name: "STRENGTH", Kind: Level, CanGet: true, Min: -54, Max: 60},
+			{Name: "NB", Kind: Func, CanGet: true, CanSet: true},
+			{Name: "TUNER", Kind: Func, CanSet: true},
+			{Name: "BACKLIGHT", Kind: Parm, Float: true, CanGet: true, CanSet: true, Min: 0, Max: 1},
+		},
+		values: map[string]float64{"AF": 0.5, "RF": 1, "PREAMP": 0, "STRENGTH": -20, "NB": 0, "BACKLIGHT": 0.8},
 		digi: DigiSettings{CWWPM: 20, CWPitchHz: 700, RTTYBaud: 45, RTTYShiftHz: 170, RTTYMarkHz: 2125,
 			DstarMycall: "N0CALL", VoiceCodec: "RADEV2"},
 		Sent: map[int64][][]byte{},
@@ -157,6 +172,67 @@ func (s *Stub) SetDigitalVoice(n int, on bool) error {
 
 func (s *Stub) ResetProtection() { s.mu.Lock(); s.state.Protection = false; s.mu.Unlock() }
 
+func (s *Stub) Controls() []Control {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Control(nil), s.controls...)
+}
+
+func (s *Stub) control(name string) (Control, bool) {
+	for _, c := range s.controls {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return Control{}, false
+}
+
+func (s *Stub) GetControl(name string) (ControlKind, float64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.control(name)
+	if !ok || !c.CanGet {
+		return 0, 0, ErrNotSupported
+	}
+	if s.rigDown {
+		return 0, 0, ErrIO
+	}
+	s.reads++
+	return c.Kind, s.values[name], nil
+}
+
+func (s *Stub) SetControl(name string, v float64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.control(name)
+	switch {
+	case !ok || !c.CanSet:
+		return ErrNotSupported
+	case s.rigDown:
+		return ErrIO
+	case c.Kind != Func && c.Max > c.Min && (v < c.Min || v > c.Max):
+		return ErrInvalid
+	}
+	if c.Kind == Func && v != 0 {
+		v = 1
+	}
+	s.values[name] = v
+	return nil
+}
+
+// SetControlValue changes a control as if the rig's front panel had (tests).
+func (s *Stub) SetControlValue(name string, v float64) {
+	s.mu.Lock()
+	s.values[name] = v
+	s.mu.Unlock()
+}
+
+// RigDown makes the rig stop answering (ErrIO), or answer again (tests).
+func (s *Stub) RigDown(down bool) { s.mu.Lock(); s.rigDown = down; s.mu.Unlock() }
+
+// ControlReads counts GetControl's reads (tests: CAT traffic).
+func (s *Stub) ControlReads() int { s.mu.Lock(); defer s.mu.Unlock(); return s.reads }
+
 // UseSBitx makes the stub an sBitx, which has a BFO (for tests).
 func (s *Stub) UseSBitx() {
 	s.mu.Lock()
@@ -262,6 +338,8 @@ func (s *Stub) SetDigi(key string, v int) error {
 		d.RTTYMarkHz = v
 	case "dstar_encrypt":
 		d.DstarEncrypt = v != 0
+	case "rade_encrypt":
+		d.RadeEncrypt = v != 0
 	case "dstar_denoise":
 		d.DstarDenoise = v != 0
 	case "dstar_verbose":
@@ -329,3 +407,24 @@ func (s *Stub) Frames(conn int64) [][]byte {
 }
 
 func (s *Stub) Version() string { return "stub" }
+
+var logLevelNames = [...]string{"TRC", "DBG", "TMG", "INF", "WRN", "ERR"} // from LogTrace
+
+// Log records the line as "[LVL] [component] message", the part of
+// hermes_log's format after the clock (Logs returns them).
+func (s *Stub) Log(level LogLevel, component, message string) {
+	name := "INF"
+	if i := int(level - LogTrace); i >= 0 && i < len(logLevelNames) {
+		name = logLevelNames[i]
+	}
+	s.mu.Lock()
+	s.logs = append(s.logs, "["+name+"] ["+component+"] "+message)
+	s.mu.Unlock()
+}
+
+// Logs returns a copy of the lines logged so far.
+func (s *Stub) Logs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.logs...)
+}

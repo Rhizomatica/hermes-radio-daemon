@@ -32,6 +32,9 @@
 #include "cat_server.h"
 #include "radio.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "cfg"
 extern _Atomic bool shutdown_;
 
 static int cfg_getint_alias(dictionary *ini,
@@ -127,7 +130,7 @@ static uint16_t cfg_digi_param(dictionary *ini, const char *key, int def)
     snprintf(entry, sizeof(entry), "main:%s", key);
     int v = iniparser_getint(ini, entry, def);
     if (!cfg_digi_param_valid(key, v)) {
-        fprintf(stderr, "config: %s = %d is out of range (%s); using %d\n",
+        HLOGI(LOG_C, "%s = %d is out of range (%s); using %d",
                 entry, v, cfg_digi_param_ranges, def);
         v = def;
     }
@@ -349,7 +352,7 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     ini = iniparser_load(ini_name);
     if (!ini)
     {
-        fprintf(stderr, "cfg: cannot parse radio config: %s\n", ini_name);
+        HLOGE(LOG_C, "cannot parse radio config: %s", ini_name);
         return false;
     }
     radio_h->cfg_radio = ini;
@@ -378,7 +381,7 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     radio_h->ptt_type = cfg_ptt_type_from_string(
         s, radio_h->backend_kind == RADIO_BACKEND_HAMLIB ? PTT_RIG : PTT_NONE);
     if (radio_h->backend_kind == RADIO_BACKEND_HAMLIB && radio_h->ptt_type == PTT_NONE)
-        fprintf(stderr, "cfg: ptt_type = NONE: transmit requests will not key the rig\n");
+        HLOGI(LOG_C, "ptt_type = NONE: transmit requests will not key the rig");
 
     /* PTT port */
     s = cfg_getstring_alias(ini, "main:ptt_pathname", "main:ptt_path", "");
@@ -467,6 +470,15 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     s = iniparser_getstring(ini, "main:mercury_args", "");
     snprintf(radio_h->mercury_args, sizeof(radio_h->mercury_args), "%s", s);
 
+    s = iniparser_getstring(ini, "main:log_level", "info");
+    snprintf(radio_h->log_level, sizeof(radio_h->log_level), "%s", s);
+    s = iniparser_getstring(ini, "main:log_component_levels", "");
+    snprintf(radio_h->log_component_levels, sizeof(radio_h->log_component_levels), "%s", s);
+    s = iniparser_getstring(ini, "main:log_file", "");
+    snprintf(radio_h->log_file, sizeof(radio_h->log_file), "%s", s);
+    b = iniparser_getboolean(ini, "main:log_jsonl", 0);
+    radio_h->log_jsonl = (bool) b;
+
     s = iniparser_getstring(ini, "main:capture_device", "default");
     snprintf(radio_h->capture_device, sizeof(radio_h->capture_device), "%s", s);
 
@@ -537,13 +549,15 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     radio_h->dstar_denoise = (uint16_t) i;
     i = iniparser_getint(ini, "main:dstar_encrypt", 0);
     radio_h->dstar_encrypt = (uint16_t) i;
+    i = iniparser_getint(ini, "main:rade_encrypt", 0);
+    radio_h->rade_encrypt = (uint16_t) (i != 0);
     s = iniparser_getstring(ini, "main:digital_voice_codec", "RADEV2");
     codec = DV_CODEC_RADEV2;
     if (!cfg_dv_codec_from_name(s, &codec))
-        fprintf(stderr, "cfg: unknown digital_voice_codec \"%s\", using RADEV2\n", s ? s : "");
+        HLOGI(LOG_C, "unknown digital_voice_codec \"%s\", using RADEV2", s ? s : "");
     if (codec == DV_CODEC_DSTAR && radio_h->backend_kind == RADIO_BACKEND_HAMLIB)
     {
-        fprintf(stderr, "cfg: DSTAR digital voice needs the sbitx backend, using RADEV2\n");
+        HLOGI(LOG_C, "DSTAR digital voice needs the sbitx backend, using RADEV2");
         codec = DV_CODEC_RADEV2;
     }
     radio_h->digital_voice_codec = codec;
@@ -610,7 +624,7 @@ bool init_config_user(radio *radio_h, const char *ini_name)
     ini = iniparser_load(ini_name);
     if (!ini)
     {
-        fprintf(stderr, "cfg: cannot parse user config: %s\n", ini_name);
+        HLOGE(LOG_C, "cannot parse user config: %s", ini_name);
         return false;
     }
     radio_h->cfg_user = ini;

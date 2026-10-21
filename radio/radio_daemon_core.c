@@ -20,6 +20,7 @@
 #include <stddef.h>
 #include <errno.h>
 #include "cfg_utils.h"
+#include "radiod_log.h"
 #include "radio_backend.h"
 #include "radio_daemon_core.h"
 #include "radio_media.h"
@@ -36,6 +37,8 @@
 #endif
 #include "voice_crypto.h"
 #include "sbitx/sbitx_alsa.h"
+
+#define LOG_C "radiod"
 
 /* systemd's sd_notify("READY=1") without libsystemd: one datagram to
  * $NOTIFY_SOCKET (a leading '@' is an abstract socket). No-op when not
@@ -56,7 +59,7 @@ static void notify_systemd_ready(void)
         return;
     if (sendto(fd, "READY=1", 7, 0, (struct sockaddr *) &sa,
                (socklen_t) (offsetof(struct sockaddr_un, sun_path) + len)) < 0)
-        fprintf(stderr, "radio_daemon: sd_notify READY failed: %s\n", strerror(errno));
+        HLOGW(LOG_C, "sd_notify READY failed: %s", strerror(errno));
     close(fd);
 }
 
@@ -110,9 +113,9 @@ static void maybe_pin_cpu(int cpu_nr)
     CPU_ZERO(&mask);
     CPU_SET(cpu_nr, &mask);
     if (sched_setaffinity(0, sizeof(mask), &mask) == 0)
-        printf("Running on CPU %d\n", sched_getcpu());
+        HLOGI(LOG_C, "running on CPU %d", sched_getcpu());
     else
-        perror("sched_setaffinity");
+        HLOGE(LOG_C, "cannot pin to CPU %d: %s", cpu_nr, strerror(errno));
 }
 
 int radio_daemon_core_run(const radio_backend_selection *selection,
@@ -155,30 +158,35 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
 
     if (!cfg_init(&radio_h, runtime->cfg_radio_path, runtime->cfg_user_path, &cfg_tid))
     {
-        fprintf(stderr, "Failed to load configuration. Exiting.\n");
+        HLOGE(LOG_C, "cannot load the configuration (%s, %s); exiting",
+              runtime->cfg_radio_path, runtime->cfg_user_path);
         goto fail;
     }
     cfg_started = true;
+    radiod_log_configure(&radio_h);
 
     if (radio_h.voice_key_file[0] != '\0')
         voice_crypto_load_key_file(radio_h.voice_key_file);
     if (radio_h.dstar_encrypt && !voice_crypto_have_key())
-        fprintf(stderr, "dstar_encrypt = 1 but no voice key is loaded (voice_key_file): "
-                        "encrypted overs will go out as silence, never in the clear\n");
+        HLOGW(LOG_C, "dstar_encrypt = 1 but no voice key is loaded (voice_key_file): "
+                     "encrypted overs will go out as silence, never in the clear");
+    if (radio_h.rade_encrypt && !voice_crypto_have_key())
+        HLOGW(LOG_C, "rade_encrypt = 1 but no voice key is loaded (voice_key_file): "
+                     "encrypted overs will go out as silence, never in the clear");
     radio_backend_configure(&radio_h, selection);
     radio_pipeline_refresh(&radio_h);
 
     if (!radio_backend_init(&radio_h))
     {
-        fprintf(stderr, "Failed to initialize %s backend. Exiting.\n",
-                radio_h.backend_ops ? radio_h.backend_ops->name : "radio");
+        HLOGE(LOG_C, "cannot start the %s backend; exiting",
+              radio_h.backend_ops ? radio_h.backend_ops->name : "radio");
         goto fail;
     }
     backend_started = true;
 
     if (pthread_create(&io_tid, NULL, radio_backend_io_thread, &radio_h) != 0)
     {
-        perror("pthread_create(io)");
+        HLOGE(LOG_C, "cannot start the radio I/O thread: %s", strerror(errno));
         shutdown_ = true;
         goto fail;
     }
@@ -186,7 +194,7 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
 
     if (!radio_media_init(&radio_h, &capture_tid, &playback_tid))
     {
-        fprintf(stderr, "Failed to initialize media bridge. Exiting.\n");
+        HLOGE(LOG_C, "cannot start the media bridge; exiting");
         shutdown_ = true;
         goto fail;
     }
@@ -206,14 +214,14 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
 #ifdef HAVE_MERCURY
         mercury_started = mercury_link_start(&radio_h, &unpinned_cpus);
 #else
-        fprintf(stderr, "ERROR: main:enable_mercury is set, but this radio_daemon was built "
-                        "without mercury (vendor/mercury not checked out); running without the modem.\n");
+        HLOGE(LOG_C, "main:enable_mercury is set, but this radio_daemon was built "
+                     "without mercury (vendor/mercury not checked out); running without the modem");
 #endif
     }
 
     if (!radio_websocket_init(&radio_h, &websocket_tid))
     {
-        fprintf(stderr, "Failed to initialize websocket service. Exiting.\n");
+        HLOGE(LOG_C, "cannot start the websocket service; exiting");
         shutdown_ = true;
         goto fail;
     }
@@ -243,14 +251,13 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
 
         if (!codec_ok)
         {
-            fprintf(stderr, "radio_daemon: the audio codec could not be opened (see above); "
-                            "a radio without it can neither hear nor transmit. Exiting.\n");
+            HLOGE(LOG_C, "the audio codec could not be opened (see above); "
+                         "a radio without it can neither hear nor transmit; exiting");
             shutdown_ = true;
             goto fail;
         }
         if (!loop_ok)
-            fprintf(stderr, "radio_daemon: loopback devices not configured after 15 s; "
-                            "reporting ready anyway\n");
+            HLOGW(LOG_C, "loopback devices not configured after 15 s; reporting ready anyway");
     }
     notify_systemd_ready();
 
@@ -282,7 +289,7 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
         cfg_shutdown(&radio_h, &cfg_tid);
     pthread_mutex_destroy(&radio_h.message_mutex);
 
-    printf("radio_daemon: clean shutdown complete.\n");
+    HLOGI(LOG_C, "clean shutdown complete");
     return EXIT_SUCCESS;
 
 fail:

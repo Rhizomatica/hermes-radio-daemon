@@ -13,6 +13,9 @@
 #include "radio_backend.h"
 #include "radio_media.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "modem"
 /* ── resampling: windowed-sinc low-pass + integer decimation / interpolation ── */
 
 #define DECIM_TAPS_PER_FACTOR 32  /* ntaps = 32*D + 1 */
@@ -265,8 +268,8 @@ void modem_audio_push_rx(const int16_t *samples, size_t nsamples, uint32_t rate)
     if (rate != s_decim.rate && !decim_setup(&s_decim, rate))
     {
         if (!s_bad_rate_logged)
-            fprintf(stderr, "modem_audio: RX rate %u Hz is not a multiple of %d Hz; "
-                            "RX to the modem disabled\n", rate, MODEM_AUDIO_RATE);
+            HLOGW(LOG_C, "RX rate %u Hz is not a multiple of %d Hz; "
+                            "RX to the modem disabled", rate, MODEM_AUDIO_RATE);
         s_bad_rate_logged = true;
         return;
     }
@@ -381,7 +384,7 @@ bool modem_audio_tx_begin(long id)
     if (s_tx_keyed)
         ok = s_tx_id == id;
     else if (tx_rate() != s_interp.rate && !interp_setup(&s_interp, tx_rate()))
-        fprintf(stderr, "modem_audio: TX rate %u Hz is not a multiple of %d Hz\n",
+        HLOGI(LOG_C, "TX rate %u Hz is not a multiple of %d Hz",
                 tx_rate(), MODEM_AUDIO_RATE);
     else
     {
@@ -451,10 +454,10 @@ void modem_audio_tx_unkey(const char *why)
     /* Outside the lock, as in begin.  If another modem keyed in between,
      * the backend's owner check makes this a no-op for it. */
     radio_backend_end_ptt(s_radio, PTT_SRC_MODEM, id);
-    fprintf(stderr, "modem_audio: TX from modem %ld %s", id, why);
     if (underruns)
-        fprintf(stderr, " (%u underruns)", underruns);
-    fprintf(stderr, "\n");
+        HLOGI(LOG_C, "TX from modem %ld %s (%u underruns)", id, why, underruns);
+    else
+        HLOGI(LOG_C, "TX from modem %ld %s", id, why);
 }
 
 bool modem_audio_tx_poll(void)

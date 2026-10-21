@@ -258,6 +258,19 @@ websocket_url = ws://0.0.0.0:8080
 ; Until logins exist it answers only to this machine (127.0.0.1, ::1).
 api_v2_enable = 0
 
+; Logging: mercury's hermes_log, so radiod's, the Go API's and mercury's
+; lines are one stream in one format:
+;   19:32:12.668 [+0.306s] [INF] [mercury-link] mercury starting (...)
+; to stderr (journald under systemd) and, with log_file, to a file.
+;   log_level             trace | debug | timing | info | warn | error (default info)
+;   log_component_levels  per component, on stderr: "hamlib=debug, api.http=warn"
+;   log_file              also write to this file ("" for none)
+;   log_jsonl             1: the file in JSONL ({"t":...,"lv":"INF","c":...,"m":...})
+log_level = info
+log_component_levels =
+log_file =
+log_jsonl = 0
+
 ; Audio bridge (works with both backends — hfsignals taps the
 ; embedded ALSA path; hamlib opens capture_device/playback_device
 ; as the rig USB codec and pumps audio through audio_bridge.c).
@@ -552,6 +565,15 @@ Uses vendored `minimodem` FSK core (FFT-based FSK detector + Baudot codec):
 Neural-network-based digital voice codec. Activated per-profile with `digital_voice = 1`. Runs entirely inside the daemon, in C: speech ↔ features with the LPCNet feature extractor and FARGAN vocoder from the vendored Opus subset at `vendor/opus_dnn/`, and features ↔ modem signal with the rade_c RADE V2 encoder/decoder at `vendor/rade_c/` (from https://github.com/freedv/rade_c). No external programs (such as `lpcnet_demo` or `/opt/radae`) are needed. The full voice DSP chain (compressor, pre-emphasis, noise reduction) is automatically bypassed when `digital_voice = 1`.
 
 `main:digital_voice_codec` in `core.ini` picks what digital voice runs: `RADEV2` (the default) or `DSTAR`. The HERMES web interface's Digital voice switch (`set_digital_voice`) follows it; switching is refused while transmitting. `DSTAR` needs the sbitx backend (on hamlib rigs D-STAR remains a mode, not digital voice). With `DSTAR`, switching digital voice on puts the profile in `DSTAR` mode and switching it off puts it back in the mode it had; `get_digital_voice` reports whether the profile is in `DSTAR`. A change of codec in the file carries each profile's digital voice over at the next start. Change it at run time over the websocket with `{"cmd": "digi_config", "key": "digital_voice_codec", "value": "DSTAR"}`: profiles with digital voice on stay on, in the new codec.
+
+#### Voice encryption
+
+Opt-in, for nets where encryption is permitted; it is not on amateur bands. Every station on the net loads the same 256-bit key from `main:voice_key_file` (32 raw bytes or 64 hex digits, chmod 600). `digi_get_config` reports `voice_key_loaded` and a `voice_key_fingerprint` to compare stations by.
+
+- `main:dstar_encrypt = 1`: D-STAR. The AMBE voice bits are XORed with ChaCha20 keystream, the per-over nonce rides in the DV header and in slow-data sync blocks (`dsp/dstar_voice.h`).
+- `main:rade_encrypt = 1`: RADE V2 (`dsp/rade_voice.h`). The modem's latent is mixed per carrier by keyed 2x2 unitaries, fresh every 40 ms frame. Two extra carriers, one either side of RADE's 14 (1000 and 2000 Hz), carry the over's nonce and frame counter in the clear, so a receiver locks within about 1 s (2-3 s near the lowest SNR) wherever it joins, with no gap in the speech and no clock shared between stations. A clipper takes the scrambled signal back to stock RADE V2's 3.5 dB PAPR. `utils/rade_crypt_sim.c` (`make rade_crypt_sim`) measures it over simulated HF channels.
+
+Either way, with no key loaded an over goes out as silence, never in the clear. A receiver with the key decrypts; one without it, or with another key, mutes the over instead of playing noise, and clear overs play as before. The status frame's `dstar_crypto` and `rade_crypto` say which: 0 clear, 1 decrypting, 2 acquiring, 3 encrypted without a key, 4 key mismatch. Both keys can be set at run time with `digi_config` (`dstar_encrypt`, `rade_encrypt`).
 
 ### Unified Digital Mode WebSocket API
 
@@ -884,6 +906,15 @@ run), a `heartbeat` every 5 s, and commands answered by exactly one `reply`:
 | `radio.set` | operator |
 | `radio.select_profile` | operator |
 | `radio.reset_protection` | operator |
+| `rig.get` (`{"names":["AF","NB"]}`: read the rig's controls now) | operator |
+| `rig.set` (`{"name":"AF","value":0.5}`; a function takes `true`/`false`) | operator |
+| `rig.watch` (`{"names":["AF"],"interval_ms":1000}`: what `radio.rig` carries for this client) | operator |
+
+The controls are the radio's own, as its backend lists them (the sBitx's, a
+CAT rig's), named in radiod's control vocabulary (see
+[Radio Controls](#radio-controls)); a name the radio does not have, a value
+out of its range, or a radio that does not answer (`rig_timeout`) is refused
+before anything else is read or set.
 
 Topics (`{"type":"subscribe","id":"1","topics":["radio.state"]}`): a snapshot of the whole
 state (`seq` 0, `snapshot: true`), then events with only the fields that changed, at most 10 a
@@ -892,12 +923,14 @@ second, whatever changed them (a command, CAT, rigctl, the front panel).
 | Topic | Data | Role |
 |-------|------|------|
 | `radio.state` | the same as `GET /api/v2/radio` | readonly |
+| `modem.status` | the same as `GET /api/v2/modem`; offered only while mercury runs | readonly |
+| `radio.rig` | `{levels, funcs, parms}`: the controls this client watches (`rig.watch`), read at its interval (250 ms at least) | readonly |
 
 ### Not implemented yet
 
-- the other `hermes.v1` topics (`radio.profiles`, `radio.rig`, `digi`, mercury's
-  `modem.status`, `modem.config` and `modem.chat`, ...) and binary frames
-  (`radio.spectrum.*`, `modem.spectrum.rx`);
+- the other `hermes.v1` topics (`radio.profiles`, `digi`, mercury's
+  `modem.config` and `modem.chat`, ...) and binary frames (`radio.spectrum.*`,
+  `modem.spectrum.rx`);
 - mercury: `getModemConfig`, `updateModemConfig` and the `modem.chat.send` command;
 - logins, sessions and roles (`/api/v2/session`);
 - WebRTC audio (in C, with libdatachannel; signalled over `hermes.v1`);

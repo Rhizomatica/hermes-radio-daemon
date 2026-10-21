@@ -38,6 +38,9 @@
 #include "../dsp/sbitx_radae.h"
 #include "../dsp/sbitx_dstar.h"
 #include "../dsp/dstar_voice.h"
+#include "radiod_log.h"
+
+#define LOG_C "hamlib"
 #include <mbelib-neo/mbelib.h>
 #include <specbleach_denoiser.h>
 #include "radio_backend.h"   /* radio_backend_set_txrx_state for auto-PTT */
@@ -350,7 +353,7 @@ static void do_ft8_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz
                                (int)(sizeof(ft8_audio) / sizeof(ft8_audio[0])),
                                (float) FT8_TX_TONE_HZ);
     if (n12 <= 0) {
-        fprintf(stderr, "FT8 tx: cannot encode \"%s\"\n", text);
+        HLOGE(LOG_C, "FT8 tx: cannot encode \"%s\"", text);
         return;
     }
     if (!tx_pend_set(s, &s->ft8_to_ring, ft8_audio, (size_t) n12, 12000, ring_rate))
@@ -621,7 +624,7 @@ dstar_hamlib_init(hamlib_digi_state *s)
     s->dstar_rx_prevsyn.mutingThreshold = MBE_MUTING_THRESHOLD_AMBE;
     s->dstar_tx_enc = mbe_ambe2400EncoderAlloc();
     if (s->dstar_tx_enc == NULL)
-        fprintf(stderr, "DSTAR: cannot allocate the AMBE encoder; TX will be silent\n");
+        HLOGE(LOG_C, "DSTAR: cannot allocate the AMBE encoder; TX will be silent");
     dstar_hamlib_reset_encoder(s);
     s->dstar_inited = true;
 }
@@ -1019,10 +1022,10 @@ static void *hamlib_digi_thread(void *radio_h_v)
                     s->radae_inited = true;
                     radae_rx_start(&s->radae_ctx);
                     s->radae_rx_running = true;
-                    fprintf(stderr, "hamlib_digi: RADAE up\n");
+                    HLOGI(LOG_C, "RADAE up");
                 } else {
-                    fprintf(stderr, "hamlib_digi: radae_init failed; "
-                                    "digital_voice disabled\n");
+                    HLOGE(LOG_C, "radae_init failed; "
+                                    "digital_voice disabled");
                     /* avoid retry spam */
                     usleep(500000);
                     continue;
@@ -1208,11 +1211,11 @@ bool hamlib_digi_start(radio *radio_h)
         return false;
     memset(&g_state, 0, sizeof(g_state));
     if (pthread_create(&g_state.tid, NULL, hamlib_digi_thread, radio_h) != 0) {
-        fprintf(stderr, "hamlib_digi: cannot spawn thread\n");
+        HLOGE(LOG_C, "cannot spawn thread");
         return false;
     }
     g_state.started = true;
-    fprintf(stderr, "hamlib_digi: pump up\n");
+    HLOGI(LOG_C, "pump up");
     return true;
 }
 

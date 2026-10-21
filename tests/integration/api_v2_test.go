@@ -7,6 +7,7 @@
 package integration
 
 import (
+	"bufio"
 	"debug/elf"
 	"encoding/json"
 	"errors"
@@ -314,5 +315,136 @@ func TestAPIv2RadioSettings(t *testing.T) {
 	}
 	if r = call(t, "PATCH", base+"/radio/settings", `{"bfo_hz":40035000}`); r.status != 422 {
 		t.Errorf("BFO on a Hamlib radio = %d %s", r.status, r.raw)
+	}
+}
+
+// The Go layer logs through radiod's logger: its lines and radiod's share
+// one stream, in hermes_log's format. With main:log_level = debug, a read is
+// logged too.
+func TestAPIv2LogsThroughRadiod(t *testing.T) {
+	needGoAPI(t)
+	d := startAPIDaemon(t, "log_level = debug")
+	base := apiBase(d)
+	call(t, "GET", base+"/radio", "")
+	r := call(t, "PATCH", base+"/radio/profiles/0", `{"power":20}`)
+	d.Stop()
+
+	log := d.Log()
+	for _, want := range []string{
+		"[DBG] [api.http] GET /api/v2/radio 200 ms=",
+		"[INF] [api.http] PATCH /api/v2/radio/profiles/0 200 ms=",
+		"request_id=" + r.header.Get("X-Request-Id"),
+		"[INF] [radiod] clean shutdown complete",
+	} {
+		if !strings.Contains(log, want) {
+			t.Errorf("daemon log lacks %q\n--- daemon log ---\n%s", want, log)
+		}
+	}
+}
+
+// modem.status through the real daemon with mercury inside: subscribe once
+// mercury has published a status, then change the callsign on mercury's TNC
+// port and see it in an event.
+func TestHermesV1ModemStatusTopic(t *testing.T) {
+	needGoAPI(t)
+	d, tnc := startMercuryDaemon(t, "api_v2_enable = 1")
+	ws, _, err := wsDialProto(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	next := func(match func(map[string]any) bool) map[string]any {
+		for {
+			if f := readFrame(t, ws, 10*time.Second); match(f) {
+				return f
+			}
+		}
+	}
+	isStatus := func(f map[string]any) bool { return f["type"] == "event" && f["topic"] == "modem.status" }
+
+	// mercury publishes its first status within about a second of starting
+	var snap map[string]any
+	for i := 0; snap == nil; i++ {
+		id := fmt.Sprintf("s%d", i)
+		_ = ws.writeFrame(opText, []byte(`{"type":"subscribe","id":"`+id+`","topics":["modem.status"]}`))
+		r := next(func(f map[string]any) bool { return f["type"] == "reply" && f["id"] == id })
+		if r["ok"] == true {
+			snap = next(isStatus)
+			break
+		}
+		if i == 20 {
+			t.Fatalf("modem.status never became available: %v\n--- daemon log ---\n%s", r, d.Log())
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if data, _ := snap["data"].(map[string]any); snap["snapshot"] != true || data["link"] == nil || data["audio_ok"] == nil {
+		t.Fatalf("snapshot = %v", snap)
+	}
+
+	conn, err := net.DialTimeout("tcp", tnc, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if got := tncCommand(t, conn, bufio.NewReader(conn), "MYCALL N0CALL"); got != "OK" {
+		t.Fatalf("TNC MYCALL = %q", got)
+	}
+	ev := next(func(f map[string]any) bool {
+		data, _ := f["data"].(map[string]any)
+		return isStatus(f) && data["my_call"] != nil
+	})
+	if data := ev["data"].(map[string]any); data["my_call"] != "N0CALL" || ev["seq"] == 0.0 {
+		t.Errorf("event after MYCALL = %v", ev)
+	}
+}
+
+// The radio's controls through the real daemon (the harness's dummy rig): rig.set
+// reaches the rig as rigctl sees it, rig.get reads it back, and rig.watch
+// gives radio.rig events.
+func TestHermesV1RigControls(t *testing.T) {
+	needGoAPI(t)
+	d := startAPIDaemon(t)
+	ws, _, err := wsDialProto(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	if h := readFrame(t, ws, 5*time.Second); !strings.Contains(fmt.Sprint(h["topics"]), "radio.rig") {
+		t.Fatalf("hello topics = %v", h["topics"])
+	}
+	cmd := func(id, frame string) map[string]any {
+		if err := ws.writeFrame(opText, []byte(frame)); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			if f := readFrame(t, ws, 5*time.Second); f["type"] == "reply" && f["id"] == id {
+				return f
+			}
+		}
+	}
+	if r := cmd("s", `{"type":"cmd","id":"s","cmd":"rig.set","args":{"name":"AF","value":0.25}}`); r["ok"] != true {
+		t.Fatalf("rig.set AF = %v", r)
+	}
+	if got := dialRigctl(t, d).cmd("l AF"); !strings.HasPrefix(got, "0.25") {
+		t.Errorf("rigctl l AF after rig.set = %q", got)
+	}
+	r := cmd("g", `{"type":"cmd","id":"g","cmd":"rig.get","args":{"names":["AF"]}}`)
+	if lv, _ := r["data"].(map[string]any)["levels"].(map[string]any); r["ok"] != true || lv["AF"] != 0.25 {
+		t.Fatalf("rig.get AF = %v", r)
+	}
+
+	cmd("sub", `{"type":"subscribe","id":"sub","topics":["radio.rig"]}`)
+	cmd("w", `{"type":"cmd","id":"w","cmd":"rig.watch","args":{"names":["AF"],"interval_ms":250}}`)
+	if got := dialRigctl(t, d).cmd("L AF 0.75"); got != "RPRT 0" {
+		t.Fatalf("rigctl L AF = %q", got)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		f := readFrame(t, ws, time.Until(deadline))
+		if f["type"] != "event" || f["topic"] != "radio.rig" {
+			continue
+		}
+		if lv, _ := f["data"].(map[string]any)["levels"].(map[string]any); lv["AF"] == 0.75 {
+			break
+		}
 	}
 }

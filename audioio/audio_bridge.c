@@ -17,6 +17,9 @@
 
 #include "audio_bridge.h"
 #include "radio_media.h"
+#include "radiod_log.h"
+
+#define LOG_C "bridge"
 #include "sbitx/sbitx_core.h"   /* sbitx_bridge_push_rx / sbitx_bridge_pop_tx */
 
 static unsigned gcd_u32(unsigned a, unsigned b)
@@ -108,9 +111,8 @@ bool audio_bridge_init(audio_bridge *b, uint32_t native_rate, uint32_t dsp_rate)
     /* Refuse pathological rate pairs (huge gcd-reduced factors blow up taps
      * and CPU). For our practical 48k/96k pair this is 2/1, well below. */
     if (b->interp_up > 256 || b->decim_up > 256) {
-        fprintf(stderr,
-                "audio_bridge: rate pair %u<->%u reduces to %d/%d — too "
-                "large, falling back to pass-through (no resample)\n",
+        HLOGW(LOG_C, "rate pair %u<->%u reduces to %d/%d — too "
+                "large, falling back to pass-through (no resample)",
                 native_rate, dsp_rate, b->interp_up, b->decim_up);
         b->native_rate = b->dsp_rate;
         return true;
@@ -118,7 +120,7 @@ bool audio_bridge_init(audio_bridge *b, uint32_t native_rate, uint32_t dsp_rate)
 
     if (!build_taps(&b->taps_up,   &b->taps_up_len,   b->interp_up,   b->decim_up) ||
         !build_taps(&b->taps_down, &b->taps_down_len, b->interp_down, b->decim_down)) {
-        fprintf(stderr, "audio_bridge: tap allocation failed\n");
+        HLOGE(LOG_C, "tap allocation failed");
         free(b->taps_up);   b->taps_up   = NULL;
         free(b->taps_down); b->taps_down = NULL;
         return false;

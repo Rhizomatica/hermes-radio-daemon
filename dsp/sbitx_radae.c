@@ -23,6 +23,12 @@
  * features with the LPCNet feature extractor and FARGAN vocoder
  * (radae_vocoder.c, vendor/opus_dnn), features <-> modem signal with the
  * RADE V2 encoder/decoder (vendor/rade_c).
+ *
+ * main:rade_encrypt scrambles the overs this station sends (dsp/rade_voice.h:
+ * the keyed latent mixing, the aux carriers' signalling, and the clipper that
+ * takes the scrambled signal back to RADE's PAPR). Every over received goes
+ * through the receiver's side of it, which unscrambles with the voice key
+ * and mutes encrypted overs it cannot decrypt.
  */
 
 #include <math.h>
@@ -34,9 +40,13 @@
 
 #include "rade_api.h"
 #include "radae_vocoder.h"
+#include "rade_voice.h"
 #include "sbitx_core.h"
 #include "sbitx_radae.h"
 
+#include "radiod_log.h"
+
+#define LOG_C "radae"
 /* Enable verbose debug logging when RADAE_DEBUG env var is set to 1 or true */
 static int radae_debug = 0;
 
@@ -74,8 +84,8 @@ bool radae_is_debug(void) { return radae_debug != 0; }
         double _st_dt = (_st_now.tv_sec  - _st_t0.tv_sec) +                    \
                         (_st_now.tv_nsec - _st_t0.tv_nsec) / 1e9;              \
         if (_st_dt >= 1.0) {                                                   \
-            fprintf(stderr,                                                    \
-                "RADAE rate [%s]: %.0f %s/s (%.1f call/s, expect %s)\n",       \
+            HLOGD(LOG_C,                                                       \
+                "RADAE rate [%s]: %.0f %s/s (%.1f call/s, expect %s)",         \
                 (tag), (double)_st_count/_st_dt, (units),                      \
                 (double)_st_calls/_st_dt, (expect));                           \
             _st_count = 0;                                                     \
@@ -87,6 +97,20 @@ bool radae_is_debug(void) { return radae_debug != 0; }
 
 // TX thread: speech -> features (LPCNet) -> RADEv2 TX -> modem IQ.
 static void *radae_tx_thread(void *arg);
+
+_Static_assert(RADE_VOICE_NC == RADE_V2_NC && RADE_VOICE_NS == RADE_V2_NS &&
+               RADE_VOICE_LATENT == RADE_V2_LATENT_DIM && RADE_VOICE_NAUX == RADE_V2_NAUX &&
+               sizeof(RADE_COMP) == 2 * sizeof(float), "rade_voice.h: RADE V2 layout");
+
+static void radae_tx_hook(void *user, rade_v2_hook_frame *f)
+{
+    rade_voice_tx_frame((rade_voice_tx *) user, f->z, (float *) f->aux);
+}
+
+static void radae_rx_hook(void *user, rade_v2_hook_frame *f)
+{
+    f->align = rade_voice_rx_symbol((rade_voice_rx *) user, f->z, (const float *) f->aux, f->sym);
+}
 
 // RX thread: modem IQ -> RADEv2 RX -> features -> speech (FARGAN).
 static void *radae_rx_thread(void *arg);
@@ -143,7 +167,7 @@ static struct rade *radae_open_tx_session(void)
     struct rade *tx_rade = rade_open(RADAE_MODEL_NAME, RADE_MODE_V2 | flags);
 
     if (!tx_rade)
-        fprintf(stderr, "RADAE TX: failed to open vendored C encoder\n");
+        HLOGE(LOG_C, "RADAE TX: failed to open vendored C encoder");
     return tx_rade;
 }
 
@@ -153,7 +177,7 @@ static struct rade *radae_open_rx_session(void)
     struct rade *rx_rade = rade_open(RADAE_MODEL_NAME, RADE_MODE_V2 | flags);
 
     if (!rx_rade)
-        fprintf(stderr, "RADAE RX: failed to open vendored C decoder\n");
+        HLOGE(LOG_C, "RADAE RX: failed to open vendored C decoder");
     return rx_rade;
 }
 
@@ -186,32 +210,32 @@ bool radae_init(radae_context *ctx, radio *radio_h)
 
     ctx->tx_speech_buffer = (float *)calloc(RADAE_SPEECH_BUFFER_SIZE, sizeof(float));
     if (!ctx->tx_speech_buffer) {
-        fprintf(stderr, "RADAE: Failed to allocate TX speech buffer\n");
+        HLOGE(LOG_C, "Failed to allocate TX speech buffer");
         goto cleanup_mutex;
     }
 
     ctx->tx_modem_buffer = (float *)calloc(RADAE_MODEM_BUFFER_SIZE * 2, sizeof(float));
     if (!ctx->tx_modem_buffer) {
-        fprintf(stderr, "RADAE: Failed to allocate TX modem buffer\n");
+        HLOGE(LOG_C, "Failed to allocate TX modem buffer");
         goto cleanup_tx_speech;
     }
 
     ctx->rx_modem_buffer = (float *)calloc(RADAE_MODEM_BUFFER_SIZE * 2, sizeof(float));
     if (!ctx->rx_modem_buffer) {
-        fprintf(stderr, "RADAE: Failed to allocate RX modem buffer\n");
+        HLOGE(LOG_C, "Failed to allocate RX modem buffer");
         goto cleanup_tx_modem;
     }
 
     ctx->rx_speech_buffer = (float *)calloc(RADAE_SPEECH_BUFFER_SIZE, sizeof(float));
     if (!ctx->rx_speech_buffer) {
-        fprintf(stderr, "RADAE: Failed to allocate RX speech buffer\n");
+        HLOGE(LOG_C, "Failed to allocate RX speech buffer");
         goto cleanup_rx_modem;
     }
 
     char *dbg = getenv("RADAE_DEBUG");
     if (dbg && (strcmp(dbg, "1") == 0 || dbg[0] == 't' || dbg[0] == 'T')) {
         radae_debug = 1;
-        fprintf(stderr, "RADAE: debug logging enabled\n");
+        HLOGI(LOG_C, "debug logging enabled");
     }
 
     rade_initialize();
@@ -226,11 +250,11 @@ bool radae_init(radae_context *ctx, radio *radio_h)
     ctx->initialized = true;
 
     if (pthread_create(&ctx->tx_thread, NULL, radae_tx_thread, ctx) != 0) {
-        fprintf(stderr, "RADAE: Failed to create TX thread\n");
+        HLOGE(LOG_C, "Failed to create TX thread");
         goto cleanup_rade;
     }
 
-    fprintf(stderr, "RADAE: Initialized (in-process LPCNet/FARGAN + RADEv2)\n");
+    HLOGI(LOG_C, "Initialized (in-process LPCNet/FARGAN + RADEv2)");
     return true;
 
 cleanup_rade:
@@ -275,7 +299,7 @@ void radae_shutdown(radae_context *ctx)
 
     ctx->initialized = false;
     rade_finalize();
-    fprintf(stderr, "RADAE: Shutdown complete\n");
+    HLOGI(LOG_C, "Shutdown complete");
 }
 
 bool radae_tx_start(radae_context *ctx)
@@ -295,7 +319,7 @@ bool radae_tx_start(radae_context *ctx)
     pthread_cond_signal(&ctx->tx_cond);
     pthread_mutex_unlock(&ctx->tx_mutex);
 
-    fprintf(stderr, "RADAE TX: flow enabled\n");
+    HLOGI(LOG_C, "RADAE TX: flow enabled");
     return true;
 }
 
@@ -308,7 +332,7 @@ void radae_tx_stop(radae_context *ctx)
     ctx->tx_eoo_pending = false;
     ctx->tx_running = false;
     pthread_cond_signal(&ctx->tx_cond);
-    fprintf(stderr, "RADAE TX: flow disabled\n");
+    HLOGW(LOG_C, "RADAE TX: flow disabled");
 }
 
 bool radae_tx_emit_eoo(radae_context *ctx)
@@ -324,7 +348,7 @@ bool radae_tx_emit_eoo(radae_context *ctx)
     pthread_mutex_unlock(&ctx->tx_mutex);
 
     if (radae_debug)
-        fprintf(stderr, "RADAE TX: EOO requested (queued for in-process encoder)\n");
+        HLOGI(LOG_C, "RADAE TX: EOO requested (queued for in-process encoder)");
     return true;
 }
 
@@ -355,12 +379,12 @@ bool radae_rx_start(radae_context *ctx)
     ctx->rx_speech_buffer_read_idx = 0;
 
     if (pthread_create(&ctx->rx_thread, NULL, radae_rx_thread, ctx) != 0) {
-        fprintf(stderr, "RADAE: Failed to create RX thread\n");
+        HLOGE(LOG_C, "Failed to create RX thread");
         ctx->rx_running = false;
         return false;
     }
 
-    fprintf(stderr, "RADAE RX: Started\n");
+    HLOGI(LOG_C, "RADAE RX: Started");
     return true;
 }
 
@@ -373,7 +397,7 @@ void radae_rx_stop(radae_context *ctx)
     pthread_cond_signal(&ctx->rx_cond);
     pthread_join(ctx->rx_thread, NULL);
 
-    fprintf(stderr, "RADAE RX: Stopped\n");
+    HLOGI(LOG_C, "RADAE RX: Stopped");
 }
 
 void radae_rx_flush(radae_context *ctx)
@@ -497,10 +521,12 @@ static void *radae_tx_thread(void *arg)
     int16_t pcm_buffer[RADAE_FRAME_SIZE];
     float speech_buffer[RADAE_FRAME_SIZE];
     bool session_ready = false;
+    static rade_voice_tx vtx;          /* this over's scrambling, if any */
+    static rade_voice_clip clip;
 
     analysis = radae_analysis_new();
     if (!analysis) {
-        fprintf(stderr, "RADAE TX: cannot allocate the LPCNet feature extractor\n");
+        HLOGE(LOG_C, "RADAE TX: cannot allocate the LPCNet feature extractor");
         goto cleanup;
     }
 
@@ -508,16 +534,16 @@ static void *radae_tx_thread(void *arg)
     if (!tx_rade)
         goto cleanup;
     if (rade_n_tx_eoo_out(tx_rade) > RADAE_TX_COMP_CAPACITY) {
-        fprintf(stderr, "RADAE TX: output buffer too small for EOO frame\n");
+        HLOGI(LOG_C, "RADAE TX: output buffer too small for EOO frame");
         goto cleanup;
     }
     features_per_tx = rade_n_features_in_out(tx_rade);
     if (features_per_tx > RADAE_TX_FEATURE_CAPACITY || features_per_tx % RADAE_VOCODER_FEATURES) {
-        fprintf(stderr, "RADAE TX: unexpected feature payload of %d floats\n", features_per_tx);
+        HLOGI(LOG_C, "RADAE TX: unexpected feature payload of %d floats", features_per_tx);
         goto cleanup;
     }
 
-    fprintf(stderr, "RADAE TX: in-process LPCNet + RADEv2 encoder ready\n");
+    HLOGI(LOG_C, "RADAE TX: in-process LPCNet + RADEv2 encoder ready");
 
     while (!ctx->shutdown_requested) {
         if (!ctx->tx_running) {
@@ -541,6 +567,15 @@ static void *radae_tx_thread(void *arg)
                 break;
             /* A new over is a new stream: start the feature extractor afresh. */
             radae_analysis_reset(analysis);
+            bool enc = ctx->radio_h->rade_encrypt != 0;
+            if (!rade_voice_tx_begin(&vtx, enc, 1.0f))
+                HLOGE(LOG_C, "RADAE TX: rade_encrypt is on but no voice key is loaded -- "
+                             "sending silence, not clear voice");
+            if (vtx.encrypt || vtx.fail_closed)
+                rade_set_latent_hook(tx_rade, radae_tx_hook, &vtx);
+            rade_voice_clip_reset(&clip);
+            if (vtx.encrypt)
+                HLOGI(LOG_C, "RADAE TX: encrypted over");
             ctx->tx_reset_requested = false;
             n_features = 0;
             session_ready = true;
@@ -554,8 +589,17 @@ static void *radae_tx_thread(void *arg)
         if (emit_eoo) {
             n_features = 0;
             int n_out = rade_tx_eoo(tx_rade, tx_out);
+            if (n_out > 0 && vtx.encrypt)
+                rade_voice_clip_run(&clip, (float *) tx_out, n_out);
             if (n_out > 0)
                 tx_store_modem_iq(ctx, tx_out, n_out);
+            if (vtx.encrypt) {
+                /* the clipper's filters still hold the end of the EOO */
+                RADE_COMP tail[RADE_VOICE_CLIP_DELAY];
+                memset(tail, 0, sizeof(tail));
+                rade_voice_clip_run(&clip, (float *) tail, RADE_VOICE_CLIP_DELAY);
+                tx_store_modem_iq(ctx, tail, RADE_VOICE_CLIP_DELAY);
+            }
             /* Clear the request only once the frame is queued, so
              * radae_tx_drained() cannot see "nothing pending, buffer
              * empty" in between and let PTT drop before it is sent. */
@@ -613,6 +657,8 @@ static void *radae_tx_thread(void *arg)
 
         if (n_features == features_per_tx) {
             int n_out = rade_tx(tx_rade, tx_out, features);
+            if (n_out > 0 && vtx.encrypt)
+                rade_voice_clip_run(&clip, (float *) tx_out, n_out);
             if (n_out > 0)
                 tx_store_modem_iq(ctx, tx_out, n_out);
             n_features = 0;
@@ -623,7 +669,7 @@ cleanup:
     radae_analysis_free(analysis);
     if (tx_rade)
         rade_close(tx_rade);
-    fprintf(stderr, "RADAE TX: Thread exiting\n");
+    HLOGE(LOG_C, "RADAE TX: Thread exiting");
     return NULL;
 }
 
@@ -636,32 +682,38 @@ static void *radae_rx_thread(void *arg)
     float *features_out = NULL;
     int16_t pcm[RADAE_VOCODER_FRAME];
     bool was_synced = false;
+    static rade_voice_rx vrx;          /* unscrambling, and the play gate */
+    rade_vc_status was_crypto = RADE_VC_CLEAR;
 
     synthesis = radae_synthesis_new();
     if (!synthesis) {
-        fprintf(stderr, "RADAE RX: cannot allocate the FARGAN vocoder\n");
+        HLOGE(LOG_C, "RADAE RX: cannot allocate the FARGAN vocoder");
         goto cleanup;
     }
 
     rx_rade = radae_open_rx_session();
     if (!rx_rade)
         goto cleanup;
+    rade_voice_rx_reset(&vrx);
+    rade_set_latent_hook(rx_rade, radae_rx_hook, &vrx);
 
     int rx_frame_capacity = rade_nin_max(rx_rade);
     int feature_capacity = rade_n_features_in_out(rx_rade);
     rx_in = (RADE_COMP *)calloc((size_t)rx_frame_capacity, sizeof(*rx_in));
     features_out = (float *)calloc((size_t)feature_capacity, sizeof(*features_out));
     if (!rx_in || !features_out) {
-        fprintf(stderr, "RADAE RX: Failed to allocate decoder buffers\n");
+        HLOGE(LOG_C, "RADAE RX: Failed to allocate decoder buffers");
         goto cleanup;
     }
 
-    fprintf(stderr, "RADAE RX: in-process RADEv2 decoder + FARGAN ready\n");
+    HLOGI(LOG_C, "RADAE RX: in-process RADEv2 decoder + FARGAN ready");
 
     while (ctx->rx_running && !ctx->shutdown_requested) {
         if (ctx->rx_reset_requested) {
             if (!radae_reset_rx_session(&rx_rade))
                 break;
+            rade_voice_rx_reset(&vrx);
+            rade_set_latent_hook(rx_rade, radae_rx_hook, &vrx);
             radae_synthesis_reset(synthesis);
             was_synced = false;
             ctx->rx_reset_requested = false;
@@ -700,23 +752,40 @@ static void *radae_rx_thread(void *arg)
         int has_eoo_out = 0;
         int n_features = rade_rx(rx_rade, features_out, &has_eoo_out, NULL, rx_in);
         if (has_eoo_out)
-            fprintf(stderr, "RADAE RX: end of over\n");
+            HLOGI(LOG_C, "RADAE RX: end of over");
         /* Log lock changes: without them a receiver that never locks and
          * one that locks but misses the end of over look the same. */
         bool synced = rade_sync(rx_rade) != 0;
         if (synced != was_synced) {
             if (synced)
-                fprintf(stderr, "RADAE RX: sync (SNR %.1f dB, offset %+.1f Hz)\n",
+                HLOGI(LOG_C, "RADAE RX: sync (SNR %.1f dB, offset %+.1f Hz)",
                         (double) rade_snrdB_3k_est(rx_rade), (double) rade_freq_offset(rx_rade));
             else
-                fprintf(stderr, "RADAE RX: sync lost%s\n", has_eoo_out ? " (end of over)" : "");
+                HLOGI(LOG_C, "RADAE RX: sync lost%s", has_eoo_out ? " (end of over)" : "");
             was_synced = synced;
         }
+        /* An encrypted over this station cannot decrypt (yet) is muted,
+         * not played as noise. */
+        const bool play = rade_voice_rx_play(&vrx);
+        if (vrx.status != was_crypto) {
+            static const char *what[] = {"clear", "decrypting", "acquiring",
+                                         "encrypted, no voice key: muted",
+                                         "encrypted, key mismatch: muted"};
+            HLOGI(LOG_C, "RADAE RX: %s", what[vrx.status <= RADE_VC_BAD_KEY ? vrx.status : 0]);
+            was_crypto = vrx.status;
+        }
+        ctx->radio_h->rade_rx_crypto = (uint16_t) vrx.status;
         for (int k = 0; k + RADAE_VOCODER_FEATURES <= n_features; k += RADAE_VOCODER_FEATURES) {
-            int n = radae_synthesis_frame(synthesis, &features_out[k], pcm);
+            int n = RADAE_VOCODER_FRAME;
+            if (play)
+                n = radae_synthesis_frame(synthesis, &features_out[k], pcm);
+            else
+                memset(pcm, 0, sizeof(pcm));
             if (n > 0)
                 rx_store_speech_pcm(ctx, pcm, n);
         }
+        if (has_eoo_out)
+            rade_voice_rx_reset(&vrx);   /* the next over starts afresh */
         if (n_features > 0)
             RADAE_RATE_LOG("rx_fargan", "feat", n_features, "decoded features");
     }
@@ -727,7 +796,7 @@ cleanup:
     free(features_out);
     if (rx_rade)
         rade_close(rx_rade);
-    fprintf(stderr, "RADAE RX: Thread exiting\n");
+    HLOGE(LOG_C, "RADAE RX: Thread exiting");
     return NULL;
 }
 

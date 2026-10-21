@@ -107,6 +107,7 @@ api/
 ├── spec/               pinned api-rest.yaml, api-ws.yaml, and the reader (spec.go)
 ├── cmd/hermesapi/      the C exports; converts C types, nothing else
 ├── cmd/hermesapi-check/  the self-check (`go run ./cmd/hermesapi-check`); opens the DB, not linked into radiod
+├── cgo/hermeslog/      the Go binding of hermes_log, the logger radiod and mercury share
 ├── cgo/radio/          the Radio interface; binding.go (the cgo binding, build tag `radiod`),
 │                       stub.go (an in-memory radio for tests and Go-only work)
 └── internal/
@@ -297,6 +298,23 @@ the result with what each subscriber last received. That is how a change made an
 calling into Go. Use the same function for the REST read of the same data, so the two never
 disagree.
 
+When the topic has no state now, return an error: `modem.status` does while mercury is not
+running. The topic is then left out of `hello`, a subscribe naming it is refused with
+`not_supported` (and subscribes nothing), and its subscribers get no events until it has state
+again:
+
+```go
+rt.Topic("modem.status", spec.RoleReadonly, func() (any, error) { return h.status() })
+```
+
+A topic whose data depends on what each client asked for is registered with `rt.TopicConn`: its
+function gets the connection (`nil` asks only whether the topic is offered). `radio.rig` is one:
+`rig.watch` starts a goroutine for the connection that reads the watched controls at the client's
+interval and keeps the latest values; the topic function returns them, and stops when
+`c.Done()` closes. Slow I/O (a CAT read) goes in such a goroutine, never in the topic function,
+which the publisher calls every 100 ms. Nested objects are compared inside, so a `radio.rig`
+event carries only the controls that changed (`{"levels":{"AF":0.6}}`).
+
 Not there yet: topics that are lists of new entries rather than state (`digi`, `modem.chat`,
 `messages`), which will read by cursor in the same loop; binary topics (`radio.spectrum.*`,
 `modem.spectrum.rx`), sent by C; and WebRTC signalling (`rtc.offer`).
@@ -376,15 +394,32 @@ CI runs all three on Debian 13, amd64 and arm64, with and without the Go layer.
   blocks only that request. Don't start goroutines that outlive their request or connection.
 - **Memory:** the Go heap has a soft 64 MB limit (`GOMEMLIMIT` overrides it) for the 1 GB Pi.
   Page large collections; don't load a whole log.
-- **cgo:** only `cgo/radio` talks to C, and only through the radiod C API. Don't add `import "C"`
-  elsewhere.
+- **cgo:** only `cgo/radio` (the radiod C API) and `cgo/hermeslog` (the logger) talk to C.
+  Don't add `import "C"` elsewhere.
+- **Logging:** log with `log/slog`, never `fmt.Print` or the `log` package. The API layer's
+  records go to radiod's logger (mercury's `hermes_log`, `internal/logging`), so they come out in
+  the same format, file and levels as radiod's and mercury's lines:
+  `19:32:12.668 [+0.306s] [INF] [api.http] PATCH /api/v2/radio/profiles/0 200 ms=1.2 request_id=...`.
+  Use `rt.Log` (component `api`), or `logging.New(rt.Radio(), "api.<domain>")` for your own
+  component. `slog.Default()` is the same logger. Requests (`api.http`) and `hermes.v1` connections
+  and commands (`api.ws`) are logged for you. The message comes first, then attributes as
+  `key=value`. Which lines are written is the station's `core.ini` (`main:log_level`,
+  `main:log_component_levels`), not your code. In unit tests the stub radio keeps the lines
+  (`Stub.Logs()`).
+
+  `cgo/hermeslog` is the binding underneath: `Log`/`Logf` with hermes_log's levels (`Debug`,
+  `Timing`, `Info`, `Warn`, `Error`), and for a standalone Go program (a command-line tool, not
+  radiod) `Init`, `SetLevel`, `SetComponentLevel`, `SetFile` and `Shutdown`. Inside radiod the
+  logger is radiod's, already started and configured; outside, the package compiles the
+  vendored `hermes_log.c`, so a tool's lines are the same as the daemon's. It needs cgo; the API
+  layer's other packages and their tests do not.
 
 ## 11. Not there yet
 
 - **Logins and sessions** (`/api/v2/session`, the database): until then `/api/v2` is
   loopback-only and every caller is `admin`.
-- **More topics**: `radio.profiles`, `radio.rig`, the list topics (`digi`, `modem.chat`,
-  `messages`), mercury's `modem.status` and `modem.config`; then **binary frames** (spectrum)
+- **More topics**: `radio.profiles`, the list topics (`digi`, `modem.chat`,
+  `messages`), mercury's `modem.config`; then **binary frames** (spectrum)
   and **WebRTC** audio (in C, with libdatachannel; the signalling arrives as `rtc.offer`
   commands).
 - **A transmit timeout** (`tx_timeout_s` in `/radio/settings`): in the spec, not in radiod

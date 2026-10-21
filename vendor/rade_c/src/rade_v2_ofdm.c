@@ -59,6 +59,16 @@ void rade_v2_ofdm_init(rade_v2_ofdm *ofdm) {
     for (int c = 0; c < Nc; c++) {
         ofdm->w[c] = 2.0f * M_PI * (carrier_1_index + c) / M;
     }
+    /* aux carriers: the bins either side of the data carriers */
+    ofdm->w_aux[0] = 2.0f * M_PI * (carrier_1_index - 1) / M;
+    ofdm->w_aux[1] = 2.0f * M_PI * (carrier_1_index + Nc) / M;
+    for (int a = 0; a < RADE_V2_NAUX; a++) {
+        for (int n = 0; n < M; n++) {
+            ofdm->Winv_aux[n][a] = rade_cscale(rade_cexp(ofdm->w_aux[a] * n), 1.0f / M);
+            ofdm->Wfwd_aux[a][n] = rade_cexp(-ofdm->w_aux[a] * n);
+        }
+        ofdm->phase_corr_aux[a] = rade_cexp(8.0f * ofdm->w_aux[a]);
+    }
 
     /* IDFT matrix: Winv[n][c] = exp(j*w[c]*n) / M */
     for (int n = 0; n < M; n++) {
@@ -119,7 +129,8 @@ void rade_v2_ofdm_init(rade_v2_ofdm *ofdm) {
    V2 frame: Ns=2 data symbols, no pilots.
    z layout (interleaved real/imag): tx_sym[k] = z[2k] + j*z[2k+1]
    sym[s][c] = tx_sym[s*Nc + c] for s=0..Ns-1, c=0..Nc-1 */
-int rade_v2_ofdm_mod_frame(const rade_v2_ofdm *ofdm, RADE_COMP *tx_out, const float *z) {
+int rade_v2_ofdm_mod_frame(const rade_v2_ofdm *ofdm, RADE_COMP *tx_out, const float *z,
+                           const RADE_COMP *aux) {
     int Nc  = RADE_V2_NC;
     int M   = RADE_V2_M;
     int Ncp = RADE_V2_NCP;
@@ -139,6 +150,13 @@ int rade_v2_ofdm_mod_frame(const rade_v2_ofdm *ofdm, RADE_COMP *tx_out, const fl
         /* IDFT: time_buf[n] = sum_c freq_sym[c] * Winv[n][c] */
         for (int n = 0; n < M; n++) {
             time_buf[n] = rade_cdot_comp(freq_sym, ofdm->Winv[n], Nc);
+        }
+        if (aux) {
+            for (int n = 0; n < M; n++) {
+                RADE_COMP t = rade_cdot_comp(&aux[s * RADE_V2_NAUX], ofdm->Winv_aux[n], RADE_V2_NAUX);
+                time_buf[n].real += t.real;
+                time_buf[n].imag += t.imag;
+            }
         }
 
         /* Insert cyclic prefix: [time[-Ncp:], time] */
@@ -160,7 +178,7 @@ int rade_v2_ofdm_mod_frame(const rade_v2_ofdm *ofdm, RADE_COMP *tx_out, const fl
    z_hat: LATENT_DIM output floats
    time_offset: fine timing offset into CP (default -16, gives start at Ncp+time_offset=16)
    phase_corr applied per carrier to compensate correct_time_offset=-8. */
-void rade_v2_ofdm_demod_frame(const rade_v2_ofdm *ofdm, float *z_hat,
+void rade_v2_ofdm_demod_frame(const rade_v2_ofdm *ofdm, float *z_hat, RADE_COMP *aux_hat,
                                const RADE_COMP *rx_i, int time_offset) {
     int Nc  = RADE_V2_NC;
     int M   = RADE_V2_M;
@@ -178,6 +196,12 @@ void rade_v2_ofdm_demod_frame(const rade_v2_ofdm *ofdm, float *z_hat,
             rx_sym[c] = rade_cdot_comp(rx_dash, ofdm->Wfwd[c], M);
             /* Apply phase correction for correct_time_offset */
             rx_sym[c] = rade_cmul(rx_sym[c], ofdm->phase_corr[c]);
+        }
+
+        if (aux_hat) {
+            for (int a = 0; a < RADE_V2_NAUX; a++)
+                aux_hat[s * RADE_V2_NAUX + a] =
+                    rade_cmul(rade_cdot_comp(rx_dash, ofdm->Wfwd_aux[a], M), ofdm->phase_corr_aux[a]);
         }
 
         /* Pack into z_hat: z[2*(s*Nc+c)] = real, z[2*(s*Nc+c)+1] = imag */
