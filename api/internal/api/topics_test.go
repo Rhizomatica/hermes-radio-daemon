@@ -61,13 +61,13 @@ func TestTopicSnapshotThenChanges(t *testing.T) {
 	}
 
 	w.Send(`{"type":"subscribe","id":"s1","topics":["radio.state"]}`)
-	if r := w.Next(testapi.Type("reply"), time.Second); r["id"] != "s1" || r["ok"] != true {
-		t.Fatalf("subscribe reply = %v", r)
-	}
 	snap := w.Next(event("radio.state"), time.Second)
 	data, _ := snap["data"].(map[string]any)
 	if snap["seq"] != 0.0 || snap["snapshot"] != true || data["frequency_hz"] != 7100000.0 || data["mode"] != "USB" || snap["ts"] == nil {
 		t.Fatalf("snapshot = %v", snap)
+	}
+	if r := w.Next(testapi.Type("reply"), time.Second); r["id"] != "s1" || r["ok"] != true {
+		t.Fatalf("subscribe reply = %v", r)
 	}
 
 	st.set("frequency_hz", 7074000)
@@ -108,6 +108,27 @@ func TestTopicRateLimit(t *testing.T) {
 	}
 	if n-1 < 5 {
 		t.Errorf("only %d events in about 1.15 s of constant change", n-1)
+	}
+}
+
+// The reply to a subscribe comes after every topic's snapshot.
+func TestTopicReplyAfterSnapshot(t *testing.T) {
+	e, _ := env(t, spec.RoleReadonly)
+	w := e.Open()
+	w.Next(testapi.Type("hello"), time.Second)
+	w.Send(`{"type":"subscribe","id":"s1","topics":["radio.state"]}`)
+	w.Next(testapi.Type("reply"), time.Second)
+	var order []string
+	for _, f := range e.Radio.Frames(w.ID) {
+		switch {
+		case bytes.Contains(f, []byte(`"snapshot":true`)):
+			order = append(order, "snapshot")
+		case bytes.Contains(f, []byte(`"type":"reply"`)):
+			order = append(order, "reply")
+		}
+	}
+	if len(order) != 2 || order[0] != "snapshot" || order[1] != "reply" {
+		t.Fatalf("frames = %v, want [snapshot reply]", order)
 	}
 }
 

@@ -19,9 +19,14 @@ import (
 )
 
 // startMercuryDaemon starts radiod with mercury linked in, on ALSA's null
-// device, its TNC on free ports.  Returns the daemon and the TNC control
-// address.
+// device, its TNC on free ports and its chat store in the test's directory.
+// Returns the daemon and the TNC control address.
 func startMercuryDaemon(t *testing.T, core ...string) (*Daemon, string) {
+	t.Helper()
+	return startMercuryDaemonOpts(t, daemonOpts{core: core})
+}
+
+func startMercuryDaemonOpts(t *testing.T, o daemonOpts) (*Daemon, string) {
 	t.Helper()
 	if !hasMercury(t) {
 		t.Skip("radio_daemon was built without mercury (vendor/mercury not checked out)")
@@ -30,22 +35,25 @@ func startMercuryDaemon(t *testing.T, core ...string) (*Daemon, string) {
 	for bcast == ctl || bcast == ctl+1 {
 		bcast = freePort(t)
 	}
-	ini := filepath.Join(t.TempDir(), "mercury.ini")
+	dir := t.TempDir()
+	ini := filepath.Join(dir, "mercury.ini")
 	writeFile(t, ini, fmt.Sprintf(`[main]
 arq_tcp_base_port = %d
 broadcast_tcp_port = %d
 [ptt]
 method = none
 [store]
-enabled = false
-`, ctl, bcast))
+enabled = true
+path = %s
+`, ctl, bcast, filepath.Join(dir, "messages.jsonl")))
 
-	d := startDaemon(t, daemonOpts{core: append([]string{
+	o.core = append([]string{
 		"enable_mercury = 1",
 		"mercury_config = " + ini,
 		"capture_device = null",
 		"playback_device = null",
-	}, core...)})
+	}, o.core...)
+	d := startDaemon(t, o)
 	addr := fmt.Sprintf("127.0.0.1:%d", ctl)
 	if err := d.waitPort(addr, 15*time.Second); err != nil {
 		t.Fatalf("mercury's TNC: %v\n--- daemon log ---\n%s", err, d.Log())

@@ -15,6 +15,7 @@ import "C"
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -248,6 +249,69 @@ func (binding) SetGpsSettings(s GpsSettings) error {
 		}
 	}
 	return codeErr(int(C.radiod_api_gps_settings_set(&cs)))
+}
+
+func (binding) ListenMode() (string, error) {
+	var buf [32]C.char
+	if err := codeErr(int(C.radiod_api_modem_listen_mode(&buf[0], C.size_t(len(buf))))); err != nil {
+		return "", err
+	}
+	return C.GoString(&buf[0]), nil
+}
+
+func (binding) SetListenMode(name string) error {
+	cs := C.CString(name)
+	defer C.free(unsafe.Pointer(cs))
+	return codeErr(int(C.radiod_api_modem_set_listen_mode(cs)))
+}
+
+func (binding) ModemBusy() (string, error) {
+	var buf [32]C.char
+	if err := codeErr(int(C.radiod_api_modem_busy(&buf[0], C.size_t(len(buf))))); err != nil {
+		return "", err
+	}
+	return C.GoString(&buf[0]), nil
+}
+
+func (binding) SetModemTxGain(db float64) error {
+	return codeErr(int(C.radiod_api_modem_set_tx_gain(C.double(db))))
+}
+
+func (binding) SetModemWaterfall(on bool) error {
+	return codeErr(int(C.radiod_api_modem_set_waterfall(C.bool(on))))
+}
+
+// chatBuf holds a few whole lines at least (mercury's longest is 8 KB).
+const chatBuf = 64 << 10
+
+func (binding) ChatSince(after uint64) ([]ChatLine, uint64, error) {
+	buf := C.malloc(chatBuf)
+	defer C.free(buf)
+	var lines []ChatLine
+	for {
+		var last C.uint64_t
+		n := C.radiod_api_modem_chat_since(C.uint64_t(after), (*C.char)(buf), chatBuf, &last)
+		if n < 0 {
+			return nil, after, codeErr(int(n))
+		}
+		if n == 0 || uint64(last) == after {
+			return lines, after, nil
+		}
+		for _, l := range strings.Split(strings.TrimRight(C.GoStringN((*C.char)(buf), C.int(n)), "\n"), "\n") {
+			var cl ChatLine
+			if json.Unmarshal([]byte(l), &cl) == nil {
+				lines = append(lines, cl)
+			}
+		}
+		after = uint64(last)
+	}
+}
+
+func (binding) ChatSend(plane, text string) error {
+	cp, ct := C.CString(plane), C.CString(text)
+	defer C.free(unsafe.Pointer(cp))
+	defer C.free(unsafe.Pointer(ct))
+	return codeErr(int(C.radiod_api_modem_chat_send(cp, ct)))
 }
 
 func (binding) WSSend(conn int64, f []byte) error {

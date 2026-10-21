@@ -32,10 +32,10 @@ static const radio_pipeline_descriptor pipeline_registry[] = {
                         RADIO_PIPELINE_CAP_DAEMON_AUDIO_BRIDGE,
     },
     {
-        .name = "hamlib-radev2",
-        .summary = "Hamlib RF control with daemon audio bridge and explicit RADEv2 slot",
+        .name = "hamlib-digital-voice",
+        .summary = "Hamlib RF control with daemon audio bridge and digital voice",
         .backend_kind = RADIO_BACKEND_HAMLIB,
-        .domain = RADIO_PIPELINE_DOMAIN_RADEV2,
+        .domain = RADIO_PIPELINE_DOMAIN_DIGITAL_VOICE,
         .media_owner = RADIO_PIPELINE_MEDIA_DAEMON,
         .runtime_kind = RADIO_PIPELINE_RUNTIME_DAEMON_CORE,
         .capabilities = RADIO_PIPELINE_CAP_WS_RX_AUDIO |
@@ -63,10 +63,10 @@ static const radio_pipeline_descriptor pipeline_registry[] = {
                         RADIO_PIPELINE_CAP_TX_RECORDING,
     },
     {
-        .name = "hfsignals-radev2",
-        .summary = "Embedded sbitx RADEv2 DSP and ALSA path",
+        .name = "hfsignals-digital-voice",
+        .summary = "Embedded sbitx digital voice DSP and ALSA path",
         .backend_kind = RADIO_BACKEND_HFSIGNALS,
-        .domain = RADIO_PIPELINE_DOMAIN_RADEV2,
+        .domain = RADIO_PIPELINE_DOMAIN_DIGITAL_VOICE,
         .media_owner = RADIO_PIPELINE_MEDIA_LEGACY,
         .runtime_kind = RADIO_PIPELINE_RUNTIME_BACKEND_EMBEDDED,
         .capabilities = RADIO_PIPELINE_CAP_EMBEDDED_DSP |
@@ -94,12 +94,16 @@ static bool active_profile_uses_digital_voice(const radio *radio_h)
     return radio_h->profiles[active].digital_voice;
 }
 
-static const char *pipeline_domain_name_from_descriptor(const radio_pipeline_descriptor *pipeline)
+/* Digital voice is named by the codec it runs. */
+static const char *pipeline_domain_name_from_descriptor(const radio *radio_h,
+                                                        const radio_pipeline_descriptor *pipeline)
 {
     if (!pipeline)
         return "unknown";
+    if (pipeline->domain != RADIO_PIPELINE_DOMAIN_DIGITAL_VOICE)
+        return "analog";
 
-    return pipeline->domain == RADIO_PIPELINE_DOMAIN_RADEV2 ? "radev2" : "analog";
+    return atomic_load(&radio_h->digital_voice_codec) == DV_CODEC_DSTAR ? "dstar" : "radev2";
 }
 
 static const char *pipeline_media_owner_name_from_descriptor(const radio_pipeline_descriptor *pipeline)
@@ -156,7 +160,7 @@ const radio_pipeline_descriptor *radio_pipeline_lookup_for_backend(radio_backend
     size_t i;
     const radio_pipeline_descriptor *fallback = NULL;
     radio_pipeline_domain wanted = digital_voice ?
-                                   RADIO_PIPELINE_DOMAIN_RADEV2 :
+                                   RADIO_PIPELINE_DOMAIN_DIGITAL_VOICE :
                                    RADIO_PIPELINE_DOMAIN_ANALOG;
 
     for (i = 0; i < radio_pipeline_registry_size(); i++)
@@ -190,7 +194,7 @@ void radio_pipeline_refresh(radio *radio_h)
     {
         HLOGI(LOG_C, "active=%s mode=%s media=%s runtime=%s",
                 pipeline->name,
-                pipeline_domain_name_from_descriptor(pipeline),
+                pipeline_domain_name_from_descriptor(radio_h, pipeline),
                 pipeline_media_owner_name_from_descriptor(pipeline),
                 pipeline_runtime_name_from_descriptor(pipeline));
     }
@@ -220,7 +224,7 @@ const char *radio_pipeline_summary(const radio *radio_h)
 
 const char *radio_pipeline_domain_name(const radio *radio_h)
 {
-    return pipeline_domain_name_from_descriptor(radio_pipeline_active(radio_h));
+    return pipeline_domain_name_from_descriptor(radio_h, radio_pipeline_active(radio_h));
 }
 
 const char *radio_pipeline_media_owner_name(const radio *radio_h)

@@ -121,10 +121,11 @@ func TestGPSTopicSnapshot(t *testing.T) {
 			}
 		}
 	}
+	// the snapshot comes before the reply
+	snap := next(func(f map[string]any) bool { return f["type"] == "event" && f["topic"] == "gps" })
 	if r := next(func(f map[string]any) bool { return f["type"] == "reply" }); r["ok"] != true {
 		t.Fatalf("subscribe reply = %v", r)
 	}
-	snap := next(func(f map[string]any) bool { return f["type"] == "event" && f["topic"] == "gps" })
 	if snap["snapshot"] != true || snap["seq"] != 0.0 {
 		t.Errorf("gps snapshot envelope = %v", snap)
 	}

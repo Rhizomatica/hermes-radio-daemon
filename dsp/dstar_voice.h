@@ -44,6 +44,10 @@
  *   blocks for the right one -- a flipped bit is not a wrong key.
  * - A receiver without the key, or with the wrong key, mutes the encrypted
  *   over instead of playing garbage.
+ * - Until a CRC-valid header or one superframe's slow data shows whether
+ *   the over is encrypted, it is muted: a lock in the middle of an
+ *   encrypted over whose first sync block is corrupt would otherwise play
+ *   that superframe's ciphertext as noise.
  *
  * Copyright (C) 2026 Rhizomatica
  * Author: Rafael Diniz <rafael@riseup.net>
@@ -103,7 +107,8 @@ void dstar_voice_tx_frame(dstar_voice_tx *t, const char ambe_d[DSTAR_VOICE_AMBE_
 typedef enum {
     DSTAR_VC_CLEAR = 0,     /* over is not encrypted */
     DSTAR_VC_DECRYPTING,    /* encrypted, key matches, playing */
-    DSTAR_VC_ACQUIRING,     /* encrypted, waiting for a clean sync block */
+    DSTAR_VC_ACQUIRING,     /* encrypted, waiting for a clean sync block; or
+                             * not yet known (no valid header): muted */
     DSTAR_VC_NO_KEY,        /* encrypted, no key loaded: muted */
     DSTAR_VC_BAD_KEY,       /* encrypted, sync blocks fail the key check: muted */
 } dstar_vc_status;
@@ -111,6 +116,8 @@ typedef enum {
 typedef struct {
     bool     hdr_enc;       /* header flagged the over as encrypted */
     bool     enc_seen;      /* a sync block was seen this over */
+    bool     clear_known;   /* a CRC-valid clear header, or a superframe's
+                             * slow data, showed the over is clear */
     bool     synced;
     uint8_t  r[VOICE_NONCE_RAND_BYTES];
     uint32_t sf;            /* superframe counter of the current superframe */

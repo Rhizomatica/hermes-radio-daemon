@@ -142,6 +142,7 @@ MERCURY_LIBS ?= $(MERCURY_DIR)/libmercury_host.a $(MERCURY_DIR)/modem/freedv/lib
 CFLAGS          += -DHAVE_MERCURY=1
 DAEMON_TOP_OBJS += modem/mercury_link.o
 modem/mercury_link.o: EXTRA_CPPFLAGS += -I$(MERCURY_DIR)/host
+api/radiod_api.o: EXTRA_CPPFLAGS += -I$(MERCURY_DIR)/host
 # One kiss_fft in the binary: freedv's (same structs, MAXFACTORS and float
 # scalar as ft8_lib's).  The FT8 test links the same copy.
 FT8_LIB_OBJS := $(filter-out %/fft/kiss_fft.o %/fft/kiss_fftr.o,$(FT8_LIB_OBJS))

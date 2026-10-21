@@ -28,6 +28,7 @@ const (
 	CodeOutOfRange   = "out_of_range"
 	CodeForbidden    = "forbidden"
 	CodeBusy         = "busy"
+	CodeNoLink       = "no_link"
 	CodeNotSupported = "not_supported"
 	CodeRigTimeout   = "rig_timeout"
 	CodeQueueFull    = "queue_full"

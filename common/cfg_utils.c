@@ -644,6 +644,9 @@ bool init_config_user(radio *radio_h, const char *ini_name)
     b = iniparser_getboolean(ini, "main:tone_generation", 0);
     radio_h->tone_generation = (bool) b;
 
+    s = iniparser_getstring(ini, "main:mercury_listen_mode", "");
+    snprintf(radio_h->mercury_listen_mode, sizeof(radio_h->mercury_listen_mode), "%s", s);
+
     /* Count profile sections (everything except [main]) */
     int sec_count = iniparser_getnsec(ini) - 1;
     if (sec_count <= 0)

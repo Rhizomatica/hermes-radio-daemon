@@ -22,6 +22,12 @@ type Stub struct {
 	log      []json.RawMessage
 	modem    json.RawMessage
 	gps      Gps
+	listen   string // mercury's listen mode
+	busy     string // "arq", "broadcast" or ""
+	link     bool   // an ARQ session up
+	chat     []ChatLine
+	gainDB   float64
+	wfall    bool
 	logs     []string
 	Sent     map[int64][][]byte // frames by connection; 0 = broadcast
 }
@@ -49,9 +55,40 @@ func NewStub() *Stub {
 			DstarMycall: "N0CALL", VoiceCodec: "RADEV2"},
 		gps: Gps{Fix: "none", Settings: GpsSettings{SampleIntervalS: 1, FilePeriodS: 3600,
 			Report: GpsReport{IntervalS: 900}}},
-		Sent: map[int64][][]byte{},
+		listen: "DATAC3",
+		Sent:   map[int64][][]byte{},
 	}
 	return s
+}
+
+// SetModemBusy says what holds the stub's modem ("arq", "broadcast" or ""),
+// and with "arq" that a session is up.
+func (s *Stub) SetModemBusy(why string) {
+	s.mu.Lock()
+	s.busy, s.link = why, why == "arq"
+	s.mu.Unlock()
+}
+
+// AddChat stores a received chat line, as mercury would.
+func (s *Stub) AddChat(plane, peer, text string) {
+	s.mu.Lock()
+	s.addChat(plane, "rx", peer, text)
+	s.mu.Unlock()
+}
+
+func (s *Stub) addChat(plane, dir, peer, text string) {
+	var seq uint64 = 1
+	if n := len(s.chat); n > 0 {
+		seq = s.chat[n-1].Seq + 1
+	}
+	s.chat = append(s.chat, ChatLine{Seq: seq, TS: 1792800000 + int64(seq), Plane: plane, Dir: dir, Peer: peer, Text: text})
+}
+
+// ModemSettings reports what the stub's mercury was set to.
+func (s *Stub) ModemSettings() (gainDB float64, waterfall bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gainDB, s.wfall
 }
 
 // SetTX puts the stub in or out of transmit (for "busy" tests).
@@ -415,6 +452,111 @@ func (s *Stub) SetGpsSettings(g GpsSettings) error {
 	s.mu.Lock()
 	s.gps.Settings = g
 	s.mu.Unlock()
+	return nil
+}
+
+// stubListenModes are the listen modes mercury can switch to at run time.
+var stubListenModes = map[string]bool{"DATAC1": true, "DATAC3": true, "DATAC4": true, "DATAC15": true,
+	"DATAC17": true, "QAM16C2": true, "MFSK": true, "MFSK500": true}
+
+func (s *Stub) running() bool { return s.modem != nil }
+
+func (s *Stub) ListenMode() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.running() {
+		return "", ErrNotSupported
+	}
+	return s.listen, nil
+}
+
+func (s *Stub) SetListenMode(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case !s.running():
+		return ErrNotSupported
+	case !stubListenModes[name]:
+		return ErrInvalid
+	case s.busy != "":
+		return ErrBusy
+	}
+	s.listen = name
+	return nil
+}
+
+func (s *Stub) ModemBusy() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.running() {
+		return "", ErrNotSupported
+	}
+	return s.busy, nil
+}
+
+func (s *Stub) SetModemTxGain(db float64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.running() {
+		return ErrNotSupported
+	}
+	if db < -20 || db > 20 {
+		return ErrInvalid
+	}
+	s.gainDB = db
+	return nil
+}
+
+func (s *Stub) SetModemWaterfall(on bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.running() {
+		return ErrNotSupported
+	}
+	s.wfall = on
+	return nil
+}
+
+func (s *Stub) ChatSince(after uint64) ([]ChatLine, uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.running() {
+		return nil, after, ErrNotSupported
+	}
+	var out []ChatLine
+	for _, l := range s.chat {
+		if l.Seq > after {
+			out = append(out, l)
+			after = l.Seq
+		}
+	}
+	return out, after, nil
+}
+
+// stubBcastMax is the stub's broadcast chat line limit (DATAC3's).
+const stubBcastMax = 120
+
+func (s *Stub) ChatSend(plane, text string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	text = strings.TrimRight(text, "\r\n")
+	switch {
+	case !s.running():
+		return ErrNotSupported
+	case text == "" || len(text) > 1024:
+		return ErrInvalid
+	case plane == "arq" && !s.link:
+		return ErrNoLink
+	case plane == "broadcast" && len(text) > stubBcastMax:
+		return ErrTooLong
+	case plane != "arq" && plane != "broadcast":
+		return ErrInvalid
+	}
+	p := plane
+	if p == "broadcast" {
+		p = "bcast"
+	}
+	s.addChat(p, "tx", "", text)
 	return nil
 }
 

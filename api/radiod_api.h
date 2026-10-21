@@ -24,6 +24,8 @@
 #define RADIOD_API_EBUSY    -3    /* refused while transmitting */
 #define RADIOD_API_ENOTSUP  -4    /* not on this radio or build */
 #define RADIOD_API_EIO      -5    /* the rig refused or did not answer (CAT) */
+#define RADIOD_API_ENOLINK  -6    /* the modem has no ARQ session up */
+#define RADIOD_API_E2BIG    -7    /* too long for one broadcast frame */
 
 /* ── radio ── */
 
@@ -182,6 +184,40 @@ void radiod_api_gps_get(radiod_api_gps *out);
 /* Apply the whole settings (all fields), validate the spec's ranges and
  * save to the configuration.  EINVAL outside the ranges. */
 int radiod_api_gps_settings_set(const radiod_api_gps_settings *s);
+
+/* Mercury's listen mode, its broadcast plane and chat (its host API,
+ * vendor/mercury/host/mercury_host.h).  ENOTSUP while mercury is not running
+ * in this daemon. */
+
+/* The listen mode's name ("DATAC3") into out. */
+int radiod_api_modem_listen_mode(char *out, size_t out_len);
+
+/* Set the listen mode by name and save it (user.ini): EINVAL for a mode
+ * mercury cannot switch to at run time, EBUSY while an ARQ session or a
+ * broadcast holds the modem (radiod_api_modem_busy says which). */
+int radiod_api_modem_set_listen_mode(const char *name);
+
+/* What holds the modem: "arq", "broadcast", or "" into out. */
+int radiod_api_modem_busy(char *out, size_t out_len);
+
+/* Mercury's TX gain in dB (-20..20) and its spectrum feed, as its UI
+ * commands set them; mercury saves them in its mercury.ini.  EINVAL out of
+ * range. */
+int radiod_api_modem_set_tx_gain(double db);
+int radiod_api_modem_set_waterfall(bool on);
+
+/* The chat lines after seq after (0: all mercury holds), oldest first, each
+ * one JSON object of mercury's ({"seq","ts","ms","plane","dir","peer",
+ * "text"}) and '\n', whole lines only (the rest on the next call), in out
+ * (NUL-terminated); *last gets the seq of the last line, after if none.
+ * Returns the bytes written, or an error (< 0). */
+long radiod_api_modem_chat_since(uint64_t after, char *out, size_t out_len, uint64_t *last);
+
+/* Send one chat line (at most 1024 bytes) on plane "arq" (ENOLINK with no
+ * session up, EBUSY while its queue is full) or "broadcast" (one frame in
+ * the listen mode: E2BIG when it does not fit; held while an ARQ session is
+ * up). */
+int radiod_api_modem_chat_send(const char *plane, const char *text);
 
 /* ── to clients (hermes.v1), thread-safe, queue only ── */
 

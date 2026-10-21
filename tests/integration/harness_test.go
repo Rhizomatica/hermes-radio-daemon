@@ -138,6 +138,8 @@ type daemonOpts struct {
 	freq int
 	// The address the websocket listens on ("" = 127.0.0.1).
 	wsHost string
+	// Extra [main] lines for user.ini, e.g. "mercury_listen_mode = DATAC4".
+	userMain []string
 }
 
 const defaultUserINI = `[main]
@@ -197,7 +199,11 @@ func startDaemon(t *testing.T, o daemonOpts) *Daemon {
 	coreINI := filepath.Join(dir, "core.ini")
 	userINI := filepath.Join(dir, "user.ini")
 	writeFile(t, coreINI, strings.Join(core, "\n")+"\n")
-	writeFile(t, userINI, fmt.Sprintf(defaultUserINI, o.freq))
+	user := fmt.Sprintf(defaultUserINI, o.freq)
+	if len(o.userMain) > 0 {
+		user = strings.Replace(user, "[main]\n", "[main]\n"+strings.Join(o.userMain, "\n")+"\n", 1)
+	}
+	writeFile(t, userINI, user)
 
 	d := &Daemon{
 		t:       t,

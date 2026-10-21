@@ -684,6 +684,7 @@ static void *radae_rx_thread(void *arg)
     bool was_synced = false;
     static rade_voice_rx vrx;          /* unscrambling, and the play gate */
     rade_vc_status was_crypto = RADE_VC_CLEAR;
+    long unsynced = 0;                 /* modem samples since sync was lost */
 
     synthesis = radae_synthesis_new();
     if (!synthesis) {
@@ -716,6 +717,7 @@ static void *radae_rx_thread(void *arg)
             rade_set_latent_hook(rx_rade, radae_rx_hook, &vrx);
             radae_synthesis_reset(synthesis);
             was_synced = false;
+            unsynced = 0;
             ctx->rx_reset_requested = false;
         }
 
@@ -764,17 +766,25 @@ static void *radae_rx_thread(void *arg)
                 HLOGI(LOG_C, "RADAE RX: sync lost%s", has_eoo_out ? " (end of over)" : "");
             was_synced = synced;
         }
+        /* A signal lost for 2 s ends the over, as rade_voice_rx_symbol()
+         * would decide at the next one. */
+        unsynced = synced ? 0 : unsynced + nin;
+        if (unsynced > 2 * RADE_MODEM_SAMPLE_RATE && vrx.any)
+            rade_voice_rx_reset(&vrx);
         /* An encrypted over this station cannot decrypt (yet) is muted,
          * not played as noise. */
         const bool play = rade_voice_rx_play(&vrx);
-        if (vrx.status != was_crypto) {
+        /* With no over, rade_voice_rx keeps "acquiring" to mute the start
+         * of the next; the station reports clear, as D-STAR does. */
+        const rade_vc_status crypto = synced || vrx.any ? vrx.status : RADE_VC_CLEAR;
+        if (crypto != was_crypto) {
             static const char *what[] = {"clear", "decrypting", "acquiring",
                                          "encrypted, no voice key: muted",
                                          "encrypted, key mismatch: muted"};
-            HLOGI(LOG_C, "RADAE RX: %s", what[vrx.status <= RADE_VC_BAD_KEY ? vrx.status : 0]);
-            was_crypto = vrx.status;
+            HLOGI(LOG_C, "RADAE RX: %s", what[crypto <= RADE_VC_BAD_KEY ? crypto : 0]);
+            was_crypto = crypto;
         }
-        ctx->radio_h->rade_rx_crypto = (uint16_t) vrx.status;
+        ctx->radio_h->rade_rx_crypto = (uint16_t) crypto;
         for (int k = 0; k + RADAE_VOCODER_FEATURES <= n_features; k += RADAE_VOCODER_FEATURES) {
             int n = RADAE_VOCODER_FRAME;
             if (play)
