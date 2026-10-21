@@ -82,6 +82,7 @@ type DigiSettings struct {
 	RTTYBaud, RTTYShiftHz, RTTYMarkHz        int
 	DstarMycall                              string
 	DstarEncrypt, DstarDenoise, DstarVerbose bool
+	RadeEncrypt                              bool
 	VoiceCodec                               string // RADEV2, DSTAR
 }
 
@@ -132,7 +133,7 @@ type Radio interface {
 
 	DigiSettings() DigiSettings
 	// SetDigi takes radiod's keys: cw_wpm, cw_pitch, rtty_baud, rtty_mark,
-	// rtty_shift, dstar_verbose, dstar_denoise, dstar_encrypt.
+	// rtty_shift, dstar_verbose, dstar_denoise, dstar_encrypt, rade_encrypt.
 	SetDigi(key string, value int) error
 	SetVoiceCodec(name string) error
 	// DigiLog returns up to max entries after id `after`, oldest first,

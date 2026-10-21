@@ -338,6 +338,8 @@ func (s *Stub) SetDigi(key string, v int) error {
 		d.RTTYMarkHz = v
 	case "dstar_encrypt":
 		d.DstarEncrypt = v != 0
+	case "rade_encrypt":
+		d.RadeEncrypt = v != 0
 	case "dstar_denoise":
 		d.DstarDenoise = v != 0
 	case "dstar_verbose":

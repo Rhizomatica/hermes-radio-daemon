@@ -392,6 +392,7 @@ void radiod_api_digi_settings_get(radiod_api_digi_settings *out)
     out->dstar_encrypt = r->dstar_encrypt != 0;
     out->dstar_denoise = r->dstar_denoise != 0;
     out->dstar_verbose = r->dstar_verbose != 0;
+    out->rade_encrypt = r->rade_encrypt != 0;
     snprintf(out->voice_codec, sizeof(out->voice_codec), "%s",
              cfg_dv_codec_name(r->digital_voice_codec));
 }
@@ -413,6 +414,7 @@ int radiod_api_digi_set(const char *key, long v)
     else if (!strcmp(key, "dstar_verbose")) r->dstar_verbose = (uint16_t) v;
     else if (!strcmp(key, "dstar_denoise")) r->dstar_denoise = (uint16_t) v;
     else if (!strcmp(key, "dstar_encrypt")) r->dstar_encrypt = (uint16_t) (v != 0);
+    else if (!strcmp(key, "rade_encrypt"))  r->rade_encrypt  = (uint16_t) (v != 0);
     else return RADIOD_API_EINVAL;
     return RADIOD_API_OK;
 }

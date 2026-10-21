@@ -566,6 +566,15 @@ Neural-network-based digital voice codec. Activated per-profile with `digital_vo
 
 `main:digital_voice_codec` in `core.ini` picks what digital voice runs: `RADEV2` (the default) or `DSTAR`. The HERMES web interface's Digital voice switch (`set_digital_voice`) follows it; switching is refused while transmitting. `DSTAR` needs the sbitx backend (on hamlib rigs D-STAR remains a mode, not digital voice). With `DSTAR`, switching digital voice on puts the profile in `DSTAR` mode and switching it off puts it back in the mode it had; `get_digital_voice` reports whether the profile is in `DSTAR`. A change of codec in the file carries each profile's digital voice over at the next start. Change it at run time over the websocket with `{"cmd": "digi_config", "key": "digital_voice_codec", "value": "DSTAR"}`: profiles with digital voice on stay on, in the new codec.
 
+#### Voice encryption
+
+Opt-in, for nets where encryption is permitted; it is not on amateur bands. Every station on the net loads the same 256-bit key from `main:voice_key_file` (32 raw bytes or 64 hex digits, chmod 600). `digi_get_config` reports `voice_key_loaded` and a `voice_key_fingerprint` to compare stations by.
+
+- `main:dstar_encrypt = 1`: D-STAR. The AMBE voice bits are XORed with ChaCha20 keystream, the per-over nonce rides in the DV header and in slow-data sync blocks (`dsp/dstar_voice.h`).
+- `main:rade_encrypt = 1`: RADE V2 (`dsp/rade_voice.h`). The modem's latent is mixed per carrier by keyed 2x2 unitaries, fresh every 40 ms frame. Two extra carriers, one either side of RADE's 14 (1000 and 2000 Hz), carry the over's nonce and frame counter in the clear, so a receiver locks within about 1 s (2-3 s near the lowest SNR) wherever it joins, with no gap in the speech and no clock shared between stations. A clipper takes the scrambled signal back to stock RADE V2's 3.5 dB PAPR. `utils/rade_crypt_sim.c` (`make rade_crypt_sim`) measures it over simulated HF channels.
+
+Either way, with no key loaded an over goes out as silence, never in the clear. A receiver with the key decrypts; one without it, or with another key, mutes the over instead of playing noise, and clear overs play as before. The status frame's `dstar_crypto` and `rade_crypto` say which: 0 clear, 1 decrypting, 2 acquiring, 3 encrypted without a key, 4 key mismatch. Both keys can be set at run time with `digi_config` (`dstar_encrypt`, `rade_encrypt`).
+
 ### Unified Digital Mode WebSocket API
 
 All three digital text modes (FT8/CW/RTTY) share a common interface:

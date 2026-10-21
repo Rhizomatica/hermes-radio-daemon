@@ -19,7 +19,7 @@ CC      = gcc
 #   gui_interface/       websocket UI (radio_websocket + websocket/ server), web/
 #   common/              configuration and shared-memory helpers
 #   include/             public protocol headers (SHM command set)
-#   utils/               radio_client, ws_client, D-STAR/AMBE tools
+#   utils/               radio_client, ws_client, D-STAR/AMBE and RADE tools
 MODULE_INCLUDES = -Iradio -Imodem -Iaudioio -Icontrol_interfaces -Igui_interface -Iapi -Ivendor/hermes_log \
                   -Icommon -Ihamlib -Iinclude
 
@@ -118,6 +118,7 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              dsp/sbitx_dstar.o \
              dsp/dstar_voice.o \
              dsp/voice_crypto.o \
+             dsp/rade_voice.o \
              dsp/mic_filter.o \
              sbitx/sbitx_si5351.o \
              sbitx/ring_buffer.o \
@@ -253,6 +254,15 @@ DSTAR_CRYPT_SIM_OBJS = utils/dstar_crypt_sim.o dsp/dstar_voice.o dsp/voice_crypt
 dstar_crypt_sim: $(DSTAR_CRYPT_SIM_OBJS)
 	$(CC) $(CFLAGS) $(DSTAR_CRYPT_SIM_OBJS) -o $@ -lmbe-neo -lcrypto -lpthread -lm
 
+# ── RADE V2 voice scrambling over a simulated HF channel, a testing aid
+# (not built by "all"): utils/rade_crypt_sim.c ──
+RADE_CRYPT_SIM_OBJS = utils/rade_crypt_sim.o dsp/rade_voice.o dsp/voice_crypto.o \
+                      dsp/radae_vocoder.o $(RADE_C_EMBED_OBJS) $(OPUS_DNN_OBJS) \
+                      vendor/hermes_log/hermes_log.o
+utils/rade_crypt_sim.o: EXTRA_CPPFLAGS := $(RADE_C_EMBED_CPPFLAGS) $(OPUS_DNN_CPPFLAGS)
+rade_crypt_sim: $(RADE_CRYPT_SIM_OBJS)
+	$(CC) $(CFLAGS) $(RADE_CRYPT_SIM_OBJS) -o $@ -lcrypto -lpthread -lm
+
 # ── unit tests (tests/tests.mk: make test, make test SANITIZE=asan|tsan) ──
 include tests/tests.mk
 
@@ -295,9 +305,10 @@ install: radio_daemon radio_client
 
 # ── clean ───────────────────────────────────────────────────────
 clean:
-	rm -f radio_daemon radio_client ws_client dstar_crypt_sim utils/dstar_crypt_sim.[od] \
+	rm -f radio_daemon radio_client ws_client dstar_crypt_sim rade_crypt_sim \
+	      utils/dstar_crypt_sim.[od] utils/rade_crypt_sim.[od] \
 	      $(DAEMON_OBJS) $(DAEMON_OBJS:.o=.d) $(TEST_BINS) $(TEST_STAMP) \
 	      $(GO_API_LIB) $(GO_API_DIR)/libhermes_api.h .radiod_version
 
 # Auto-generated header dependencies (from -MMD). Hyphen: ignore on first build.
--include $(DAEMON_OBJS:.o=.d)
+-include $(DAEMON_OBJS:.o=.d) $(RADE_CRYPT_SIM_OBJS:.o=.d) $(DSTAR_CRYPT_SIM_OBJS:.o=.d)

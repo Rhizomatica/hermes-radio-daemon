@@ -272,6 +272,15 @@ void rade_rx_set_agc(struct rade *r, int enable) {
     if (r->flags & RADE_MODE_V2) r->rx_v2.agc_en = enable;
 }
 
+void rade_set_latent_hook(struct rade *r, rade_v2_latent_hook hook, void *user) {
+    assert(r != NULL);
+    if (!(r->flags & RADE_MODE_V2)) return;
+    r->tx_v2.latent_hook      = hook;
+    r->tx_v2.latent_hook_user = user;
+    r->rx_v2.latent_hook      = hook;
+    r->rx_v2.latent_hook_user = user;
+}
+
 void rade_tx_set_data_symbol(struct rade *r, float symbol) {
     assert(r != NULL);
     if (r->flags & RADE_MODE_V2) rade_tx_v2_set_data_symbol(&r->tx_v2, symbol);

@@ -23,6 +23,12 @@
  * features with the LPCNet feature extractor and FARGAN vocoder
  * (radae_vocoder.c, vendor/opus_dnn), features <-> modem signal with the
  * RADE V2 encoder/decoder (vendor/rade_c).
+ *
+ * main:rade_encrypt scrambles the overs this station sends (dsp/rade_voice.h:
+ * the keyed latent mixing, the aux carriers' signalling, and the clipper that
+ * takes the scrambled signal back to RADE's PAPR). Every over received goes
+ * through the receiver's side of it, which unscrambles with the voice key
+ * and mutes encrypted overs it cannot decrypt.
  */
 
 #include <math.h>
@@ -34,6 +40,7 @@
 
 #include "rade_api.h"
 #include "radae_vocoder.h"
+#include "rade_voice.h"
 #include "sbitx_core.h"
 #include "sbitx_radae.h"
 
@@ -90,6 +97,20 @@ bool radae_is_debug(void) { return radae_debug != 0; }
 
 // TX thread: speech -> features (LPCNet) -> RADEv2 TX -> modem IQ.
 static void *radae_tx_thread(void *arg);
+
+_Static_assert(RADE_VOICE_NC == RADE_V2_NC && RADE_VOICE_NS == RADE_V2_NS &&
+               RADE_VOICE_LATENT == RADE_V2_LATENT_DIM && RADE_VOICE_NAUX == RADE_V2_NAUX &&
+               sizeof(RADE_COMP) == 2 * sizeof(float), "rade_voice.h: RADE V2 layout");
+
+static void radae_tx_hook(void *user, rade_v2_hook_frame *f)
+{
+    rade_voice_tx_frame((rade_voice_tx *) user, f->z, (float *) f->aux);
+}
+
+static void radae_rx_hook(void *user, rade_v2_hook_frame *f)
+{
+    f->align = rade_voice_rx_symbol((rade_voice_rx *) user, f->z, (const float *) f->aux, f->sym);
+}
 
 // RX thread: modem IQ -> RADEv2 RX -> features -> speech (FARGAN).
 static void *radae_rx_thread(void *arg);
@@ -500,6 +521,8 @@ static void *radae_tx_thread(void *arg)
     int16_t pcm_buffer[RADAE_FRAME_SIZE];
     float speech_buffer[RADAE_FRAME_SIZE];
     bool session_ready = false;
+    static rade_voice_tx vtx;          /* this over's scrambling, if any */
+    static rade_voice_clip clip;
 
     analysis = radae_analysis_new();
     if (!analysis) {
@@ -544,6 +567,15 @@ static void *radae_tx_thread(void *arg)
                 break;
             /* A new over is a new stream: start the feature extractor afresh. */
             radae_analysis_reset(analysis);
+            bool enc = ctx->radio_h->rade_encrypt != 0;
+            if (!rade_voice_tx_begin(&vtx, enc, 1.0f))
+                HLOGE(LOG_C, "RADAE TX: rade_encrypt is on but no voice key is loaded -- "
+                             "sending silence, not clear voice");
+            if (vtx.encrypt || vtx.fail_closed)
+                rade_set_latent_hook(tx_rade, radae_tx_hook, &vtx);
+            rade_voice_clip_reset(&clip);
+            if (vtx.encrypt)
+                HLOGI(LOG_C, "RADAE TX: encrypted over");
             ctx->tx_reset_requested = false;
             n_features = 0;
             session_ready = true;
@@ -557,8 +589,17 @@ static void *radae_tx_thread(void *arg)
         if (emit_eoo) {
             n_features = 0;
             int n_out = rade_tx_eoo(tx_rade, tx_out);
+            if (n_out > 0 && vtx.encrypt)
+                rade_voice_clip_run(&clip, (float *) tx_out, n_out);
             if (n_out > 0)
                 tx_store_modem_iq(ctx, tx_out, n_out);
+            if (vtx.encrypt) {
+                /* the clipper's filters still hold the end of the EOO */
+                RADE_COMP tail[RADE_VOICE_CLIP_DELAY];
+                memset(tail, 0, sizeof(tail));
+                rade_voice_clip_run(&clip, (float *) tail, RADE_VOICE_CLIP_DELAY);
+                tx_store_modem_iq(ctx, tail, RADE_VOICE_CLIP_DELAY);
+            }
             /* Clear the request only once the frame is queued, so
              * radae_tx_drained() cannot see "nothing pending, buffer
              * empty" in between and let PTT drop before it is sent. */
@@ -616,6 +657,8 @@ static void *radae_tx_thread(void *arg)
 
         if (n_features == features_per_tx) {
             int n_out = rade_tx(tx_rade, tx_out, features);
+            if (n_out > 0 && vtx.encrypt)
+                rade_voice_clip_run(&clip, (float *) tx_out, n_out);
             if (n_out > 0)
                 tx_store_modem_iq(ctx, tx_out, n_out);
             n_features = 0;
@@ -639,6 +682,8 @@ static void *radae_rx_thread(void *arg)
     float *features_out = NULL;
     int16_t pcm[RADAE_VOCODER_FRAME];
     bool was_synced = false;
+    static rade_voice_rx vrx;          /* unscrambling, and the play gate */
+    rade_vc_status was_crypto = RADE_VC_CLEAR;
 
     synthesis = radae_synthesis_new();
     if (!synthesis) {
@@ -649,6 +694,8 @@ static void *radae_rx_thread(void *arg)
     rx_rade = radae_open_rx_session();
     if (!rx_rade)
         goto cleanup;
+    rade_voice_rx_reset(&vrx);
+    rade_set_latent_hook(rx_rade, radae_rx_hook, &vrx);
 
     int rx_frame_capacity = rade_nin_max(rx_rade);
     int feature_capacity = rade_n_features_in_out(rx_rade);
@@ -665,6 +712,8 @@ static void *radae_rx_thread(void *arg)
         if (ctx->rx_reset_requested) {
             if (!radae_reset_rx_session(&rx_rade))
                 break;
+            rade_voice_rx_reset(&vrx);
+            rade_set_latent_hook(rx_rade, radae_rx_hook, &vrx);
             radae_synthesis_reset(synthesis);
             was_synced = false;
             ctx->rx_reset_requested = false;
@@ -715,11 +764,28 @@ static void *radae_rx_thread(void *arg)
                 HLOGI(LOG_C, "RADAE RX: sync lost%s", has_eoo_out ? " (end of over)" : "");
             was_synced = synced;
         }
+        /* An encrypted over this station cannot decrypt (yet) is muted,
+         * not played as noise. */
+        const bool play = rade_voice_rx_play(&vrx);
+        if (vrx.status != was_crypto) {
+            static const char *what[] = {"clear", "decrypting", "acquiring",
+                                         "encrypted, no voice key: muted",
+                                         "encrypted, key mismatch: muted"};
+            HLOGI(LOG_C, "RADAE RX: %s", what[vrx.status <= RADE_VC_BAD_KEY ? vrx.status : 0]);
+            was_crypto = vrx.status;
+        }
+        ctx->radio_h->rade_rx_crypto = (uint16_t) vrx.status;
         for (int k = 0; k + RADAE_VOCODER_FEATURES <= n_features; k += RADAE_VOCODER_FEATURES) {
-            int n = radae_synthesis_frame(synthesis, &features_out[k], pcm);
+            int n = RADAE_VOCODER_FRAME;
+            if (play)
+                n = radae_synthesis_frame(synthesis, &features_out[k], pcm);
+            else
+                memset(pcm, 0, sizeof(pcm));
             if (n > 0)
                 rx_store_speech_pcm(ctx, pcm, n);
         }
+        if (has_eoo_out)
+            rade_voice_rx_reset(&vrx);   /* the next over starts afresh */
         if (n_features > 0)
             RADAE_RATE_LOG("rx_fargan", "feat", n_features, "decoded features");
     }

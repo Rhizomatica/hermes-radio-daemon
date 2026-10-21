@@ -10,7 +10,18 @@ CLI tools, tests and CMake are not vendored.
 Like upstream, it builds against Opus's patched DNN code (nnet core,
 config.h, opus_types.h, ...): here the subset in vendor/opus_dnn, which also
 provides the LPCNet feature extractor and FARGAN vocoder the daemon uses for
-speech <-> features. Nothing daemon-local is added to these sources.
+speech <-> features.
+
+One daemon-local change, for dsp/rade_voice.c's keyed voice scrambling;
+re-apply it on update:
+- a V2 latent hook (rade_set_latent_hook in rade_api.h; latent_hook in
+  rade_tx_v2_state and rade_rx_v2_state), a callback on each modem frame's
+  latent vector between the encoder and the OFDM modulator, and between the
+  demodulator and frame sync. It may set the RX frame alignment (align).
+- two aux carriers (RADE_V2_NAUX in rade_v2_ofdm.h), the OFDM bins either
+  side of the 14 data carriers: the hook writes their symbols on TX and
+  reads them on RX. All zero unless the hook writes them, when the signal
+  is stock RADE V2. The RX band-pass is widened to pass them.
 
 API: single unified `rade_api.h`; select V2 with rade_open(model, RADE_MODE_V2 | flags).
 

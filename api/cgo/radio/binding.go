@@ -146,6 +146,7 @@ func (binding) DigiSettings() DigiSettings {
 		CWWPM: int(d.cw_wpm), CWPitchHz: int(d.cw_pitch_hz), RTTYBaud: int(d.rtty_baud),
 		RTTYShiftHz: int(d.rtty_shift_hz), RTTYMarkHz: int(d.rtty_mark_hz),
 		DstarMycall: cstr(d.dstar_mycall[:]), DstarEncrypt: bool(d.dstar_encrypt),
+		RadeEncrypt:  bool(d.rade_encrypt),
 		DstarDenoise: bool(d.dstar_denoise), DstarVerbose: bool(d.dstar_verbose),
 		VoiceCodec: cstr(d.voice_codec[:]),
 	}
