@@ -134,8 +134,9 @@ func fields(t topic, c *Conn) (map[string]json.RawMessage, error) {
 }
 
 // subscribe handles a subscribe frame on the connection's goroutine: every
-// topic is checked, and its state read, before any is subscribed; then the
-// reply, then one snapshot per topic.
+// topic is checked, and its state read, before any is subscribed; then one
+// snapshot per topic, then the reply, so the client knows the snapshots are
+// complete (api-ws.yaml, "Rules"). The publisher sends nothing in between.
 func (c *Conn) subscribe(id string, names []string) {
 	if len(names) == 0 {
 		c.reply(id, nil, Errf(CodeMissingArg, "topics"))
@@ -187,7 +188,8 @@ func (c *Conn) subscribe(id string, names []string) {
 		}
 		snaps[i] = m
 	}
-	c.reply(id, nil, nil)
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for i, name := range names {
 		if h := hists[i]; h != nil {
 			c.streamSnapshot(name, h.items, h.next)
@@ -195,6 +197,7 @@ func (c *Conn) subscribe(id string, names []string) {
 		}
 		c.snapshot(name, snaps[i])
 	}
+	c.reply(id, nil, nil)
 }
 
 // object marshals v as a JSON object's fields.
@@ -211,10 +214,9 @@ func object(v any) (map[string]json.RawMessage, error) {
 }
 
 // streamSnapshot (re)starts a stream subscription: the history, one event
-// per item from seq 0, all marked snapshot; then new items from next.
+// per item from seq 0, all marked snapshot; then new items from next. With
+// c.mu held.
 func (c *Conn) streamSnapshot(name string, items []map[string]json.RawMessage, next uint64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	s := &subscription{cursor: next}
 	c.subs[name] = s
 	now := stamp(time.Now())
@@ -229,10 +231,9 @@ func (c *Conn) streamSnapshot(name string, items []map[string]json.RawMessage, n
 	}
 }
 
-// snapshot (re)starts a subscription: the whole state m, seq 0.
+// snapshot (re)starts a subscription: the whole state m, seq 0. With c.mu
+// held.
 func (c *Conn) snapshot(name string, m map[string]json.RawMessage) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.subs[name] = &subscription{seq: 0, last: m}
 	c.send(event{Type: "event", Topic: name, Seq: 0, TS: stamp(time.Now()), Snapshot: true, Data: m})
 }

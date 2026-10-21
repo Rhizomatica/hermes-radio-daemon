@@ -197,9 +197,6 @@ func TestModemChat(t *testing.T) {
 		t.Errorf("hello does not offer modem.chat: %v", h["topics"])
 	}
 	w.Send(`{"type":"subscribe","id":"s","topics":["modem.chat"]}`)
-	if r := w.Next(testapi.Type("reply"), time.Second); r["ok"] != true {
-		t.Fatalf("subscribe = %v", r)
-	}
 	for i, want := range []map[string]any{
 		{"plane": "broadcast", "dir": "rx", "peer": "PY2XYZ", "text": "hello all"},
 		{"plane": "arq", "dir": "rx", "peer": "PY2XYZ", "text": "hi"},
@@ -218,6 +215,9 @@ func TestModemChat(t *testing.T) {
 			t.Errorf("history %d: at = %v", i, d["at"])
 		}
 	}
+	if r := w.Next(testapi.Type("reply"), time.Second); r["ok"] != true { // after the history
+		t.Fatalf("subscribe = %v", r)
+	}
 
 	if r := e.Cmd("modem.chat.send", `{"plane":"broadcast","text":"CQ"}`); r["ok"] != true {
 		t.Fatalf("send = %v", r)
@@ -230,7 +230,7 @@ func TestModemChat(t *testing.T) {
 	w.None(chatEvent, 300*time.Millisecond) // once
 
 	for _, c := range []struct{ args, code string }{
-		{`{"plane":"arq","text":"x"}`, "bad_request"}, // no session up
+		{`{"plane":"arq","text":"x"}`, "no_link"}, // no session up
 		{`{"plane":"broadcast","text":"` + strings.Repeat("x", 200) + `"}`, "out_of_range"},
 		{`{"plane":"vhf","text":"x"}`, "out_of_range"},
 		{`{"plane":"arq"}`, "missing_arg"},

@@ -277,13 +277,14 @@ func TestHermesV1RadioStateTopic(t *testing.T) {
 			}
 		}
 	}
+	// the snapshot, then the reply
+	isState := func(f map[string]any) bool { return f["type"] == "event" && f["topic"] == "radio.state" }
+	if snap := next(isState); snap["snapshot"] != true ||
+		snap["data"].(map[string]any)["frequency_hz"] != 7100000.0 {
+		t.Fatalf("snapshot = %v", snap)
+	}
 	if r := next(func(f map[string]any) bool { return f["type"] == "reply" }); r["ok"] != true {
 		t.Fatalf("subscribe reply = %v", r)
-	}
-	isState := func(f map[string]any) bool { return f["type"] == "event" && f["topic"] == "radio.state" }
-	snap := next(isState)
-	if data, _ := snap["data"].(map[string]any); snap["snapshot"] != true || data["frequency_hz"] != 7100000.0 {
-		t.Fatalf("snapshot = %v", snap)
 	}
 
 	if got := dialRigctl(t, d).cmd("F 7074000"); got != "RPRT 0" {
@@ -369,9 +370,18 @@ func TestHermesV1ModemStatusTopic(t *testing.T) {
 	for i := 0; snap == nil; i++ {
 		id := fmt.Sprintf("s%d", i)
 		_ = ws.writeFrame(opText, []byte(`{"type":"subscribe","id":"`+id+`","topics":["modem.status"]}`))
-		r := next(func(f map[string]any) bool { return f["type"] == "reply" && f["id"] == id })
+		// the snapshot comes before the reply
+		var seen map[string]any
+		r := next(func(f map[string]any) bool {
+			if isStatus(f) && seen == nil {
+				seen = f
+			}
+			return f["type"] == "reply" && f["id"] == id
+		})
 		if r["ok"] == true {
-			snap = next(isStatus)
+			if snap = seen; snap == nil {
+				t.Fatalf("subscribe replied with no snapshot before it")
+			}
 			break
 		}
 		if i == 20 {
@@ -545,7 +555,7 @@ func TestHermesV1ModemChat(t *testing.T) {
 		t.Errorf("chat event = %v", ev)
 	}
 	_ = ws.writeFrame(opText, []byte(`{"type":"cmd","id":"c2","cmd":"modem.chat.send","args":{"plane":"arq","text":"x"}}`))
-	if r := next(reply("c2")); r["ok"] != false {
-		t.Errorf("ARQ send with no session = %v", r)
+	if r := next(reply("c2")); r["ok"] != false || r["error"].(map[string]any)["code"] != "no_link" {
+		t.Errorf("ARQ send with no session = %v, want no_link", r)
 	}
 }

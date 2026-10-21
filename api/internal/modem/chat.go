@@ -76,7 +76,7 @@ func (h handlers) cmdChatSend(_ context.Context, _ *api.Conn, args json.RawMessa
 	case err == nil:
 		return nil, nil
 	case errors.Is(err, rad.ErrNoLink):
-		return nil, api.Errf(api.CodeBadRequest, "no ARQ session is up")
+		return nil, api.Errf(api.CodeNoLink, "no ARQ session is up")
 	case errors.Is(err, rad.ErrBusy):
 		return nil, api.Errf(api.CodeQueueFull, "the ARQ session's queue is full")
 	case errors.Is(err, rad.ErrTooLong):

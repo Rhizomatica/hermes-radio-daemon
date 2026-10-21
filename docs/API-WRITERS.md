@@ -274,8 +274,9 @@ heartbeat are sent for you.
 A topic pushes state to the clients that subscribe to it. The spec's rules are implemented for
 you:
 
-- `{"type":"subscribe","id":"1","topics":["radio.state"]}` gets a `reply`, then one event per
-  topic with the whole state: `seq` 0, `snapshot: true`;
+- `{"type":"subscribe","id":"1","topics":["radio.state"]}` gets one event per topic with the
+  whole state (`seq` 0, `snapshot: true`), then the `reply`, so the client knows the snapshot
+  is complete;
 - after that, an event only when the state changes, carrying only the top-level fields that
   changed, with the next `seq`; at most 10 events a second per topic;
 - `unsubscribe` stops them; subscribing again starts over with a snapshot;
@@ -318,7 +319,7 @@ A topic that is a list of new entries rather than state (`modem.chat`; later `di
 `messages`) is a stream, registered with `rt.Stream`. Its function reads the items after a
 cursor and returns them with the cursor after the last; cursor 0 is the snapshot, as much
 history as the topic offers. Each item is one event, never a diff: on subscribe the history goes
-as events marked `snapshot` (seq 0, 1, ...), then the publisher reads each subscriber's cursor
+as events marked `snapshot` (seq 0, 1, ..., none with no history) before the reply, then the publisher reads each subscriber's cursor
 every 100 ms and sends what came. Subscribers that keep up share one read:
 
 ```go
