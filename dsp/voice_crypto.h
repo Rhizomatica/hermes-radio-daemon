@@ -26,6 +26,7 @@
 #define VOICE_DOMAIN_CHECK 0x02
 #define VOICE_DOMAIN_HDRCHECK 0x03   /* the DV header's 64-bit key check */
 #define VOICE_DOMAIN_RADE_LATENT 0x10 /* RADE V2's per-frame latent mixing */
+#define VOICE_DOMAIN_RADE_SIGNAL 0x11 /* RADE V2's signalling message check */
 
 /* Load the voice key from a file holding either 32 raw bytes or 64 hex
  * digits (surrounding whitespace allowed). Replaces any previous key. On

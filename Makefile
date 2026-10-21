@@ -118,6 +118,7 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              dsp/sbitx_dstar.o \
              dsp/dstar_voice.o \
              dsp/voice_crypto.o \
+             dsp/rade_voice.o \
              dsp/mic_filter.o \
              sbitx/sbitx_si5351.o \
              sbitx/ring_buffer.o \
@@ -302,4 +303,4 @@ clean:
 	      $(GO_API_LIB) $(GO_API_DIR)/libhermes_api.h .radiod_version
 
 # Auto-generated header dependencies (from -MMD). Hyphen: ignore on first build.
--include $(DAEMON_OBJS:.o=.d)
+-include $(DAEMON_OBJS:.o=.d) $(RADE_CRYPT_SIM_OBJS:.o=.d)

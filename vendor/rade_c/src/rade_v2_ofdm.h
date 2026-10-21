@@ -41,6 +41,7 @@
 #ifndef RADE_V2_OFDM_H
 #define RADE_V2_OFDM_H
 
+#include <stdint.h>
 #include "rade_dsp.h"
 
 #ifdef __cplusplus
@@ -62,9 +63,28 @@ extern "C" {
 
 #define RADE_V2_NB_TOTAL_FEATURES  36
 
-/* Latent hook: called in place on one modem frame's latent vector, n =
-   RADE_V2_LATENT_DIM floats, symbol s carrier c at z[(s*Nc + c)*2] (re, im). */
-typedef void (*rade_v2_latent_hook)(void *user, float *z, int n);
+/* Aux carriers (daemon-local, not RADE): one OFDM carrier just below and one
+   just above the Nc data carriers, on the same grid, symbols and cyclic
+   prefix, so they stay orthogonal to them. Off (all zero) unless a latent
+   hook writes them, when the signal is stock RADE V2. */
+#define RADE_V2_NAUX        2
+
+/* Latent hook: once per modem frame on TX, once per received symbol in sync
+   on RX (the last two symbols, either frame alignment). */
+typedef struct {
+    float     *z;    /* RADE_V2_LATENT_DIM floats, in place: symbol s, carrier c
+                        at z[(s*Nc + c)*2] (re, im) */
+    RADE_COMP *aux;  /* RADE_V2_NS * RADE_V2_NAUX aux symbols, aux[s*NAUX + a]:
+                        TX: the hook writes them (zeroed before); RX: as
+                        demodulated, with the data carriers' timing and
+                        frequency correction */
+    uint32_t   sym;  /* TX: frames sent * RADE_V2_NS; RX: the receiver's
+                        symbol counter, which advances by one per symbol,
+                        in sync or not */
+    int        align;/* RX, set by the hook: 1 these two symbols are a frame,
+                        0 they are not, -1 (as called) frame sync decides */
+} rade_v2_hook_frame;
+typedef void (*rade_v2_latent_hook)(void *user, rade_v2_hook_frame *f);
 #define RADE_V2_NUM_USED_FEATURES  20
 
 /*---------------------------------------------------------------------------*\
@@ -73,6 +93,10 @@ typedef void (*rade_v2_latent_hook)(void *user, float *z, int n);
 
 typedef struct {
     float     w[RADE_V2_NC];
+    float     w_aux[RADE_V2_NAUX];
+    RADE_COMP Winv_aux[RADE_V2_M][RADE_V2_NAUX];
+    RADE_COMP Wfwd_aux[RADE_V2_NAUX][RADE_V2_M];
+    RADE_COMP phase_corr_aux[RADE_V2_NAUX];
     RADE_COMP Winv[RADE_V2_M][RADE_V2_NC];     /* IDFT matrix: Nc freq -> M time */
     RADE_COMP Wfwd[RADE_V2_NC][RADE_V2_M];     /* DFT matrix:  M time  -> Nc freq */
     RADE_COMP phase_corr[RADE_V2_NC];          /* Per-carrier phase correction exp(j*8*w[c]) */
@@ -90,15 +114,18 @@ typedef struct {
 void rade_v2_ofdm_init(rade_v2_ofdm *ofdm);
 
 /* Modulate one modem frame: z[RADE_V2_LATENT_DIM] -> tx_out[RADE_V2_NMF]
+   aux: RADE_V2_NS * RADE_V2_NAUX aux carrier symbols, or NULL (off).
    Returns number of output samples (RADE_V2_NMF). */
-int rade_v2_ofdm_mod_frame(const rade_v2_ofdm *ofdm, RADE_COMP *tx_out, const float *z);
+int rade_v2_ofdm_mod_frame(const rade_v2_ofdm *ofdm, RADE_COMP *tx_out, const float *z,
+                           const RADE_COMP *aux);
 
 /* Demodulate one modem frame.
    rx_i: Ns * SYM_LEN freq-corrected IQ samples (last Ns symbols, shifted each call)
    z_hat: LATENT_DIM output floats
+   aux_hat: RADE_V2_NS * RADE_V2_NAUX aux carrier symbols out, or NULL
    time_offset: fine timing offset into CP (default -16)
    correct_time_offset: per-carrier phase correction samples (default -8) */
-void rade_v2_ofdm_demod_frame(const rade_v2_ofdm *ofdm, float *z_hat,
+void rade_v2_ofdm_demod_frame(const rade_v2_ofdm *ofdm, float *z_hat, RADE_COMP *aux_hat,
                                const RADE_COMP *rx_i, int time_offset);
 
 /* Compute EOO channel sparsity metric from one time-domain symbol (M samples).

@@ -170,6 +170,9 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     if (radio_h.dstar_encrypt && !voice_crypto_have_key())
         HLOGW(LOG_C, "dstar_encrypt = 1 but no voice key is loaded (voice_key_file): "
                      "encrypted overs will go out as silence, never in the clear");
+    if (radio_h.rade_encrypt && !voice_crypto_have_key())
+        HLOGW(LOG_C, "rade_encrypt = 1 but no voice key is loaded (voice_key_file): "
+                     "encrypted overs will go out as silence, never in the clear");
     radio_backend_configure(&radio_h, selection);
     radio_pipeline_refresh(&radio_h);
 

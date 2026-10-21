@@ -87,11 +87,12 @@ int rade_rx_v2_init(rade_rx_v2_state *rx, int bpf_en) {
     /* BPF */
     rx->bpf_en = bpf_en;
     if (bpf_en) {
-        /* B_bpf = 1.2 * carrier_bandwidth, centre = 1500 Hz */
-        float Rs_dash = (float)RADE_FS / RADE_V2_M;  /* 62.5 Hz */
-        float w0 = rx->ofdm.w[0];
-        float wN = rx->ofdm.w[RADE_V2_NC - 1];
-        float bandwidth  = 1.2f * (wN - w0) * (float)RADE_FS / (2.0f * (float)M_PI);
+        /* B_bpf = 1.2 * carrier_bandwidth, centre = 1500 Hz; daemon-local:
+           over the aux carriers too, and 1.4 times, so the filter's edge
+           leaves them alone */
+        float w0 = rx->ofdm.w_aux[0];
+        float wN = rx->ofdm.w_aux[1];
+        float bandwidth  = 1.4f * (wN - w0) * (float)RADE_FS / (2.0f * (float)M_PI);
         float centre     = (wN + w0) * (float)RADE_FS / (2.0f * (float)M_PI) / 2.0f;
         rade_bpf_init(&rx->bpf, RADE_BPF_NTAP, (float)RADE_FS, bandwidth, centre,
                       RADE_V2_SYM_LEN + RADE_BPF_NTAP);
@@ -273,8 +274,12 @@ static int update_frame_sync_decode(rade_rx_v2_state *rx,
                                     int sig_det, int sine_det) {
     int arch = 0;
 
-    if (rx->latent_hook)
-        rx->latent_hook(rx->latent_hook_user, rx->az_hat, RADE_V2_LATENT_DIM);
+    int align = -1;
+    if (rx->latent_hook) {
+        rade_v2_hook_frame f = { rx->az_hat, rx->aux_hat, (uint32_t) rx->s, -1 };
+        rx->latent_hook(rx->latent_hook_user, &f);
+        align = f.align;
+    }
 
     float metric = rade_frame_sync(&rx->sync_model, rx->az_hat, arch);
 
@@ -286,6 +291,8 @@ static int update_frame_sync_decode(rade_rx_v2_state *rx,
         rx->frame_sync_even = BETA * rx->frame_sync_even + (1.0f - BETA) * metric;
         winning = (rx->frame_sync_even > rx->frame_sync_odd);
     }
+    if (align >= 0)
+        winning = align;   /* the hook knows the frame alignment */
 
     if (!winning)
         return 0;
@@ -501,7 +508,7 @@ int rade_rx_v2_process(rade_rx_v2_state *rx, float *features_out,
 
         /* OFDM demodulate -> az_hat */
         int time_offset = -16;
-        rade_v2_ofdm_demod_frame(&rx->ofdm, rx->az_hat, rx->rx_i, time_offset);
+        rade_v2_ofdm_demod_frame(&rx->ofdm, rx->az_hat, rx->aux_hat, rx->rx_i, time_offset);
 
         /* EOO detection */
         if (detect_eoo(rx)) {

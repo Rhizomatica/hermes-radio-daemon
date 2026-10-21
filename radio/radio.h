@@ -460,6 +460,10 @@ typedef struct {
      * over this station sends, with the key from voice_key_file. Receiving
      * decrypts whenever a key is loaded, whatever this is set to. */
     _Atomic uint16_t dstar_encrypt;
+    /* Opt-in RADE V2 voice encryption (dsp/rade_voice.h), the same way: 1
+     * scrambles every over this station sends; receiving unscrambles
+     * whenever a key is loaded. */
+    _Atomic uint16_t rade_encrypt;
     /* Path of the 256-bit voice key (32 raw bytes or 64 hex digits). The key
      * itself is held in dsp/voice_crypto.c, never in this struct. */
     char voice_key_file[256];
@@ -552,6 +556,8 @@ typedef struct {
     /* dstar_vc_status of the over being received: 0 clear, 1 decrypting,
      * 2 acquiring, 3 encrypted without a key, 4 key mismatch. */
     _Atomic uint16_t dstar_rx_crypto;
+    /* rade_vc_status of the RADE V2 over being received, the same codes. */
+    _Atomic uint16_t rade_rx_crypto;
 } radio;
 
 /* digi_tx_queue helpers (defined in cfg_utils.c or radio_websocket.c). */

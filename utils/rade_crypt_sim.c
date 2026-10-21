@@ -3,16 +3,24 @@
  *
  * speech -> LPCNet features -> RADE V2 TX (the daemon's rade_api session,
  * SSB BPF on) with the keyed latent mixing -> channel -> RADE V2 RX with the
- * unmixing -> FARGAN -> speech. Prints a cepstral distance between the input
- * and decoded features (lower is better; ~1-3 is good speech, >30 is
- * unintelligible) so channels and keys can be compared without listening.
+ * unmixing -> FARGAN -> speech. The receiver learns the nonce and frame
+ * counter from the aux carriers' signalling (rade_voice.h), and plays only
+ * what rade_voice_rx_play() allows. Prints the frames decoded and played,
+ * when playing started, the messages decoded, the signal's PAPR, and a
+ * cepstral distance between the input and played features (lower is
+ * better; ~1-3 is good speech, >30 is unintelligible).
  *
- * The receiver's frame counter is a genie here: its position in the sample
- * stream says which TX frame it is demodulating. On air that is the
- * signalling's job.
+ * usage: rade_crypt_sim MODE in16k.wav out16k.wav [snr3k_dB] [foff_Hz] [CHAN] [seed] [join_s]
+ *   MODE: plain (stock RADE V2) | key | nokey (TX keyed, RX none) | wrongkey |
+ *         clear (TX clear, RX keyed: must play)
+ *   join_s: seconds into the over at which the receiver starts listening
  *
- * usage: rade_crypt_sim MODE in16k.wav out16k.wav [snr3k_dB] [foff_Hz] [CHAN] [seed]
- *   MODE: plain | key | nokey (TX keyed, RX none) | wrongkey
+ * Encrypted overs go through rade_voice's clipper, as the daemon sends them.
+ *
+ * Environment: AUX_AMP, the aux carriers' level against the data carriers
+ * (1); CLIP=0, no clipper; SNR_PEAK=1, take snr3k against the over's peak
+ * power instead of its mean (a transmitter that is peak-limited, as a PA
+ * is).
  *   CHAN: awgn | mpg | mpp | mpd (two equal Rayleigh paths: 1 ms 0.1 Hz,
  *         2 ms 1 Hz, 4 ms 2 Hz; Gaussian Doppler), static (2 ms, frozen),
  *         flat (one path, 1 Hz)
@@ -33,34 +41,37 @@
 _Static_assert(RADE_VOICE_NC == RADE_V2_NC && RADE_VOICE_NS == RADE_V2_NS &&
                RADE_VOICE_LATENT == RADE_V2_LATENT_DIM, "rade_voice.h: RADE V2 layout");
 
-/* Samples from the receiver's position to the start of the frame its hook
- * is offered at the right alignment, the TX and RX filters included
- * (measured on MPP: 240..320 decodes every frame with the right key). */
-#ifndef RX_LATENCY
-#define RX_LATENCY 280
-#endif
+_Static_assert(RADE_VOICE_NAUX == RADE_V2_NAUX && sizeof(RADE_COMP) == 2 * sizeof(float),
+               "rade_voice.h: RADE V2 aux carriers");
 
 static const uint8_t KEY_A[VOICE_KEY_BYTES] = "hermes rade_crypt_sim key A....";
 static const uint8_t KEY_B[VOICE_KEY_BYTES] = "hermes rade_crypt_sim key B....";
-static const uint8_t NONCE[VOICE_NONCE_RAND_BYTES] = {1, 2, 3, 4, 5, 6};
 
-static uint32_t tx_frame;
-static long rx_pos, rx_on_start;
+static rade_voice_tx vtx;
+static rade_voice_rx vrx;
 static const uint8_t *rx_key;
+static double lat_pow;   /* the data carriers' mean symbol power, before mixing */
+static long lat_n;
 
-static void tx_hook(void *user, float *z, int n)
+/* TX and RX share this process's one voice key: each hook sets its own. */
+static void tx_hook(void *user, rade_v2_hook_frame *f)
 {
-    (void) user; (void) n;
+    (void) user;
+    for (int i = 0; i < RADE_V2_LATENT_DIM; i += 2)
+        lat_pow += f->z[i] * f->z[i] + f->z[i + 1] * f->z[i + 1];
+    lat_n += RADE_V2_LATENT_DIM / 2;
     voice_crypto_set_key(KEY_A);
-    rade_voice_scramble(z, NONCE, tx_frame++, false);
+    rade_voice_tx_frame(&vtx, f->z, (float *) f->aux);
 }
 
-static void rx_hook(void *user, float *z, int n)
+static void rx_hook(void *user, rade_v2_hook_frame *f)
 {
-    (void) user; (void) n;
-    long k = (rx_pos - rx_on_start - RX_LATENCY) / RADE_V2_NMF;
-    voice_crypto_set_key(rx_key);
-    rade_voice_scramble(z, NONCE, (uint32_t) (k < 0 ? 0 : k), true);
+    (void) user;
+    if (rx_key)
+        voice_crypto_set_key(rx_key);
+    else
+        voice_crypto_clear_key();
+    f->align = rade_voice_rx_symbol(&vrx, f->z, (const float *) f->aux, f->sym);
 }
 
 /* ---- channel ---- */
@@ -151,16 +162,19 @@ int main(int argc, char **argv)
 {
     if (argc < 4) {
         fprintf(stderr, "usage: %s plain|key|nokey|wrongkey in16k.wav out16k.wav "
-                        "[snr3k_dB] [foff_Hz] [awgn|mpg|mpp|mpd|static|flat] [seed]\n", argv[0]);
+                        "[snr3k_dB] [foff_Hz] [awgn|mpg|mpp|mpd|static|flat] [seed] [join_s]\n", argv[0]);
         return 1;
     }
     const char *mode = argv[1];
     double snr = argc > 4 ? atof(argv[4]) : 100, foff = argc > 5 ? atof(argv[5]) : 0;
     const char *chan = argc > 6 ? argv[6] : "awgn";
     srand(argc > 7 ? (unsigned) atoi(argv[7]) : 1);
-    int keyed_tx = strcmp(mode, "plain") != 0;
-    rx_key = !strcmp(mode, "key") ? KEY_A : !strcmp(mode, "wrongkey") ? KEY_B : NULL;
-    if (strcmp(mode, "plain") && strcmp(mode, "key") && strcmp(mode, "nokey") && strcmp(mode, "wrongkey")) {
+    double join_s = argc > 8 ? atof(argv[8]) : 0;
+    const double aux_amp = getenv("AUX_AMP") ? atof(getenv("AUX_AMP")) : 1.0;
+    int plain = !strcmp(mode, "plain"), keyed_tx = !plain && strcmp(mode, "clear");
+    rx_key = !strcmp(mode, "key") || !strcmp(mode, "clear") ? KEY_A : !strcmp(mode, "wrongkey") ? KEY_B : NULL;
+    if (!plain && strcmp(mode, "key") && strcmp(mode, "nokey") && strcmp(mode, "wrongkey") &&
+        strcmp(mode, "clear")) {
         fprintf(stderr, "unknown mode %s\n", mode);
         return 1;
     }
@@ -177,10 +191,13 @@ int main(int argc, char **argv)
     struct rade *rx = rade_open("builtin", RADE_MODE_V2 | RADE_VERBOSE_0);
     if (!tx || !rx)
         return 1;
-    if (keyed_tx)
+    voice_crypto_set_key(KEY_A);
+    rade_voice_tx_begin(&vtx, keyed_tx, (float) aux_amp);
+    rade_voice_rx_reset(&vrx);
+    if (!plain) {
         rade_set_latent_hook(tx, tx_hook, NULL);
-    if (rx_key)
         rade_set_latent_hook(rx, rx_hook, NULL);
+    }
 
     /* TX: a little quiet, the over, its end-of-over, quiet to drain */
     int per_tx = rade_n_features_in_out(tx);
@@ -210,9 +227,23 @@ int main(int argc, char **argv)
     /* channel: paths, frequency offset, AWGN at the over's power */
     double S = 0, fs = RADE_MODEM_SAMPLE_RATE, dly_ms = 0, spread = 0;
     int two_paths = 1, fading = 1;
-    for (size_t i = on_start; i < on_end; i++)
-        S += sig[i].real * sig[i].real + sig[i].imag * sig[i].imag;
+    /* the transmitter's clipper (rade_voice.h), on encrypted overs */
+    const int clip = keyed_tx && !(getenv("CLIP") && !atoi(getenv("CLIP")));
+    if (clip) {
+        rade_voice_clip cl;
+        rade_voice_clip_reset(&cl);
+        rade_voice_clip_run(&cl, (float *) sig, (int) sig_n);   /* the delay sits in the quiet after */
+    }
+    double peak = 0;
+    for (size_t i = on_start; i < on_end; i++) {
+        double p = sig[i].real * sig[i].real + sig[i].imag * sig[i].imag;
+        S += p;
+        peak = p > peak ? p : peak;
+    }
     S /= (double) (on_end - on_start);
+    const double S_mean = S;
+    if (getenv("SNR_PEAK") && atoi(getenv("SNR_PEAK")))
+        S = peak;
     if (!strcmp(chan, "mpg"))         { dly_ms = 1; spread = 0.1; }
     else if (!strcmp(chan, "mpp"))    { dly_ms = 2; spread = 1; }
     else if (!strcmp(chan, "mpd"))    { dly_ms = 4; spread = 2; }
@@ -250,21 +281,29 @@ int main(int argc, char **argv)
     float *rfeat = calloc((size_t) rade_n_features_in_out(rx), sizeof(float));
     size_t pos = 0;
     unsigned written = 0;
-    long calls = 0, synced = 0;
-    rx_on_start = (long) on_start;
+    long calls = 0, synced = 0, played = 0, first_play = -1;
+    pos = on_start + (size_t) (join_s * fs);
+    unsigned char *was_played = NULL;
     for (;;) {
         int nin = rade_nin(rx), has_eoo = 0;
         if (pos + (size_t) nin > sig_n)
             break;
-        rx_pos = (long) pos;
         int n = rade_rx(rx, rfeat, &has_eoo, NULL, ch + pos);
+        int play = plain || rade_voice_rx_play(&vrx);
         pos += (size_t) nin;
         calls++;
         synced += rade_sync(rx) != 0;
         for (int k = 0; k + RADAE_VOCODER_FEATURES <= n; k += RADAE_VOCODER_FEATURES) {
-            int16_t out[RADAE_VOCODER_FRAME];
+            int16_t out[RADAE_VOCODER_FRAME] = {0};
             keep(&fout, &rfeat[k]);
-            int m = radae_synthesis_frame(syn, &rfeat[k], out);
+            was_played = realloc(was_played, fout.n);
+            was_played[fout.n - 1] = (unsigned char) play;
+            if (play) {
+                played++;
+                if (first_play < 0)
+                    first_play = (long) (pos - on_start);
+            }
+            int m = play ? radae_synthesis_frame(syn, &rfeat[k], out) : RADAE_VOCODER_FRAME;
             if (m > 0) {
                 fwrite(out, sizeof(int16_t), (size_t) m, fo);
                 written += (unsigned) m;
@@ -275,12 +314,13 @@ int main(int argc, char **argv)
 
     /* cepstral distance at the best alignment over the frames decoded */
     double best = INFINITY;
-    for (long lag = -400; lag <= 60; lag++) {
+    const long lag0 = -400 - (long) (join_s * 100);   /* 100 feature frames a second */
+    for (long lag = lag0; lag <= 60; lag++) {
         double d = 0;
         long n = 0;
         for (size_t i = 0; i < fin.n; i++) {
             long j = (long) i + lag;
-            if (j < 0 || (size_t) j >= fout.n)
+            if (j < 0 || (size_t) j >= fout.n || !was_played[j])
                 continue;
             for (int k = 0; k < 18; k++) {
                 double e = fin.v[i * 18 + k] - fout.v[j * 18 + k];
@@ -288,11 +328,17 @@ int main(int argc, char **argv)
             }
             n++;
         }
-        if (n > 0 && n >= (long) fout.n * 9 / 10 && d / n < best)
+        if (n > 0 && n >= played * 9 / 10 && d / n < best)
             best = d / n;
     }
-    printf("%-8s %-6s snr3k %5.1f dB  foff %5.1f Hz  frames in %zu out %zu  sync %ld/%ld  cepdist %.2f\n",
-           mode, chan, snr, foff, fin.n, fout.n, synced, calls, best);
+    static const char *st[] = {"clear", "decrypting", "acquiring", "no key", "bad key"};
+    printf("%-8s %-6s snr3k %5.1f dB  foff %5.1f Hz  join %.1f s  in %zu out %zu played %ld "
+           "from %.2f s  msgs %u bad %u  status %s  papr %.1f dB  latent rms %.2f  cepdist %.2f\n",
+           mode, chan, snr, foff, join_s, fin.n, fout.n, played,
+           first_play < 0 ? -1.0 : first_play / fs, vrx.msgs, vrx.msgs_bad,
+           plain ? "-" : st[vrx.status], 10 * log10(peak / S_mean),
+           lat_n ? sqrt(lat_pow / lat_n) : 0.0, played ? best : INFINITY);
+    free(was_played);
 
     radae_analysis_free(an);
     radae_synthesis_free(syn);

@@ -132,6 +132,7 @@ typedef struct {
     RADE_COMP Ry_smooth[RADE_V2_SYM_LEN];
 
     float az_hat[RADE_V2_LATENT_DIM];          /* Last latent vector from demod */
+    RADE_COMP aux_hat[RADE_V2_NS * RADE_V2_NAUX]; /* and the aux carriers' symbols */
 
     /* Called on az_hat once per symbol in sync, before frame sync and the
        decoder: the last two symbols, either alignment (frame sync picks). */

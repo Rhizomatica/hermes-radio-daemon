@@ -203,12 +203,15 @@ RADE_EXPORT float rade_rx_get_data_symbol(struct rade *r);
 // input levels).
 RADE_EXPORT void rade_rx_set_agc(struct rade *r, int enable);
 
-// V2 only: a callback on each modem frame's latent vector, in place
-// (RADE_V2_LATENT_DIM floats; symbol s, carrier c at z[(s*Nc + c)*2], re/im).
-// Tx: after the encoder, before the OFDM modulator. Rx: once per received
-// symbol while in sync, on the last two symbols, after the demodulator and
-// before frame sync and the decoder (so both frame alignments are offered;
-// frame sync picks one). For keyed scrambling of the latent. NULL removes it.
+// V2 only (daemon-local): a callback on each modem frame, rade_v2_hook_frame
+// in rade_v2_ofdm.h: the latent vector in place (RADE_V2_LATENT_DIM floats;
+// symbol s, carrier c at z[(s*Nc + c)*2], re/im) and the aux carriers'
+// symbols. Tx: after the encoder, before the OFDM modulator; the hook writes
+// the aux symbols. Rx: once per received symbol while in sync, on the last
+// two symbols, after the demodulator and before frame sync and the decoder
+// (so both frame alignments are offered); the hook may say which is a frame
+// (align), else frame sync picks. For keyed scrambling of the latent. NULL
+// removes it.
 RADE_EXPORT void rade_set_latent_hook(struct rade *r, rade_v2_latent_hook hook, void *user);
 
 #ifdef __cplusplus

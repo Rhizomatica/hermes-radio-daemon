@@ -549,6 +549,8 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     radio_h->dstar_denoise = (uint16_t) i;
     i = iniparser_getint(ini, "main:dstar_encrypt", 0);
     radio_h->dstar_encrypt = (uint16_t) i;
+    i = iniparser_getint(ini, "main:rade_encrypt", 0);
+    radio_h->rade_encrypt = (uint16_t) (i != 0);
     s = iniparser_getstring(ini, "main:digital_voice_codec", "RADEV2");
     codec = DV_CODEC_RADEV2;
     if (!cfg_dv_codec_from_name(s, &codec))

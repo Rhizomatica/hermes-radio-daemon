@@ -53,6 +53,7 @@ typedef struct {
     int            bpf_en;
     rade_v2_latent_hook latent_hook;   /* after the encoder, before the modulator */
     void          *latent_hook_user;
+    uint32_t       frames;       /* modem frames sent, for the hook */
     rade_bpf       bpf;          /* SSB BPF state, continuous across rade_tx_v2_process()
                                      and rade_tx_v2_eoo() calls -- matches radae_v2.py's
                                      RADEv2Transmitter, which filters data and EOO through

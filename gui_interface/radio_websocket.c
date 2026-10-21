@@ -403,7 +403,9 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
          "\"dstar_rpt1\":\"%s\",\"dstar_rpt2\":\"%s\","
          "\"dstar_suffix\":\"%s\",\"dstar_heard\":%u,"
          /* 0 clear, 1 decrypting, 2 acquiring, 3 no key, 4 key mismatch */
-         "\"dstar_crypto\":%u}",
+         "\"dstar_crypto\":%u,"
+         /* the same codes for the RADE V2 over being received */
+         "\"rade_crypto\":%u}",
          active,
          radio_h->profiles[active].freq, radio_h->profiles[active].freq,
          mode_to_string(radio_h->profiles[active].mode),
@@ -442,7 +444,8 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
          radio_pipeline_uses_daemon_audio_bridge(radio_h) ? "true" : "false",
          ds_my, ds_ur, ds_r1, ds_r2, ds_sfx,
          (unsigned) radio_h->dstar_rx_heard,
-         (unsigned) radio_h->dstar_rx_crypto);
+         (unsigned) radio_h->dstar_rx_crypto,
+         (unsigned) radio_h->rade_rx_crypto);
 }
 
 /* ─────────────────────── command dispatcher ─────────────────────── */
@@ -705,11 +708,13 @@ static void handle_ws_command(radio *radio_h, ws_conn_t *c,
             "\"cw_wpm\":%d,\"cw_pitch\":%d,"
             "\"rtty_baud\":%d,\"rtty_mark\":%d,\"rtty_shift\":%d,"
             "\"dstar_verbose\":%d,\"dstar_denoise\":%d,\"dstar_encrypt\":%d,"
+            "\"rade_encrypt\":%d,"
             "\"digital_voice_codec\":\"%s\","
             "\"voice_key_loaded\":%s,\"voice_key_fingerprint\":\"%s\"}",
             radio_h->cw_wpm, radio_h->cw_pitch,
             radio_h->rtty_baud, radio_h->rtty_mark, radio_h->rtty_shift,
             radio_h->dstar_verbose, radio_h->dstar_denoise, radio_h->dstar_encrypt,
+            radio_h->rade_encrypt,
             cfg_dv_codec_name(radio_h->digital_voice_codec),
             voice_crypto_have_key() ? "true" : "false", fp);
         ws_send_text(c, json); return;
@@ -775,6 +780,7 @@ static void handle_ws_command(radio *radio_h, ws_conn_t *c,
         else if (!strcmp(key, "dstar_verbose")) radio_h->dstar_verbose = (uint16_t) v;
         else if (!strcmp(key, "dstar_denoise")) radio_h->dstar_denoise = (uint16_t) v;
         else if (!strcmp(key, "dstar_encrypt")) radio_h->dstar_encrypt = (uint16_t) (v != 0);
+        else if (!strcmp(key, "rade_encrypt"))  radio_h->rade_encrypt  = (uint16_t) (v != 0);
         else { send_cmd_error(c, cmd, "unknown key"); return; }
         send_cmd_result(c, cmd, true, "OK"); return;
     }

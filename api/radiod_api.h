@@ -121,12 +121,13 @@ typedef struct {
     int  rtty_baud, rtty_shift_hz, rtty_mark_hz;
     char dstar_mycall[16];
     bool dstar_encrypt, dstar_denoise, dstar_verbose;
+    bool rade_encrypt;
     char voice_codec[8];          /* RADEV2, DSTAR */
 } radiod_api_digi_settings;
 
 void radiod_api_digi_settings_get(radiod_api_digi_settings *out);
 /* key is radiod's: cw_wpm, cw_pitch, rtty_baud, rtty_mark, rtty_shift,
- * dstar_verbose, dstar_denoise, dstar_encrypt. */
+ * dstar_verbose, dstar_denoise, dstar_encrypt, rade_encrypt. */
 int radiod_api_digi_set(const char *key, long value);
 int radiod_api_set_voice_codec(const char *name);
 
