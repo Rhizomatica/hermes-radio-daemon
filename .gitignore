@@ -80,3 +80,6 @@ dkms.conf
 /api/libhermes_api.a
 /api/libhermes_api.h
 /.radiod_version
+
+# the self-check's database
+/api/data/
