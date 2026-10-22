@@ -5,6 +5,26 @@ tested on Sailfish OS 5.2) with a Hamlib rig on its USB port. The RPMs are
 built on the device itself, with the compiler from the Sailfish
 repositories. No Sailfish SDK is needed.
 
+## Installing the published packages
+
+Built packages for aarch64 (built on Sailfish OS 5.2) are at
+<http://debian.hermes.radio/sailfish/>: the binary RPMs as an rpm-md
+repository in `aarch64/`, the source RPMs in `source/`, and `SHA256SUMS`.
+As root on the phone (`devel-su`), with developer mode on:
+
+```sh
+ssu ar hermes http://debian.hermes.radio/sailfish/aarch64/
+pkcon refresh
+pkcon install hermes-radio-daemon
+```
+
+Then set the rig in `/etc/hermes/core.ini` (see below) and start radiod
+with `systemctl start radiod`.
+
+The repository is plain HTTP and unsigned, like the HERMES APT repository's
+key download: the server's TLS certificate does not verify. `SHA256SUMS`
+lists every package.
+
 ## What is here
 
 | File | |
