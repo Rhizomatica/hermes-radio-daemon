@@ -220,6 +220,9 @@ Installs to `/usr/bin/` and `/etc/hermes/` (configs are only placed if they do n
 - `/etc/hermes/core.ini`
 - `/etc/hermes/user.ini`
 
+On a Sailfish OS phone, build and install RPMs instead:
+[packaging/sailfish/README.md](packaging/sailfish/README.md).
+
 ## Configuration
 
 All configuration lives in two files under `/etc/hermes/`.
