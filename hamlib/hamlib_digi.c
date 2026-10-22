@@ -726,29 +726,32 @@ static void do_dstar_tx(hamlib_digi_state *s, uint32_t ring_rate)
                 /* In-speech noise reduction front-end (libspecbleach, 8 kHz).
                  * Runtime tunable via dstar_denoise. */
                 {
-                    static SpectralBleachHandle nr;
+                    static specbleach_denoiser *nr = NULL;
                     static uint32_t nr_latency;
                     static uint32_t nr_total;
                     const float *src = s->dstar_mic8k;
                     float denoised[160];
                     if (s->radio_h->dstar_denoise && nr == NULL) {
-                        nr = specbleach_initialize(8000, 20.0f);
+                        nr = specbleach_denoiser_initialize(8000, 20.0f, 0u);
                         if (nr != NULL) {
-                            SpectralBleachDenoiserParameters p;
-                            memset(&p, 0, sizeof(p));
-                            p.reduction_amount = 12.0f;
-                            p.smoothing_factor = 30.0f;
-                            p.whitening_factor = 15.0f;
-                            p.adaptive_noise = 1;
-                            p.noise_estimation_method = 2;   /* Martin Min Statistics */
+                            SpecbleachDenoiserParameters p = {0};
+                            p.learn_noise = SPECBLEACH_LEARN_OFF;
+                            p.residual_listen = false;
+                            p.reduction_gain = 0.25f;
+                            p.smoothing_factor = 0.30f;
+                            p.whitening_factor = 0.15f;
+                            p.adaptive_noise = true;
+                            p.noise_estimation_method = SPECBLEACH_NOISE_ESTIMATION_MARTIN;
                             p.masking_depth = 0.5f;
                             p.suppression_strength = 0.6f;
-                            specbleach_load_parameters(nr, p);
-                            nr_latency = specbleach_get_latency(nr);
+                            p.aggressiveness = 0.0f;
+                            p.tonal_reduction_gain = 0.0f;
+                            specbleach_denoiser_load_parameters(nr, &p, sizeof(p));
+                            nr_latency = specbleach_denoiser_get_latency(nr);
                         }
                     }
                     if (s->radio_h->dstar_denoise && nr != NULL) {
-                        specbleach_process(nr, 160, s->dstar_mic8k, denoised);
+                        specbleach_denoiser_process(nr, 160, s->dstar_mic8k, denoised);
                         nr_total += 160;
                         if (nr_total > nr_latency)
                             src = denoised;
