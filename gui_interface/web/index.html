@@ -89,8 +89,9 @@ label { color: #080; }
     <h2>Radio State</h2>
     <div class="row">
       <label>Freq (Hz):</label>
-      <input type="text" id="freq" size="10" value="14200000">
-      <button onclick="send_cmd('set_frequency', 'value', document.getElementById('freq').value)">Set</button>
+      <input type="text" id="freq" size="10" value="14200000"
+             onkeydown="if (event.key === 'Enter') set_freq()">
+      <button onclick="set_freq()">Set</button>
       <label style="margin-left:12px">Profile:</label>
       <select id="profile" onchange="send_cmd('set_profile', 'value', this.value)">
         <option value="0">0: Data</option>
@@ -379,7 +380,8 @@ function handle_text(data) {
     if (j.type === 'state') {
       if (j.frequency !== undefined || j.freq !== undefined) {
         g_freq = j.frequency !== undefined ? j.frequency : j.freq;
-        $('freq').value = g_freq;
+        // not while the operator is typing a new one in it
+        if (document.activeElement !== $('freq')) $('freq').value = g_freq;
       }
       if (j.profile !== undefined) $('profile').value = j.profile;
       if (j.mode) { g_mode = j.mode; $('mode').value = j.mode; }
@@ -753,9 +755,20 @@ function set_digi_config(key) {
   ws.send(JSON.stringify({ cmd: 'digi_config', key: key, value: v }));
 }
 
+function set_freq() {
+  send_cmd('set_frequency', 'value', $('freq').value);
+  $('freq').blur();
+}
+
 function ptt_toggle() {
   send_cmd(ptt_on ? 'ptt_off' : 'ptt_on');
 }
+
+// The frames are a few milliseconds each and arrive with the network's
+// jitter: play them back to back from a short queue (AUDIO_LEAD ahead of the
+// clock), and start the queue over when it runs dry or grows too long.
+var AUDIO_LEAD = 0.15, AUDIO_MAX_LEAD = 0.6;
+var audio_next = 0;
 
 function play_audio(samples16) {
   if (!audio_ctx) audio_ctx = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 8000});
@@ -767,7 +780,11 @@ function play_audio(samples16) {
   var src = audio_ctx.createBufferSource();
   src.buffer = buf;
   src.connect(audio_ctx.destination);
-  src.start();
+  var now = audio_ctx.currentTime;
+  if (audio_next < now + 0.02 || audio_next > now + AUDIO_MAX_LEAD)
+    audio_next = now + AUDIO_LEAD;
+  src.start(audio_next);
+  audio_next += buf.duration;
 }
 
 function start_spectrum() {
