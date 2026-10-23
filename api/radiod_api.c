@@ -39,7 +39,6 @@ static ws_server_t    *s_ws;
 void radiod_api_attach(void *radio_h)
 {
     s_radio = (radio *) radio_h;
-    gps_init(s_radio);
 }
 
 void radiod_api_attach_ws(void *server)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 
 	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
@@ -15,7 +16,7 @@ import (
 
 // Register adds the GPS operations and the gps topic.
 func Register(rt *api.Router) {
-	h := handlers{rt.Radio()}
+	h := handlers{r: rt.Radio(), mu: &sync.Mutex{}}
 	rt.Op("getGps", h.getGps)
 	rt.Op("updateGpsSettings", h.updateSettings)
 
@@ -26,7 +27,10 @@ func Register(rt *api.Router) {
 	})
 }
 
-type handlers struct{ r rad.Radio }
+type handlers struct {
+	r  rad.Radio
+	mu *sync.Mutex
+}
 
 // ── response schemas (api-rest.yaml components) ──
 
@@ -83,6 +87,10 @@ func (h handlers) updateSettings(w http.ResponseWriter, r *http.Request) {
 	if !api.Decode(w, r, &raw) {
 		return
 	}
+	// The read, merge and apply are one step: two PATCHes at the same moment
+	// must not each read the same settings and drop the other's field.
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	cur := h.r.Gps().Settings
 	f := api.Fields{}
 	next := cur
@@ -188,7 +196,8 @@ func intIn(raw json.RawMessage, key string, lo, hi int64, f api.Fields) (int64, 
 	return v, true
 }
 
-// validEmail is a light check; the C layer's buffer is the hard cap (128).
+// validEmail is a light check; the C layer's buffer (char[128]) is the hard
+// cap, so at most 127 bytes plus the terminator survive the copy.
 func validEmail(e string) bool {
-	return len(e) > 0 && len(e) <= 128 && strings.Contains(e, "@") && !strings.ContainsAny(e, " \t\r\n")
+	return len(e) > 0 && len(e) <= 127 && strings.Contains(e, "@") && !strings.ContainsAny(e, " \t\r\n")
 }

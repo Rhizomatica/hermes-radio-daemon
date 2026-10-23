@@ -19,7 +19,7 @@
 #include "radiod_api.h"
 
 /* Load the settings from core.ini and, when main:gps_enable is set, start
- * the reader thread.  Called once, from radiod_api_attach, after the
+ * the reader thread.  Called once, from radio_daemon_core_run, after the
  * configuration is loaded. */
 void gps_init(radio *radio_h);
 

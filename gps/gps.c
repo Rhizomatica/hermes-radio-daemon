@@ -31,10 +31,11 @@ static radio           *s_radio;
 static pthread_mutex_t  s_mutex = PTHREAD_MUTEX_INITIALIZER;
 static radiod_api_gps   s_gps;
 
-static pthread_t s_thread;
-static bool      s_thread_running;
-static char      s_host[64] = "127.0.0.1";
-static char      s_port[16] = "2947";
+static pthread_t    s_thread;
+static _Atomic bool s_thread_running;
+static bool         s_connected; /* reader thread only: gpsd is up */
+static char         s_host[64] = "127.0.0.1";
+static char         s_port[16] = "2947";
 
 /* The defaults, the spec's (and hermes-sensors'). */
 static void settings_default(radiod_api_gps_settings *s)
@@ -274,6 +275,35 @@ static void gps_sleep_ms(int ms)
         usleep(50 * 1000);
 }
 
+/* Drop the fix to none: once the gpsd connection is gone there is no reader
+ * behind the last fix, so GET /gps and the gps topic must not keep serving
+ * a stale fix. */
+static void gps_clear_fix(void)
+{
+    gps_set_fix(0, NAN, NAN, NAN, false, NAN, false);
+}
+
+/* The reader logs one line per state change, not once a second: up, then
+ * lost (and back up), whatever the retry cadence in between. */
+static void gps_connected(void)
+{
+    if (!s_connected)
+    {
+        s_connected = true;
+        HLOGI("gps", "reading the fix from gpsd at %s:%s", s_host, s_port);
+    }
+}
+
+static void gps_lost(void)
+{
+    if (s_connected)
+    {
+        s_connected = false;
+        HLOGW("gps", "gpsd connection lost; reconnecting");
+    }
+    gps_clear_fix();
+}
+
 static void *gps_thread(void *arg)
 {
     (void) arg;
@@ -285,7 +315,7 @@ static void *gps_thread(void *arg)
         int fd = gps_connect();
         if (fd < 0)
         {
-            HLOGW("gps", "cannot connect to gpsd at %s:%s; retrying", s_host, s_port);
+            gps_lost();
             gps_sleep_ms(1000);
             continue;
         }
@@ -299,10 +329,11 @@ static void *gps_thread(void *arg)
         if (write(fd, watch, sizeof(watch) - 1) < 0)
         {
             close(fd);
+            gps_lost();
             gps_sleep_ms(1000);
             continue;
         }
-        HLOGI("gps", "reading the fix from gpsd at %s:%s", s_host, s_port);
+        gps_connected();
 
         used = 0;
         while (s_thread_running)
@@ -337,7 +368,7 @@ static void *gps_thread(void *arg)
         }
         close(fd);
         if (s_thread_running)
-            HLOGW("gps", "gpsd connection lost; reconnecting");
+            gps_lost();
     }
     return NULL;
 }

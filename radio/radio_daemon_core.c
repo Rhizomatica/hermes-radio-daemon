@@ -220,6 +220,11 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
 #endif
     }
 
+    /* The station's GPS reader (gpsd's JSON socket).  Started here, next to
+     * the other modules, so it does not depend on the websocket: recording
+     * and the over-the-air position reports need it too. */
+    gps_init(&radio_h);
+
     if (!radio_websocket_init(&radio_h, &websocket_tid))
     {
         HLOGE(LOG_C, "cannot start the websocket service; exiting");

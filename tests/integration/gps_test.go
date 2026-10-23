@@ -83,17 +83,20 @@ func TestGPSRESTAndSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := string(b)
-	for _, want := range []string{
-		"gps_logging = 1",
-		"gps_sample_interval_s = 5",
-		"gps_file_period_s = 120",
-		"gps_email = gps@example.com",
-		"gps_report_enabled = 1",
-		"gps_report_interval_s = 300",
+	// iniparser's dump pads the keys and quotes the values
+	// (gps_logging                    = "1"), so read the values back with an
+	// ini read rather than matching the raw lines.
+	ini := parseINI(string(b))
+	for _, kv := range []struct{ key, want string }{
+		{"main:gps_logging", "1"},
+		{"main:gps_sample_interval_s", "5"},
+		{"main:gps_file_period_s", "120"},
+		{"main:gps_email", "gps@example.com"},
+		{"main:gps_report_enabled", "1"},
+		{"main:gps_report_interval_s", "300"},
 	} {
-		if !strings.Contains(content, want) {
-			t.Errorf("core.ini lacks %q\n%s", want, content)
+		if got := ini[kv.key]; got != kv.want {
+			t.Errorf("core.ini %s = %q, want %q\n%s", kv.key, got, kv.want, string(b))
 		}
 	}
 }
@@ -211,4 +214,32 @@ func serveFakeGpsd(conn net.Conn) {
 func fakeTPV() string {
 	at := time.Now().UTC().Format(time.RFC3339)
 	return fmt.Sprintf(`{"class":"TPV","device":"fake","mode":3,"lat":19.430000,"lon":-99.130000,"alt":2240.000,"altMSL":2240.000,"time":%q}`+"\n", at)
+}
+
+// parseINI reads a flat [section] key = value file into a map keyed by
+// "section:key". Enough for the daemon's core.ini, whose values iniparser's
+// dump writes with padded keys and quoted values.
+func parseINI(content string) map[string]string {
+	m := map[string]string{}
+	section := ""
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line[0] == ';' || line[0] == '#' {
+			continue
+		}
+		if line[0] == '[' {
+			if end := strings.IndexByte(line, ']'); end > 0 {
+				section = line[1:end]
+			}
+			continue
+		}
+		eq := strings.IndexByte(line, '=')
+		if eq < 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:eq])
+		val := strings.Trim(strings.TrimSpace(line[eq+1:]), `"`)
+		m[section+":"+key] = val
+	}
+	return m
 }
