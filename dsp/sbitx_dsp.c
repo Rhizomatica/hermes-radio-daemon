@@ -184,7 +184,7 @@ static bool radae_rs_init(void)
 static dcblock_preserve_t rx_dc_state = {0.0f, 0.0f};
 static dcblock_preserve_t tx_dc_state = {0.0f, 0.0f};
 
-static SpectralBleachHandle nr_handle = NULL;
+static specbleach_denoiser *nr_handle = NULL;
 static uint32_t nr_latency = 0;
 static uint64_t nr_total_samples = 0;
 static bool nr_initialized = false;
@@ -1057,28 +1057,31 @@ static void dsp_dstar_tx_encode_frame(const float *mic8k)
 
     /* In-speech noise reduction front-end (libspecbleach, 8 kHz). Runtime
      * tunable via dstar_denoise (0 disables). */
-    static SpectralBleachHandle nr;
+    static specbleach_denoiser *nr = NULL;
     static uint32_t nr_latency;
     static uint32_t nr_total;
     float denoised[160];
     if (radio_h_dsp->dstar_denoise && nr == NULL) {
-        nr = specbleach_initialize(8000, 20.0f);
+        nr = specbleach_denoiser_initialize(8000, 20.0f, 0u);
         if (nr != NULL) {
-            SpectralBleachDenoiserParameters p;
-            memset(&p, 0, sizeof(p));
-            p.reduction_amount = 12.0f;
-            p.smoothing_factor = 30.0f;
-            p.whitening_factor = 15.0f;
-            p.adaptive_noise = 1;
-            p.noise_estimation_method = 2;   /* Martin Minimum Statistics */
+            SpecbleachDenoiserParameters p = specbleach_denoiser_get_default_parameters();
+            p.learn_noise = SPECBLEACH_LEARN_OFF;
+            p.residual_listen = false;
+            p.reduction_gain = 0.25f;
+            p.smoothing_factor = 0.30f;
+            p.whitening_factor = 0.15f;
+            p.adaptive_noise = true;
+            p.noise_estimation_method = SPECBLEACH_NOISE_ESTIMATION_MARTIN;
             p.masking_depth = 0.5f;
             p.suppression_strength = 0.6f;
-            specbleach_load_parameters(nr, p);
-            nr_latency = specbleach_get_latency(nr);
+            p.aggressiveness = 0.0f;
+            p.tonal_reduction_gain = 0.0f;
+            specbleach_denoiser_load_parameters(nr, &p, sizeof(p));
+            nr_latency = specbleach_denoiser_get_latency(nr);
         }
     }
     if (radio_h_dsp->dstar_denoise && nr != NULL) {
-        specbleach_process(nr, 160, mic8k, denoised);
+        specbleach_denoiser_process(nr, 160, mic8k, denoised);
         nr_total += 160;
         if (nr_total > nr_latency)
             src = denoised;
@@ -2018,30 +2021,30 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     {
         if (!nr_initialized)
         {
-            nr_handle = specbleach_initialize(96000, 20.0f);
+            nr_handle = specbleach_denoiser_initialize(96000, 20.0f, 0u);
             if (nr_handle)
             {
-                SpectralBleachDenoiserParameters nr_params;
-                nr_params.learn_noise = 0;
+                SpecbleachDenoiserParameters nr_params = specbleach_denoiser_get_default_parameters();
+                nr_params.learn_noise = SPECBLEACH_LEARN_OFF;
                 nr_params.residual_listen = false;
-                nr_params.reduction_amount = 12.0f;
+                nr_params.reduction_gain = 0.25f;
                 nr_params.smoothing_factor = 0.0f;
                 nr_params.whitening_factor = 0.0f;
-                nr_params.adaptive_noise = 1;
-                nr_params.noise_estimation_method = 0;
+                nr_params.adaptive_noise = true;
+                nr_params.noise_estimation_method = SPECBLEACH_NOISE_ESTIMATION_SPP_MMSE;
                 nr_params.masking_depth = 0.5f;
                 nr_params.suppression_strength = 0.5f;
                 nr_params.aggressiveness = 0.0f;
-                nr_params.tonal_reduction = 0.0f;
-                specbleach_load_parameters(nr_handle, nr_params);
-                nr_latency = specbleach_get_latency(nr_handle);
+                nr_params.tonal_reduction_gain = 0.0f;
+                specbleach_denoiser_load_parameters(nr_handle, &nr_params, sizeof(nr_params));
+                nr_latency = specbleach_denoiser_get_latency(nr_handle);
             }
             nr_initialized = true;
         }
 
         if (nr_handle)
         {
-            specbleach_process(nr_handle, MAX_BINS / 2, rx_float_out, rx_float_buf);
+            specbleach_denoiser_process(nr_handle, MAX_BINS / 2, rx_float_out, rx_float_buf);
             nr_total_samples += MAX_BINS / 2;
 
             if (nr_total_samples < nr_latency + MAX_BINS / 2)
@@ -2847,7 +2850,7 @@ void dsp_free(radio *radio_h)
 
     if (nr_handle)
     {
-        specbleach_free(nr_handle);
+        specbleach_denoiser_free(nr_handle);
         nr_handle = NULL;
         nr_initialized = false;
     }
