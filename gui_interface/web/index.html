@@ -32,6 +32,16 @@ label { color: #080; }
     #smeter-bar { height: 16px; background: #111; border: 1px solid #333; overflow: hidden; }
     #smeter-fill { height: 100%; width: 0%; background: linear-gradient(90deg,#1a7d3a,#3fd06a 45%,#e8d23a 62%,#e85a2a); transition: width 0.12s linear; }
     #smeter-read { font: 12px monospace; color: #cfe; margin-top: 3px; }
+#dial { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+#dial-digits { font: 34px monospace; color: #3f6; background: #000; border: 1px solid #333; padding: 2px 10px; border-radius: 4px; user-select: none; outline: none; }
+#dial-digits:focus { border-color: #2a5; }
+#dial-digits .d { cursor: ns-resize; padding: 0 1px; }
+#dial-digits .d:hover, #dial-digits .sel { background: #143; }
+#dial-digits .lz { color: #153; }
+#dial-digits .sep { color: #2a2; }
+#active-profile { font: 14px monospace; color: #cfe; border: 1px solid #2a5; padding: 4px 8px; border-radius: 3px; }
+#active-profile.tx-on { color: #f55; border-color: #f55; }
+#spec-scope, #spec-wf { cursor: crosshair; }
 #ctrl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px; }
 .ctrl { border: 1px solid #262; padding: 5px 6px; border-radius: 3px; background: #0d140d; }
 .ctrl .name { font-size: 11px; color: #8c8; display: flex; justify-content: space-between; }
@@ -87,10 +97,20 @@ label { color: #080; }
 <div id="tab-ctrl" class="tab-content active">
   <div class="panel">
     <h2>Radio State</h2>
+    <div id="dial">
+      <div id="dial-digits" tabindex="0"
+           title="Wheel over a digit tunes by that digit; click its top or bottom half; arrow keys: up/down tune, left/right pick the digit"></div>
+      <div>
+        <button onclick="tune_by(-1000)">-1k</button><button onclick="tune_by(-100)">-100</button><button onclick="tune_by(-10)">-10</button>
+        <button onclick="tune_by(10)">+10</button><button onclick="tune_by(100)">+100</button><button onclick="tune_by(1000)">+1k</button>
+      </div>
+      <div id="active-profile">profile -</div>
+    </div>
     <div class="row">
       <label>Freq (Hz):</label>
-      <input type="text" id="freq" size="10" value="14200000">
-      <button onclick="send_cmd('set_frequency', 'value', document.getElementById('freq').value)">Set</button>
+      <input type="text" id="freq" size="10" value="14200000"
+             onkeydown="if (event.key === 'Enter') set_freq()">
+      <button onclick="set_freq()">Set</button>
       <label style="margin-left:12px">Profile:</label>
       <select id="profile" onchange="send_cmd('set_profile', 'value', this.value)">
         <option value="0">0: Data</option>
@@ -249,8 +269,8 @@ label { color: #080; }
       <div id="smeter-read">S— · — dBm</div>
     </div>
     <div id="spectrum">
-      <canvas id="spec-scope"></canvas>
-      <canvas id="spec-wf"></canvas>
+      <canvas id="spec-scope" title="Click to tune there"></canvas>
+      <canvas id="spec-wf" title="Click to tune there"></canvas>
     </div>
     <div id="freq-axis"><span id="axis-l">—</span><span id="axis-c">—</span><span id="axis-r">—</span></div>
     <div id="audio-status">No audio data yet</div>
@@ -378,11 +398,17 @@ function handle_text(data) {
     // server doesn't echo a "cmd" field on those, so key on type.
     if (j.type === 'state') {
       if (j.frequency !== undefined || j.freq !== undefined) {
-        g_freq = j.frequency !== undefined ? j.frequency : j.freq;
-        $('freq').value = g_freq;
+        // a state sent before the operator's last tuning would move the dial back
+        if (Date.now() > tune_until) g_freq = j.frequency !== undefined ? j.frequency : j.freq;
+        // not while the operator is typing a new one in it
+        if (document.activeElement !== $('freq')) $('freq').value = g_freq;
+        dial_render();
       }
-      if (j.profile !== undefined) $('profile').value = j.profile;
+      if (j.profile !== undefined) { g_profile = j.profile; $('profile').value = j.profile; }
       if (j.mode) { g_mode = j.mode; $('mode').value = j.mode; }
+      if (j.txrx_state !== undefined) g_tx = (j.txrx_state === 1);
+      audio_rate_from_state(j);
+      show_active();
       update_dstar(j);
       if (j.s_meter !== undefined) update_smeter(j.s_meter);
       if (j.txrx_state !== undefined) {
@@ -753,13 +779,133 @@ function set_digi_config(key) {
   ws.send(JSON.stringify({ cmd: 'digi_config', key: key, value: v }));
 }
 
+// ---- tuning: the dial, the step buttons, click-to-tune on the spectrum ----
+var PROFILE_NAMES = ['Data', 'SSB', 'FM', 'AM', 'DRM', 'DV', 'FT8', 'CW', 'RTTY'];
+var g_profile = -1, g_tx = false, g_span_hz = 0;
+var dial_sel = 1000;                  // the digit the arrow keys tune
+var tune_pending = null, tune_timer = null, tune_until = 0;
+
+function show_active() {
+  var el = $('active-profile');
+  if (!el || g_profile < 0) return;
+  el.textContent = 'profile ' + g_profile + ' ' + (PROFILE_NAMES[g_profile] || '') +
+                   ' | ' + (g_mode || '?') + ' | ' + (g_tx ? 'TX' : 'RX');
+  el.className = g_tx ? 'tx-on' : '';
+}
+
+// The dial frequency, one span per digit (MHz.kHz.Hz), leading zeros dimmed.
+function dial_render() {
+  var el = $('dial-digits');
+  if (!el) return;
+  var s = String(Math.max(0, Math.round(g_freq)));
+  while (s.length < 8) s = '0' + s;
+  var html = '', lead = true;
+  for (var i = 0; i < s.length; i++) {
+    var place = s.length - 1 - i, step = Math.pow(10, place);
+    if (s[i] !== '0' || place <= 6) lead = false;    // the MHz units always shown
+    var cls = 'd' + (step === dial_sel ? ' sel' : '') + (lead ? ' lz' : '');
+    html += '<span class="' + cls + '" data-step="' + step + '">' + s[i] + '</span>';
+    if (place === 6 || place === 3) html += '<span class="sep">.</span>';
+  }
+  el.innerHTML = html;
+}
+
+// Tune now on the page; send the latest frequency to the radio at most
+// every 80 ms, so that a spun wheel does not queue up CAT commands.
+function tune_to(f) {
+  f = Math.round(f);
+  if (!(f > 0)) return;
+  g_freq = f;
+  tune_until = Date.now() + 1500;
+  if (document.activeElement !== $('freq')) $('freq').value = f;
+  dial_render();
+  tune_pending = f;
+  if (!tune_timer) tune_timer = setTimeout(tune_flush, 80);
+}
+
+function tune_flush() {
+  tune_timer = null;
+  if (tune_pending === null) return;
+  send_cmd('set_frequency', 'value', String(tune_pending));
+  tune_pending = null;
+}
+
+function tune_by(delta) { tune_to(g_freq + delta); }
+
+function dial_step_of(e) {
+  var t = e.target;
+  return (t && t.dataset && t.dataset.step) ? parseInt(t.dataset.step) : 0;
+}
+
+function dial_init() {
+  var dd = $('dial-digits');
+  dd.addEventListener('wheel', function (e) {
+    var step = dial_step_of(e);
+    if (!step) return;
+    e.preventDefault();
+    dial_sel = step;
+    tune_by(e.deltaY < 0 ? step : -step);
+  }, { passive: false });
+  dd.addEventListener('click', function (e) {
+    var step = dial_step_of(e);
+    if (!step) return;
+    var r = e.target.getBoundingClientRect();
+    dial_sel = step;
+    tune_by(e.clientY < r.top + r.height / 2 ? step : -step);
+    dd.focus();
+  });
+  dd.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowUp') tune_by(dial_sel);
+    else if (e.key === 'ArrowDown') tune_by(-dial_sel);
+    else if (e.key === 'ArrowLeft') { if (dial_sel < 10000000) dial_sel *= 10; dial_render(); }
+    else if (e.key === 'ArrowRight') { if (dial_sel > 1) dial_sel /= 10; dial_render(); }
+    else return;
+    e.preventDefault();
+  });
+  // Click-to-tune: the spectrum spans the passband, from the dial up (USB)
+  // or down (LSB); put the dial where the click is.
+  ['spec-scope', 'spec-wf'].forEach(function (id) {
+    $(id).addEventListener('click', function (e) {
+      if (!(g_span_hz > 0) || !(g_freq > 0)) return;
+      var r = e.currentTarget.getBoundingClientRect();
+      var x = (e.clientX - r.left) / r.width;
+      var lo = (g_mode === 'LSB') ? g_freq - g_span_hz : g_freq;
+      tune_to(Math.round((lo + x * g_span_hz) / 10) * 10);
+    });
+  });
+  dial_render();
+}
+
+function set_freq() {
+  var f = parseInt($('freq').value);
+  $('freq').blur();
+  if (f > 0) tune_to(f);
+}
+
 function ptt_toggle() {
   send_cmd(ptt_on ? 'ptt_off' : 'ptt_on');
 }
 
+// The frames are a few milliseconds each and arrive with the network's
+// jitter: play them back to back from a short queue (AUDIO_LEAD ahead of the
+// clock), and start the queue over when it runs dry or grows too long.
+var AUDIO_LEAD = 0.15, AUDIO_MAX_LEAD = 0.6;
+var audio_next = 0;
+// The 0x01 frames carry the daemon's audio rings at main:audio_sample_rate
+// (48 kHz with a Hamlib radio), except the decoded 8 kHz speech of RADE and
+// D-STAR on a Hamlib radio (see broadcast_rx_audio_chunk).
+var g_audio_rate = 8000;
+
+function audio_rate_from_state(j) {
+  if (!j.audio_sample_rate) return;
+  var decoded = j.backend === 'hamlib' && (j.digital_voice === true || j.mode === 'DSTAR');
+  var rate = decoded ? 8000 : j.audio_sample_rate;
+  if (rate !== g_audio_rate) { g_audio_rate = rate; audio_next = 0; }
+}
+
 function play_audio(samples16) {
-  if (!audio_ctx) audio_ctx = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 8000});
-  var buf = audio_ctx.createBuffer(1, samples16.length / 2, 8000);
+  if (!audio_ctx) audio_ctx = new (window.AudioContext || window.webkitAudioContext)();
+  var buf = audio_ctx.createBuffer(1, samples16.length / 2, g_audio_rate);
   var ch = buf.getChannelData(0);
   var view = new DataView(samples16.buffer, samples16.byteOffset, samples16.byteLength);
   for (var i = 0; i < ch.length; i++)
@@ -767,11 +913,15 @@ function play_audio(samples16) {
   var src = audio_ctx.createBufferSource();
   src.buffer = buf;
   src.connect(audio_ctx.destination);
-  src.start();
+  var now = audio_ctx.currentTime;
+  if (audio_next < now + 0.02 || audio_next > now + AUDIO_MAX_LEAD)
+    audio_next = now + AUDIO_LEAD;
+  src.start(audio_next);
+  audio_next += buf.duration;
 }
 
 function start_spectrum() {
-  if (!audio_ctx) audio_ctx = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 8000});
+  if (!audio_ctx) audio_ctx = new (window.AudioContext || window.webkitAudioContext)();
 }
 
 // Waterfall calibration (live-tunable from the UI).
@@ -910,6 +1060,7 @@ function draw_spectrum(data) {
   // low-freq (left) edge; LSB: the daemon flipped the bins so the dial is at
   // the high-freq (right) edge. Label left / centre / right in MHz.
   var total = n * bin_hz;
+  g_span_hz = total;
   var lsb = (g_mode === 'LSB');
   var lo = lsb ? (g_freq - total) : g_freq;
   var hi = lsb ? g_freq : (g_freq + total);
@@ -923,6 +1074,7 @@ function draw_spectrum(data) {
     ' | span ' + Math.round(total) + ' Hz | ' + bins + ' bins @ ' + bin_hz.toFixed(1) + ' Hz/bin' +
     ' | floor ' + wf_min + ' / ceil ' + wf_max + ' dB';
 }
+dial_init();
 </script>
 </body>
 </html>
