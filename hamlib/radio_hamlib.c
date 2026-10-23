@@ -35,9 +35,14 @@
 #include <strings.h>
 
 #include <hamlib/rig.h>
-/* Newer Hamlib versions declare the same hamlib_port structure in both rig.h
- * and port.h; including port.h here creates duplicate type definitions. Keep
- * the legacy rig->state.rigport access path instead. */
+/* Hamlib 4.7 on (and 5) define struct hamlib_port and HAMLIB_RIGPORT in
+ * port.h, which rig.h does not include; 4.6 has both in rig.h, and 4.5 has
+ * no accessor, only the port inside rig->state. */
+#if defined(__has_include)
+#if __has_include(<hamlib/port.h>)
+#include <hamlib/port.h>
+#endif
+#endif
 #ifndef HAMLIB_RIGPORT
 #define HAMLIB_RIGPORT(r) (&(r)->state.rigport)
 #endif
