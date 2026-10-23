@@ -1064,7 +1064,7 @@ static void dsp_dstar_tx_encode_frame(const float *mic8k)
     if (radio_h_dsp->dstar_denoise && nr == NULL) {
         nr = specbleach_denoiser_initialize(8000, 20.0f, 0u);
         if (nr != NULL) {
-            SpecbleachDenoiserParameters p = {0};
+            SpecbleachDenoiserParameters p = specbleach_denoiser_get_default_parameters();
             p.learn_noise = SPECBLEACH_LEARN_OFF;
             p.residual_listen = false;
             p.reduction_gain = 0.25f;
@@ -2024,7 +2024,7 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             nr_handle = specbleach_denoiser_initialize(96000, 20.0f, 0u);
             if (nr_handle)
             {
-                SpecbleachDenoiserParameters nr_params = {0};
+                SpecbleachDenoiserParameters nr_params = specbleach_denoiser_get_default_parameters();
                 nr_params.learn_noise = SPECBLEACH_LEARN_OFF;
                 nr_params.residual_listen = false;
                 nr_params.reduction_gain = 0.25f;

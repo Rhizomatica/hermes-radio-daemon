@@ -734,7 +734,7 @@ static void do_dstar_tx(hamlib_digi_state *s, uint32_t ring_rate)
                     if (s->radio_h->dstar_denoise && nr == NULL) {
                         nr = specbleach_denoiser_initialize(8000, 20.0f, 0u);
                         if (nr != NULL) {
-                            SpecbleachDenoiserParameters p = {0};
+                            SpecbleachDenoiserParameters p = specbleach_denoiser_get_default_parameters();
                             p.learn_noise = SPECBLEACH_LEARN_OFF;
                             p.residual_listen = false;
                             p.reduction_gain = 0.25f;
