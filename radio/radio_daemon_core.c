@@ -36,6 +36,7 @@
 #include "mercury_link.h"
 #endif
 #include "voice_crypto.h"
+#include "gps.h"
 #include "sbitx/sbitx_alsa.h"
 
 #define LOG_C "radiod"
@@ -219,6 +220,11 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
 #endif
     }
 
+    /* The station's GPS reader (gpsd's JSON socket).  Started here, next to
+     * the other modules, so it does not depend on the websocket: recording
+     * and the over-the-air position reports need it too. */
+    gps_init(&radio_h);
+
     if (!radio_websocket_init(&radio_h, &websocket_tid))
     {
         HLOGE(LOG_C, "cannot start the websocket service; exiting");
@@ -264,6 +270,8 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     pthread_join(io_tid, NULL);
     io_started = false;
 
+    gps_shutdown();
+
     if (headset_started)
         audio_headset_shutdown(&radio_h);
     if (shm_started)
@@ -295,6 +303,7 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
 fail:
     if (io_started)
         pthread_join(io_tid, NULL);
+    gps_shutdown();
     if (headset_started)
         audio_headset_shutdown(&radio_h);
     if (shm_started)

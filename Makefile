@@ -20,7 +20,7 @@ CC      = gcc
 #   common/              configuration and shared-memory helpers
 #   include/             public protocol headers (SHM command set)
 #   utils/               radio_client, ws_client, D-STAR/AMBE and RADE tools
-MODULE_INCLUDES = -Iradio -Imodem -Iaudioio -Icontrol_interfaces -Igui_interface -Iapi -Ivendor/hermes_log \
+MODULE_INCLUDES = -Iradio -Imodem -Iaudioio -Icontrol_interfaces -Igui_interface -Iapi -Igps -Ivendor/hermes_log \
                   -Icommon -Ihamlib -Iinclude
 
 # -MMD -MP auto-generates per-object header dependencies (*.d), so editing a
@@ -89,6 +89,7 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   common/cfg_utils.o \
                   common/shm_utils.o \
                   common/radiod_log.o \
+                  gps/gps.o \
                   gui_interface/websocket/ws_server.o \
                   gui_interface/websocket/ws_frame.o \
                   gui_interface/websocket/ws_crypto.o \

@@ -21,6 +21,7 @@ type Stub struct {
 	digi     DigiSettings
 	log      []json.RawMessage
 	modem    json.RawMessage
+	gps      Gps
 	listen   string // mercury's listen mode
 	busy     string // "arq", "broadcast" or ""
 	link     bool   // an ARQ session up
@@ -52,6 +53,8 @@ func NewStub() *Stub {
 		values: map[string]float64{"AF": 0.5, "RF": 1, "PREAMP": 0, "STRENGTH": -20, "NB": 0, "BACKLIGHT": 0.8},
 		digi: DigiSettings{CWWPM: 20, CWPitchHz: 700, RTTYBaud: 45, RTTYShiftHz: 170, RTTYMarkHz: 2125,
 			DstarMycall: "N0CALL", VoiceCodec: "RADEV2"},
+		gps: Gps{Fix: "none", Settings: GpsSettings{SampleIntervalS: 1, FilePeriodS: 3600,
+			Report: GpsReport{IntervalS: 900}}},
 		listen: "DATAC3",
 		Sent:   map[int64][][]byte{},
 	}
@@ -425,6 +428,31 @@ func (s *Stub) ModemStatus() (json.RawMessage, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.modem, s.modem != nil
+}
+
+// SetGpsFix puts the stub's fix (lat/lon/alt nil: no position; at nil: none).
+func (s *Stub) SetGpsFix(fix string, lat, lon, alt *float64, at *string) {
+	s.mu.Lock()
+	s.gps.Fix = fix
+	s.gps.Latitude, s.gps.Longitude, s.gps.AltitudeM, s.gps.At = lat, lon, alt, at
+	s.mu.Unlock()
+}
+
+func (s *Stub) Gps() Gps {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gps
+}
+
+func (s *Stub) SetGpsSettings(g GpsSettings) error {
+	// The ranges api-rest.yaml gives GpsSettings.
+	if g.SampleIntervalS < 1 || g.FilePeriodS < 60 || g.Report.IntervalS < 60 {
+		return ErrInvalid
+	}
+	s.mu.Lock()
+	s.gps.Settings = g
+	s.mu.Unlock()
+	return nil
 }
 
 // stubListenModes are the listen modes mercury can switch to at run time.
