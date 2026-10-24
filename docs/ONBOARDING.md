@@ -26,16 +26,17 @@ make go-test test integration-test # Go, C, and the real daemon on Hamlib's dumm
 ```
 To try it, set `[main] api_v2_enable = 1` in core.ini, run the daemon, then:
 `curl http://127.0.0.1:8080/api/v2/radio` (https if the station runs wss).
-Until logins exist, `/api/v2` answers only on localhost, and every caller is admin.
+Sessions exist now (`POST /api/v2/session`, first-boot `/setup`); until the C side turns
+on `api_v2_enable`, `/api/v2` still answers only on localhost.
 
 ## What's there, and what's next
 - **Examples to copy** (real operations we need):
   - REST: health, radio state, list/get/update/select profiles, protection reset, digi log (paginated), digi settings, modem (mercury) status;
   - commands: `radio.set`, `radio.select_profile`, `radio.reset_protection`.
+  - authentication: sessions (`internal/auth`), first-boot setup (`internal/setup`), users (`internal/users`), all over `internal/store`.
 - **Coming:**
-  - the APIs that move over from hermes-api (messages, users, stations, schedules, ...), one Go package per domain;
+  - the APIs that move over from hermes-api (messages, stations, schedules, ...), one Go package per domain;
   - hermes.v1 topics and events;
-  - logins and roles;
   - WebRTC (in C; Go only builds the signalling).
 
 ## House rules
