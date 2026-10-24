@@ -37,7 +37,12 @@ func run() {
 	}
 
 	// Ask the router itself, exactly as radiod's C server would, for /health.
-	rt := station.NewRouter(radio.Default())
+	// With a database open, sessions and users are wired in.
+	rad := radio.Default()
+	rt := station.NewRouter(rad)
+	if st != nil {
+		rt = station.NewAuthenticatedRouter(rad, st)
+	}
 	status, _, _, body := rt.ServeRaw("GET", "/api/v2/health", "", "Host: localhost\r\n", "", nil)
 
 	r := rt.Radio()
