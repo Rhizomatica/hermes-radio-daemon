@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -108,6 +109,15 @@ func (rt *Router) WSOpen(id int64, r *http.Request) int {
 	if roleRank[role] == 0 {
 		rt.wsLog.Info("refused: no session", "conn", id, "peer", r.RemoteAddr)
 		return http.StatusUnauthorized
+	}
+	// api-ws.yaml: only same-origin browsers are accepted. A Bearer token
+	// (which browsers never send on an upgrade) is exempt; the session
+	// cookie must come with an Origin naming this station. Only enforced
+	// once sessions exist (Resolve set); the loopback-admin router has no
+	// sessions and keeps answering without an Origin.
+	if rt.Resolve != nil && !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") && !SameOrigin(r) {
+		rt.wsLog.Info("refused: bad origin", "conn", id, "peer", r.RemoteAddr)
+		return http.StatusForbidden
 	}
 	c := &Conn{ID: id, Role: role, rt: rt, in: make(chan []byte, connQueue), done: make(chan struct{}),
 		subs: map[string]*subscription{}}

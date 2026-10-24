@@ -9,12 +9,14 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 )
 
 var problemTitles = map[string]string{
 	"bad_request":            "Bad request",
+	"unauthenticated":        "Unauthenticated",
 	"forbidden":              "Forbidden",
 	"not_found":              "Not found",
 	"method_not_allowed":     "Method not allowed",
@@ -24,6 +26,13 @@ var problemTitles = map[string]string{
 	"not_running":            "Not running",
 	"not_supported":          "Not supported",
 	"encryption_not_allowed": "Encryption not allowed",
+	"rate_limited":           "Rate limited",
+	"csrf":                   "CSRF check failed",
+	"bad_setup_code":         "Bad setup code",
+	"setup_done":             "Setup already done",
+	"bad_passphrase":         "Bad passphrase",
+	"conflict":               "Conflict",
+	"too_large":              "Too large",
 	"internal":               "Internal error",
 }
 
@@ -147,3 +156,18 @@ func DecodeCursor(w http.ResponseWriter, r *http.Request) (uint64, bool) {
 }
 
 func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }
+
+// SameOrigin reports whether the request's Origin header names the request's
+// host. It is false when Origin is absent, so callers that exempt other
+// clients (Bearer tools) must decide before calling it.
+func SameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return false
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
+}
