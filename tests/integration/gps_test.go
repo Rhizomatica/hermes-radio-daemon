@@ -24,9 +24,10 @@ import (
 func TestGPSRESTAndSettings(t *testing.T) {
 	needGoAPI(t)
 	d := startAPIDaemon(t)
+	token := setupAPI(t, d)
 	base := apiBase(d)
 
-	r := call(t, "GET", base+"/gps", "")
+	r := callAuth(t, "GET", base+"/gps", "", token)
 	if r.status != 200 {
 		t.Fatalf("GET /gps = %d %s", r.status, r.raw)
 	}
@@ -46,8 +47,8 @@ func TestGPSRESTAndSettings(t *testing.T) {
 		t.Errorf("default report = %v", rep)
 	}
 
-	r = call(t, "PATCH", base+"/gps/settings",
-		`{"logging":true,"sample_interval_s":5,"file_period_s":120,"email":"gps@example.com","report":{"enabled":true,"interval_s":300}}`)
+	r = callAuth(t, "PATCH", base+"/gps/settings",
+		`{"logging":true,"sample_interval_s":5,"file_period_s":120,"email":"gps@example.com","report":{"enabled":true,"interval_s":300}}`, token)
 	if r.status != 200 || r.body["logging"] != true || r.body["sample_interval_s"].(float64) != 5 ||
 		r.body["file_period_s"].(float64) != 120 || r.body["email"] != "gps@example.com" {
 		t.Fatalf("PATCH /gps/settings = %d %s", r.status, r.raw)
@@ -56,7 +57,7 @@ func TestGPSRESTAndSettings(t *testing.T) {
 		t.Errorf("report = %v", rep)
 	}
 
-	r = call(t, "GET", base+"/gps", "")
+	r = callAuth(t, "GET", base+"/gps", "", token)
 	if r.status != 200 {
 		t.Fatalf("GET /gps = %d %s", r.status, r.raw)
 	}
@@ -66,11 +67,11 @@ func TestGPSRESTAndSettings(t *testing.T) {
 	}
 
 	// A refused PATCH (one bad field) changes nothing.
-	r = call(t, "PATCH", base+"/gps/settings", `{"sample_interval_s":7,"file_period_s":1}`)
+	r = callAuth(t, "PATCH", base+"/gps/settings", `{"sample_interval_s":7,"file_period_s":1}`, token)
 	if r.status != 422 || r.body["code"] != "invalid" {
 		t.Fatalf("bad PATCH = %d %s", r.status, r.raw)
 	}
-	if r = call(t, "GET", base+"/gps", ""); r.status != 200 {
+	if r = callAuth(t, "GET", base+"/gps", "", token); r.status != 200 {
 		t.Fatalf("GET /gps = %d %s", r.status, r.raw)
 	}
 	if s, _ := r.body["settings"].(map[string]any); s == nil || s["sample_interval_s"].(float64) != 5 {
@@ -106,7 +107,8 @@ func TestGPSRESTAndSettings(t *testing.T) {
 func TestGPSTopicSnapshot(t *testing.T) {
 	needGoAPI(t)
 	d := startAPIDaemon(t)
-	ws, _, err := wsDialProto(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1")
+	token := setupAPI(t, d)
+	ws, _, err := wsDialAuth(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1", token)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,10 +151,11 @@ func TestGPSFixFromGpsd(t *testing.T) {
 		"gps_host = 127.0.0.1",
 		"gps_port = " + port,
 	}})
+	token := setupAPI(t, d)
 
 	var r httpResult
 	if !eventually(10*time.Second, func() bool {
-		r = call(t, "GET", apiBase(d)+"/gps", "")
+		r = callAuth(t, "GET", apiBase(d)+"/gps", "", token)
 		return r.status == 200 && r.body["fix"] == "3d"
 	}) {
 		t.Fatalf("no 3-D fix within 10 s (last %d %s)\n--- daemon log ---\n%s", r.status, r.raw, d.Log())

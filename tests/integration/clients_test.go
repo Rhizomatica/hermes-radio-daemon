@@ -50,9 +50,14 @@ func wsDial(rawURL string) (*wsConn, error) {
 	return c, err
 }
 
-// wsDialProto dials asking for a subprotocol ("" for none). On a refused
-// upgrade it returns the HTTP status; on success the accepted subprotocol.
+// wsDialProto dials asking for a subprotocol ("" for none), with no session.
 func wsDialProto(rawURL, proto string) (*wsConn, string, error) {
+	return wsDialAuth(rawURL, proto, "")
+}
+
+// wsDialAuth is wsDialProto with a session token (Authorization: Bearer),
+// which api-ws.yaml accepts instead of the hermes_session cookie.
+func wsDialAuth(rawURL, proto, token string) (*wsConn, string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, "", err
@@ -75,8 +80,12 @@ func wsDialProto(rawURL, proto string) (*wsConn, string, error) {
 	if proto != "" {
 		protoHdr = "Sec-WebSocket-Protocol: " + proto + "\r\n"
 	}
+	authHdr := ""
+	if token != "" {
+		authHdr = "Authorization: Bearer " + token + "\r\n"
+	}
 	fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"+
-		"Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n%s\r\n", path, u.Host, key, protoHdr)
+		"Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n%s%s\r\n", path, u.Host, key, protoHdr, authHdr)
 
 	r := bufio.NewReader(conn)
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
