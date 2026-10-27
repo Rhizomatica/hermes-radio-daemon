@@ -14,6 +14,7 @@ import (
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/auth"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/config"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/passwd"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/ratelimit"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/store"
@@ -39,7 +40,7 @@ type handlers struct {
 // Register adds the setup operations.
 func Register(rt *api.Router, st *store.Store, cfg Config) {
 	if cfg.SetupCodePath == "" {
-		cfg.SetupCodePath = "/etc/hermes/setup-code"
+		cfg.SetupCodePath = config.DefaultSetupCode
 	}
 	if cfg.SessionLifetime <= 0 {
 		cfg.SessionLifetime = auth.DefaultLifetime
@@ -145,27 +146,30 @@ func (h *handlers) run(w http.ResponseWriter, r *http.Request) {
 		api.Problem(w, r, http.StatusInternalServerError, "internal", "cannot hash the password", nil)
 		return
 	}
-	admin, err := h.store.CreateUser(r.Context(), store.NewUser{
-		Username: req.Admin.Username, PasswordHash: hash, Role: "admin",
-		DisplayName: req.Admin.DisplayName,
-	})
-	if err != nil {
-		api.Problem(w, r, http.StatusConflict, "conflict", "the admin username is taken", nil)
-		return
+	metas := map[string]string{
+		"station.name":     req.StationName,
+		"station.language": req.Language,
+		"station.timezone": req.Timezone,
+		"setup.done":       "1",
 	}
-
-	// Station identity and the setup flag.
-	setMeta := func(k, v string) { _ = h.store.SetMeta(r.Context(), k, v) }
-	setMeta("station.name", req.StationName)
-	setMeta("station.language", req.Language)
-	setMeta("station.timezone", req.Timezone)
 	if req.Callsign != nil {
-		setMeta("station.callsign", *req.Callsign)
+		metas["station.callsign"] = *req.Callsign
 	}
 	if req.Country != nil {
-		setMeta("station.country", *req.Country)
+		metas["station.country"] = *req.Country
 	}
-	setMeta("setup.done", "1")
+	admin, err := h.store.CompleteSetup(r.Context(), store.NewUser{
+		Username: req.Admin.Username, PasswordHash: hash, Role: "admin",
+		DisplayName: req.Admin.DisplayName,
+	}, metas)
+	if err != nil {
+		if strings.Contains(err.Error(), "users.username") {
+			api.Problem(w, r, http.StatusConflict, "conflict", "the admin username is taken", nil)
+		} else {
+			api.Problem(w, r, http.StatusInternalServerError, "internal", "cannot complete setup", nil)
+		}
+		return
+	}
 
 	token, expires, err := auth.IssueSession(w, r, h.store, h.lifetime, admin)
 	if err != nil {

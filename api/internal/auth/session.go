@@ -5,20 +5,30 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/passwd"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/store"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/users"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/spec"
 )
 
-// sessionCookie is the Set-Cookie line api-rest.yaml specifies.
-func sessionCookie(value string, maxAge int) *http.Cookie {
+// sessionCookie is the Set-Cookie line api-rest.yaml specifies. secure is
+// whether the browser may store and send it: only over TLS (or a proxy that
+// says so), so the cookie still works on the daemon's plain-HTTP loopback.
+func sessionCookie(value string, maxAge int, secure bool) *http.Cookie {
 	return &http.Cookie{
 		Name: "hermes_session", Value: value, Path: "/",
-		HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode, MaxAge: maxAge,
+		HttpOnly: true, Secure: secure, SameSite: http.SameSiteStrictMode, MaxAge: maxAge,
 	}
+}
+
+// secureRequest reports whether the session cookie should be Secure: the
+// request came over TLS, or a TLS-terminating proxy set X-Forwarded-Proto.
+func secureRequest(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
@@ -37,12 +47,15 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 	}
 	u, err := h.store.UserByUsername(r.Context(), req.Username)
 	if errors.Is(err, sql.ErrNoRows) {
+		// Unknown username: burn the same Argon2id work so the response
+		// time does not reveal which usernames exist.
 		h.dummyVerify(req.Password)
 	} else if err != nil {
 		api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
 		return
-	}
-	if err == nil && !u.Disabled && passwd.Verify(u.PasswordHash, req.Password) {
+	} else if passwd.Verify(u.PasswordHash, req.Password) && !u.Disabled {
+		// Verify runs before the disabled check, so a disabled account
+		// costs the same as a wrong password.
 		h.startSession(w, r, u)
 		return
 	}
@@ -77,7 +90,7 @@ func IssueSession(w http.ResponseWriter, r *http.Request, st *store.Store, lifet
 		return "", "", err
 	}
 	_ = st.SetLastLoginAt(r.Context(), u.ID)
-	http.SetCookie(w, sessionCookie(raw, int(lifetime.Seconds())))
+	http.SetCookie(w, sessionCookie(raw, int(lifetime.Seconds()), secureRequest(r)))
 	return raw, expiresAt, nil
 }
 
@@ -105,7 +118,7 @@ func (h *handlers) logout(w http.ResponseWriter, r *http.Request) {
 		api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
 		return
 	}
-	http.SetCookie(w, sessionCookie("", -1))
+	http.SetCookie(w, sessionCookie("", -1, secureRequest(r)))
 	api.JSON(w, http.StatusNoContent, nil)
 }
 
@@ -117,7 +130,7 @@ func (h *handlers) listMySessions(w http.ResponseWriter, r *http.Request) {
 	}
 	target := a.UserID
 	if q := r.URL.Query().Get("user_id"); q != "" {
-		if a.Role != "admin" {
+		if spec.Role(a.Role) != spec.RoleAdmin {
 			api.Problem(w, r, http.StatusForbidden, "forbidden", "only admins may list another user's sessions", nil)
 			return
 		}
@@ -163,7 +176,7 @@ func (h *handlers) revokeSession(w http.ResponseWriter, r *http.Request) {
 		api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
 		return
 	}
-	if s.UserID != a.UserID && a.Role != "admin" {
+	if s.UserID != a.UserID && spec.Role(a.Role) != spec.RoleAdmin {
 		api.Problem(w, r, http.StatusForbidden, "forbidden", "not your session", nil)
 		return
 	}

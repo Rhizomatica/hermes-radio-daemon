@@ -1,7 +1,7 @@
 // Package config reads the API layer's slice of radiod's configuration. The
 // API layer owns no socket: radiod's C server listens and hands /api/v2
-// requests to the Go exports, so the only value the Go layer reads is where
-// its SQLite database lives.
+// requests to the Go exports, so the only values the Go layer reads are where
+// its SQLite database lives and where the first-boot setup code is.
 package config
 
 import "os"
@@ -10,9 +10,10 @@ import "os"
 // (common/cfg_utils.c main:recording_dir, /var/lib/hermes-radio-daemon).
 const defaultDatabase = "/var/lib/hermes-radio-daemon/hermes.sqlite"
 
-// defaultSetupCode is where the installer writes the one-time setup code
-// (api-rest.yaml: /etc/hermes/setup-code, root only).
-const defaultSetupCode = "/etc/hermes/setup-code"
+// DefaultSetupCode is where the installer writes the one-time setup code
+// (api-rest.yaml: /etc/hermes/setup-code, root only). setup.Register uses it
+// as the fallback, so the path has a single source of truth.
+const DefaultSetupCode = "/etc/hermes/setup-code"
 
 // Config is the slice of radiod's configuration the API layer reads.
 type Config struct {
@@ -30,7 +31,7 @@ type Config struct {
 func Load() Config {
 	return Config{
 		DatabasePath:  getenv("DATABASE_PATH", defaultDatabase),
-		SetupCodePath: getenv("SETUP_CODE_PATH", defaultSetupCode),
+		SetupCodePath: getenv("SETUP_CODE_PATH", DefaultSetupCode),
 	}
 }
 

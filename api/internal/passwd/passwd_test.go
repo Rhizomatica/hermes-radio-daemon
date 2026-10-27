@@ -1,6 +1,8 @@
 package passwd
 
 import (
+	"bytes"
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -45,5 +47,22 @@ func TestVerifyMalformed(t *testing.T) {
 		if Verify(s, "anything") {
 			t.Errorf("Verify(%q) = true, want false", s)
 		}
+	}
+}
+
+func TestVerifyRejectsAbsurdParams(t *testing.T) {
+	for _, s := range []string{
+		"$argon2id$v=19$m=999999999,t=2,p=1$c2FsdA$a2V5", // memory
+		"$argon2id$v=19$m=19456,t=99,p=1$c2FsdA$a2V5",    // time
+		"$argon2id$v=19$m=19456,t=2,p=99$c2FsdA$a2V5",    // threads
+	} {
+		if Verify(s, "anything") {
+			t.Errorf("Verify(%q) = true, want false", s)
+		}
+	}
+	// A key longer than this build accepts is refused, not allocated for.
+	key := base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte("k"), 65))
+	if Verify("$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$"+key, "anything") {
+		t.Error("Verify with an oversized key = true, want false")
 	}
 }

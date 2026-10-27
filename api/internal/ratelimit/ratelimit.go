@@ -32,7 +32,11 @@ func (l *Limiter) Allow(key string, n int, window time.Duration) (bool, time.Dur
 			keep = append(keep, t)
 		}
 	}
-	l.hits[key] = keep
+	if len(keep) == 0 {
+		delete(l.hits, key)
+	} else {
+		l.hits[key] = keep
+	}
 	if len(keep) >= n {
 		return false, time.Until(keep[0].Add(window))
 	}

@@ -118,6 +118,11 @@ func expired(expiresAt string) bool {
 	return err != nil || time.Now().After(t)
 }
 
+// lastSeenTouchEvery throttles how often resolve bumps a session's
+// last_seen_at, so an authenticated read does not become a write on every
+// request.
+const lastSeenTouchEvery = time.Minute
+
 // resolve looks up the request's session, joined with its user's role.
 func (h *handlers) resolve(r *http.Request) (store.AuthSession, bool) {
 	raw := tokenFrom(r)
@@ -127,6 +132,9 @@ func (h *handlers) resolve(r *http.Request) (store.AuthSession, bool) {
 	a, err := h.store.AuthSessionByTokenHash(r.Context(), hashToken(raw))
 	if err != nil || a.Disabled || expired(a.ExpiresAt) {
 		return store.AuthSession{}, false
+	}
+	if t, err := time.Parse(time.RFC3339, a.LastSeenAt); err != nil || time.Since(t) > lastSeenTouchEvery {
+		_ = h.store.TouchSession(r.Context(), a.SessionID) // best-effort
 	}
 	return a, true
 }

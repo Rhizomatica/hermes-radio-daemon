@@ -64,13 +64,18 @@ func TestSetPassword(t *testing.T) {
 	id := e.SeedUser("bob", "password1", "user")
 	at := e.Login("admin", "password1")
 	bt := e.Login("bob", "password1")
+	bt2 := e.Login("bob", "password1") // a second session, to be revoked
 
-	// Self change with the current password; other sessions end.
+	// Self change with the current password; other sessions end, but the
+	// current one survives (api-rest.yaml setPassword).
 	if r := e.DoAuth("PUT", "/users/"+itoa(id)+"/password", `{"current_password":"password1","new_password":"newpass99"}`, bt); r.Status != 204 {
 		t.Fatalf("self setPassword = %d: %s", r.Status, r.Body)
 	}
-	if r := e.DoAuth("GET", "/session", "", bt); r.Status != 401 {
-		t.Fatalf("old session survived password change: %d", r.Status)
+	if r := e.DoAuth("GET", "/session", "", bt); r.Status != 200 {
+		t.Fatalf("current session did not survive password change: %d", r.Status)
+	}
+	if r := e.DoAuth("GET", "/session", "", bt2); r.Status != 401 {
+		t.Fatalf("other session survived password change: %d", r.Status)
 	}
 	if r := e.Do("POST", "/session", `{"username":"bob","password":"password1"}`); r.Status != 401 {
 		t.Fatalf("old password still works: %d", r.Status)
@@ -78,8 +83,8 @@ func TestSetPassword(t *testing.T) {
 	e.Login("bob", "newpass99")
 
 	// Wrong current password → 422.
-	bt2 := e.Login("bob", "newpass99")
-	if r := e.DoAuth("PUT", "/users/"+itoa(id)+"/password", `{"current_password":"wrong","new_password":"newpass100"}`, bt2); r.Status != 422 {
+	bt3 := e.Login("bob", "newpass99")
+	if r := e.DoAuth("PUT", "/users/"+itoa(id)+"/password", `{"current_password":"wrong","new_password":"newpass100"}`, bt3); r.Status != 422 {
 		t.Fatalf("wrong current = %d, want 422", r.Status)
 	}
 	// An admin changes without the current password.

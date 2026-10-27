@@ -31,11 +31,12 @@ type NewSession struct {
 // AuthSession is what an authentication check needs: a session joined to
 // its user's role and disabled flag.
 type AuthSession struct {
-	SessionID int64
-	UserID    int64
-	Role      string
-	Disabled  bool
-	ExpiresAt string
+	SessionID  int64
+	UserID     int64
+	Role       string
+	Disabled   bool
+	LastSeenAt string
+	ExpiresAt  string
 }
 
 const sessionCols = "id, user_id, token_hash, ip, user_agent, created_at, last_seen_at, expires_at"
@@ -62,9 +63,9 @@ func (s *Store) AuthSessionByTokenHash(ctx context.Context, hash string) (AuthSe
 	var a AuthSession
 	var disabled int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT s.id, s.user_id, u.role, u.disabled, s.expires_at
+		SELECT s.id, s.user_id, u.role, u.disabled, s.last_seen_at, s.expires_at
 		FROM sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.token_hash = ?`, hash).Scan(&a.SessionID, &a.UserID, &a.Role, &disabled, &a.ExpiresAt)
+		WHERE s.token_hash = ?`, hash).Scan(&a.SessionID, &a.UserID, &a.Role, &disabled, &a.LastSeenAt, &a.ExpiresAt)
 	if err != nil {
 		return AuthSession{}, err
 	}
@@ -104,6 +105,13 @@ func (s *Store) RevokeSession(ctx context.Context, id int64) error {
 // RevokeAllForUser deletes every session of a user.
 func (s *Store) RevokeAllForUser(ctx context.Context, userID int64) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, userID)
+	return err
+}
+
+// RevokeAllForUserExcept deletes every session of a user except one (the
+// caller's own, on a self password change).
+func (s *Store) RevokeAllForUserExcept(ctx context.Context, userID, exceptSessionID int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND id != ?`, userID, exceptSessionID)
 	return err
 }
 

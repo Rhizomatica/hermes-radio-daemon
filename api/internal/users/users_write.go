@@ -177,9 +177,15 @@ func (h *handlers) setPassword(w http.ResponseWriter, r *http.Request) {
 		api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
 		return
 	}
-	// Other sessions of that user end (api-rest.yaml setPassword). The
-	// mailbox update arrives with the email helper (not implemented yet).
-	if err := h.store.RevokeAllForUser(r.Context(), id); err != nil {
+	// Other sessions of that user end (api-rest.yaml setPassword); a user
+	// changing their own password keeps the session making this request.
+	// The mailbox update arrives with the email helper (not implemented yet).
+	if p.UserID == id {
+		if err := h.store.RevokeAllForUserExcept(r.Context(), id, p.SessionID); err != nil {
+			api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
+			return
+		}
+	} else if err := h.store.RevokeAllForUser(r.Context(), id); err != nil {
 		api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
 		return
 	}

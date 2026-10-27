@@ -29,6 +29,14 @@ const (
 	threads = 1     // parallelism
 	keyLen  = 32    // bytes
 	saltLen = 16    // bytes
+
+	// Upper bounds a stored hash may claim. Anything beyond is absurd — a
+	// tampered hash — so Verify refuses it instead of allocating for it.
+	// maxMemory stays well under radiod's 64 MiB Go heap cap.
+	maxMemory  = 32 * 1024 // KiB
+	maxTime    = 8         // passes
+	maxThreads = 4         // parallelism
+	maxKeyLen  = 64        // bytes
 )
 
 // ErrInvalid is returned by Hash when the password is not usable (it never
@@ -79,6 +87,7 @@ func parse(encoded string) (params, error) {
 	if len(parts) != 6 || parts[0] != "" || parts[1] != "argon2id" || parts[2] != "v=19" {
 		return p, ErrInvalid
 	}
+	var mem, tm, par uint64
 	for _, kv := range strings.Split(parts[3], ",") {
 		k, v, ok := strings.Cut(kv, "=")
 		if !ok {
@@ -90,24 +99,31 @@ func parse(encoded string) (params, error) {
 		}
 		switch k {
 		case "m":
-			p.memory = uint32(n)
+			mem = n
 		case "t":
-			p.time = uint32(n)
+			tm = n
 		case "p":
-			p.threads = uint8(n)
+			par = n
 		default:
 			return p, ErrInvalid
 		}
 	}
-	if p.memory == 0 || p.time == 0 || p.threads == 0 {
+	if mem == 0 || tm == 0 || par == 0 {
 		return p, ErrInvalid
 	}
+	if mem > maxMemory || tm > maxTime || par > maxThreads {
+		return p, ErrInvalid
+	}
+	p.memory, p.time, p.threads = uint32(mem), uint32(tm), uint8(par)
 	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
 	if err != nil || len(salt) == 0 {
 		return p, ErrInvalid
 	}
 	key, err := base64.RawStdEncoding.DecodeString(parts[5])
 	if err != nil || len(key) == 0 {
+		return p, ErrInvalid
+	}
+	if len(key) > maxKeyLen {
 		return p, ErrInvalid
 	}
 	p.salt, p.key, p.keyLen = salt, key, uint32(len(key))

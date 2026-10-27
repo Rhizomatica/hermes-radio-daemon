@@ -23,3 +23,15 @@ func TestLimiter(t *testing.T) {
 		t.Fatal("other key is blocked")
 	}
 }
+
+func TestLimiterEvictsEmptyKeys(t *testing.T) {
+	l := &Limiter{}
+	old := time.Now().Add(-2 * time.Minute)
+	l.hits = map[string][]time.Time{"k": {old}}
+	if ok, _ := l.Allow("k", 5, time.Minute); !ok {
+		t.Fatal("Allow = false")
+	}
+	if _, ok := l.hits["k"]; ok {
+		t.Fatal("empty key was not evicted")
+	}
+}

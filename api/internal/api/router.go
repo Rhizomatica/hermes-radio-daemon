@@ -90,7 +90,7 @@ func (rt *Router) Op(id string, h http.HandlerFunc) {
 	rt.ops[id] = op
 	rt.mux.HandleFunc(op.Method+" "+spec.BasePath+op.Path, func(w http.ResponseWriter, r *http.Request) {
 		if !op.Public {
-			role := rt.RoleOf(r)
+			var role spec.Role
 			if rt.Resolve != nil {
 				if p, ok := rt.Resolve(r); ok {
 					role = p.Role
@@ -98,6 +98,8 @@ func (rt *Router) Op(id string, h http.HandlerFunc) {
 				} else {
 					role = spec.RoleNone
 				}
+			} else {
+				role = rt.RoleOf(r)
 			}
 			if role == spec.RoleNone {
 				// api-rest.yaml: 401 unauthenticated for "not logged in",

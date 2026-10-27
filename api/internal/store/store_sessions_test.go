@@ -25,7 +25,7 @@ func TestSessions(t *testing.T) {
 
 	// Auth join resolves the role and disabled flag.
 	a, err := s.AuthSessionByTokenHash(ctx, "tok1")
-	if err != nil || a.Role != "user" || a.Disabled || a.ExpiresAt != "2026-12-01T00:00:00Z" || a.SessionID != ss.ID {
+	if err != nil || a.Role != "user" || a.Disabled || a.LastSeenAt == "" || a.ExpiresAt != "2026-12-01T00:00:00Z" || a.SessionID != ss.ID {
 		t.Fatalf("AuthSessionByTokenHash = %+v, %v", a, err)
 	}
 	if _, err := s.AuthSessionByTokenHash(ctx, "nope"); !errors.Is(err, sql.ErrNoRows) {
@@ -61,6 +61,31 @@ func TestSessions(t *testing.T) {
 	list, _ = s.ListSessions(ctx, u.ID)
 	if len(list) != 0 {
 		t.Fatalf("after RevokeAllForUser: %d sessions", len(list))
+	}
+}
+
+func TestRevokeAllForUserExcept(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+
+	u, _ := s.CreateUser(ctx, NewUser{Username: "carol", PasswordHash: "h", Role: "user"})
+	s1, err := s.CreateSession(ctx, NewSession{UserID: u.ID, TokenHash: "k1", ExpiresAt: "x"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	s2, err := s.CreateSession(ctx, NewSession{UserID: u.ID, TokenHash: "k2", ExpiresAt: "x"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if err := s.RevokeAllForUserExcept(ctx, u.ID, s1.ID); err != nil {
+		t.Fatalf("RevokeAllForUserExcept: %v", err)
+	}
+	if _, err := s.SessionByID(ctx, s1.ID); err != nil {
+		t.Fatalf("kept session gone: %v", err)
+	}
+	if _, err := s.SessionByID(ctx, s2.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("other session survived: %v", err)
 	}
 }
 
