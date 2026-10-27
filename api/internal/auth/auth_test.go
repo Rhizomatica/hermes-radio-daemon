@@ -12,6 +12,7 @@ import (
 	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/passwd"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/setup"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/station"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/store"
 )
@@ -23,7 +24,7 @@ func newEnv(t *testing.T) (*api.Router, *store.Store) {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return station.NewAuthenticatedRouter(rad.NewStub(), st), st
+	return station.NewAuthenticatedRouter(rad.NewStub(), st, setup.Config{}), st
 }
 
 func seedUser(t *testing.T, st *store.Store, username, password, role string) int64 {

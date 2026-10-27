@@ -17,6 +17,7 @@ import (
 	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/passwd"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/setup"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/station"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/store"
 )
@@ -44,7 +45,7 @@ func NewAuth(t *testing.T) *Env {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return &Env{T: t, Radio: s, R: station.NewAuthenticatedRouter(s, st), Store: st}
+	return &Env{T: t, Radio: s, R: station.NewAuthenticatedRouter(s, st, setup.Config{}), Store: st}
 }
 
 // SeedUser creates a user directly in the store (NewAuth only).

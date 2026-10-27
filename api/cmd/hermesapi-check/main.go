@@ -15,6 +15,7 @@ import (
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/config"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/setup"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/station"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/store"
 )
@@ -41,7 +42,7 @@ func run() {
 	rad := radio.Default()
 	rt := station.NewRouter(rad)
 	if st != nil {
-		rt = station.NewAuthenticatedRouter(rad, st)
+		rt = station.NewAuthenticatedRouter(rad, st, setup.Config{SetupCodePath: cfg.SetupCodePath})
 	}
 	status, _, _, body := rt.ServeRaw("GET", "/api/v2/health", "", "Host: localhost\r\n", "", nil)
 
