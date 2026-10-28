@@ -1,0 +1,25 @@
+[Unit]
+Description=HERMES radio controller daemon (hermes-radio-daemon)
+After=network.target
+
+[Service]
+# notify: radiod reports READY once it is up
+Type=notify
+User=root
+Group=root
+# Sailfish OS suspends (autosleep) whenever no wakelock is held, and that
+# stalls the rig's USB audio mid-transmission: hold one while radiod runs.
+ExecStartPre=-/bin/sh -c 'echo radiod > /sys/power/wake_lock'
+ExecStart=/usr/bin/radio_daemon -c 3
+# Whatever way the daemon ended, leave the transmitter in receive. "-": a
+# radio that cannot be reached must not fail the unit.
+ExecStopPost=-/usr/bin/radio_daemon --ptt-off
+ExecStopPost=-/bin/sh -c 'echo radiod > /sys/power/wake_unlock'
+KillSignal=SIGTERM
+IgnoreSIGPIPE=no
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -5,8 +5,8 @@
 #
 #   Debian:      hamlib, iniparser, ALSA, FFTW, OpenSSL, i2c, libunixcw, ...
 #   HERMES repo: csdr (debian.hermes.radio, signing key pinned below)
-#   upstream:    libspecbleach and mbelib-neo, built at pinned tags (the
-#                stations' own packages of them are in no APT repository)
+#   upstream:    libspecbleach and mbelib-neo, built at the commits the
+#                HERMES packages of them are made from
 #
 # Copyright (C) 2026 Rhizomatica
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -17,11 +17,13 @@ set -eu
 HERMES_REPO=http://debian.hermes.radio/hermes
 HERMES_KEY_FPR=EEE8F00AD242EC5592667F75EA1367BE5DD191BB
 
-# Upstream sources not packaged for trixie: the versions the stations run.
+# Upstream sources not packaged for trixie, at the commits of the HERMES
+# packages: libspecbleach 0.4.1+git20261017.f63b64b, mbelib-neo
+# 2.6.2+git20261020.a3c7bbd.
 SPECBLEACH_URL=https://github.com/lucianodato/libspecbleach
-SPECBLEACH_REF=v0.3.0
+SPECBLEACH_REF=f63b64b660086bc6436753353edffe705599bff8
 MBELIB_URL=https://github.com/arancormonk/mbelib-neo
-MBELIB_REF=v2.4.0
+MBELIB_REF=a3c7bbdae9eb21cbfab57006c1a5daca7bdcba7f
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -46,27 +48,25 @@ echo "deb [signed-by=$keyring] $HERMES_REPO trixie main" > /etc/apt/sources.list
 apt-get update
 apt-get install -y --no-install-recommends csdr
 
-# libspecbleach: the stations run a 0.3.0-1 package that is in no APT
-# repository, so CI builds upstream's v0.3.0 tag (a superset of the
-# package's API).  It has no install rules: built shared, header and
-# library copied in.  On x86_64 its denoiser calls the AVX filter whatever
-# ENABLE_AVX says, so AVX stays on there and, position-independent, goes
-# into the shared library; elsewhere that file does not build.
-case "$(uname -m)" in
-    x86_64) avx=ON ;;
-    *)      avx=OFF ;;
-esac
-git clone -q --depth 1 --branch "$SPECBLEACH_REF" "$SPECBLEACH_URL" "$tmp/specbleach"
-cmake -S "$tmp/specbleach" -B "$tmp/specbleach/build" -DCMAKE_BUILD_TYPE=Release \
-      -DBUILD_SHARED_LIBS=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DENABLE_AVX=$avx \
-      -DENABLE_TESTS=OFF -DENABLE_EXAMPLES=OFF
-cmake --build "$tmp/specbleach/build" -j "$(nproc)"
-install -m 644 "$tmp"/specbleach/include/specbleach_*.h /usr/include/
-install -m 644 "$tmp/specbleach/build/libspecbleach.so" /usr/lib/
+# Clone one commit of a repository into a directory.
+fetch_commit()
+{
+    git init -q "$3"
+    git -C "$3" fetch -q --depth 1 "$1" "$2"
+    git -C "$3" checkout -q FETCH_HEAD
+}
 
-# mbelib-neo (D-STAR AMBE, with the encoder), CMake.
-git clone -q --depth 1 --branch "$MBELIB_REF" "$MBELIB_URL" "$tmp/mbelib"
-cmake -S "$tmp/mbelib" -B "$tmp/mbelib/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+# libspecbleach, CMake; it picks its AVX code at run time.
+fetch_commit "$SPECBLEACH_URL" "$SPECBLEACH_REF" "$tmp/specbleach"
+cmake -S "$tmp/specbleach" -B "$tmp/specbleach/build" -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/usr -DENABLE_TESTS=OFF -DENABLE_EXAMPLES=OFF
+cmake --build "$tmp/specbleach/build" -j "$(nproc)"
+cmake --install "$tmp/specbleach/build"
+
+# mbelib-neo (D-STAR AMBE, with the encoder), CMake, not tuned for the host.
+fetch_commit "$MBELIB_URL" "$MBELIB_REF" "$tmp/mbelib"
+cmake -S "$tmp/mbelib" -B "$tmp/mbelib/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+      -DMBELIB_ENABLE_NATIVE=OFF -DMBELIB_BUILD_TESTS=OFF -DMBELIB_BUILD_EXAMPLES=OFF
 cmake --build "$tmp/mbelib/build" -j "$(nproc)"
 cmake --install "$tmp/mbelib/build"
 ldconfig
