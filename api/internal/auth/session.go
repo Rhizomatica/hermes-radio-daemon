@@ -3,6 +3,7 @@ package auth
 import (
 	"database/sql"
 	"errors"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -26,9 +27,18 @@ func sessionCookie(value string, maxAge int, secure bool) *http.Cookie {
 }
 
 // secureRequest reports whether the session cookie should be Secure: the
-// request came over TLS, or a TLS-terminating proxy set X-Forwarded-Proto.
+// request came over TLS, or a TLS-terminating proxy on the loopback set
+// X-Forwarded-Proto: https. A remote client's X-Forwarded-Proto is not
+// trusted (radiod answers /api/v2 only on loopback until api_v2_enable).
 func secureRequest(r *http.Request) bool {
-	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	if r.TLS != nil {
+		return true
+	}
+	if !strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		return false
+	}
+	ip := net.ParseIP(ClientIP(r))
+	return ip != nil && ip.IsLoopback()
 }
 
 func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
@@ -40,9 +50,11 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The attempt is counted before the Argon2id work, so parallel guesses
-	// cannot all pass the check first; a success gives it back.
+	// cannot all pass the check first; a success (or a server fault) gives
+	// the reservation back via its token.
 	key := "login:" + ClientIP(r)
-	if ok, retry := h.loginLimiter.Reserve(key, 5, time.Minute); !ok {
+	ok, retry, token := h.loginLimiter.Reserve(key, 5, time.Minute)
+	if !ok {
 		w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
 		api.Problem(w, r, http.StatusTooManyRequests, "rate_limited", "too many failed logins", nil)
 		return
@@ -53,13 +65,13 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 		// time does not reveal which usernames exist.
 		h.dummyVerify(req.Password)
 	} else if err != nil {
-		h.loginLimiter.Release(key)
+		h.loginLimiter.Release(token)
 		api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
 		return
 	} else if passwd.Verify(u.PasswordHash, req.Password) && !u.Disabled {
 		// Verify runs before the disabled check, so a disabled account
 		// costs the same as a wrong password.
-		h.loginLimiter.Release(key)
+		h.loginLimiter.Release(token)
 		h.startSession(w, r, u)
 		return
 	}

@@ -9,40 +9,65 @@ import (
 func TestLimiter(t *testing.T) {
 	l := &Limiter{}
 	for i := 0; i < 5; i++ {
-		if ok, _ := l.Reserve("k", 5, time.Minute); !ok {
+		if ok, _, _ := l.Reserve("k", 5, time.Minute); !ok {
 			t.Fatalf("attempt %d: Reserve = false before the limit", i+1)
 		}
 	}
-	if ok, retry := l.Reserve("k", 5, time.Minute); ok {
+	if ok, retry, _ := l.Reserve("k", 5, time.Minute); ok {
 		t.Fatal("Reserve = true at the limit")
 	} else if retry <= 0 || retry > time.Minute {
 		t.Fatalf("retry = %v", retry)
 	}
 	// A different key is unaffected.
-	if ok, _ := l.Reserve("other", 5, time.Minute); !ok {
+	if ok, _, _ := l.Reserve("other", 5, time.Minute); !ok {
 		t.Fatal("other key is blocked")
 	}
 }
 
 func TestLimiterRelease(t *testing.T) {
 	l := &Limiter{}
+	var tok Token
 	for i := 0; i < 5; i++ {
-		l.Reserve("k", 5, time.Minute)
+		ok, _, tk := l.Reserve("k", 5, time.Minute)
+		if !ok {
+			t.Fatalf("attempt %d: Reserve = false before the limit", i+1)
+		}
+		tok = tk
 	}
-	l.Release("k")
-	if ok, _ := l.Reserve("k", 5, time.Minute); !ok {
+	l.Release(tok)
+	if ok, _, _ := l.Reserve("k", 5, time.Minute); !ok {
 		t.Fatal("Reserve = false after Release")
 	}
-	if ok, _ := l.Reserve("k", 5, time.Minute); ok {
+	if ok, _, _ := l.Reserve("k", 5, time.Minute); ok {
 		t.Fatal("Reserve = true past the limit")
 	}
 	// Releasing the only event drops the key.
-	l.Reserve("solo", 5, time.Minute)
-	l.Release("solo")
+	_, _, tk := l.Reserve("solo", 5, time.Minute)
+	l.Release(tk)
 	if _, ok := l.hits["solo"]; ok {
 		t.Fatal("empty key was not dropped by Release")
 	}
-	l.Release("never-seen") // must not panic
+	l.Release(Token{}) // a zero token must not panic
+}
+
+// Release removes the reservation it names, not the most recent one, so a
+// successful attempt does not drop a concurrent attempt's count.
+func TestLimiterReleaseSpecific(t *testing.T) {
+	l := &Limiter{}
+	okA, _, tokA := l.Reserve("k", 5, time.Minute)
+	if !okA {
+		t.Fatal("first Reserve = false")
+	}
+	_, _, tokB := l.Reserve("k", 5, time.Minute)
+	// Release the first reservation, while the second is still the most
+	// recent one.
+	l.Release(tokA)
+	if got := len(l.hits["k"]); got != 1 {
+		t.Fatalf("hits = %d, want 1", got)
+	}
+	if l.hits["k"][0].id != tokB.id {
+		t.Fatal("the wrong reservation was removed")
+	}
 }
 
 // A burst of parallel reservations must not exceed the limit: the check and
@@ -56,7 +81,7 @@ func TestLimiterParallelBurst(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if ok, _ := l.Reserve("k", 5, time.Minute); ok {
+			if ok, _, _ := l.Reserve("k", 5, time.Minute); ok {
 				mu.Lock()
 				allowed++
 				mu.Unlock()
@@ -72,14 +97,15 @@ func TestLimiterParallelBurst(t *testing.T) {
 func TestLimiterEvictsEmptyKeys(t *testing.T) {
 	l := &Limiter{}
 	old := time.Now().Add(-2 * time.Minute)
-	l.hits = map[string][]time.Time{"k": {old}}
-	if ok, _ := l.Reserve("k", 5, time.Minute); !ok {
+	l.hits = map[string][]reservation{"k": {{at: old, id: 1}}}
+	ok, _, tk := l.Reserve("k", 5, time.Minute)
+	if !ok {
 		t.Fatal("Reserve = false")
 	}
 	if got := len(l.hits["k"]); got != 1 {
 		t.Fatalf("hits = %d, want only the new one", got)
 	}
-	l.Release("k")
+	l.Release(tk)
 	if _, ok := l.hits["k"]; ok {
 		t.Fatal("empty key was not evicted")
 	}

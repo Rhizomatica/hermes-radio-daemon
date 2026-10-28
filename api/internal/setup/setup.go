@@ -62,17 +62,30 @@ var (
 )
 
 // done reports whether first-boot setup has completed.
-func (h *handlers) done(r *http.Request) bool {
-	v, ok, _ := h.store.GetMeta(r.Context(), "setup.done")
-	return ok && v == "1"
+func (h *handlers) done(r *http.Request) (bool, error) {
+	v, ok, err := h.store.GetMeta(r.Context(), "setup.done")
+	if err != nil {
+		return false, err
+	}
+	return ok && v == "1", nil
 }
 
 func (h *handlers) status(w http.ResponseWriter, r *http.Request) {
-	api.JSON(w, http.StatusOK, map[string]any{"done": h.done(r)})
+	done, err := h.done(r)
+	if err != nil {
+		api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
+		return
+	}
+	api.JSON(w, http.StatusOK, map[string]any{"done": done})
 }
 
 func (h *handlers) run(w http.ResponseWriter, r *http.Request) {
-	if h.done(r) {
+	done, err := h.done(r)
+	if err != nil {
+		api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
+		return
+	}
+	if done {
 		api.Problem(w, r, http.StatusConflict, "setup_done", "setup was already completed", nil)
 		return
 	}
@@ -130,18 +143,26 @@ func (h *handlers) run(w http.ResponseWriter, r *http.Request) {
 	// cannot all pass the check first; a right code (or a server fault)
 	// gives it back.
 	key := "setup:" + auth.ClientIP(r)
-	if ok, retry := h.limiter.Reserve(key, 5, 10*time.Minute); !ok {
+	ok, retry, reservation := h.limiter.Reserve(key, 5, 10*time.Minute)
+	if !ok {
 		w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
 		api.Problem(w, r, http.StatusTooManyRequests, "rate_limited", "too many wrong setup codes", nil)
 		return
 	}
 	code, err := os.ReadFile(h.codePath)
 	if err != nil {
-		h.limiter.Release(key)
-		if errors.Is(err, os.ErrNotExist) && h.done(r) {
-			// A concurrent setup finished and retired the code.
-			api.Problem(w, r, http.StatusConflict, "setup_done", "setup was already completed", nil)
-			return
+		h.limiter.Release(reservation)
+		if errors.Is(err, os.ErrNotExist) {
+			alreadyDone, derr := h.done(r)
+			if derr != nil {
+				api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
+				return
+			}
+			if alreadyDone {
+				// A concurrent setup finished and retired the code.
+				api.Problem(w, r, http.StatusConflict, "setup_done", "setup was already completed", nil)
+				return
+			}
 		}
 		api.Problem(w, r, http.StatusInternalServerError, "internal", "no setup code available", nil)
 		return
@@ -151,7 +172,7 @@ func (h *handlers) run(w http.ResponseWriter, r *http.Request) {
 		api.Problem(w, r, http.StatusForbidden, "bad_setup_code", "wrong setup code", nil)
 		return
 	}
-	h.limiter.Release(key)
+	h.limiter.Release(reservation)
 
 	hash, err := passwd.Hash(req.Admin.Password)
 	if err != nil {
