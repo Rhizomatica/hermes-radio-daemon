@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -110,12 +109,13 @@ func (rt *Router) WSOpen(id int64, r *http.Request) int {
 		rt.wsLog.Info("refused: no session", "conn", id, "peer", r.RemoteAddr)
 		return http.StatusUnauthorized
 	}
-	// api-ws.yaml: only same-origin browsers are accepted. A Bearer token
-	// (which browsers never send on an upgrade) is exempt; the session
-	// cookie must come with an Origin naming this station. Only enforced
-	// once sessions exist (Resolve set); the loopback-admin router has no
+	// api-ws.yaml: only same-origin browsers are accepted. A request with
+	// the session cookie must come with an Origin naming this station (the
+	// same rule as the REST CSRF check); a Bearer-only request, which a
+	// browser never makes on an upgrade, is exempt. Only enforced once
+	// sessions exist (Resolve set); the loopback-admin router has no
 	// sessions and keeps answering without an Origin.
-	if rt.Resolve != nil && !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") && !SameOrigin(r) {
+	if rt.Resolve != nil && HasSessionCookie(r) && !SameOrigin(r) {
 		rt.wsLog.Info("refused: bad origin", "conn", id, "peer", r.RemoteAddr)
 		return http.StatusForbidden
 	}

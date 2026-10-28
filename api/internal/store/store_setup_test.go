@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -38,5 +39,38 @@ func TestCompleteSetupRollsBackOnError(t *testing.T) {
 	}
 	if _, ok, _ := s.GetMeta(ctx, "setup.done"); ok {
 		t.Fatal("setup.done was written despite the failed setup")
+	}
+}
+
+func TestCompleteSetupOnlyOnce(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+
+	metas := map[string]string{"station.name": "First", "setup.done": "1"}
+	if _, err := s.CompleteSetup(ctx, NewUser{Username: "one", PasswordHash: "h", Role: "admin"}, metas); err != nil {
+		t.Fatalf("first CompleteSetup: %v", err)
+	}
+	_, err := s.CompleteSetup(ctx, NewUser{Username: "two", PasswordHash: "h", Role: "admin"},
+		map[string]string{"station.name": "Second"})
+	if !errors.Is(err, ErrSetupDone) {
+		t.Fatalf("second CompleteSetup = %v, want ErrSetupDone", err)
+	}
+	if _, err := s.UserByUsername(ctx, "two"); err == nil {
+		t.Fatal("second admin was created")
+	}
+	if v, _, _ := s.GetMeta(ctx, "station.name"); v != "First" {
+		t.Fatalf("station.name = %q, want First", v)
+	}
+}
+
+func TestCompleteSetupTakenUsername(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	if _, err := s.CreateUser(ctx, NewUser{Username: "taken", PasswordHash: "h", Role: "admin"}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	_, err := s.CompleteSetup(ctx, NewUser{Username: "taken", PasswordHash: "h", Role: "admin"}, nil)
+	if !errors.Is(err, ErrUsernameTaken) {
+		t.Fatalf("CompleteSetup = %v, want ErrUsernameTaken", err)
 	}
 }

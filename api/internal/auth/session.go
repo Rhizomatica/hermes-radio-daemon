@@ -20,7 +20,7 @@ import (
 // says so), so the cookie still works on the daemon's plain-HTTP loopback.
 func sessionCookie(value string, maxAge int, secure bool) *http.Cookie {
 	return &http.Cookie{
-		Name: "hermes_session", Value: value, Path: "/",
+		Name: api.SessionCookie, Value: value, Path: "/",
 		HttpOnly: true, Secure: secure, SameSite: http.SameSiteStrictMode, MaxAge: maxAge,
 	}
 }
@@ -39,8 +39,10 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 	if !api.Decode(w, r, &req) {
 		return
 	}
-	key := "login:" + clientIP(r)
-	if ok, retry := h.loginLimiter.Allow(key, 5, time.Minute); !ok {
+	// The attempt is counted before the Argon2id work, so parallel guesses
+	// cannot all pass the check first; a success gives it back.
+	key := "login:" + ClientIP(r)
+	if ok, retry := h.loginLimiter.Reserve(key, 5, time.Minute); !ok {
 		w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
 		api.Problem(w, r, http.StatusTooManyRequests, "rate_limited", "too many failed logins", nil)
 		return
@@ -51,19 +53,21 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 		// time does not reveal which usernames exist.
 		h.dummyVerify(req.Password)
 	} else if err != nil {
+		h.loginLimiter.Release(key)
 		api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
 		return
 	} else if passwd.Verify(u.PasswordHash, req.Password) && !u.Disabled {
 		// Verify runs before the disabled check, so a disabled account
 		// costs the same as a wrong password.
+		h.loginLimiter.Release(key)
 		h.startSession(w, r, u)
 		return
 	}
-	h.loginLimiter.Hit(key)
 	api.Problem(w, r, http.StatusUnauthorized, "unauthenticated", "wrong username or password", nil)
 }
 
 func (h *handlers) startSession(w http.ResponseWriter, r *http.Request, u store.User) {
+	h.purgeExpired(r)
 	token, expires, err := IssueSession(w, r, h.store, h.lifetime, u)
 	if err != nil {
 		api.Problem(w, r, http.StatusInternalServerError, "internal", "cannot make a session token", nil)
@@ -85,7 +89,7 @@ func IssueSession(w http.ResponseWriter, r *http.Request, st *store.Store, lifet
 	expires := time.Now().Add(lifetime).UTC()
 	expiresAt := expires.Format(time.RFC3339)
 	if _, err := st.CreateSession(r.Context(), store.NewSession{
-		UserID: u.ID, TokenHash: hash, IP: clientIP(r), UserAgent: r.UserAgent(), ExpiresAt: expiresAt,
+		UserID: u.ID, TokenHash: hash, IP: ClientIP(r), UserAgent: r.UserAgent(), ExpiresAt: expiresAt,
 	}); err != nil {
 		return "", "", err
 	}
@@ -95,26 +99,26 @@ func IssueSession(w http.ResponseWriter, r *http.Request, st *store.Store, lifet
 }
 
 func (h *handlers) getSession(w http.ResponseWriter, r *http.Request) {
-	a, ok := h.resolve(r)
+	p, ok := api.PrincipalFrom(r)
 	if !ok {
 		api.Problem(w, r, http.StatusUnauthorized, "unauthenticated", "not logged in", nil)
 		return
 	}
-	u, err := h.store.UserByID(r.Context(), a.UserID)
+	u, err := h.store.UserByID(r.Context(), p.UserID)
 	if err != nil {
 		api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
 		return
 	}
-	api.JSON(w, http.StatusOK, Session{User: users.Of(u), ExpiresAt: a.ExpiresAt})
+	api.JSON(w, http.StatusOK, Session{User: users.Of(u), ExpiresAt: p.ExpiresAt})
 }
 
 func (h *handlers) logout(w http.ResponseWriter, r *http.Request) {
-	a, ok := h.resolve(r)
+	p, ok := api.PrincipalFrom(r)
 	if !ok {
 		api.Problem(w, r, http.StatusUnauthorized, "unauthenticated", "not logged in", nil)
 		return
 	}
-	if err := h.store.RevokeSession(r.Context(), a.SessionID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := h.store.RevokeSession(r.Context(), p.SessionID); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
 		return
 	}
@@ -123,14 +127,14 @@ func (h *handlers) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) listMySessions(w http.ResponseWriter, r *http.Request) {
-	a, ok := h.resolve(r)
+	p, ok := api.PrincipalFrom(r)
 	if !ok {
 		api.Problem(w, r, http.StatusUnauthorized, "unauthenticated", "not logged in", nil)
 		return
 	}
-	target := a.UserID
+	target := p.UserID
 	if q := r.URL.Query().Get("user_id"); q != "" {
-		if spec.Role(a.Role) != spec.RoleAdmin {
+		if p.Role != spec.RoleAdmin {
 			api.Problem(w, r, http.StatusForbidden, "forbidden", "only admins may list another user's sessions", nil)
 			return
 		}
@@ -150,14 +154,14 @@ func (h *handlers) listMySessions(w http.ResponseWriter, r *http.Request) {
 	for _, s := range list {
 		out = append(out, sessionInfo{
 			ID: s.ID, UserID: s.UserID, CreatedAt: s.CreatedAt, LastSeenAt: s.LastSeenAt,
-			ExpiresAt: s.ExpiresAt, IP: s.IP, UserAgent: s.UserAgent, Current: s.ID == a.SessionID,
+			ExpiresAt: s.ExpiresAt, IP: s.IP, UserAgent: s.UserAgent, Current: s.ID == p.SessionID,
 		})
 	}
 	api.JSON(w, http.StatusOK, map[string]any{"data": out})
 }
 
 func (h *handlers) revokeSession(w http.ResponseWriter, r *http.Request) {
-	a, ok := h.resolve(r)
+	p, ok := api.PrincipalFrom(r)
 	if !ok {
 		api.Problem(w, r, http.StatusUnauthorized, "unauthenticated", "not logged in", nil)
 		return
@@ -176,7 +180,7 @@ func (h *handlers) revokeSession(w http.ResponseWriter, r *http.Request) {
 		api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
 		return
 	}
-	if s.UserID != a.UserID && spec.Role(a.Role) != spec.RoleAdmin {
+	if s.UserID != p.UserID && p.Role != spec.RoleAdmin {
 		api.Problem(w, r, http.StatusForbidden, "forbidden", "not your session", nil)
 		return
 	}

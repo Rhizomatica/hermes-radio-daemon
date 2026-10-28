@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
@@ -137,5 +139,60 @@ func TestLoginRateLimit(t *testing.T) {
 	}
 	if w.Header().Get("Retry-After") == "" {
 		t.Fatal("no Retry-After")
+	}
+}
+
+// A successful login does not count against the failed-login limit.
+func TestLoginSuccessIsNotCounted(t *testing.T) {
+	rt, st := newEnv(t)
+	seedUser(t, st, "alice", "correct horse", "user")
+
+	for i := 0; i < 8; i++ {
+		if w := do(rt, "POST", "/api/v2/session", `{"username":"alice","password":"correct horse"}`, ""); w.Code != 201 {
+			t.Fatalf("login %d = %d, want 201", i+1, w.Code)
+		}
+	}
+}
+
+// Parallel guesses are counted before they are checked: a burst cannot get
+// past the limit.
+func TestLoginRateLimitParallel(t *testing.T) {
+	rt, st := newEnv(t)
+	seedUser(t, st, "alice", "correct horse", "user")
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	codes := map[int]int{}
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w := do(rt, "POST", "/api/v2/session", `{"username":"alice","password":"wrong"}`, "")
+			mu.Lock()
+			codes[w.Code]++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if codes[401] != 5 || codes[429] != 15 {
+		t.Fatalf("status codes = %v, want 5x401 and 15x429", codes)
+	}
+}
+
+// A login sweeps expired sessions out of the table.
+func TestLoginPurgesExpiredSessions(t *testing.T) {
+	rt, st := newEnv(t)
+	id := seedUser(t, st, "alice", "correct horse", "user")
+	old, err := st.CreateSession(context.Background(), store.NewSession{
+		UserID: id, TokenHash: "stale", ExpiresAt: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if w := do(rt, "POST", "/api/v2/session", `{"username":"alice","password":"correct horse"}`, ""); w.Code != 201 {
+		t.Fatalf("login = %d", w.Code)
+	}
+	if _, err := st.SessionByID(context.Background(), old.ID); err == nil {
+		t.Fatal("expired session was not purged")
 	}
 }

@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/base64"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	gotime "time"
 )
 
 func TestHashAndVerify(t *testing.T) {
@@ -64,5 +67,32 @@ func TestVerifyRejectsAbsurdParams(t *testing.T) {
 	key := base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte("k"), 65))
 	if Verify("$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$"+key, "anything") {
 		t.Error("Verify with an oversized key = true, want false")
+	}
+}
+
+// Parallel callers queue for the Argon2id slot: never more than one at once.
+func TestSlotLimitsConcurrency(t *testing.T) {
+	var running, peak atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			withSlot(func() {
+				n := running.Add(1)
+				for {
+					p := peak.Load()
+					if n <= p || peak.CompareAndSwap(p, n) {
+						break
+					}
+				}
+				gotime.Sleep(5 * gotime.Millisecond)
+				running.Add(-1)
+			})
+		}()
+	}
+	wg.Wait()
+	if peak.Load() != 1 {
+		t.Fatalf("peak concurrency = %d, want 1", peak.Load())
 	}
 }

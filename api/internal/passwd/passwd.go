@@ -39,6 +39,19 @@ const (
 	maxKeyLen  = 64        // bytes
 )
 
+// slots bounds how many Argon2id computations run at once. Each one holds
+// about 19 MiB, so parallel logins (or a burst of guesses) would otherwise
+// stack several of them inside radiod's 64 MiB heap cap. Hash and Verify
+// queue for the slot instead.
+var slots = make(chan struct{}, 1)
+
+// withSlot runs fn while holding the Argon2id slot.
+func withSlot(fn func()) {
+	slots <- struct{}{}
+	defer func() { <-slots }()
+	fn()
+}
+
 // ErrInvalid is returned by Hash when the password is not usable (it never
 // is today: any string, including empty, hashes) and by Verify's parser for
 // a malformed hash.
@@ -51,7 +64,8 @@ func Hash(password string) (string, error) {
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("passwd: %w", err)
 	}
-	key := argon2.IDKey([]byte(password), salt, time, memory, threads, keyLen)
+	var key []byte
+	withSlot(func() { key = argon2.IDKey([]byte(password), salt, time, memory, threads, keyLen) })
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2.Version, memory, time, threads,
 		base64.RawStdEncoding.EncodeToString(salt),
@@ -66,7 +80,8 @@ func Verify(encoded, password string) bool {
 	if err != nil {
 		return false
 	}
-	key := argon2.IDKey([]byte(password), p.salt, p.time, p.memory, p.threads, p.keyLen)
+	var key []byte
+	withSlot(func() { key = argon2.IDKey([]byte(password), p.salt, p.time, p.memory, p.threads, p.keyLen) })
 	return subtle.ConstantTimeCompare(key, p.key) == 1
 }
 

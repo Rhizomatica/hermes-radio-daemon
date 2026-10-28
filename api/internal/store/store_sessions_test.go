@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestSessions(t *testing.T) {
@@ -123,5 +124,26 @@ func TestMeta(t *testing.T) {
 	}
 	if v, _, _ := s.GetMeta(ctx, "setup.done"); v != "0" {
 		t.Fatalf("GetMeta after overwrite = %q", v)
+	}
+}
+
+func TestPurgeExpiredSessions(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	u, _ := s.CreateUser(ctx, NewUser{Username: "alice", PasswordHash: "h", Role: "user"})
+
+	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	old, _ := s.CreateSession(ctx, NewSession{UserID: u.ID, TokenHash: "old", ExpiresAt: "2026-10-28T11:59:59Z"})
+	live, _ := s.CreateSession(ctx, NewSession{UserID: u.ID, TokenHash: "live", ExpiresAt: "2026-10-28T12:00:01Z"})
+
+	n, err := s.PurgeExpiredSessions(ctx, now)
+	if err != nil || n != 1 {
+		t.Fatalf("PurgeExpiredSessions = %d, %v; want 1", n, err)
+	}
+	if _, err := s.SessionByID(ctx, old.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expired session survived: %v", err)
+	}
+	if _, err := s.SessionByID(ctx, live.ID); err != nil {
+		t.Fatalf("live session purged: %v", err)
 	}
 }

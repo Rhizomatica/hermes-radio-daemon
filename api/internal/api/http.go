@@ -171,3 +171,14 @@ func SameOrigin(r *http.Request) bool {
 	}
 	return strings.EqualFold(u.Host, r.Host)
 }
+
+// SessionCookie is the name of the session cookie.
+const SessionCookie = "hermes_session"
+
+// HasSessionCookie reports whether the request carries a session cookie, the
+// credential a browser attaches by itself, which is what CSRF and the
+// WebSocket origin check guard.
+func HasSessionCookie(r *http.Request) bool {
+	c, err := r.Cookie(SessionCookie)
+	return err == nil && c.Value != ""
+}

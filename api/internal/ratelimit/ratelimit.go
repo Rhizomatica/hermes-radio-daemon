@@ -9,16 +9,19 @@ import (
 )
 
 // Limiter tracks event timestamps per key and reports when a key has hit n
-// events within window.
+// events within window. Empty keys are dropped, so the map holds only keys
+// with an event still inside a window.
 type Limiter struct {
 	mu   sync.Mutex
 	hits map[string][]time.Time
 }
 
-// Allow reports whether key may act now: true when fewer than n events fell
-// in the last window. When false, retry is how long until the oldest event
-// ages out.
-func (l *Limiter) Allow(key string, n int, window time.Duration) (bool, time.Duration) {
+// Reserve records one event for key and reports whether it was within the
+// limit: true when fewer than n events fell in the last window. Checking and
+// recording are one step, so a burst of parallel requests cannot all pass
+// before any of them counts. When false nothing is recorded and retry is how
+// long until the oldest event ages out.
+func (l *Limiter) Reserve(key string, n int, window time.Duration) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.hits == nil {
@@ -32,23 +35,23 @@ func (l *Limiter) Allow(key string, n int, window time.Duration) (bool, time.Dur
 			keep = append(keep, t)
 		}
 	}
-	if len(keep) == 0 {
-		delete(l.hits, key)
-	} else {
-		l.hits[key] = keep
-	}
 	if len(keep) >= n {
+		l.hits[key] = keep
 		return false, time.Until(keep[0].Add(window))
 	}
+	l.hits[key] = append(keep, now)
 	return true, 0
 }
 
-// Hit records one event for key.
-func (l *Limiter) Hit(key string) {
+// Release gives back the most recent event of key, for an attempt that
+// should not count (a successful login, a server-side failure).
+func (l *Limiter) Release(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.hits == nil {
-		l.hits = map[string][]time.Time{}
+	h := l.hits[key]
+	if len(h) <= 1 {
+		delete(l.hits, key)
+		return
 	}
-	l.hits[key] = append(l.hits[key], time.Now())
+	l.hits[key] = h[:len(h)-1]
 }

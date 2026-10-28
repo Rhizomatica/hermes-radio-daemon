@@ -5,10 +5,12 @@ package setup
 
 import (
 	"crypto/subtle"
-	"net"
+	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,16 +61,18 @@ var (
 	locales    = map[string]bool{"en": true, "es": true, "pt-BR": true, "fr": true}
 )
 
+// done reports whether first-boot setup has completed.
+func (h *handlers) done(r *http.Request) bool {
+	v, ok, _ := h.store.GetMeta(r.Context(), "setup.done")
+	return ok && v == "1"
+}
+
 func (h *handlers) status(w http.ResponseWriter, r *http.Request) {
-	done := false
-	if v, ok, _ := h.store.GetMeta(r.Context(), "setup.done"); ok && v == "1" {
-		done = true
-	}
-	api.JSON(w, http.StatusOK, map[string]any{"done": done})
+	api.JSON(w, http.StatusOK, map[string]any{"done": h.done(r)})
 }
 
 func (h *handlers) run(w http.ResponseWriter, r *http.Request) {
-	if v, ok, _ := h.store.GetMeta(r.Context(), "setup.done"); ok && v == "1" {
+	if h.done(r) {
 		api.Problem(w, r, http.StatusConflict, "setup_done", "setup was already completed", nil)
 		return
 	}
@@ -122,24 +126,32 @@ func (h *handlers) run(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key := "setup:" + clientIP(r)
-	if ok, retry := h.limiter.Allow(key, 5, 10*time.Minute); !ok {
-		w.Header().Set("Retry-After", "600")
+	// The attempt is counted before the code is read, so parallel guesses
+	// cannot all pass the check first; a right code (or a server fault)
+	// gives it back.
+	key := "setup:" + auth.ClientIP(r)
+	if ok, retry := h.limiter.Reserve(key, 5, 10*time.Minute); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
 		api.Problem(w, r, http.StatusTooManyRequests, "rate_limited", "too many wrong setup codes", nil)
-		_ = retry
 		return
 	}
 	code, err := os.ReadFile(h.codePath)
 	if err != nil {
+		h.limiter.Release(key)
+		if errors.Is(err, os.ErrNotExist) && h.done(r) {
+			// A concurrent setup finished and retired the code.
+			api.Problem(w, r, http.StatusConflict, "setup_done", "setup was already completed", nil)
+			return
+		}
 		api.Problem(w, r, http.StatusInternalServerError, "internal", "no setup code available", nil)
 		return
 	}
 	expected := strings.TrimSpace(string(code))
 	if subtle.ConstantTimeCompare([]byte(req.SetupCode), []byte(expected)) != 1 {
-		h.limiter.Hit(key)
 		api.Problem(w, r, http.StatusForbidden, "bad_setup_code", "wrong setup code", nil)
 		return
 	}
+	h.limiter.Release(key)
 
 	hash, err := passwd.Hash(req.Admin.Password)
 	if err != nil {
@@ -162,13 +174,21 @@ func (h *handlers) run(w http.ResponseWriter, r *http.Request) {
 		Username: req.Admin.Username, PasswordHash: hash, Role: "admin",
 		DisplayName: req.Admin.DisplayName,
 	}, metas)
-	if err != nil {
-		if strings.Contains(err.Error(), "users.username") {
-			api.Problem(w, r, http.StatusConflict, "conflict", "the admin username is taken", nil)
-		} else {
-			api.Problem(w, r, http.StatusInternalServerError, "internal", "cannot complete setup", nil)
-		}
+	switch {
+	case errors.Is(err, store.ErrSetupDone):
+		// Lost a race with a concurrent setup.
+		api.Problem(w, r, http.StatusConflict, "setup_done", "setup was already completed", nil)
 		return
+	case errors.Is(err, store.ErrUsernameTaken):
+		api.Problem(w, r, http.StatusConflict, "conflict", "the admin username is taken", nil)
+		return
+	case err != nil:
+		api.Problem(w, r, http.StatusInternalServerError, "internal", "cannot complete setup", nil)
+		return
+	}
+	// The code is one-time: retire it now that it has been used.
+	if err := os.Remove(h.codePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		slog.Warn("cannot remove the used setup code", "path", h.codePath, "error", err)
 	}
 
 	token, expires, err := auth.IssueSession(w, r, h.store, h.lifetime, admin)
@@ -177,11 +197,4 @@ func (h *handlers) run(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	api.JSON(w, http.StatusCreated, auth.Session{User: users.Of(admin), Token: token, ExpiresAt: expires})
-}
-
-func clientIP(r *http.Request) string {
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
-	}
-	return r.RemoteAddr
 }

@@ -110,4 +110,11 @@ func TestWSOrigin(t *testing.T) {
 		t.Fatalf("bearer WS = %d, want 0", code)
 	}
 	defer rt.WSClose(103)
+	// A cookie plus a bogus Bearer header does not dodge the origin check.
+	req = httptest.NewRequest("GET", "/api/v2/ws", nil)
+	req.Header.Set("Authorization", "Bearer nonsense")
+	req.AddCookie(sc)
+	if code := rt.WSOpen(104, req); code != 403 {
+		t.Fatalf("cookie + bogus Bearer WS without Origin = %d, want 403", code)
+	}
 }

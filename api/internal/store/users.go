@@ -3,9 +3,31 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
+
+// ErrUsernameTaken is returned when a user insert violates the unique
+// username constraint.
+var ErrUsernameTaken = errors.New("username is taken")
+
+// isUniqueViolation reports whether err is SQLite's UNIQUE constraint error.
+func isUniqueViolation(err error) bool {
+	var se *sqlite.Error
+	return errors.As(err, &se) && se.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE
+}
+
+// insertUserErr wraps a failed users insert: ErrUsernameTaken for a duplicate.
+func insertUserErr(username string, err error) error {
+	if isUniqueViolation(err) {
+		return fmt.Errorf("insert user %q: %w", username, ErrUsernameTaken)
+	}
+	return fmt.Errorf("insert user %q: %w", username, err)
+}
 
 // User is one row of the users table.
 type User struct {
@@ -57,7 +79,7 @@ func (s *Store) CreateUser(ctx context.Context, n NewUser) (User, error) {
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		n.Username, n.PasswordHash, n.Role, n.DisplayName, n.Locale, n.Phone, n.Location)
 	if err != nil {
-		return User{}, fmt.Errorf("insert user %q: %w", n.Username, err)
+		return User{}, insertUserErr(n.Username, err)
 	}
 	id, err := res.LastInsertId()
 	if err != nil {

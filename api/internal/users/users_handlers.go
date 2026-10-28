@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/passwd"
@@ -90,7 +89,7 @@ func (h *handlers) create(w http.ResponseWriter, r *http.Request) {
 		DisplayName: req.DisplayName, Locale: req.Locale, Phone: req.Phone, Location: req.Location,
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "users.username") {
+		if errors.Is(err, store.ErrUsernameTaken) {
 			api.Problem(w, r, http.StatusConflict, "conflict", "username is taken", nil)
 		} else {
 			api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)

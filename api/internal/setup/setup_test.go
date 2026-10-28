@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
@@ -18,6 +19,11 @@ import (
 )
 
 func newRouter(t *testing.T, code string) *api.Router {
+	rt, _ := newRouterPath(t, code)
+	return rt
+}
+
+func newRouterPath(t *testing.T, code string) (*api.Router, string) {
 	t.Helper()
 	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "h.sqlite"))
 	if err != nil {
@@ -31,7 +37,7 @@ func newRouter(t *testing.T, code string) *api.Router {
 	rt := api.NewRouter(rad.NewStub())
 	auth.Register(rt, st, auth.Config{})
 	setup.Register(rt, st, setup.Config{SetupCodePath: path})
-	return rt
+	return rt, path
 }
 
 func do(rt *api.Router, method, path, body string) *httptest.ResponseRecorder {
@@ -105,5 +111,48 @@ func TestSetupLockout(t *testing.T) {
 	}
 	if w := do(rt, "POST", "/setup", wrong); w.Code != 429 {
 		t.Fatalf("sixth wrong code = %d, want 429", w.Code)
+	}
+}
+
+// The one-time code is retired once setup has used it.
+func TestSetupRetiresCode(t *testing.T) {
+	rt, path := newRouterPath(t, "abc123")
+	if w := do(rt, "POST", "/setup", body); w.Code != 201 {
+		t.Fatalf("runSetup = %d: %s", w.Code, w.Body)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("setup code file still there: %v", err)
+	}
+}
+
+// A failed setup (wrong code) leaves the code in place.
+func TestSetupKeepsCodeOnFailure(t *testing.T) {
+	rt, path := newRouterPath(t, "abc123")
+	do(rt, "POST", "/setup", strings.Replace(body, "abc123", "wrong", 1))
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("setup code file gone after a failed setup: %v", err)
+	}
+}
+
+// Concurrent setups with the right code and different admins: exactly one wins.
+func TestSetupConcurrent(t *testing.T) {
+	rt := newRouter(t, "abc123")
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	codes := map[int]int{}
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			b := strings.Replace(body, `"alice"`, `"admin`+string(rune('a'+i))+`"`, 1)
+			w := do(rt, "POST", "/setup", b)
+			mu.Lock()
+			codes[w.Code]++
+			mu.Unlock()
+		}(i)
+	}
+	wg.Wait()
+	if codes[201] != 1 || codes[409] != 5 {
+		t.Fatalf("status codes = %v, want one 201 and five 409", codes)
 	}
 }

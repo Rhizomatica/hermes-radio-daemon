@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 )
 
 // Session is one row of the sessions table.
@@ -113,6 +114,18 @@ func (s *Store) RevokeAllForUser(ctx context.Context, userID int64) error {
 func (s *Store) RevokeAllForUserExcept(ctx context.Context, userID, exceptSessionID int64) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND id != ?`, userID, exceptSessionID)
 	return err
+}
+
+// PurgeExpiredSessions deletes every session that expired before now and
+// returns how many. expires_at is UTC RFC 3339, so the string comparison
+// orders by time.
+func (s *Store) PurgeExpiredSessions(ctx context.Context, now time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at < ?`,
+		now.UTC().Format(time.RFC3339))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // ListSessions returns a user's sessions, newest first.

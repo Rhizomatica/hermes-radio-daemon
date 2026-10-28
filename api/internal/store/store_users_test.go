@@ -110,3 +110,15 @@ func TestUsersCRUD(t *testing.T) {
 		t.Fatalf("DeleteUser missing = %v, want ErrNoRows", err)
 	}
 }
+
+func TestCreateUserDuplicateIsTyped(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	if _, err := s.CreateUser(ctx, NewUser{Username: "dup", PasswordHash: "h", Role: "user"}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	_, err := s.CreateUser(ctx, NewUser{Username: "dup", PasswordHash: "h", Role: "user"})
+	if !errors.Is(err, ErrUsernameTaken) {
+		t.Fatalf("duplicate CreateUser = %v, want ErrUsernameTaken", err)
+	}
+}

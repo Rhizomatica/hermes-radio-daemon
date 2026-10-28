@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
@@ -40,6 +41,7 @@ type handlers struct {
 	store        *store.Store
 	lifetime     time.Duration
 	loginLimiter *ratelimit.Limiter // failed logins, 5 a minute per address
+	lastPurge    atomic.Int64       // unix time of the last expired-session purge
 }
 
 // Register adds the session operations and makes RoleOf resolve sessions.
@@ -81,7 +83,7 @@ func hashToken(raw string) string {
 
 // tokenFrom reads the session token: the cookie, or Authorization: Bearer.
 func tokenFrom(r *http.Request) string {
-	if c, err := r.Cookie("hermes_session"); err == nil && c.Value != "" {
+	if c, err := r.Cookie(api.SessionCookie); err == nil && c.Value != "" {
 		return c.Value
 	}
 	if a := r.Header.Get("Authorization"); strings.HasPrefix(a, "Bearer ") {
@@ -95,8 +97,7 @@ func tokenFrom(r *http.Request) string {
 // Origin naming this station or X-Hermes-CSRF: 1. Bearer-authenticated
 // requests are exempt (browsers never add that header by themselves).
 func (h *handlers) csrfOK(r *http.Request) bool {
-	c, err := r.Cookie("hermes_session")
-	if err != nil || c.Value == "" {
+	if !api.HasSessionCookie(r) {
 		return true // Bearer or none; the role gate handles "none"
 	}
 	if r.Header.Get("X-Hermes-CSRF") == "1" {
@@ -105,8 +106,11 @@ func (h *handlers) csrfOK(r *http.Request) bool {
 	return api.SameOrigin(r)
 }
 
-// clientIP is the request's address without its port, for rate limiting.
-func clientIP(r *http.Request) string {
+// ClientIP is the request's address without its port, for rate limiting and
+// the session list. radiod's C server hands over the real peer address, so
+// each client has its own bucket (until api_v2_enable, /api/v2 is
+// loopback-only and every client is 127.0.0.1).
+func ClientIP(r *http.Request) string {
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host
 	}
@@ -153,7 +157,7 @@ func (h *handlers) resolvePrincipal(r *http.Request) (api.Principal, bool) {
 	if !ok {
 		return api.Principal{}, false
 	}
-	return api.Principal{SessionID: a.SessionID, UserID: a.UserID, Role: spec.Role(a.Role)}, true
+	return api.Principal{SessionID: a.SessionID, UserID: a.UserID, Role: spec.Role(a.Role), ExpiresAt: a.ExpiresAt}, true
 }
 
 // dummyVerify burns the same Argon2id work on a login for an unknown user,
@@ -172,6 +176,20 @@ func (h *handlers) dummyVerify(password string) {
 	if dummy.hash != "" {
 		passwd.Verify(dummy.hash, password)
 	}
+}
+
+// purgeEvery is how often a login sweeps expired sessions out of the table.
+const purgeEvery = time.Hour
+
+// purgeExpired deletes expired sessions, at most once per purgeEvery. It runs
+// on login, so an idle station does no work; failures are best-effort.
+func (h *handlers) purgeExpired(r *http.Request) {
+	now := time.Now()
+	last := h.lastPurge.Load()
+	if now.Unix()-last < int64(purgeEvery.Seconds()) || !h.lastPurge.CompareAndSwap(last, now.Unix()) {
+		return
+	}
+	_, _ = h.store.PurgeExpiredSessions(r.Context(), now)
 }
 
 // Session is api-rest.yaml's Session.

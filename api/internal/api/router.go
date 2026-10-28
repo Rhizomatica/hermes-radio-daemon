@@ -215,6 +215,7 @@ type Principal struct {
 	SessionID int64
 	UserID    int64
 	Role      spec.Role
+	ExpiresAt string // RFC 3339, when the session ends
 }
 
 type ctxPrincipalKey struct{}
