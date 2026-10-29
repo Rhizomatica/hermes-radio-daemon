@@ -52,6 +52,12 @@ type httpResult struct {
 
 func call(t *testing.T, method, url, body string) httpResult {
 	t.Helper()
+	return callAuth(t, method, url, body, "")
+}
+
+// callAuth is call with a session token (Authorization: Bearer).
+func callAuth(t *testing.T, method, url, body, token string) httpResult {
+	t.Helper()
 	var rd io.Reader
 	if body != "" {
 		rd = strings.NewReader(body)
@@ -59,6 +65,9 @@ func call(t *testing.T, method, url, body string) httpResult {
 	req, _ := http.NewRequest(method, url, rd)
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
 	if err != nil {
@@ -73,6 +82,25 @@ func call(t *testing.T, method, url, body string) httpResult {
 
 func startAPIDaemon(t *testing.T, extra ...string) *Daemon {
 	return startDaemon(t, daemonOpts{core: append([]string{"api_v2_enable = 1"}, extra...)})
+}
+
+// setupAPI runs first-boot setup on a freshly started daemon and returns the
+// new admin's session token. startDaemon points the daemon at a temp database
+// and a known setup code (SETUP_CODE_PATH), so this is deterministic.
+func setupAPI(t *testing.T, d *Daemon) string {
+	t.Helper()
+	r := call(t, "POST", apiBase(d)+"/setup",
+		`{"setup_code":"`+apiSetupCode+`","station_name":"Test Station","callsign":"TEST1",`+
+			`"country":"BR","language":"en","timezone":"America/Sao_Paulo",`+
+			`"admin":{"username":"admin","password":"password1","display_name":"Admin"}}`)
+	if r.status != 201 {
+		t.Fatalf("POST /setup = %d %s\n--- daemon log ---\n%s", r.status, r.raw, d.Log())
+	}
+	token, _ := r.body["token"].(string)
+	if token == "" {
+		t.Fatalf("POST /setup returned no token: %s", r.raw)
+	}
+	return token
 }
 
 // Off by default: /api/v2 is not served and its socket refused.
@@ -109,6 +137,7 @@ func needGoAPI(t *testing.T) {
 func TestAPIv2REST(t *testing.T) {
 	needGoAPI(t)
 	d := startAPIDaemon(t)
+	token := setupAPI(t, d)
 	base := apiBase(d)
 	rig := dialRigctl(t, d)
 
@@ -116,40 +145,41 @@ func TestAPIv2REST(t *testing.T) {
 	if r.status != 200 || r.body["status"] != "ok" || r.header.Get("X-Request-Id") == "" {
 		t.Fatalf("health = %d %s", r.status, r.raw)
 	}
-	r = call(t, "GET", base+"/radio", "")
+	r = callAuth(t, "GET", base+"/radio", "", token)
 	if r.status != 200 || r.body["frequency_hz"] != 7100000.0 || r.body["backend"] != "hamlib" {
 		t.Errorf("radio = %d %s", r.status, r.raw)
 	}
 
-	r = call(t, "PATCH", base+"/radio/profiles/0", `{"frequency_hz":7074000,"mode":"USB","power":20}`)
+	r = callAuth(t, "PATCH", base+"/radio/profiles/0", `{"frequency_hz":7074000,"mode":"USB","power":20}`, token)
 	if r.status != 200 || r.body["frequency_hz"] != 7074000.0 {
 		t.Fatalf("PATCH = %d %s", r.status, r.raw)
 	}
 	if got := rig.cmd("f"); got != "7074000" {
 		t.Errorf("after the PATCH, rigctl f = %q, want 7074000", got)
 	}
-	r = call(t, "PATCH", base+"/radio/profiles/0", `{"power":300}`)
+	r = callAuth(t, "PATCH", base+"/radio/profiles/0", `{"power":300}`, token)
 	if r.status != 422 || r.header.Get("Content-Type") != "application/problem+json" || r.body["code"] != "invalid" {
 		t.Errorf("bad PATCH = %d %s", r.status, r.raw)
 	}
-	if r = call(t, "GET", base+"/radio/profiles/42", ""); r.status != 404 {
+	if r = callAuth(t, "GET", base+"/radio/profiles/42", "", token); r.status != 404 {
 		t.Errorf("profile 42 = %d", r.status)
 	}
-	if r = call(t, "DELETE", base+"/radio", ""); r.status != 405 || r.header.Get("Allow") != "GET" {
+	if r = callAuth(t, "DELETE", base+"/radio", "", token); r.status != 405 || r.header.Get("Allow") != "GET" {
 		t.Errorf("DELETE /radio = %d, Allow %q", r.status, r.header.Get("Allow"))
 	}
-	if r = call(t, "GET", base+"/radio/digi", ""); r.status != 200 || r.body["voice_codec"] == nil {
+	if r = callAuth(t, "GET", base+"/radio/digi", "", token); r.status != 200 || r.body["voice_codec"] == nil {
 		t.Errorf("digi settings = %d %s", r.status, r.raw)
 	}
-	if r = call(t, "GET", base+"/digi/log", ""); r.status != 200 || r.body["data"] == nil {
+	if r = callAuth(t, "GET", base+"/digi/log", "", token); r.status != 200 || r.body["data"] == nil {
 		t.Errorf("digi log = %d %s", r.status, r.raw)
 	}
-	if r = call(t, "GET", base+"/modem", ""); r.status != 503 || r.body["code"] != "not_running" {
+	if r = callAuth(t, "GET", base+"/modem", "", token); r.status != 503 || r.body["code"] != "not_running" {
 		t.Errorf("modem without mercury = %d %s", r.status, r.raw)
 	}
 }
 
-// Until logins exist, /api/v2 answers only on loopback.
+// /api/v2 still answers only on loopback (the C server gates it before the
+// Go layer), so a remote client is refused even with a session.
 func TestAPIv2LoopbackOnly(t *testing.T) {
 	needGoAPI(t)
 	var other string
@@ -164,12 +194,13 @@ func TestAPIv2LoopbackOnly(t *testing.T) {
 		t.Skip("no non-loopback IPv4 address on this machine")
 	}
 	d := startDaemon(t, daemonOpts{wsHost: "0.0.0.0", core: []string{"api_v2_enable = 1"}})
+	token := setupAPI(t, d)
 	port := d.WSURL[strings.LastIndex(d.WSURL, ":")+1 : len(d.WSURL)-1]
 	r := call(t, "GET", "http://"+other+":"+port+"/api/v2/radio", "")
 	if r.status != 403 || r.body["code"] != "forbidden" {
 		t.Errorf("GET /api/v2/radio from %s = %d %s, want 403", other, r.status, r.raw)
 	}
-	if r = call(t, "GET", apiBase(d)+"/radio", ""); r.status != 200 {
+	if r = callAuth(t, "GET", apiBase(d)+"/radio", "", token); r.status != 200 {
 		t.Errorf("from loopback = %d", r.status)
 	}
 }
@@ -198,6 +229,7 @@ func readFrame(t *testing.T, ws *wsConn, timeout time.Duration) map[string]any {
 func TestHermesV1(t *testing.T) {
 	needGoAPI(t)
 	d := startAPIDaemon(t)
+	token := setupAPI(t, d)
 	url := strings.TrimSuffix(d.WSURL, "/") + "/api/v2/ws"
 
 	_, _, err := wsDialProto(url, "")
@@ -206,7 +238,7 @@ func TestHermesV1(t *testing.T) {
 		t.Fatalf("upgrade without hermes.v1: %v, want HTTP 426", err)
 	}
 
-	ws, proto, err := wsDialProto(url, "hermes.v1")
+	ws, proto, err := wsDialAuth(url, "hermes.v1", token)
 	if err != nil || proto != "hermes.v1" {
 		t.Fatalf("upgrade with hermes.v1: %v (subprotocol %q)\n--- daemon log ---\n%s", err, proto, d.Log())
 	}
@@ -258,7 +290,8 @@ func TestHermesV1(t *testing.T) {
 func TestHermesV1RadioStateTopic(t *testing.T) {
 	needGoAPI(t)
 	d := startAPIDaemon(t)
-	ws, _, err := wsDialProto(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1")
+	token := setupAPI(t, d)
+	ws, _, err := wsDialAuth(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1", token)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,19 +337,20 @@ func TestHermesV1RadioStateTopic(t *testing.T) {
 func TestAPIv2RadioSettings(t *testing.T) {
 	needGoAPI(t)
 	d := startAPIDaemon(t)
+	token := setupAPI(t, d)
 	base := apiBase(d)
-	r := call(t, "GET", base+"/radio/settings", "")
+	r := callAuth(t, "GET", base+"/radio/settings", "", token)
 	if r.status != 200 || r.body["bfo_hz"] != nil || r.body["tx_timeout_s"] != nil || r.body["step_hz"] == nil {
 		t.Fatalf("GET /radio/settings = %d %s", r.status, r.raw)
 	}
-	r = call(t, "PATCH", base+"/radio/settings", `{"step_hz":500,"swr_limit":3.2,"default_profile_fallback_s":120}`)
+	r = callAuth(t, "PATCH", base+"/radio/settings", `{"step_hz":500,"swr_limit":3.2,"default_profile_fallback_s":120}`, token)
 	if r.status != 200 || r.body["step_hz"] != 500.0 || r.body["swr_limit"] != 3.2 || r.body["default_profile_fallback_s"] != 120.0 {
 		t.Fatalf("PATCH = %d %s", r.status, r.raw)
 	}
-	if r = call(t, "GET", base+"/radio/settings", ""); r.body["step_hz"] != 500.0 || r.body["swr_limit"] != 3.2 {
+	if r = callAuth(t, "GET", base+"/radio/settings", "", token); r.body["step_hz"] != 500.0 || r.body["swr_limit"] != 3.2 {
 		t.Errorf("read back = %s", r.raw)
 	}
-	if r = call(t, "PATCH", base+"/radio/settings", `{"bfo_hz":40035000}`); r.status != 422 {
+	if r = callAuth(t, "PATCH", base+"/radio/settings", `{"bfo_hz":40035000}`, token); r.status != 422 {
 		t.Errorf("BFO on a Hamlib radio = %d %s", r.status, r.raw)
 	}
 }
@@ -327,9 +361,10 @@ func TestAPIv2RadioSettings(t *testing.T) {
 func TestAPIv2LogsThroughRadiod(t *testing.T) {
 	needGoAPI(t)
 	d := startAPIDaemon(t, "log_level = debug")
+	token := setupAPI(t, d)
 	base := apiBase(d)
-	call(t, "GET", base+"/radio", "")
-	r := call(t, "PATCH", base+"/radio/profiles/0", `{"power":20}`)
+	callAuth(t, "GET", base+"/radio", "", token)
+	r := callAuth(t, "PATCH", base+"/radio/profiles/0", `{"power":20}`, token)
 	d.Stop()
 
 	log := d.Log()
@@ -351,7 +386,8 @@ func TestAPIv2LogsThroughRadiod(t *testing.T) {
 func TestHermesV1ModemStatusTopic(t *testing.T) {
 	needGoAPI(t)
 	d, tnc := startMercuryDaemon(t, "api_v2_enable = 1")
-	ws, _, err := wsDialProto(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1")
+	token := setupAPI(t, d)
+	ws, _, err := wsDialAuth(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1", token)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +452,8 @@ func TestHermesV1ModemStatusTopic(t *testing.T) {
 func TestHermesV1RigControls(t *testing.T) {
 	needGoAPI(t)
 	d := startAPIDaemon(t)
-	ws, _, err := wsDialProto(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1")
+	token := setupAPI(t, d)
+	ws, _, err := wsDialAuth(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1", token)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,10 +500,10 @@ func TestHermesV1RigControls(t *testing.T) {
 
 // waitModem polls GET path until mercury inside the daemon has published a
 // status (503 until then).
-func waitModem(t *testing.T, d *Daemon, path string) httpResult {
+func waitModem(t *testing.T, d *Daemon, token, path string) httpResult {
 	t.Helper()
 	for i := 0; ; i++ {
-		r := call(t, "GET", apiBase(d)+path, "")
+		r := callAuth(t, "GET", apiBase(d)+path, "", token)
 		if r.status == 200 {
 			return r
 		}
@@ -483,19 +520,20 @@ func waitModem(t *testing.T, d *Daemon, path string) httpResult {
 func TestAPIv2ModemListenMode(t *testing.T) {
 	needGoAPI(t)
 	d, _ := startMercuryDaemon(t, "api_v2_enable = 1")
-	if c := waitModem(t, d, "/modem/config"); c.body["listen_mode"] == nil {
+	token := setupAPI(t, d)
+	if c := waitModem(t, d, token, "/modem/config"); c.body["listen_mode"] == nil {
 		t.Errorf("GET /modem/config = %s", c.raw)
 	}
-	if r := call(t, "PATCH", apiBase(d)+"/modem/config", `{"listen_mode":"DATAC0"}`); r.status != 422 {
+	if r := callAuth(t, "PATCH", apiBase(d)+"/modem/config", `{"listen_mode":"DATAC0"}`, token); r.status != 422 {
 		t.Errorf("PATCH DATAC0 = %d %s", r.status, r.raw)
 	}
-	r := call(t, "PATCH", apiBase(d)+"/modem/config", `{"listen_mode":"DATAC1"}`)
+	r := callAuth(t, "PATCH", apiBase(d)+"/modem/config", `{"listen_mode":"DATAC1"}`, token)
 	if r.status != 200 || r.body["listen_mode"] != "DATAC1" {
 		t.Fatalf("PATCH DATAC1 = %d %s\n--- daemon log ---\n%s", r.status, r.raw, d.Log())
 	}
 	// mercury's status says it within a second or so
 	for i := 0; ; i++ {
-		if s := call(t, "GET", apiBase(d)+"/modem", ""); s.body["listen_mode"] == "DATAC1" {
+		if s := callAuth(t, "GET", apiBase(d)+"/modem", "", token); s.body["listen_mode"] == "DATAC1" {
 			break
 		} else if i == 20 {
 			t.Fatalf("GET /modem listen_mode = %v after the PATCH", s.body["listen_mode"])
@@ -509,7 +547,8 @@ func TestAPIv2ModemListenMode(t *testing.T) {
 
 	d2, _ := startMercuryDaemonOpts(t, daemonOpts{core: []string{"api_v2_enable = 1"},
 		userMain: []string{"mercury_listen_mode = DATAC4"}})
-	if c := waitModem(t, d2, "/modem/config"); c.body["listen_mode"] != "DATAC4" {
+	token2 := setupAPI(t, d2)
+	if c := waitModem(t, d2, token2, "/modem/config"); c.body["listen_mode"] != "DATAC4" {
 		t.Errorf("listen mode from user.ini = %v\n--- daemon log ---\n%s", c.body["listen_mode"], d2.Log())
 	}
 	if !strings.Contains(d2.Log(), "[mercury-link] listen mode DATAC4") {
@@ -523,8 +562,9 @@ func TestAPIv2ModemListenMode(t *testing.T) {
 func TestHermesV1ModemChat(t *testing.T) {
 	needGoAPI(t)
 	d, _ := startMercuryDaemon(t, "api_v2_enable = 1")
-	waitModem(t, d, "/modem")
-	ws, _, err := wsDialProto(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1")
+	token := setupAPI(t, d)
+	waitModem(t, d, token, "/modem")
+	ws, _, err := wsDialAuth(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1", token)
 	if err != nil {
 		t.Fatal(err)
 	}
