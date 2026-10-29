@@ -14,4 +14,4 @@ spec.
 `python3 api/spec/gen_reference.py` (needs PyYAML) regenerates `docs/API-REFERENCE.md` and
 `docs/API-WS-REFERENCE.md` from these two files and from the operations, commands and topics the Go
 code registers, marking each one implemented or planned. Rerun it, and commit the result, whenever you
-re-pin the spec or add a handler.
+re-pin the spec or add a handler; the `api-docs` CI job fails if the committed docs differ from a fresh run.

@@ -11,6 +11,8 @@
 #   no-mercury   the build without the submodule or the Go layer, which must
 #                still work, with its unit and integration tests
 #   sanitizers   make test under ASan+UBSan and under TSan
+#   api-docs     docs/API-*REFERENCE.md must match what api/spec/gen_reference.py
+#                generates from the spec and the registered handlers
 
 name: CI
 
@@ -22,6 +24,23 @@ on:
   workflow_dispatch:
 
 jobs:
+  api-docs:
+    name: API reference is up to date
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PyYAML
+        run: pip install pyyaml
+      - name: Regenerate the API reference
+        run: python3 api/spec/gen_reference.py
+      - name: Fail if the committed docs differ
+        run: |
+          git diff --exit-code -- docs/ || {
+            echo "::error::docs/API-*REFERENCE.md are stale: run python3 api/spec/gen_reference.py and commit the result"
+            exit 1
+          }
+
   build-test:
     name: Build + unit tests (Debian 13, ${{ matrix.arch }})
     strategy:

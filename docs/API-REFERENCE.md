@@ -447,7 +447,7 @@ curl -sS -X GET "$BASE/sessions" \
 **Example**
 
 ```bash
-curl -sS -X DELETE "$BASE/sessions/{session_id}" \
+curl -sS -X DELETE "$BASE/sessions/42" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -511,6 +511,8 @@ curl -sS -X GET "$BASE/users" \
 
 Also creates the Postfix/Dovecot mailbox through the station's `email_create_user` helper.
 
+> **In this build:** The mailbox is not created yet: the station's `email_create_user` helper is not wired in. Only the account is created.
+
 **Request body** (`application/json`, required): [UserCreate](#schema-usercreate)
 
 | Field | Type | Required | Notes |
@@ -569,7 +571,7 @@ curl -sS -X POST "$BASE/users" \
 **Example**
 
 ```bash
-curl -sS -X GET "$BASE/users/{user_id}" \
+curl -sS -X GET "$BASE/users/2" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -610,7 +612,7 @@ curl -sS -X GET "$BASE/users/{user_id}" \
 **Example**
 
 ```bash
-curl -sS -X PATCH "$BASE/users/{user_id}" \
+curl -sS -X PATCH "$BASE/users/2" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -625,6 +627,8 @@ curl -sS -X PATCH "$BASE/users/{user_id}" \
 
 - Role: **admin**
 - Status: **implemented**
+
+> **In this build:** The mailbox is not removed yet: the station's email helper is not wired in. Only the account and its sessions are removed.
 
 **Parameters**
 
@@ -643,7 +647,7 @@ curl -sS -X PATCH "$BASE/users/{user_id}" \
 **Example**
 
 ```bash
-curl -sS -X DELETE "$BASE/users/{user_id}" \
+curl -sS -X DELETE "$BASE/users/2" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -654,6 +658,8 @@ curl -sS -X DELETE "$BASE/users/{user_id}" \
 
 - Role: **user**
 - Status: **implemented**
+
+> **In this build:** The mailbox password is not updated yet: the station's email helper is not wired in. Only the login password changes.
 
 **Parameters**
 
@@ -679,7 +685,7 @@ curl -sS -X DELETE "$BASE/users/{user_id}" \
 **Example**
 
 ```bash
-curl -sS -X PUT "$BASE/users/{user_id}/password" \
+curl -sS -X PUT "$BASE/users/2/password" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -1991,7 +1997,7 @@ curl -sS -X GET "$BASE/radio/profiles" \
 **Example**
 
 ```bash
-curl -sS -X GET "$BASE/radio/profiles/{profile}" \
+curl -sS -X GET "$BASE/radio/profiles/default" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -2032,7 +2038,7 @@ All fields are validated before any is applied.
 **Example**
 
 ```bash
-curl -sS -X PATCH "$BASE/radio/profiles/{profile}" \
+curl -sS -X PATCH "$BASE/radio/profiles/default" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{

@@ -243,8 +243,24 @@ def param_rows(path_item, op):
     return rows
 
 
+# Sample values for path parameters, so the examples can be pasted as they are.
+PATH_SAMPLES = {"user_id": "2", "session_id": "42", "profile": "default"}
+
+# What the build does today where the spec text promises more. Shown under an
+# implemented operation's spec description, so planned behaviour is not read
+# as current.
+NOTES = {
+    "createUser": "The mailbox is not created yet: the station's `email_create_user` helper is not "
+                  "wired in. Only the account is created.",
+    "deleteUser": "The mailbox is not removed yet: the station's email helper is not wired in. Only "
+                  "the account and its sessions are removed.",
+    "setPassword": "The mailbox password is not updated yet: the station's email helper is not "
+                   "wired in. Only the login password changes.",
+}
+
+
 def curl_example(method, path, op, path_item):
-    url = "$BASE" + re.sub(r"\{(\w+)\}", lambda m: "{" + m.group(1) + "}", path)
+    url = "$BASE" + re.sub(r"\{(\w+)\}", lambda m: PATH_SAMPLES.get(m.group(1), m.group(0)), path)
     lines = [f"curl -sS -X {method.upper()} \"{url}\""]
     if op.get("security") != []:
         lines.append('  -H "Authorization: Bearer $TOKEN"')
@@ -346,6 +362,8 @@ def gen_rest():
             w(f"- Status: **{'implemented' if ok else 'planned (not implemented yet)'}**\n")
             if op.get("description"):
                 w(op["description"].strip() + "\n")
+            if ok and oid in NOTES:
+                w("> **In this build:** " + NOTES[oid] + "\n")
             rows = param_rows(item, op)
             if rows:
                 w("**Parameters**\n\n| Name | In | Type | Required | Notes |\n| --- | --- | --- | --- | --- |")
