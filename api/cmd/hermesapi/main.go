@@ -27,7 +27,10 @@ import (
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/config"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/setup"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/station"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/store"
 )
 
 var router *api.Router
@@ -41,7 +44,18 @@ func HermesInit() {
 	if os.Getenv("GOMEMLIMIT") == "" {
 		debug.SetMemoryLimit(64 << 20)
 	}
-	router = station.NewRouter(radio.Default())
+	// Authentication needs the SQLite store. Until the C side turns on
+	// api_v2_enable, /api/v2 is loopback-only, so a failure to open it falls
+	// back to the loopback-admin router (the pre-authentication behaviour).
+	r := radio.Default()
+	cfg := config.Load()
+	st, err := store.Open(context.Background(), cfg.DatabasePath)
+	if err != nil {
+		slog.Error("cannot open the API database; /api/v2 serves without sessions", "error", err)
+		router = station.NewRouter(r)
+	} else {
+		router = station.NewAuthenticatedRouter(r, st, setup.Config{SetupCodePath: cfg.SetupCodePath})
+	}
 	slog.SetDefault(router.Log) // any slog use in the layer goes to radiod's logger
 }
 

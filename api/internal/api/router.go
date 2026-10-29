@@ -34,6 +34,18 @@ type Router struct {
 	// on loopback until then (main:api_v2_enable).
 	RoleOf func(r *http.Request) spec.Role
 
+	// Resolve, when set, turns a request into its principal. The router
+	// uses it for the role gate and puts the principal in the request
+	// context (PrincipalFrom) before the handler runs. The auth domain
+	// installs it; nil means RoleOf is the gate (tests, loopback admin).
+	Resolve func(r *http.Request) (Principal, bool)
+
+	// CSRF, when set, reports whether a mutating request passes api-rest.yaml's
+	// CSRF rule (the auth domain installs it): a request authenticated with the
+	// session cookie must carry an Origin naming this station or
+	// X-Hermes-CSRF: 1; Bearer-authenticated requests are exempt.
+	CSRF func(r *http.Request) bool
+
 	// Log is the API layer's logger: radiod's (internal/logging), component
 	// "api". Requests are logged as "api.http", hermes.v1 as "api.ws".
 	Log     *slog.Logger
@@ -77,9 +89,32 @@ func (rt *Router) Op(id string, h http.HandlerFunc) {
 	}
 	rt.ops[id] = op
 	rt.mux.HandleFunc(op.Method+" "+spec.BasePath+op.Path, func(w http.ResponseWriter, r *http.Request) {
-		if !op.Public && !AtLeast(rt.RoleOf(r), op.Role) {
-			Problem(w, r, http.StatusForbidden, "forbidden", "this needs the "+string(op.Role)+" role", nil)
-			return
+		if !op.Public {
+			var role spec.Role
+			if rt.Resolve != nil {
+				if p, ok := rt.Resolve(r); ok {
+					role = p.Role
+					r = WithPrincipal(r, p)
+				} else {
+					role = spec.RoleNone
+				}
+			} else {
+				role = rt.RoleOf(r)
+			}
+			if role == spec.RoleNone {
+				// api-rest.yaml: 401 unauthenticated for "not logged in",
+				// distinct from a role that is too low.
+				Problem(w, r, http.StatusUnauthorized, "unauthenticated", "not logged in, or the session ended", nil)
+				return
+			}
+			if rt.CSRF != nil && r.Method != http.MethodGet && r.Method != http.MethodHead && !rt.CSRF(r) {
+				Problem(w, r, http.StatusForbidden, "csrf", "add an Origin header naming this station, or X-Hermes-CSRF: 1", nil)
+				return
+			}
+			if !AtLeast(role, op.Role) {
+				Problem(w, r, http.StatusForbidden, "forbidden", "this needs the "+string(op.Role)+" role", nil)
+				return
+			}
 		}
 		h(w, r)
 	})
@@ -173,6 +208,27 @@ func (rt *Router) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rt.mux.ServeHTTP(w, r)
+}
+
+// Principal is the authenticated identity of a request.
+type Principal struct {
+	SessionID int64
+	UserID    int64
+	Role      spec.Role
+	ExpiresAt string // RFC 3339, when the session ends
+}
+
+type ctxPrincipalKey struct{}
+
+// WithPrincipal returns a copy of r carrying p.
+func WithPrincipal(r *http.Request, p Principal) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), ctxPrincipalKey{}, p))
+}
+
+// PrincipalFrom returns the request's principal and whether it is set.
+func PrincipalFrom(r *http.Request) (Principal, bool) {
+	p, ok := r.Context().Value(ctxPrincipalKey{}).(Principal)
+	return p, ok
 }
 
 type ctxRequestID struct{}

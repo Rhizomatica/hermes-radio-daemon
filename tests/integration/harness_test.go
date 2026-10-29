@@ -142,6 +142,10 @@ type daemonOpts struct {
 	userMain []string
 }
 
+// apiSetupCode is the one-time setup code the harness writes for the daemon
+// (via SETUP_CODE_PATH), so first-boot setup (setupAPI) is deterministic.
+const apiSetupCode = "test-setup-code"
+
 const defaultUserINI = `[main]
 current_profile = 0
 default_profile = 0
@@ -204,6 +208,7 @@ func startDaemon(t *testing.T, o daemonOpts) *Daemon {
 		user = strings.Replace(user, "[main]\n", "[main]\n"+strings.Join(o.userMain, "\n")+"\n", 1)
 	}
 	writeFile(t, userINI, user)
+	writeFile(t, filepath.Join(dir, "setup-code"), apiSetupCode+"\n")
 
 	d := &Daemon{
 		t:       t,
@@ -218,6 +223,21 @@ func startDaemon(t *testing.T, o daemonOpts) *Daemon {
 	d.cmd.Dir = dir
 	d.cmd.Stdout = d.log
 	d.cmd.Stderr = d.log
+	// The API layer reads these from the environment (config.Load); pointing
+	// them at the test's directory makes sessions real and deterministic, the
+	// same as CI, instead of falling back to the loopback-admin router. Drop
+	// any pre-existing values so the test's always win.
+	env := make([]string, 0, len(os.Environ())+2)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "DATABASE_PATH=") || strings.HasPrefix(kv, "SETUP_CODE_PATH=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	d.cmd.Env = append(env,
+		"DATABASE_PATH="+filepath.Join(dir, "api.sqlite"),
+		"SETUP_CODE_PATH="+filepath.Join(dir, "setup-code"),
+	)
 	if err := d.cmd.Start(); err != nil {
 		t.Fatalf("start %s: %v", radiodBin, err)
 	}

@@ -431,13 +431,17 @@ CI runs all three on Debian 13, amd64 and arm64, with and without the Go layer.
 
 ## 11. Not there yet
 
-- **Logins and sessions** (`/api/v2/session`, the database): until then `/api/v2` is
-  loopback-only and every caller is `admin`.
+- **Authentication is in** (`internal/auth`, `internal/setup`, `internal/users` over
+  `internal/store`): opaque session tokens (cookie or `Authorization: Bearer`), the role
+  gate (`RoleOf`/`Resolve`), CSRF, login rate limiting, first-boot `/setup`, and user CRUD
+  with password change. Still to do: the mailbox helper behind user create/password (a new
+  radiod C API verb), avatars, LXMF identity export, and flipping `api_v2_enable` so
+  `/api/v2` leaves loopback.
 - **More topics**: `radio.profiles`, the list topics (`digi`, `modem.chat`,
   `messages`), mercury's `modem.config`; then **binary frames** (spectrum)
   and **WebRTC** audio (in C, with libdatachannel; the signalling arrives as `rtc.offer`
   commands).
 - **A transmit timeout** (`tx_timeout_s` in `/radio/settings`): in the spec, not in radiod
   yet, so it is null and a PATCH of it is refused.
-- **APIs moving from hermes-api** (messages, users, stations, schedules, ...): each one is a
+- **APIs moving from hermes-api** (messages, stations, schedules, ...): each one is a
   domain package written as in this guide.

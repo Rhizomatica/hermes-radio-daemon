@@ -3,10 +3,12 @@
 package testapi
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,7 +16,10 @@ import (
 
 	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/passwd"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/setup"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/station"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/store"
 )
 
 // Env is a station router over a Stub.
@@ -22,6 +27,7 @@ type Env struct {
 	T     *testing.T
 	Radio *rad.Stub
 	R     *api.Router
+	Store *store.Store // nil unless NewAuth
 }
 
 // New returns the whole station's router over a fresh Stub.
@@ -29,6 +35,48 @@ func New(t *testing.T) *Env {
 	s := rad.NewStub()
 	return &Env{T: t, Radio: s, R: station.NewRouter(s)}
 }
+
+// NewAuth returns the station's router over a fresh Stub and a fresh SQLite
+// store, with sessions and users enabled.
+func NewAuth(t *testing.T) *Env {
+	s := rad.NewStub()
+	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "hermes.sqlite"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return &Env{T: t, Radio: s, R: station.NewAuthenticatedRouter(s, st, setup.Config{}), Store: st}
+}
+
+// SeedUser creates a user directly in the store (NewAuth only).
+func (e *Env) SeedUser(username, password, role string) int64 {
+	e.T.Helper()
+	if e.Store == nil {
+		e.T.Fatal("SeedUser needs NewAuth")
+	}
+	h, err := passwd.Hash(password)
+	if err != nil {
+		e.T.Fatalf("passwd.Hash: %v", err)
+	}
+	u, err := e.Store.CreateUser(context.Background(), store.NewUser{Username: username, PasswordHash: h, Role: role})
+	if err != nil {
+		e.T.Fatalf("CreateUser: %v", err)
+	}
+	return u.ID
+}
+
+// Login logs in and returns the session token.
+func (e *Env) Login(username, password string) string {
+	e.T.Helper()
+	body := `{"username":` + quote(username) + `,"password":` + quote(password) + `}`
+	r := e.Do("POST", "/session", body)
+	if r.Status != 201 {
+		e.T.Fatalf("login: %d %s", r.Status, r.Body)
+	}
+	return r.JSON(e.T)["token"].(string)
+}
+
+func quote(s string) string { b, _ := json.Marshal(s); return string(b) }
 
 // Response is what a request got.
 type Response struct {
@@ -49,6 +97,11 @@ func (r Response) JSON(t *testing.T) map[string]any {
 
 // Do sends a request (body as JSON when not empty) under /api/v2.
 func (e *Env) Do(method, path, body string) Response {
+	return e.DoAuth(method, path, body, "")
+}
+
+// DoAuth is Do with an Authorization: Bearer token ("" for none).
+func (e *Env) DoAuth(method, path, body, token string) Response {
 	var rd io.Reader
 	if body != "" {
 		rd = strings.NewReader(body)
@@ -56,6 +109,9 @@ func (e *Env) Do(method, path, body string) Response {
 	req := httptest.NewRequest(method, "/api/v2"+path, rd)
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	w := httptest.NewRecorder()
 	e.R.ServeHTTP(w, req)
