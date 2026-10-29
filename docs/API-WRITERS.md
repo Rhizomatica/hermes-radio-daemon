@@ -381,12 +381,22 @@ e.Radio.SetTX(true)                                       // a change from elsew
 ev := w.Next(isState, time.Second)                        // seq 1, {"tx": true, ...}
 ```
 
+**You get a contract check for free.** `TestContract` (`internal/station/contract_test.go`) walks
+every operation the router registers, so your new one is covered the moment you `rt.Op` it. It
+checks that: no session gives 401; each role below the spec's `x-hermes-role` gives 403; the
+allowed role reaches your handler; the status you answer is one `api-rest.yaml` documents
+(besides the generic 400/404/415/422/429); and every reply has `X-Request-Id`, errors are
+`application/problem+json` with a matching `status`, `code` and `request_id`, and a 204 has no
+body. If it fails because your handler answers a status the spec does not list, add it to the
+spec in hermes-documentation first (rule 1), not to the test.
+
 Test the refusals as much as the happy path: every 4xx your handler can give, and that a
 refused write changed nothing.
 
-Integration tests (`tests/integration/api_v2_test.go`) run the real radiod on Hamlib's dummy
+Integration tests (`tests/integration/api_v2_test.go`, `api_auth_test.go`) run the real radiod on Hamlib's dummy
 rig and check what crosses the C/Go boundary (a REST write that moves the rig as rigctl sees
-it, the hermes.v1 upgrade). Add one when your operation touches the radio in a new way.
+it, the hermes.v1 upgrade; `api_auth_test.go` runs the account
+lifecycle: login, users, sessions, the cookie and its CSRF rule, the login limit). Add one when your operation touches the radio in a new way.
 
 ```bash
 make go-test            # Go unit tests, race detector

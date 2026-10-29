@@ -63,3 +63,32 @@ func TestTopics(t *testing.T) {
 		t.Error("a name that is not a topic was found")
 	}
 }
+
+// Statuses reads each operation's documented responses, including $ref ones.
+func TestStatuses(t *testing.T) {
+	st := Statuses()
+	has := func(id string, code int) bool {
+		for _, c := range st[id] {
+			if c == code {
+				return true
+			}
+		}
+		return false
+	}
+	for id, code := range map[string]int{
+		"login": 201, "logout": 204, "getSession": 200, // inline
+		"runSetup": 409, "getProfile": 404, "updateProfile": 422, // $ref
+	} {
+		if !has(id, code) {
+			t.Errorf("%s: %d not among documented statuses %v", id, code, st[id])
+		}
+	}
+	if has("getHealth", 201) {
+		t.Errorf("getHealth documents 201: %v", st["getHealth"])
+	}
+	for id := range Operations() {
+		if len(st[id]) == 0 {
+			t.Errorf("%s documents no responses", id)
+		}
+	}
+}
