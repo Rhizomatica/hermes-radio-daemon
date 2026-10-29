@@ -104,6 +104,10 @@ const (
 // connection and sends its hello. It returns 0 to accept, or the HTTP
 // status to refuse with (401 when sessions exist and there is none).
 func (rt *Router) WSOpen(id int64, r *http.Request) int {
+	if rt.Resolve == nil && !loopbackPeer(r.RemoteAddr) {
+		rt.wsLog.Info("refused: remote with no sessions", "conn", id, "peer", r.RemoteAddr)
+		return http.StatusForbidden
+	}
 	role := rt.RoleOf(r)
 	if roleRank[role] == 0 {
 		rt.wsLog.Info("refused: no session", "conn", id, "peer", r.RemoteAddr)

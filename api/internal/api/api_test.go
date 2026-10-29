@@ -115,10 +115,25 @@ func TestServeRaw(t *testing.T) {
 	}
 }
 
+// ServeRaw keeps the loopback-only policy while there are no sessions: a
+// remote peer is refused, a loopback one is answered.
+func TestServeRawLoopbackOnly(t *testing.T) {
+	e := testapi.New(t)
+	st, ct, _, _ := e.R.ServeRaw("GET", "/api/v2/health", "", "", "10.0.0.1", nil)
+	if st != 403 || ct != "application/problem+json" {
+		t.Errorf("remote peer without sessions = %d %q, want 403 problem+json", st, ct)
+	}
+	if st, _, _, _ = e.R.ServeRaw("GET", "/api/v2/health", "", "", "127.0.0.1", nil); st != 200 {
+		t.Errorf("loopback peer without sessions = %d, want 200", st)
+	}
+}
+
 // hermes.v1: hello on open, unknown commands and subscriptions answered.
 func TestHermesV1Basics(t *testing.T) {
 	e := testapi.New(t)
-	if st := e.R.WSOpen(7, httptest.NewRequest("GET", "/api/v2/ws", nil)); st != 0 {
+	req := httptest.NewRequest("GET", "/api/v2/ws", nil)
+	req.RemoteAddr = "127.0.0.1" // the no-session router answers only on loopback
+	if st := e.R.WSOpen(7, req); st != 0 {
 		t.Fatalf("WSOpen = %d", st)
 	}
 	defer e.R.WSClose(7)

@@ -1305,12 +1305,7 @@ static bool is_api_v2(const char *path)
     return !strcmp(path, "/api/v2") || !strncmp(path, "/api/v2/", 8);
 }
 
-/* Until sessions exist, /api/v2 answers only to this machine. */
-static bool is_loopback(const char *peer)
-{
-    return !strncmp(peer, "127.", 4) || !strcmp(peer, "::1");
-}
-
+#ifndef HAVE_GO_API
 static void api_problem(ws_http_response_t *resp, int status, const char *code, const char *detail)
 {
     char *b = malloc(320);
@@ -1322,6 +1317,7 @@ static void api_problem(ws_http_response_t *resp, int status, const char *code, 
     resp->body = b;
     resp->body_len = n > 0 ? (size_t) n : 0;
 }
+#endif
 
 static bool on_ws_http(ws_conn_t *c, const ws_http_request_t *req, ws_http_response_t *resp,
                        void *user_data)
@@ -1330,11 +1326,6 @@ static bool on_ws_http(ws_conn_t *c, const ws_http_request_t *req, ws_http_respo
     (void) c;
     if (!is_api_v2(req->path) || !ctx->radio_h->api_v2_enable)
         return false;                   /* the static pages (404 for /api/v2 when off) */
-    if (!is_loopback(req->peer))
-    {
-        api_problem(resp, 403, "forbidden", "/api/v2 answers only on this machine until logins exist");
-        return true;
-    }
 #ifdef HAVE_GO_API
     /* Go's strings are copied here and freed: the server sends the reply
      * after this returns (one thread, so static buffers do). */
@@ -1368,8 +1359,6 @@ static int on_ws_upgrade(ws_conn_t *c, const ws_http_request_t *req, unsigned *c
         return 0;                       /* radiod's legacy protocol, class 0 */
     if (!ctx->radio_h->api_v2_enable)
         return 404;
-    if (!is_loopback(req->peer))
-        return 403;
     if (!ws_http_header(req, "Sec-WebSocket-Protocol", want, sizeof(want)) ||
         !strstr(want, "hermes.v1"))
         return 426;

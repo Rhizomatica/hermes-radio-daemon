@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/textproto"
 	"net/url"
@@ -32,6 +33,17 @@ func RequestFromRaw(ctx context.Context, method, path, query, rawHeaders, peer s
 	r.RemoteAddr = peer
 	r.ContentLength = int64(len(body))
 	return r, nil
+}
+
+// loopbackPeer reports whether peer is this machine's own address. radiod's
+// C server hands over the bare client IP (no port); tolerate a port in case
+// that ever changes.
+func loopbackPeer(peer string) bool {
+	if host, _, err := net.SplitHostPort(peer); err == nil {
+		peer = host
+	}
+	ip := net.ParseIP(peer)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Recorder is a minimal http.ResponseWriter that keeps the answer.
@@ -70,6 +82,11 @@ func (rt *Router) ServeRaw(method, path, query, rawHeaders, peer string, body []
 	rec := &Recorder{}
 	if err != nil {
 		Problem(rec, (&http.Request{}).WithContext(ctx), http.StatusBadRequest, "bad_request", err.Error(), nil)
+	} else if rt.Resolve == nil && !loopbackPeer(peer) {
+		// No sessions (the loopback-admin router): keep the pre-auth policy of
+		// answering only on this machine. Once sessions exist, the role gate
+		// decides and any peer may be answered.
+		Problem(rec, r, http.StatusForbidden, "forbidden", "/api/v2 answers only on this machine until logins exist", nil)
 	} else {
 		func() {
 			defer func() { // one bad handler must not take the daemon down

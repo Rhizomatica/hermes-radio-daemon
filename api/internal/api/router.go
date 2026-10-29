@@ -29,9 +29,9 @@ type Router struct {
 	commands map[string]command
 	topics   map[string]topic
 
-	// RoleOf gives a request's session role. Until sessions exist
-	// (/api/v2/session) every caller is admin: radiod answers /api/v2 only
-	// on loopback until then (main:api_v2_enable).
+	// RoleOf gives a request's session role. While Resolve is nil there are
+	// no sessions and every caller is admin, so /api/v2 answers only on
+	// loopback.
 	RoleOf func(r *http.Request) spec.Role
 
 	// Resolve, when set, turns a request into its principal. The router

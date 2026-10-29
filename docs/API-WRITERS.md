@@ -149,12 +149,13 @@ To run it for real, build radiod with Go on the `PATH` (`make`; it builds
 api_v2_enable = 1
 ```
 
-Then `curl http://127.0.0.1:8080/api/v2/radio`. **Until logins exist, `/api/v2` answers only
-to this machine (127.0.0.1, ::1)** and every caller is treated as `admin`; from anywhere else
-it answers 403. A radiod built without Go answers `/api/v2` with 503. **Never put a reverse
-proxy on the station in front of radiod's port** (nginx's `/api` goes to hermes-api, not
-radiod): to radiod every proxied request would come from 127.0.0.1, and the network would be
-`admin`.
+Then `curl http://127.0.0.1:8080/api/v2/radio`. **With the session store open, `/api/v2`
+answers any client**; a session token (the `hermes_session` cookie or `Authorization: Bearer`)
+sets the role, and without one only `security: []` operations answer (the rest are 401). If
+the store cannot be opened, radiod answers only on loopback, every caller `admin`. A radiod
+built without Go answers `/api/v2` with 503. **Never put a reverse proxy on the station in
+front of radiod's port** (nginx's `/api` goes to hermes-api, not radiod): radiod trusts
+`X-Forwarded-Proto` only from a loopback peer.
 
 ## 5. Adding a REST operation
 
@@ -434,9 +435,10 @@ CI runs all three on Debian 13, amd64 and arm64, with and without the Go layer.
 - **Authentication is in** (`internal/auth`, `internal/setup`, `internal/users` over
   `internal/store`): opaque session tokens (cookie or `Authorization: Bearer`), the role
   gate (`RoleOf`/`Resolve`), CSRF, login rate limiting, first-boot `/setup`, and user CRUD
-  with password change. Still to do: the mailbox helper behind user create/password (a new
-  radiod C API verb), avatars, LXMF identity export, and flipping `api_v2_enable` so
-  `/api/v2` leaves loopback.
+  with password change. `/api/v2` no longer answers loopback-only: any client is answered,
+  and the session role gates each call (loopback only in the no-session fallback). Still to
+  do: the mailbox helper behind user create/password (a new radiod C API verb), avatars, and
+  LXMF identity export.
 - **More topics**: `radio.profiles`, the list topics (`digi`, `modem.chat`,
   `messages`), mercury's `modem.config`; then **binary frames** (spectrum)
   and **WebRTC** audio (in C, with libdatachannel; the signalling arrives as `rtc.offer`
