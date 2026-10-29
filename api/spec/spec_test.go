@@ -1,6 +1,9 @@
 package spec
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The reader finds the contract's operations with their method, path, role
 // and public flag, and the hermes.v1 commands.
@@ -90,5 +93,38 @@ func TestStatuses(t *testing.T) {
 		if len(st[id]) == 0 {
 			t.Errorf("%s documents no responses", id)
 		}
+	}
+}
+
+// Statuses scans by layout (see spec.go). Guard its assumptions on the real
+// file: no response key it cannot read (default, 4XX), and every status key
+// of every responses block is counted, found by a looser line scan.
+func TestStatusesLayout(t *testing.T) {
+	st := Statuses()
+	inResp, id, total := false, "", 0
+	for _, l := range strings.Split(restYAML, "\n") {
+		switch {
+		case reOpID.MatchString(l):
+			id, inResp = reOpID.FindStringSubmatch(l)[1], false
+		case reOpPath.MatchString(l) || reOpVerb.MatchString(l):
+			id, inResp = "", false
+		case reRespOpen.MatchString(l):
+			inResp = true
+		case inResp && reIndent6.MatchString(l):
+			inResp = false
+		case inResp && strings.TrimSpace(l) != "" && strings.HasPrefix(l, "        ") && !strings.HasPrefix(l, "         "):
+			key := strings.Trim(strings.SplitN(strings.TrimSpace(l), ":", 2)[0], `"'`)
+			if len(key) != 3 || key[0] < '1' || key[0] > '5' || strings.ContainsAny(key, "Xx") || key[1] < '0' || key[1] > '9' || key[2] < '0' || key[2] > '9' {
+				t.Errorf("%s: response key %q is not a plain 3-digit status; Statuses() would skip it", id, key)
+			}
+			total++
+		}
+	}
+	n := 0
+	for _, codes := range st {
+		n += len(codes)
+	}
+	if n != total {
+		t.Errorf("Statuses() found %d response statuses, a looser scan %d", n, total)
 	}
 }

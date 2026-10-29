@@ -111,6 +111,11 @@ func Operations() map[string]Operation {
 	return ops
 }
 
+// Statuses reads api-rest.yaml by its layout, like the other readers here,
+// but this one also infers where a responses block ends from indentation:
+// the block opens at 6 spaces, its status keys sit at 8, and a line indented
+// 6 or less ends it. That holds for the pinned file; TestStatusesLayout fails
+// on what the scan would skip (a default: or "4XX" response) or mis-split.
 var (
 	reRespOpen = regexp.MustCompile(`^      responses:\s*$`)
 	reRespCode = regexp.MustCompile(`^        ["']?([0-9]{3})["']?:`)

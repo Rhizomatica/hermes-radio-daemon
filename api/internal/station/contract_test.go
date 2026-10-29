@@ -15,7 +15,11 @@ import (
 var roleOrder = []spec.Role{spec.RoleReadonly, spec.RoleUser, spec.RoleOperator, spec.RoleAdmin}
 
 // Statuses any operation may answer without documenting them one by one: the
-// request itself was refused before or by validation.
+// request itself was refused before or by validation. 400, 404, 415, 422 and
+// 429 are the request-level refusals; 413 is the body-size ceiling; 401 and
+// 403 are the gate's, and are asserted strictly on their own (no session ->
+// 401, a lower role -> 403), so here they only keep a public operation's own
+// 401 (login: wrong credentials) from being called undocumented.
 var generic = map[int]bool{400: true, 401: true, 403: true, 404: true, 413: true, 415: true, 422: true, 429: true}
 
 // undocumented503 are answers the code gives that the pinned api-rest.yaml
@@ -36,16 +40,41 @@ const gateDetail = "not logged in, or the session ended"
 
 var pathParam = regexp.MustCompile(`\{(\w+)\}`)
 
-// fillPath puts a value in each {param}: profile 0 exists on the stub radio;
-// everything else is an id nothing has, so an operation that takes one
-// answers 404 from its handler and never changes anything.
-func fillPath(p string) string {
+// sample is the value for a {param}, by name. profile 0 exists on the stub
+// radio; the other implemented parameters are numeric ids, and 999999 is one
+// nothing has, so the operation answers 404 from its handler. A new
+// operation whose parameter is not an id (a filename, a callsign) must be
+// given a value here: fillPath fails the test on a name it does not know,
+// rather than send a wrong kind of value.
+var sample = map[string]string{"profile": "0", "user_id": "999999", "session_id": "999999"}
+
+func fillPath(t *testing.T, p string) string {
 	return pathParam.ReplaceAllStringFunc(p, func(m string) string {
-		if m == "{profile}" {
-			return "0"
+		v, ok := sample[m[1:len(m)-1]]
+		if !ok {
+			t.Fatalf("path parameter %s has no sample value: add it to sample in contract_test.go", m)
 		}
-		return "999999"
+		return v
 	})
+}
+
+// volatile are fields that change on their own during the run: every reply's
+// request_id, and last_login_at (the logout subtest logs in again).
+var volatile = regexp.MustCompile(`"(request_id|last_login_at)":("[^"]*"|null)`)
+
+// snapshot is every parameterless GET an admin can make, by path: the state
+// the station shows. Sessions are left out (the test logs in and out).
+func snapshot(e *testapi.Env, token string) map[string]string {
+	out := map[string]string{}
+	for _, id := range e.R.Operations() {
+		op := spec.Operations()[id]
+		if op.Method != "GET" || strings.Contains(op.Path, "{") || strings.HasPrefix(op.Path, "/session") {
+			continue
+		}
+		r := e.DoAuth("GET", op.Path, "", token)
+		out[op.Path] = volatile.ReplaceAllString(string(r.Body), "")
+	}
+	return out
 }
 
 // TestContract walks every operation the router registers, whatever it is,
@@ -75,9 +104,22 @@ func TestContract(t *testing.T) {
 	}
 	statuses := spec.Statuses()
 
+	// The calls below use an id nothing has and the empty object, which a
+	// handler must refuse before it changes anything. The subtests share one
+	// station, so check that after all of them it shows what it showed before.
+	before := snapshot(e, tokens[spec.RoleAdmin])
+	defer func() {
+		after := snapshot(e, tokens[spec.RoleAdmin])
+		for path, b := range before {
+			if after[path] != b {
+				t.Errorf("GET %s changed during the contract run (a refused call mutated state):\nbefore: %s\nafter:  %s", path, b, after[path])
+			}
+		}
+	}()
+
 	for _, id := range ids {
 		op := spec.Operations()[id]
-		path := fillPath(op.Path)
+		path := fillPath(t, op.Path)
 		body := ""
 		if op.Method == "POST" || op.Method == "PUT" || op.Method == "PATCH" {
 			body = "{}"

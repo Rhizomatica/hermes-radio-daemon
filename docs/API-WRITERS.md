@@ -385,7 +385,7 @@ ev := w.Next(isState, time.Second)                        // seq 1, {"tx": true,
 every operation the router registers, so your new one is covered the moment you `rt.Op` it. It
 checks that: no session gives 401; each role below the spec's `x-hermes-role` gives 403; the
 allowed role reaches your handler; the status you answer is one `api-rest.yaml` documents
-(besides the generic 400/404/415/422/429); and every reply has `X-Request-Id`, errors are
+(besides the generic 400/404/413/415/422/429); and every reply has `X-Request-Id`, errors are
 `application/problem+json` with a matching `status`, `code` and `request_id`, and a 204 has no
 body. If it fails because your handler answers a status the spec does not list, add it to the
 spec in hermes-documentation first (rule 1), not to the test.
