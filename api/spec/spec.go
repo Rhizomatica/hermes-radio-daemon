@@ -111,6 +111,66 @@ func Operations() map[string]Operation {
 	return ops
 }
 
+// Statuses reads api-rest.yaml by its layout, like the other readers here,
+// but this one also infers where a responses block ends from indentation:
+// the block opens at 6 spaces, its status keys sit at 8, and a line indented
+// 6 or less ends it. That holds for the pinned file; TestStatusesLayout fails
+// on what the scan would skip (a default: or "4XX" response) or mis-split.
+var (
+	reRespOpen = regexp.MustCompile(`^      responses:\s*$`)
+	reRespCode = regexp.MustCompile(`^        ["']?([0-9]{3})["']?:`)
+	reIndent6  = regexp.MustCompile(`^ {0,6}\S`)
+)
+
+var statuses map[string][]int
+
+// Statuses returns, by operationId, the HTTP statuses each operation of
+// api-rest.yaml documents under responses (including the ones it takes from
+// components/responses by $ref), in file order.
+func Statuses() map[string][]int {
+	if statuses != nil {
+		return statuses
+	}
+	out := map[string][]int{}
+	inPaths, inResp := false, false
+	id := ""
+	for _, l := range strings.Split(restYAML, "\n") {
+		if strings.HasPrefix(l, "paths:") {
+			inPaths = true
+			continue
+		}
+		if inPaths && reTopKey.MatchString(l) {
+			break
+		}
+		if !inPaths {
+			continue
+		}
+		if m := reOpID.FindStringSubmatch(l); m != nil {
+			id, inResp = m[1], false
+			continue
+		}
+		if reOpPath.MatchString(l) || reOpVerb.MatchString(l) {
+			id, inResp = "", false
+			continue
+		}
+		if reRespOpen.MatchString(l) {
+			inResp = true
+			continue
+		}
+		if inResp {
+			if m := reRespCode.FindStringSubmatch(l); m != nil && id != "" {
+				var code int
+				fmt.Sscanf(m[1], "%d", &code)
+				out[id] = append(out[id], code)
+			} else if reIndent6.MatchString(l) {
+				inResp = false // the next key of the operation
+			}
+		}
+	}
+	statuses = out
+	return out
+}
+
 // Op returns one operation, or an error naming the unknown operationId.
 func Op(id string) (Operation, error) {
 	op, ok := Operations()[id]
