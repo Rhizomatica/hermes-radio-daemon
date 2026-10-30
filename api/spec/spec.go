@@ -1,4 +1,4 @@
-// Package spec is the station API's contract (README.md): the pinned
+// Package spec is the station API's contract (README.md):
 // api-rest.yaml and api-ws.yaml, embedded, and what the router needs from
 // them, read without a YAML dependency.
 //
@@ -114,7 +114,7 @@ func Operations() map[string]Operation {
 // Statuses reads api-rest.yaml by its layout, like the other readers here,
 // but this one also infers where a responses block ends from indentation:
 // the block opens at 6 spaces, its status keys sit at 8, and a line indented
-// 6 or less ends it. That holds for the pinned file; TestStatusesLayout fails
+// 6 or less ends it. That holds for api-rest.yaml; TestStatusesLayout fails
 // on what the scan would skip (a default: or "4XX" response) or mis-split.
 var (
 	reRespOpen = regexp.MustCompile(`^      responses:\s*$`)

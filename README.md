@@ -16,7 +16,7 @@ Radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-net)
 - **Complete rig control surface** — every level, function and parameter the connected rig exposes (RF/mic gain, squelch, NB/NR/notch, preamp/attenuator, VOX, break-in, monitor, keyer speed, …) plus split, RIT/XIT, filter width, antenna, memory channels and tuner control. Discovered from the rig's own Hamlib capabilities, not hardcoded per model, and served identically over the websocket API, the network `rigctld` server and the web panel. See [Radio Controls](#radio-controls).
 - **Up to 9 profiles** with frequency, mode, power, timeout, and digital-voice state
 - **Single in-tree websocket server** speaking one JSON dialect for both backends, with `ws://` and `wss://` (TLS) support out of the box (no Mongoose dependency)
-- **Station API** (`/api/v2` REST and the `hermes.v1` WebSocket, as specified in hermes-documentation `tech_docs/api-redesign`): handlers written in Go (`api/`), linked into the daemon; the daemon's C code owns every socket. Off by default; see [Station API](#station-api-apiv2-hermesv1)
+- **Station API** (`/api/v2` REST and the `hermes.v1` WebSocket, as specified in `api/spec/`): handlers written in Go (`api/`), linked into the daemon; the daemon's C code owns every socket. Off by default; see [Station API](#station-api-apiv2-hermesv1)
 - **Mercury HF modem inside the daemon** (`enable_mercury`): keyed and fed audio by the daemon directly, its UI traffic on the daemon's websocket
 - WAV recording with remote start/stop on both backends
 - INI configuration at `/etc/hermes/core.ini` and `/etc/hermes/user.ini`
@@ -858,9 +858,8 @@ its chat (`modem.chat`, `modem.chat.send`), through mercury's host API
 
 ## Station API (`/api/v2`, `hermes.v1`)
 
-The station's API as specified in hermes-documentation `tech_docs/api-redesign`
-(`api-rest.yaml`, `api-ws.yaml`; the copy this daemon implements is pinned in
-`api/spec/`). The handlers are Go (`api/`, built as a C archive and linked into
+The station's API as specified in `api/spec/` (`api-rest.yaml`, `api-ws.yaml`),
+with the design notes and decision register in `docs/api-design/`. The handlers are Go (`api/`, built as a C archive and linked into
 `radio_daemon` when `go` is on the `PATH`); the daemon's C websocket server
 carries them on the same listener as everything else. Developers:
 [docs/API-WRITERS.md](docs/API-WRITERS.md), [docs/ONBOARDING.md](docs/ONBOARDING.md).

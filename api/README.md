@@ -1,7 +1,7 @@
 # api: the station API
 
-radiod's `/api/v2` REST API and `hermes.v1` WebSocket (contract: hermes-documentation
-`tech_docs/api-redesign`, pinned in `spec/`). Written in Go and linked into radiod as a C
+radiod's `/api/v2` REST API and `hermes.v1` WebSocket (contract: `spec/`, design
+notes in `docs/api-design/`). Written in Go and linked into radiod as a C
 archive. radiod's C server owns every socket and calls the handlers here; they reach the daemon
 only through the radiod C API beside this file, `radiod_api.h`.
 

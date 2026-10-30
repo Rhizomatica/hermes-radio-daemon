@@ -157,7 +157,7 @@ tags:
       packet; otherwise it goes out in the clear, signed. Either way a receiver keeps one
       copy per broadcast, however many passes or paths bring it, and an encrypted one
       that a station missed can still reach it later through NNCP relaying over ARQ.
-      The wire format is in `broadcast.md`, same folder.
+      The wire format is in `docs/api-design/broadcast.md`.
   - name: attachments
     description: Files attached to messages.
   - name: stations
@@ -168,7 +168,7 @@ tags:
     description: |
       The station's Reticulum node: a transport and LXMF propagation node for phones on
       its Wi-Fi, with backhaul links to other stations over Mercury ARQ. LXMF messages
-      themselves are messages (`channel` = `lxmf`). See `reticulum.md`, same folder.
+      themselves are messages (`channel` = `lxmf`). See `docs/api-design/reticulum.md`.
   - name: schedules
     description: When the station calls the others.
   - name: queue
