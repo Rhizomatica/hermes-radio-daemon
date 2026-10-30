@@ -22,18 +22,6 @@ var roleOrder = []spec.Role{spec.RoleReadonly, spec.RoleUser, spec.RoleOperator,
 // 401 (login: wrong credentials) from being called undocumented.
 var generic = map[int]bool{400: true, 401: true, 403: true, 404: true, 413: true, 415: true, 422: true, 429: true}
 
-// undocumented503 are answers the code gives that the pinned api-rest.yaml
-// does not list: with no mercury running, the modem operations say 503
-// not_running (docs/API-WRITERS.md). That is a gap in the contract, to be
-// proposed to hermes-documentation; until the pinned spec has it, it is
-// named here instead of hidden. TestContractAllowlistIsCurrent fails once
-// the spec documents one, so an entry cannot outlive the gap.
-var undocumented503 = map[string]bool{
-	"getModemStatus":    true,
-	"getModemConfig":    true,
-	"updateModemConfig": true,
-}
-
 // gateDetail is what the router's own login gate says. A public operation may
 // answer 401 itself (login does, for wrong credentials) but never with this.
 const gateDetail = "not logged in, or the session ended"
@@ -171,9 +159,6 @@ func TestContract(t *testing.T) {
 			for _, c := range statuses[id] {
 				documented = documented || c == r.Status
 			}
-			if !documented && r.Status == 503 && undocumented503[id] && absent(r) {
-				documented = true
-			}
 			if !documented && !generic[r.Status] {
 				t.Errorf("%s %s answered %d, which the spec does not document (documents %v): %s",
 					op.Method, op.Path, r.Status, statuses[id], r.Body)
@@ -188,17 +173,6 @@ func TestContract(t *testing.T) {
 func absent(r testapi.Response) bool {
 	c := problemCode(r)
 	return r.Status == 503 && (c == "not_running" || c == "not_supported")
-}
-
-// An allowlist entry is dropped as soon as the spec documents the status.
-func TestContractAllowlistIsCurrent(t *testing.T) {
-	for id := range undocumented503 {
-		for _, c := range spec.Statuses()[id] {
-			if c == 503 {
-				t.Errorf("%s: the spec now documents 503; remove it from undocumented503", id)
-			}
-		}
-	}
 }
 
 func below(a, b spec.Role) bool {

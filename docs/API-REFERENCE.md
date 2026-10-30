@@ -39,6 +39,7 @@ The REST API of a HERMES station, served by hermes-radio-daemon under `/api/v2`.
 | 413 | TooLarge | Over the size limit for HF (`code` = `too_large`). |
 | 422 | Invalid | Validation failed (`code` = `invalid`; `errors` per field). |
 | 429 | TooManyRequests | Too many failed logins (`code` = `rate_limited`). |
+|  | NotRunning | Mercury is not running, so there is no modem to ask (`code` = `not_running`). |
 
 ## Contents
 
@@ -2280,6 +2281,7 @@ Mercury, the HF modem.
 | --- | --- | --- |
 | 200 | Status. | `application/json` [ModemStatus](#schema-modemstatus) |
 | 401 | Not logged in, or the session ended (`code` = `unauthenticated`). | `application/problem+json` [Problem](#schema-problem) |
+| 503 | Mercury is not running, so there is no modem to ask (`code` = `not_running`). | `application/problem+json` [Problem](#schema-problem) |
 
 **Example**
 
@@ -2302,6 +2304,7 @@ curl -sS -X GET "$BASE/modem" \
 | --- | --- | --- |
 | 200 | Configuration. | `application/json` [ModemConfig](#schema-modemconfig) |
 | 401 | Not logged in, or the session ended (`code` = `unauthenticated`). | `application/problem+json` [Problem](#schema-problem) |
+| 503 | Mercury is not running, so there is no modem to ask (`code` = `not_running`). | `application/problem+json` [Problem](#schema-problem) |
 
 **Example**
 
@@ -2333,6 +2336,7 @@ curl -sS -X GET "$BASE/modem/config" \
 | 200 | Applied and saved. | `application/json` [ModemConfig](#schema-modemconfig) |
 | 409 | `listen_mode` changed while an ARQ link is up or a broadcast is on the air (`code` = `busy`); `modem.status` says which (`link`, `broadcast.state`). Or changed to a mode that can't carry broadcast messages while some are waiting (`code` = `broadcasts_waiting`). Nothing was applied. | `application/problem+json` [Problem](#schema-problem) |
 | 422 | Not applied (a validation error). | `application/problem+json` [Problem](#schema-problem) |
+| 503 | Mercury is not running, so there is no modem to ask (`code` = `not_running`). | `application/problem+json` [Problem](#schema-problem) |
 
 **Example**
 
