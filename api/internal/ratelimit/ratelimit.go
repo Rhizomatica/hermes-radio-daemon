@@ -8,9 +8,16 @@ import (
 	"time"
 )
 
+// MaxKeys bounds how many keys a Limiter holds. Keys come from clients (their
+// address), so without a bound a client rotating addresses would grow the map
+// for as long as the daemon runs.
+const MaxKeys = 4096
+
 // Limiter tracks event timestamps per key and reports when a key has hit n
-// events within window. Empty keys are dropped, so the map holds only keys
-// with an event still inside a window.
+// events within window. Empty keys are dropped, and a new key that would pass
+// MaxKeys first sweeps every key's expired events; if the map is still full,
+// the new key is refused like one over its limit (failing closed: memory stays
+// bounded, and keys already tracked keep working).
 type Limiter struct {
 	mu   sync.Mutex
 	hits map[string][]reservation
@@ -46,6 +53,12 @@ func (l *Limiter) Reserve(key string, n int, window time.Duration) (bool, time.D
 	}
 	now := time.Now()
 	cut := now.Add(-window)
+	if _, known := l.hits[key]; !known && len(l.hits) >= MaxKeys {
+		l.sweep(cut)
+		if len(l.hits) >= MaxKeys {
+			return false, window, Token{}
+		}
+	}
 	keep := l.hits[key][:0]
 	for _, r := range l.hits[key] {
 		if r.at.After(cut) {
@@ -59,6 +72,31 @@ func (l *Limiter) Reserve(key string, n int, window time.Duration) (bool, time.D
 	l.next++
 	l.hits[key] = append(keep, reservation{at: now, id: l.next})
 	return true, 0, Token{key: key, id: l.next}
+}
+
+// sweep drops every event at or before cut, and the keys left empty. A
+// Limiter is used with one window (one per call site), so cut fits them all.
+func (l *Limiter) sweep(cut time.Time) {
+	for k, h := range l.hits {
+		keep := h[:0]
+		for _, r := range h {
+			if r.at.After(cut) {
+				keep = append(keep, r)
+			}
+		}
+		if len(keep) == 0 {
+			delete(l.hits, k)
+		} else {
+			l.hits[k] = keep
+		}
+	}
+}
+
+// Keys is how many keys the limiter holds (for tests).
+func (l *Limiter) Keys() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.hits)
 }
 
 // Release removes the reservation token identifies: an attempt that should

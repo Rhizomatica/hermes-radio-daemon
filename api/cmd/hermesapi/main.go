@@ -3,10 +3,10 @@
 // websocket server calls these exports, and the handlers reach the daemon
 // through api/radiod_api.h. Nothing here touches a socket.
 //
-// This package must not import internal/store (or anything that pulls SQLite
-// in): radiod never opens a database, and linking modernc.org/sqlite would
-// bloat radiod for nothing. The standalone self-check lives in
-// cmd/hermesapi-check.
+// Users and sessions live in radiod's own SQLite database (internal/store,
+// modernc.org/sqlite, pure Go, no cgo), which HermesInit opens: logins are
+// checked here, in the process that faces the network. The standalone
+// self-check lives in cmd/hermesapi-check.
 package main
 
 /*
@@ -44,9 +44,9 @@ func HermesInit() {
 	if os.Getenv("GOMEMLIMIT") == "" {
 		debug.SetMemoryLimit(64 << 20)
 	}
-	// Authentication needs the SQLite store. Until the C side turns on
-	// api_v2_enable, /api/v2 is loopback-only, so a failure to open it falls
-	// back to the loopback-admin router (the pre-authentication behaviour).
+	// Authentication needs the SQLite store. If it cannot be opened, the
+	// router has no sessions: every caller is admin, so it answers only on
+	// loopback (ServeRaw, WSOpen) and remote clients get 403.
 	r := radio.Default()
 	cfg := config.Load()
 	st, err := store.Open(context.Background(), cfg.DatabasePath)

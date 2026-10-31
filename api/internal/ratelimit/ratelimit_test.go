@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -108,5 +109,37 @@ func TestLimiterEvictsEmptyKeys(t *testing.T) {
 	l.Release(tk)
 	if _, ok := l.hits["k"]; ok {
 		t.Fatal("empty key was not evicted")
+	}
+}
+
+// Keys from many clients stay bounded: expired ones are swept when the map
+// fills, and while every key is live a new one is refused, not added.
+func TestLimiterKeysBounded(t *testing.T) {
+	l := &Limiter{}
+	// Each call site uses one window; the sweep goes by it.
+	const w = 20 * time.Millisecond
+	for i := 0; i < MaxKeys; i++ {
+		l.Reserve(fmt.Sprintf("ip%d", i), 5, w)
+	}
+	time.Sleep(2 * w)
+	if ok, _, _ := l.Reserve("fresh", 5, w); !ok {
+		t.Fatal("a new key was refused although every old one had expired")
+	}
+	if n := l.Keys(); n != 1 {
+		t.Fatalf("keys = %d after the sweep, want 1", n)
+	}
+
+	l = &Limiter{}
+	for i := 0; i < MaxKeys; i++ {
+		l.Reserve(fmt.Sprintf("ip%d", i), 5, time.Minute)
+	}
+	if ok, _, _ := l.Reserve("one-too-many", 5, time.Minute); ok {
+		t.Fatal("a key past MaxKeys was accepted")
+	}
+	if n := l.Keys(); n != MaxKeys {
+		t.Fatalf("keys = %d, want %d", n, MaxKeys)
+	}
+	if ok, _, _ := l.Reserve("ip0", 5, time.Minute); !ok {
+		t.Fatal("a key already tracked was refused while the map is full")
 	}
 }

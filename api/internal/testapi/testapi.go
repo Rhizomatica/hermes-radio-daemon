@@ -131,7 +131,24 @@ var lastConn atomic.Int64
 func (e *Env) Open() *WS {
 	e.T.Helper()
 	id := lastConn.Add(1)
-	if st := e.R.WSOpen(id, httptest.NewRequest("GET", "/api/v2/ws", nil)); st != 0 {
+	req := httptest.NewRequest("GET", "/api/v2/ws", nil)
+	req.RemoteAddr = "127.0.0.1" // the no-session router answers only on loopback
+	if st := e.R.WSOpen(id, req); st != 0 {
+		e.T.Fatalf("WSOpen = %d", st)
+	}
+	e.T.Cleanup(func() { e.R.WSClose(id) })
+	return &WS{e: e, ID: id}
+}
+
+// OpenAuth opens a hermes.v1 connection with a session token, from a
+// remote peer (NewAuth); it is closed when the test ends.
+func (e *Env) OpenAuth(token string) *WS {
+	e.T.Helper()
+	id := lastConn.Add(1)
+	req := httptest.NewRequest("GET", "/api/v2/ws", nil)
+	req.RemoteAddr = "192.0.2.10"
+	req.Header.Set("Authorization", "Bearer "+token)
+	if st := e.R.WSOpen(id, req); st != 0 {
 		e.T.Fatalf("WSOpen = %d", st)
 	}
 	e.T.Cleanup(func() { e.R.WSClose(id) })

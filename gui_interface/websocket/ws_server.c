@@ -78,6 +78,7 @@ struct ws_qmsg {
     bool is_text;
     long to_id;                   /* one connection, or -1: every one of class cls */
     unsigned cls;
+    uint16_t close_code;          /* nonzero: close to_id with this code, data the reason */
 };
 
 struct ws_conn {
@@ -1191,6 +1192,12 @@ static void server_drain_queue(ws_server_t *s)
             if (m->to_id >= 0 ? c->id != m->to_id : c->cls != m->cls)
                 continue;
 
+            if (m->close_code != 0)
+            {
+                conn_close_ws(c, m->close_code, (const char *) m->data);
+                continue;
+            }
+
             /* Binary frames are the spectrum/audio stream: droppable under
              * backpressure.  Text frames are state the client needs. */
             (void) conn_send_frame(c, m->is_text ? WS_OP_TEXT : WS_OP_BINARY,
@@ -1529,8 +1536,9 @@ void ws_server_stop(ws_server_t *s)
     free(s);
 }
 
-static int server_enqueue(ws_server_t *s, long to_id, unsigned cls,
-                          const void *data, size_t len, bool is_text)
+static int server_enqueue_msg(ws_server_t *s, long to_id, unsigned cls,
+                              const void *data, size_t len, bool is_text,
+                              uint16_t close_code)
 {
     struct ws_qmsg *m;
 
@@ -1553,6 +1561,7 @@ static int server_enqueue(ws_server_t *s, long to_id, unsigned cls,
     m->is_text = is_text;
     m->to_id = to_id;
     m->cls = cls;
+    m->close_code = close_code;
     m->next = NULL;
 
     pthread_mutex_lock(&s->qlock);
@@ -1578,6 +1587,12 @@ static int server_enqueue(ws_server_t *s, long to_id, unsigned cls,
     return 0;
 }
 
+static int server_enqueue(ws_server_t *s, long to_id, unsigned cls,
+                          const void *data, size_t len, bool is_text)
+{
+    return server_enqueue_msg(s, to_id, cls, data, len, is_text, 0);
+}
+
 int ws_server_broadcast(ws_server_t *s, const void *data, size_t len, bool is_text)
 {
     return server_enqueue(s, -1, 0, data, len, is_text);
@@ -1595,4 +1610,16 @@ int ws_server_send_to(ws_server_t *s, long conn_id, const void *data,
     if (conn_id < 0)
         return -1;
     return server_enqueue(s, conn_id, 0, data, len, is_text);
+}
+
+int ws_server_close_conn(ws_server_t *s, long conn_id, uint16_t code, const char *reason)
+{
+    char r[124];                  /* a close frame's payload: 2 code bytes + 123 */
+
+    if (conn_id < 0 || code < 1000 || code > 4999)
+        return -1;
+    snprintf(r, sizeof(r), "%s", reason != NULL ? reason : "");
+    /* Queued with the sends, so what was sent before it still goes out first.
+     * The reason travels NUL-terminated; the frame carries it without. */
+    return server_enqueue_msg(s, conn_id, 0, r, strlen(r) + 1, true, code);
 }

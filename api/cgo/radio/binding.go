@@ -326,6 +326,15 @@ func (binding) WSSend(conn int64, f []byte) error {
 	return nil
 }
 
+func (binding) WSClose(conn int64, code int, reason string) error {
+	cr := C.CString(reason)
+	defer C.free(unsafe.Pointer(cr))
+	if C.radiod_api_ws_close(C.long(conn), C.int(code), cr) != 0 {
+		return ErrNotSupported
+	}
+	return nil
+}
+
 func (binding) WSBroadcast(f []byte) error {
 	if len(f) == 0 {
 		return nil
@@ -339,6 +348,8 @@ func (binding) WSBroadcast(f []byte) error {
 }
 
 func (binding) Version() string { return C.GoString(C.radiod_api_version()) }
+
+func (binding) CORSOrigins() string { return C.GoString(C.radiod_api_cors_origins()) }
 
 // Log goes to radiod's logger through the hermes_log binding.
 func (binding) Log(level LogLevel, component, message string) {

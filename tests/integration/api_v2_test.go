@@ -178,9 +178,10 @@ func TestAPIv2REST(t *testing.T) {
 	}
 }
 
-// /api/v2 still answers only on loopback (the C server gates it before the
-// Go layer), so a remote client is refused even with a session.
-func TestAPIv2LoopbackOnly(t *testing.T) {
+// Remote clients are answered now that sessions exist: without a session
+// they get 401, and with a valid session they get through — REST and
+// hermes.v1 alike.
+func TestAPIv2RemoteAuth(t *testing.T) {
 	needGoAPI(t)
 	var other string
 	addrs, _ := net.InterfaceAddrs()
@@ -196,12 +197,31 @@ func TestAPIv2LoopbackOnly(t *testing.T) {
 	d := startDaemon(t, daemonOpts{wsHost: "0.0.0.0", core: []string{"api_v2_enable = 1"}})
 	token := setupAPI(t, d)
 	port := d.WSURL[strings.LastIndex(d.WSURL, ":")+1 : len(d.WSURL)-1]
-	r := call(t, "GET", "http://"+other+":"+port+"/api/v2/radio", "")
-	if r.status != 403 || r.body["code"] != "forbidden" {
-		t.Errorf("GET /api/v2/radio from %s = %d %s, want 403", other, r.status, r.raw)
+	base := "http://" + other + ":" + port + "/api/v2"
+
+	if r := call(t, "GET", base+"/radio", ""); r.status != 401 || r.body["code"] != "unauthenticated" {
+		t.Errorf("GET /api/v2/radio from %s without a session = %d %s, want 401 unauthenticated", other, r.status, r.raw)
 	}
-	if r = callAuth(t, "GET", apiBase(d)+"/radio", "", token); r.status != 200 {
-		t.Errorf("from loopback = %d", r.status)
+	if r := callAuth(t, "GET", base+"/radio", "", token); r.status != 200 {
+		t.Errorf("GET /api/v2/radio from %s with a session = %d %s, want 200", other, r.status, r.raw)
+	}
+
+	wsURL := "ws://" + other + ":" + port + "/api/v2/ws"
+	_, _, err := wsDialProto(wsURL, "hermes.v1")
+	var se *httpStatusError
+	if !errors.As(err, &se) || se.status != 401 {
+		t.Errorf("hermes.v1 remote upgrade with no session = %v, want HTTP 401", err)
+	}
+	ws, proto, err := wsDialAuth(wsURL, "hermes.v1", token)
+	if err != nil {
+		t.Fatalf("hermes.v1 remote upgrade with a session: %v", err)
+	}
+	defer ws.Close()
+	if proto != "hermes.v1" {
+		t.Errorf("hermes.v1 remote protocol = %q, want hermes.v1", proto)
+	}
+	if f := readFrame(t, ws, time.Second); f["type"] != "hello" {
+		t.Errorf("hermes.v1 remote hello = %v", f)
 	}
 }
 

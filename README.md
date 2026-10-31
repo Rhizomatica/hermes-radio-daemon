@@ -178,8 +178,10 @@ suppressed, with a reason, in `tests/sanitizer-suppressions/tsan.supp`.
 `api/` is the station's `/api/v2` REST API and `hermes.v1` WebSocket, written in
 Go and linked into radiod as a C archive when `go` is on the `PATH` (`make`; without Go the
 daemon builds as before and answers `/api/v2` with 503). radiod's C code owns the sockets and
-calls the Go handlers. Turn it on with `main:api_v2_enable = 1`; until logins exist it answers
-only to this machine. How to add operations and commands, the directory layout and the rules:
+calls the Go handlers. Turn it on with `main:api_v2_enable = 1`. With the session store open it
+answers any client, and the caller's session role gates each operation; if the store cannot be
+opened it falls back to answering loopback only. How to add operations and commands, the directory
+layout and the rules:
 **[docs/API-WRITERS.md](docs/API-WRITERS.md)**; new to it: [docs/ONBOARDING.md](docs/ONBOARDING.md).
 
 ```bash
@@ -259,8 +261,15 @@ websocket_url = ws://0.0.0.0:8080
 
 ; Station API: /api/v2 (REST) and /api/v2/ws (hermes.v1) on the same
 ; listener. Needs a daemon built with Go (otherwise /api/v2 answers 503).
-; Until logins exist it answers only to this machine (127.0.0.1, ::1).
+; With the session store open it answers any client; without it, loopback only.
 api_v2_enable = 0
+; Origins whose browser pages may call /api/v2 from elsewhere (CORS): * (the
+; default) for any, or a list such as https://app.example.org
+; http://192.168.10.5:3000 (space or comma separated, scheme://host[:port]).
+; Cross-origin pages log in with a Bearer token; the session cookie stays
+; same-origin, so no page can use a user's login without its token. Empty:
+; same-origin only.
+api_cors_origins = *
 
 ; Logging: mercury's hermes_log, so radiod's, the Go API's and mercury's
 ; lines are one stream in one format:
@@ -864,10 +873,16 @@ with the design notes and decision register in `docs/api-design/`. The handlers 
 carries them on the same listener as everything else. Developers:
 [docs/API-WRITERS.md](docs/API-WRITERS.md), [docs/ONBOARDING.md](docs/ONBOARDING.md).
 
-Enable it with `api_v2_enable = 1` in `[main]`. Until logins exist:
+Enable it with `api_v2_enable = 1` in `[main]`. With the session store open,
+radiod answers any client that can reach `websocket_url`:
 
-- `/api/v2` answers only to this machine; from any other address, 403;
-- every caller has the `admin` role.
+- without a session, only `security: []` operations work (`/health`, `/setup`); the rest are 401;
+- a session's role (`readonly`, `user`, `operator`, `admin`) gates each operation, command and topic.
+
+If the session store cannot be opened, radiod falls back to answering loopback only,
+every caller `admin`. A `hermes.v1` connection lasts only as long as its session: when the
+session ends or its role changes, radiod closes it (1008). Use `wss://` beyond a trusted
+link: over `ws://` passwords and session tokens cross the network in the clear.
 
 A daemon built without Go answers `/api/v2` with 503 (`not_supported`).
 Errors are RFC 9457 `application/problem+json` with a stable `code`, and every

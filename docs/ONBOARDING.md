@@ -27,8 +27,9 @@ make go-test test integration-test # Go, C, and the real daemon on Hamlib's dumm
 ```
 To try it, set `[main] api_v2_enable = 1` in core.ini, run the daemon, then:
 `curl http://127.0.0.1:8080/api/v2/radio` (https if the station runs wss).
-Sessions exist now (`POST /api/v2/session`, first-boot `/setup`); until the C side turns
-on `api_v2_enable`, `/api/v2` still answers only on localhost.
+Sessions exist now (`POST /api/v2/session`, first-boot `/setup`); with `api_v2_enable = 1`,
+`/api/v2` answers any client, and the session role gates each operation. If the session
+store cannot be opened it still answers only on localhost.
 
 ## What's there, and what's next
 - **Examples to copy** (real operations we need):

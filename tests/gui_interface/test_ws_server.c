@@ -155,6 +155,21 @@ static const char *ws_next(int fd, int timeout_ms)
     return payload;
 }
 
+/* The next server frame's opcode and payload (< 126 bytes); -1 on timeout. */
+static int ws_frame(int fd, int timeout_ms, char *payload, size_t cap, size_t *len)
+{
+    uint8_t h[2];
+    struct pollfd p = { .fd = fd, .events = POLLIN };
+    *len = 0;
+    if (poll(&p, 1, timeout_ms) <= 0 || recv(fd, h, 2, MSG_WAITALL) != 2)
+        return -1;
+    size_t n = h[1] & 0x7f;
+    if (n >= 126 || n > cap || recv(fd, payload, n, MSG_WAITALL) != (ssize_t) n)
+        return -1;
+    *len = n;
+    return h[0] & 0x0f;
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -257,6 +272,33 @@ static void test_upgrade_routing_and_classes(void)
     close(v2);
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, ws_server_send_to(srv, v2_id, "gone", 4, true),
                                   "a send to a closed connection is still accepted (and dropped)");
+}
+
+/* Another thread can close a connection: after what was queued before it,
+ * with the code and reason it gave; later sends to it are dropped. */
+static void test_close_conn_from_another_thread(void)
+{
+    last_conn_id = -1;
+    int v2 = ws_open(UPGRADE("/api/v2/ws", "Sec-WebSocket-Protocol: hermes.v1\r\n"));
+    long id = last_conn_id;
+    TEST_ASSERT_GREATER_OR_EQUAL_INT64(0, id);
+
+    TEST_ASSERT_EQUAL_INT(-1, ws_server_close_conn(srv, id, 999, "bad code"));
+    TEST_ASSERT_EQUAL_INT(0, ws_server_send_to(srv, id, "last", 4, true));
+    TEST_ASSERT_EQUAL_INT(0, ws_server_close_conn(srv, id, 1008, "session ended"));
+    TEST_ASSERT_EQUAL_INT(0, ws_server_send_to(srv, id, "after", 5, true));
+
+    char pl[128];
+    size_t n;
+    TEST_ASSERT_EQUAL_INT(0x1, ws_frame(v2, 1000, pl, sizeof(pl), &n));
+    TEST_ASSERT_EQUAL_MEMORY("last", pl, 4);
+    TEST_ASSERT_EQUAL_INT(0x8, ws_frame(v2, 1000, pl, sizeof(pl), &n));
+    TEST_ASSERT_EQUAL_size_t(2 + strlen("session ended"), n);
+    TEST_ASSERT_EQUAL_INT(1008, ((uint8_t) pl[0] << 8) | (uint8_t) pl[1]);
+    TEST_ASSERT_EQUAL_MEMORY("session ended", pl + 2, n - 2);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(-1, ws_frame(v2, 300, pl, sizeof(pl), &n),
+                                  "a frame came after the close");
+    close(v2);
 }
 
 /* ── HTTPS: the same server with TLS ── */
@@ -362,6 +404,7 @@ int main(void)
     RUN_TEST(test_rest_refusals);
     RUN_TEST(test_static_pages_and_head);
     RUN_TEST(test_upgrade_routing_and_classes);
+    RUN_TEST(test_close_conn_from_another_thread);
     RUN_TEST(test_https_rest_and_upgrade);
     int failed = UNITY_END();
     ws_server_stop(srv);

@@ -88,6 +88,12 @@ type Conn struct {
 	in   chan []byte
 	done chan struct{}
 
+	// cred is the upgrade request's credentials (headers and peer, no
+	// body), and session its session: the connection lasts only as long as
+	// they still resolve to that session and role (sessionLive).
+	cred    *http.Request
+	session int64
+
 	// mu orders this connection's events: its goroutine (snapshots) and
 	// the publisher both send under it.
 	mu   sync.Mutex
@@ -104,7 +110,18 @@ const (
 // connection and sends its hello. It returns 0 to accept, or the HTTP
 // status to refuse with (401 when sessions exist and there is none).
 func (rt *Router) WSOpen(id int64, r *http.Request) int {
-	role := rt.RoleOf(r)
+	if rt.Resolve == nil && !loopbackPeer(r.RemoteAddr) {
+		rt.wsLog.Info("refused: remote with no sessions", "conn", id, "peer", r.RemoteAddr)
+		return http.StatusForbidden
+	}
+	role, session := rt.RoleOf(r), int64(0)
+	if rt.Resolve != nil {
+		p, ok := rt.Resolve(r)
+		role, session = p.Role, p.SessionID
+		if !ok {
+			role = spec.RoleNone
+		}
+	}
 	if roleRank[role] == 0 {
 		rt.wsLog.Info("refused: no session", "conn", id, "peer", r.RemoteAddr)
 		return http.StatusUnauthorized
@@ -120,7 +137,7 @@ func (rt *Router) WSOpen(id int64, r *http.Request) int {
 		return http.StatusForbidden
 	}
 	c := &Conn{ID: id, Role: role, rt: rt, in: make(chan []byte, connQueue), done: make(chan struct{}),
-		subs: map[string]*subscription{}}
+		cred: r.Clone(context.Background()), session: session, subs: map[string]*subscription{}}
 	c.send(hello{
 		Type: "hello", Protocol: "hermes.v1", Service: "hermes-radio-daemon",
 		Version: rt.radio.Version(), Role: string(role),
@@ -164,12 +181,58 @@ func (rt *Router) WSClose(id int64) {
 	}
 }
 
+// closeSessionEnded is the WebSocket close code for a connection whose
+// session ended or whose role changed (api-ws.yaml): 1008, policy violation.
+const closeSessionEnded = 1008
+
+// sessionLive reports whether the connection's credentials still resolve to
+// the session and role it opened with. Logout, revocation, expiry, a
+// disabled or deleted user, or a new role all end it. Without sessions
+// (the loopback-admin router) there is nothing to end.
+func (c *Conn) sessionLive() (bool, string) {
+	if c.rt.Resolve == nil || c.cred == nil {
+		return true, ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p, ok := c.rt.Resolve(c.cred.WithContext(ctx))
+	switch {
+	case !ok || p.SessionID != c.session:
+		return false, "session ended"
+	case p.Role != c.Role:
+		return false, "role changed; connect again"
+	}
+	return true, ""
+}
+
+// end closes the connection from the station's side: it stops here at once
+// (no further command, event or heartbeat), and radiod's C server sends
+// the close frame and then calls WSClose, which finds it already gone.
+func (c *Conn) end(reason string) {
+	if _, ok := c.rt.conns.LoadAndDelete(c.ID); !ok {
+		return
+	}
+	close(c.done)
+	_ = c.rt.radio.WSClose(c.ID, closeSessionEnded, reason)
+	c.rt.wsLog.Info("closed by the station", "conn", c.ID, "reason", reason)
+}
+
 func (rt *Router) heartbeat() {
 	t := time.NewTicker(heartbeatPeriod)
 	defer t.Stop()
 	for range t.C {
 		open := false
-		rt.conns.Range(func(_, _ any) bool { open = true; return false })
+		rt.conns.Range(func(_, v any) bool {
+			// A connection whose session ended while it sat idle (only
+			// subscribed, or quiet) is closed within one heartbeat.
+			c := v.(*Conn)
+			if live, why := c.sessionLive(); !live {
+				c.end(why)
+			} else {
+				open = true
+			}
+			return true
+		})
 		if !open {
 			continue
 		}
@@ -247,6 +310,12 @@ func (c *Conn) handle(frame []byte) {
 	}
 	if len(f.ID) > 64 {
 		c.reply("", nil, Errf(CodeBadRequest, "id longer than 64 characters"))
+		return
+	}
+	// Every command and subscription runs on a session that is still live:
+	// one ended since the upgrade closes the connection instead.
+	if live, why := c.sessionLive(); !live {
+		c.end(why)
 		return
 	}
 	switch f.Type {

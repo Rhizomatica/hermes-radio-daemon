@@ -180,3 +180,30 @@ func TestAPIv2AuthLifecycle(t *testing.T) {
 		t.Errorf("429 without Retry-After: %v", limited.header)
 	}
 }
+
+// CORS through the real daemon (C passes OPTIONS and the headers through):
+// the default allows any origin, a preflight is answered before the role
+// gate, and credentials are never allowed.
+func TestAPIv2CORS(t *testing.T) {
+	needGoAPI(t)
+	d := startAPIDaemon(t)
+	base := apiBase(d)
+	setupAPI(t, d)
+
+	r := callHdr(t, "OPTIONS", base+"/radio/profiles/0", "", map[string]string{
+		"Origin":                         "https://app.example.org",
+		"Access-Control-Request-Method":  "PATCH",
+		"Access-Control-Request-Headers": "authorization, content-type",
+	})
+	if r.status != 204 || r.header.Get("Access-Control-Allow-Origin") != "*" ||
+		r.header.Get("Access-Control-Allow-Headers") != "authorization, content-type" {
+		t.Fatalf("preflight = %d %v\n--- daemon log ---\n%s", r.status, r.header, d.Log())
+	}
+	if r.header.Get("Access-Control-Allow-Credentials") != "" {
+		t.Fatal("credentials allowed cross-origin")
+	}
+	r = callHdr(t, "GET", base+"/radio", "", map[string]string{"Origin": "https://app.example.org"})
+	if r.status != 401 || r.header.Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("cross-origin GET without a session = %d %v", r.status, r.header)
+	}
+}
