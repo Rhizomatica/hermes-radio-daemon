@@ -959,6 +959,10 @@ static void loop_check_period(const char *device, snd_pcm_uframes_t period)
 static pthread_mutex_t loop_ready_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  loop_ready_cond = PTHREAD_COND_INITIALIZER;
 static int             loop_ready_count, loop_ready_expected;
+/* The snd-aloop cables run only with main:enable_loop_audio: a modem in
+ * radiod or on RTP takes its audio from modem_audio, and with nothing on
+ * the cables their buffer only fills. */
+static bool            loop_started;
 static int             codec_ready_count, codec_ready_expected;
 
 static void loop_opened(void)
@@ -1447,11 +1451,25 @@ void *control_thread(void *device_ptr)
             modem_audio_push_rx(modem_rx, n, 48000);
         }
 
-        if (sbitx_buf_free_size(dsp_to_loopback) >= buffer_size)
+        if (!loop_started)
+            ;   /* no cable to play to */
+        else if (sbitx_buf_free_size(dsp_to_loopback) >= buffer_size)
             sbitx_buf_write(dsp_to_loopback, output_loopback, buffer_size); // stereo 48 kHz interleaved
         else
         {
-            HLOGW(LOG_C, "Buffer full dsp_to_loopback! Cleaning buffer");
+            /* Nothing reads the cable (no modem on it, or it failed to
+             * open): once every 10 s, with the count, not once a block,
+             * which flooded the journal and pushed everything else out. */
+            static unsigned full;
+            static time_t last;
+            time_t now = time(NULL);
+            full++;
+            if (now - last >= 10)
+            {
+                HLOGW(LOG_C, "Buffer full dsp_to_loopback, cleaning it (%u times)", full);
+                full = 0;
+                last = now;
+            }
             sbitx_buf_clear(dsp_to_loopback);
         }
 
@@ -1502,26 +1520,34 @@ void sound_system_init(radio *radio_h, pthread_t *control_tid, pthread_t *radio_
 
     sbitx_buf_init_all();
 
+    loop_started = radio_h->enable_loop_audio;
     pthread_mutex_lock(&loop_ready_lock);
-    loop_ready_expected = 2;            /* loop capture + loop playback */
+    loop_ready_expected = loop_started ? 2 : 0;  /* loop capture + loop playback */
     codec_ready_expected = 2;           /* codec capture + codec playback */
     pthread_mutex_unlock(&loop_ready_lock);
 
     pthread_create(radio_playback, NULL, radio_playback_thread, (void*)radio_playback_dev);
-    pthread_create(loop_playback, NULL, loop_playback_thread, (void*)loop_playback_dev);
+    if (loop_started)
+        pthread_create(loop_playback, NULL, loop_playback_thread, (void*)loop_playback_dev);
 
     pthread_create(control_tid, NULL, control_thread, NULL);
 
     pthread_create(radio_capture, NULL, radio_capture_thread, (void*)radio_capture_dev);
-    pthread_create(loop_capture, NULL, loop_capture_thread, (void*)loop_capture_dev);
+    if (loop_started)
+        pthread_create(loop_capture, NULL, loop_capture_thread, (void*)loop_capture_dev);
+    else
+        HLOGI(LOG_C, "snd-aloop cables off (main:enable_loop_audio = 0)");
 
 
     struct sched_param sch;
     sch.sched_priority = sched_get_priority_max(SCHED_FIFO);
     pthread_setschedparam(*radio_capture, SCHED_FIFO, &sch);
     pthread_setschedparam(*radio_playback, SCHED_FIFO, &sch);
-    pthread_setschedparam(*loop_capture, SCHED_FIFO, &sch);
-    pthread_setschedparam(*loop_playback, SCHED_FIFO, &sch);
+    if (loop_started)
+    {
+        pthread_setschedparam(*loop_capture, SCHED_FIFO, &sch);
+        pthread_setschedparam(*loop_playback, SCHED_FIFO, &sch);
+    }
 
     /* The DSP thread sits between the capture and the playback threads and
      * has to keep pace with them, but it ran at normal priority: anything
@@ -1542,10 +1568,12 @@ void sound_system_shutdown(radio *radio_h, pthread_t *control_tid, pthread_t *ra
         return;
 
     pthread_join(*radio_playback, NULL);
-    pthread_join(*loop_playback, NULL);
+    if (loop_started)
+        pthread_join(*loop_playback, NULL);
 
     pthread_join(*control_tid, NULL);
 
     pthread_join(*radio_capture, NULL);
-    pthread_join(*loop_capture, NULL);
+    if (loop_started)
+        pthread_join(*loop_capture, NULL);
 }
