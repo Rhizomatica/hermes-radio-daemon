@@ -20,6 +20,8 @@ var (
 	ErrIO           = errors.New("the rig refused or did not answer")
 	ErrNoLink       = errors.New("the modem has no ARQ session up")
 	ErrTooLong      = errors.New("too long for one broadcast frame")
+	ErrProtection   = errors.New("the SWR protection has tripped")
+	ErrNoPTT        = errors.New("this client does not hold PTT")
 )
 
 // ControlKind is a control's kind in radiod's control vocabulary
@@ -155,6 +157,11 @@ type Radio interface {
 	SetFilterWidth(profile int, hz uint32) error
 	SetDigitalVoice(profile int, on bool) error
 	ResetProtection()
+	// PTT keys (on) or unkeys the transmitter for hermes.v1 connection conn,
+	// which then owns it; radiod unkeys when that connection closes. On:
+	// ErrProtection with the SWR protection tripped, ErrBusy while another
+	// client holds PTT. Off: ErrNoPTT when conn does not hold it.
+	PTT(conn int64, on bool) error
 
 	Settings() Settings
 	SetDefaultProfile(n int) error
@@ -246,6 +253,10 @@ func codeErr(rc int) error {
 		return ErrNoLink
 	case -7:
 		return ErrTooLong
+	case -8:
+		return ErrProtection
+	case -9:
+		return ErrNoPTT
 	default:
 		return ErrNotSupported
 	}

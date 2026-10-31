@@ -66,6 +66,10 @@ func prof(n int) C.uint32_t {
 }
 
 func (binding) SelectProfile(n int) error { return codeErr(int(C.radiod_api_select_profile(prof(n)))) }
+
+func (binding) PTT(conn int64, on bool) error {
+	return codeErr(int(C.radiod_api_ptt(C.long(conn), C.bool(on))))
+}
 func (binding) SetFrequency(n int, hz uint32) error {
 	return codeErr(int(C.radiod_api_set_frequency(prof(n), C.uint32_t(hz))))
 }

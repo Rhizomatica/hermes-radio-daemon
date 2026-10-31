@@ -32,6 +32,7 @@ func Register(rt *api.Router) {
 	rt.Command("radio.set", spec.RoleOperator, h.cmdSet)
 	rt.Command("radio.select_profile", spec.RoleOperator, h.cmdSelect)
 	rt.Command("radio.reset_protection", spec.RoleOperator, h.cmdResetProtection)
+	registerPTT(rt)
 
 	// The same RadioState as getRadioState, pushed as it changes.
 	rt.Topic("radio.state", spec.RoleReadonly, func() (any, error) { return stateOf(h.r.State()), nil })

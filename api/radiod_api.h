@@ -26,6 +26,8 @@
 #define RADIOD_API_EIO      -5    /* the rig refused or did not answer (CAT) */
 #define RADIOD_API_ENOLINK  -6    /* the modem has no ARQ session up */
 #define RADIOD_API_E2BIG    -7    /* too long for one broadcast frame */
+#define RADIOD_API_EPROTECT -8    /* the SWR protection has tripped: reset it first */
+#define RADIOD_API_ENOPTT   -9    /* this client does not hold PTT */
 
 /* ── radio ── */
 
@@ -85,6 +87,12 @@ int radiod_api_set_default_profile_fallback(int32_t seconds);   /* -1: never */
 int radiod_api_set_step(uint32_t hz);
 int radiod_api_set_swr_limit(uint32_t swr_x10);                  /* >= 10 */
 int radiod_api_set_bfo(uint32_t hz);                             /* ENOTSUP on Hamlib */
+/* PTT for hermes.v1 connection conn_id, which then owns it: the radio
+ * unkeys when that connection closes, as for any websocket client.
+ * on: 0; EPROTECT with the SWR protection tripped; EBUSY while another
+ * client (or the daemon) holds PTT. off: 0; ENOPTT when this connection
+ * does not hold it (nothing changes). */
+int radiod_api_ptt(long conn_id, bool on);
 void radiod_api_reset_protection(void);
 
 /* ── radio controls: levels, functions and parameters, in radiod's control

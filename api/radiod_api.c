@@ -289,6 +289,19 @@ int radiod_api_set_bfo(uint32_t hz)
     return RADIOD_API_OK;
 }
 
+int radiod_api_ptt(long conn_id, bool on)
+{
+    if (!s_radio)
+        return RADIOD_API_ENOTSUP;
+    if (!on)
+        return radio_backend_unkey_ptt(s_radio, PTT_SRC_WEBSOCKET, conn_id) ?
+               RADIOD_API_OK : RADIOD_API_ENOPTT;
+    if (s_radio->swr_protection_enabled)
+        return RADIOD_API_EPROTECT;
+    return radio_backend_claim_ptt(s_radio, PTT_SRC_WEBSOCKET, conn_id) == 0 ?
+           RADIOD_API_OK : RADIOD_API_EBUSY;
+}
+
 void radiod_api_reset_protection(void)
 {
     if (s_radio)

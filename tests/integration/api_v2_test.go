@@ -619,3 +619,63 @@ func TestHermesV1ModemChat(t *testing.T) {
 		t.Errorf("ARQ send with no session = %v, want no_link", r)
 	}
 }
+
+// v1cmd sends one hermes.v1 command and returns its reply.
+func v1cmd(t *testing.T, ws *wsConn, id, frame string) map[string]any {
+	t.Helper()
+	if err := ws.writeFrame(opText, []byte(frame)); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if r := readFrame(t, ws, 5*time.Second); r["type"] == "reply" && r["id"] == id {
+			return r
+		}
+	}
+}
+
+// radio.ptt through the real daemon: the connection that keys owns PTT,
+// another is refused, and closing the owner's socket unkeys the radio (C's
+// close path, which no unit test reaches).
+func TestHermesV1PTT(t *testing.T) {
+	needGoAPI(t)
+	d := startAPIDaemon(t)
+	token := setupAPI(t, d)
+	url := strings.TrimSuffix(d.WSURL, "/") + "/api/v2/ws"
+	rig := dialRigctl(t, d)
+
+	a, _, err := wsDialAuth(url, "hermes.v1", token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _, err := wsDialAuth(url, "hermes.v1", token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	if r := v1cmd(t, a, "1", `{"type":"cmd","id":"1","cmd":"radio.ptt","args":{"on":true}}`); r["ok"] != true {
+		t.Fatalf("key = %v\n--- daemon log ---\n%s", r, d.Log())
+	}
+	if got := rig.cmd("t"); got != "1" {
+		t.Fatalf("after radio.ptt on, rigctl t = %q", got)
+	}
+	r := v1cmd(t, b, "2", `{"type":"cmd","id":"2","cmd":"radio.ptt","args":{"on":true}}`)
+	if e, _ := r["error"].(map[string]any); r["ok"] != false || e["code"] != "busy" {
+		t.Fatalf("a second connection keying = %v, want busy", r)
+	}
+	r = v1cmd(t, b, "3", `{"type":"cmd","id":"3","cmd":"radio.ptt","args":{"on":false}}`)
+	if e, _ := r["error"].(map[string]any); e["code"] != "no_ptt" || rig.cmd("t") != "1" {
+		t.Fatalf("a second connection unkeying = %v", r)
+	}
+
+	a.Close()
+	if !eventually(5*time.Second, func() bool { return rig.cmd("t") == "0" }) {
+		t.Fatalf("closing the keying socket left the radio in TX\n--- daemon log ---\n%s", d.Log())
+	}
+	if r := v1cmd(t, b, "4", `{"type":"cmd","id":"4","cmd":"radio.ptt","args":{"on":true}}`); r["ok"] != true {
+		t.Fatalf("keying after the holder left = %v", r)
+	}
+	if r := v1cmd(t, b, "5", `{"type":"cmd","id":"5","cmd":"radio.ptt","args":{"on":false}}`); r["ok"] != true || rig.cmd("t") != "0" {
+		t.Fatalf("unkey = %v", r)
+	}
+}
