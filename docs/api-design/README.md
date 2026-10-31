@@ -81,7 +81,7 @@ How a request is authenticated:
 
 1. The UI logs in with `POST /api/v2/session`. radiod sets a session cookie (`HttpOnly`, `Secure`, `SameSite=Strict`) and stores only a hash of the token. Tools send the same token as `Authorization: Bearer`.
 2. radiod checks the session on every REST request and on every WebSocket upgrade; with no session, the upgrade is refused (401). The session's role gates every route and command (`x-hermes-role` in [api-rest.yaml](../../api/spec/api-rest.yaml)).
-3. Browsers must come from the station's own origin (`Origin` is checked; no CORS headers).
+3. The session cookie works only from the station's own origin (`Origin` is checked). Pages from other origins may call the API with a Bearer token (CORS, `main:api_cors_origins`, any origin by default since 2026-10-31), never with the cookie: no `Access-Control-Allow-Credentials` is sent.
 
 With nothing in front of it, radiod also does what a reverse proxy did: it caps request and header sizes, times out slow clients, caps connections and rate-limits logins.
 
@@ -237,7 +237,7 @@ A station's Wi-Fi is open to its community, so the API has to assume that anyone
 | User endpoints build shell commands from unescaped input (`email_create_user`, `email_update_user`) | Arguments validated against `^[a-z0-9._-]{1,32}$` and passed with `escapeshellarg`. Every other `exec` is reviewed the same way |
 | `POST /user/{id}` accepts `admin=1`; `POST /sys/config` updates any column | Explicit allow-lists of fields, with role changes for admins only |
 | Passwords stored as unsalted SHA-256; bad login returns 500 | argon2id with rehash on login (see Database). Bad login returns 401, and failed logins are rate-limited to 5 a minute per IP |
-| CORS `*` together with credentials; `APP_DEBUG=true` sends stack traces | Same-origin only, no CORS headers; `APP_DEBUG=false` |
+| CORS `*` together with credentials; `APP_DEBUG=true` sends stack traces | CORS without credentials: any origin by default, Bearer tokens only, the cookie same-origin; `APP_DEBUG=false` |
 | File password in the URL (`?i=`) | The `X-Hermes-File-Key` header |
 | `www-data` in the sudo group on stations installed without hardening | A fixed list of helper commands in `sudoers.d/hermes`, on every station |
 | Daemons on `0.0.0.0` with no auth: radiod WS 8080, rigctld 4532, Mercury WS 10000 and its TNC ports | Bound to localhost; the network reaches only radiod's HTTPS port |

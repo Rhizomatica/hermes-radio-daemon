@@ -603,6 +603,9 @@ func (s *Stub) Frames(conn int64) [][]byte {
 
 func (s *Stub) Version() string { return "stub" }
 
+// CORSOrigins is none: a test sets them on the router (SetCORSOrigins).
+func (s *Stub) CORSOrigins() string { return "" }
+
 var logLevelNames = [...]string{"TRC", "DBG", "TMG", "INF", "WRN", "ERR"} // from LogTrace
 
 // Log records the line as "[LVL] [component] message", the part of

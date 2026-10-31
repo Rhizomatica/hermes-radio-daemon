@@ -240,6 +240,10 @@ typedef struct {
 
 /* ── station ── */
 
+/* main:api_cors_origins as configured ("*", any, when unset; "" for none):
+ * the origins whose pages may call /api/v2 cross-origin. Read once; valid
+ * for the process. */
+const char *radiod_api_cors_origins(void);
 const char *radiod_api_version(void);
 
 #endif /* RADIOD_API_H */

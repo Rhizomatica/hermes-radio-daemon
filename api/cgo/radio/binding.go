@@ -349,6 +349,8 @@ func (binding) WSBroadcast(f []byte) error {
 
 func (binding) Version() string { return C.GoString(C.radiod_api_version()) }
 
+func (binding) CORSOrigins() string { return C.GoString(C.radiod_api_cors_origins()) }
+
 // Log goes to radiod's logger through the hermes_log binding.
 func (binding) Log(level LogLevel, component, message string) {
 	hermeslog.Log(hermeslog.Level(level), component, message)

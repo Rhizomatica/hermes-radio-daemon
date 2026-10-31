@@ -53,6 +53,11 @@ const char *radiod_api_version(void)
     return RADIOD_GIT_HASH;
 }
 
+const char *radiod_api_cors_origins(void)
+{
+    return s_radio ? s_radio->api_cors_origins : "";
+}
+
 
 /* ── radio ── */
 

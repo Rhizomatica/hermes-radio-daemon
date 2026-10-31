@@ -27,7 +27,11 @@ info:
       subscription, and within one heartbeat otherwise. The reason is `session ended`, or
       `role changed; connect again`; the client logs in again, or reconnects for the hello
       of its new role.
-    - Only same-origin browsers are accepted (`Origin` is checked).
+    - An upgrade with the session cookie must come from this station's own page (`Origin`
+      is checked; 403 otherwise). A page from another origin sends its token as a second
+      subprotocol instead, since a browser cannot set `Authorization` on an upgrade:
+      `Sec-WebSocket-Protocol: hermes.v1, hermes.token.<token>`. The station answers with
+      `hermes.v1` alone.
     - The upgrade response carries `X-Request-Id`, which the station's logs use for this
       connection; each command's `id` is logged with it.
     - `readonly` may subscribe to everything `user` sees and runs no commands.
@@ -58,7 +62,8 @@ info:
 
     The same rules as `api-rest.yaml` (its Security section), and on this socket:
 
-    - The upgrade needs a session and an `Origin` naming this station; `readonly` runs no
+    - The upgrade needs a session; with the cookie, also an `Origin` naming this station.
+      `readonly` runs no
       commands.
     - **Transmitting** (`radio.ptt`, `digi.send`, transmit audio on WebRTC) needs `operator`, is limited
       per user (`settings.tx_rate_limit`, error `rate_limited`) and is written to the audit

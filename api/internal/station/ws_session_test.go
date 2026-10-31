@@ -108,3 +108,28 @@ func TestRemotePeerWithSessions(t *testing.T) {
 	w := e.OpenAuth(token) // a remote peer with a session is accepted
 	w.Next(testapi.Type("hello"), time.Second)
 }
+
+// A page from another origin opens hermes.v1 with its token as a subprotocol
+// (it cannot set Authorization on an upgrade); a wrong token is refused.
+func TestWSTokenSubprotocolCrossOrigin(t *testing.T) {
+	e := testapi.NewAuth(t)
+	e.SeedUser("op", "password1", "operator")
+	token := e.Login("op", "password1")
+	upgrade := func(id int64, proto string) int {
+		req := httptest.NewRequest("GET", "/api/v2/ws", nil)
+		req.RemoteAddr = "192.0.2.10"
+		req.Header.Set("Origin", "https://app.example.org")
+		req.Header.Set("Sec-WebSocket-Protocol", proto)
+		return e.R.WSOpen(id, req)
+	}
+	if st := upgrade(9101, "hermes.v1, hermes.token."+token); st != 0 {
+		t.Fatalf("token subprotocol = %d, want 0", st)
+	}
+	t.Cleanup(func() { e.R.WSClose(9101) })
+	if st := upgrade(9102, "hermes.v1, hermes.token.wrong"); st != 401 {
+		t.Fatalf("wrong token = %d, want 401", st)
+	}
+	if st := upgrade(9103, "hermes.v1"); st != 401 {
+		t.Fatalf("no token = %d, want 401", st)
+	}
+}

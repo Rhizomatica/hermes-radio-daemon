@@ -81,7 +81,10 @@ func hashToken(raw string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// tokenFrom reads the session token: the cookie, or Authorization: Bearer.
+// tokenFrom reads the session token: the cookie, Authorization: Bearer, or
+// (on a WebSocket upgrade from another origin's page) the hermes.token.
+// subprotocol. Only the cookie is subject to the Origin and CSRF rules: the
+// other two are sent by code that already holds the token.
 func tokenFrom(r *http.Request) string {
 	if c, err := r.Cookie(api.SessionCookie); err == nil && c.Value != "" {
 		return c.Value
@@ -89,7 +92,7 @@ func tokenFrom(r *http.Request) string {
 	if a := r.Header.Get("Authorization"); strings.HasPrefix(a, "Bearer ") {
 		return strings.TrimPrefix(a, "Bearer ")
 	}
-	return ""
+	return api.WSToken(r)
 }
 
 // csrfOK is the router's CSRF check (api-rest.yaml Security): a request that

@@ -436,6 +436,10 @@ CI runs all three on Debian 13, amd64 and arm64, with and without the Go layer.
   username, a token) has a cap: `ratelimit.Limiter` holds at most `MaxKeys`, and buckets go
   by `auth.RateKey` (an IPv6 /64, not one address). A secret guessed at, like the setup code,
   also gets a station-wide budget, so many addresses don't buy many tries.
+- **CORS is the router's.** Handlers never set `Access-Control-*` headers or answer `OPTIONS`
+  (`internal/api/cors.go`, `main:api_cors_origins`). Cross-origin callers authenticate with a
+  Bearer token (or the `hermes.token.` subprotocol on the upgrade), never the cookie, so don't
+  add a credentialed path.
 - **Threads:** handlers run concurrently on Go's goroutines. Blocking in a handler is fine; it
   blocks only that request. Don't start goroutines that outlive their request or connection.
 - **Memory:** the Go heap has a soft 64 MB limit (`GOMEMLIMIT` overrides it) for the 1 GB Pi.

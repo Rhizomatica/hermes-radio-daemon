@@ -225,6 +225,9 @@ type Radio interface {
 	Log(level LogLevel, component, message string)
 
 	Version() string
+	// CORSOrigins is main:api_cors_origins: the origins whose pages may call
+	// /api/v2 cross-origin ("" for none).
+	CORSOrigins() string
 }
 
 func codeErr(rc int) error {

@@ -263,6 +263,13 @@ websocket_url = ws://0.0.0.0:8080
 ; listener. Needs a daemon built with Go (otherwise /api/v2 answers 503).
 ; With the session store open it answers any client; without it, loopback only.
 api_v2_enable = 0
+; Origins whose browser pages may call /api/v2 from elsewhere (CORS): * (the
+; default) for any, or a list such as https://app.example.org
+; http://192.168.10.5:3000 (space or comma separated, scheme://host[:port]).
+; Cross-origin pages log in with a Bearer token; the session cookie stays
+; same-origin, so no page can use a user's login without its token. Empty:
+; same-origin only.
+api_cors_origins = *
 
 ; Logging: mercury's hermes_log, so radiod's, the Go API's and mercury's
 ; lines are one stream in one format:

@@ -51,6 +51,13 @@ info:
       `X-Hermes-CSRF: 1` header; otherwise 403 `csrf`. Requests authenticated with
       `Authorization: Bearer` are exempt, since browsers never add that header by
       themselves.
+    - **CORS.** Pages from other origins may call the API (`main:api_cors_origins`: `*`,
+      the default, for any origin; a list narrows it; empty turns CORS off). They
+      authenticate with `Authorization: Bearer`: no `Access-Control-Allow-Credentials` is
+      ever sent, so the session cookie stays same-origin and no page can act with a user's
+      login unless it holds the token. Preflights are answered before the role gate, with
+      the headers they ask for. A station that cannot open its session store (every
+      loopback caller admin) sends no CORS headers.
     - **First boot.** `/setup` needs the one-time setup code the installer writes to the
       console and to `/etc/hermes/setup-code` (root only). Anyone on the Wi-Fi could
       otherwise claim a new station before its owner does.

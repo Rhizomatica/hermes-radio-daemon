@@ -54,6 +54,8 @@ type Router struct {
 
 	conns   sync.Map // int64 -> *Conn (hermes.v1)
 	hbStart sync.Once
+
+	cors map[string]bool // origins allowed cross-origin (cors.go); empty: none
 }
 
 // NewRouter returns an empty router over a radio.
@@ -69,6 +71,7 @@ func NewRouter(r radio.Radio) *Router {
 		httpLog:  logging.New(r, "api.http"),
 		wsLog:    logging.New(r, "api.ws"),
 	}
+	rt.SetCORSOrigins(r.CORSOrigins())
 	return rt
 }
 
@@ -140,7 +143,9 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(context.WithValue(r.Context(), ctxRequestID{}, id))
 	start := time.Now()
 	sw := &statusWriter{ResponseWriter: w}
-	rt.serve(sw, r)
+	if !rt.handleCORS(sw, r) {
+		rt.serve(sw, r)
+	}
 	rt.logRequest(r, sw.code(), time.Since(start))
 }
 
