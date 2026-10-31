@@ -187,6 +187,11 @@ type Radio interface {
 	// DigiLog returns up to max entries after id `after`, oldest first,
 	// each one JSON object in digi_log's line format.
 	DigiLog(after uint64, max int) []json.RawMessage
+	// DigiSend queues text for the active profile's digital text mode:
+	// ErrNotSupported when that is not FT8, CW or RTTY, ErrInvalid for FT8
+	// text the modulator cannot carry, ErrBusy with the queue full. The
+	// digi log reports it (dir tx) when it goes out.
+	DigiSend(text string) error
 
 	// Gps is the station's own position and fix, and its GPS settings.
 	Gps() Gps

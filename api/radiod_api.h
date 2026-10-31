@@ -139,6 +139,12 @@ void radiod_api_digi_settings_get(radiod_api_digi_settings *out);
 /* key is radiod's: cw_wpm, cw_pitch, rtty_baud, rtty_mark, rtty_shift,
  * dstar_verbose, dstar_denoise, dstar_encrypt, rade_encrypt. */
 int radiod_api_digi_set(const char *key, long value);
+/* Queue text (at most 255 bytes) for the active profile's digital text
+ * mode, as it is sent today: 0; ENOTSUP when the active profile is not in
+ * FT8, CW or RTTY; EINVAL for FT8 text the modulator cannot carry (free
+ * text: 13 characters, A-Z 0-9 space + - . / ?); EBUSY with the queue full.
+ * The digi log reports it (dir tx) when it goes out. */
+int radiod_api_digi_send(const char *text);
 int radiod_api_set_voice_codec(const char *name);
 
 /* The digi log's in-memory ring, oldest first: up to max entries after id

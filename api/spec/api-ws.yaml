@@ -342,8 +342,8 @@ components:
       name: digi
       summary: |
         One event per FT8 decode, CW or RTTY line, D-STAR header, and per digital-mode
-        transmission (`dir: tx`). The snapshot is the last 100; older ones are in
-        `GET /digi/log`.
+        transmission (`dir: tx`). The snapshot is what radiod keeps in memory (its last
+        64 entries); older ones are in `GET /digi/log`.
       payload:
         allOf:
           - $ref: "#/components/schemas/EventEnvelope"

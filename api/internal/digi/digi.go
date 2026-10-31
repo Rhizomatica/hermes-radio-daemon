@@ -21,6 +21,7 @@ func Register(rt *api.Router) {
 	rt.Op("getDigiLog", h.getLog)
 	rt.Op("getDigiSettings", h.getSettings)
 	rt.Op("updateDigiSettings", h.updateSettings)
+	registerSend(rt)
 }
 
 type handlers struct{ r rad.Radio }

@@ -16,6 +16,7 @@
 #include "radio.h"
 #include "radio_backend.h"
 #include "radio_controls.h"
+#include "dsp/sbitx_ft8.h"
 #include "cfg_utils.h"
 #include "dsp/digi_log.h"
 #include "gps/gps.h"
@@ -51,6 +52,20 @@ void radiod_api_attach_ws(void *server)
 const char *radiod_api_version(void)
 {
     return RADIOD_GIT_HASH;
+}
+
+int radiod_api_digi_send(const char *text)
+{
+    if (!s_radio || !text)
+        return RADIOD_API_ENOTSUP;
+    uint16_t mode = s_radio->profiles[s_radio->profile_active_idx].mode;
+    if (mode != MODE_FT8 && mode != MODE_CW && mode != MODE_RTTY)
+        return RADIOD_API_ENOTSUP;
+    if (strlen(text) >= DIGI_TX_MSG_MAX)
+        return RADIOD_API_EINVAL;
+    if (mode == MODE_FT8 && !sbitx_ft8_can_encode(text))
+        return RADIOD_API_EINVAL;
+    return digi_tx_queue_push(&s_radio->digi_tx, text) ? RADIOD_API_OK : RADIOD_API_EBUSY;
 }
 
 const char *radiod_api_cors_origins(void)

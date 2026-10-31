@@ -679,3 +679,35 @@ func TestHermesV1PTT(t *testing.T) {
 		t.Fatalf("unkey = %v", r)
 	}
 }
+
+// digi.send through the real daemon: refused outside a digital mode, FT8
+// text radiod's modulator can't carry refused by its own check, and a CW
+// line queued.
+func TestHermesV1DigiSend(t *testing.T) {
+	needGoAPI(t)
+	d := startAPIDaemon(t)
+	token := setupAPI(t, d)
+	ws, _, err := wsDialAuth(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1", token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	errCode := func(r map[string]any) any { e, _ := r["error"].(map[string]any); return e["code"] }
+
+	if r := v1cmd(t, ws, "1", `{"type":"cmd","id":"1","cmd":"digi.send","args":{"text":"CQ"}}`); errCode(r) != "wrong_mode" {
+		t.Fatalf("outside a digital mode = %v", r)
+	}
+	if r := v1cmd(t, ws, "2", `{"type":"cmd","id":"2","cmd":"radio.set","args":{"mode":"FT8"}}`); r["ok"] != true {
+		t.Fatalf("radio.set FT8 = %v", r)
+	}
+	if r := v1cmd(t, ws, "3", `{"type":"cmd","id":"3","cmd":"digi.send","args":{"text":"THIS IS FAR TOO LONG FOR FT8"}}`); errCode(r) != "out_of_range" {
+		t.Fatalf("long FT8 = %v\n--- daemon log ---\n%s", r, d.Log())
+	}
+	if r := v1cmd(t, ws, "4", `{"type":"cmd","id":"4","cmd":"radio.set","args":{"mode":"CW"}}`); r["ok"] != true {
+		t.Fatalf("radio.set CW = %v", r)
+	}
+	r := v1cmd(t, ws, "5", `{"type":"cmd","id":"5","cmd":"digi.send","args":{"text":"TEST"}}`)
+	if r["ok"] != true || r["data"].(map[string]any)["queued"] != true {
+		t.Fatalf("CW = %v\n--- daemon log ---\n%s", r, d.Log())
+	}
+}

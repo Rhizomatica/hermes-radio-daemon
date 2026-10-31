@@ -4,6 +4,7 @@
 package setup
 
 import (
+	"context"
 	"crypto/subtle"
 	"errors"
 	"log/slog"
@@ -51,6 +52,13 @@ func Register(rt *api.Router, st *store.Store, cfg Config) {
 	h := &handlers{
 		store: st, codePath: cfg.SetupCodePath,
 		lifetime: cfg.SessionLifetime, limiter: &ratelimit.Limiter{}, global: &ratelimit.Limiter{},
+	}
+	rt.StationCallsign = func(ctx context.Context) string {
+		v, ok, err := st.GetMeta(ctx, "station.callsign")
+		if err != nil || !ok {
+			return ""
+		}
+		return v
 	}
 	rt.Op("getSetupStatus", h.status)
 	rt.Op("runSetup", h.run)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Stub is an in-memory Radio for tests and Go-only development: two
@@ -32,6 +33,7 @@ type Stub struct {
 	Sent     map[int64][][]byte // frames by connection; 0 = broadcast
 	closed   map[int64]WSCloseFrame
 	pttOwner int64 // the hermes.v1 connection holding PTT, 0 for none
+	digiSent []string
 }
 
 // NewStub returns a Stub tuned to 7.1 MHz USB.
@@ -441,6 +443,33 @@ func (s *Stub) SetVoiceCodec(name string) error {
 	s.digi.VoiceCodec = strings.ToUpper(name)
 	s.mu.Unlock()
 	return nil
+}
+
+// DigiSend follows radiod's checks (radiod_api_digi_send) and logs the text
+// as sent at once (dir tx), as radiod does when it goes out.
+func (s *Stub) DigiSend(text string) error {
+	st := s.State()
+	if st.Mode != "FT8" && st.Mode != "CW" && st.Mode != "RTTY" {
+		return ErrNotSupported
+	}
+	if st.Mode == "FT8" && (len(text) > 13 || strings.Trim(strings.ToUpper(text), "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 +-./?") != "") {
+		return ErrInvalid
+	}
+	s.mu.Lock()
+	s.digiSent = append(s.digiSent, text)
+	id := uint64(len(s.log) + 1)
+	s.mu.Unlock()
+	b, _ := json.Marshal(map[string]any{"id": id, "at": time.Now().UTC().Format(time.RFC3339), "mode": st.Mode,
+		"dir": "tx", "text": text, "frequency_hz": st.FrequencyHz})
+	s.AddDigi(string(b))
+	return nil
+}
+
+// DigiSent returns what DigiSend queued.
+func (s *Stub) DigiSent() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.digiSent...)
 }
 
 func (s *Stub) DigiLog(after uint64, max int) []json.RawMessage {
