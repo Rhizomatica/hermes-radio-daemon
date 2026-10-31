@@ -19,7 +19,8 @@ pkcon install hermes-radio-daemon
 ```
 
 Then set the rig in `/etc/hermes/core.ini` (see below) and start radiod
-with `systemctl start radiod`.
+with `systemctl enable --now radiod`. To update: `pkcon refresh && pkcon
+update`.
 
 The repository is plain HTTP and unsigned, like the HERMES APT repository's
 key download: the server's TLS certificate does not verify. `SHA256SUMS`
