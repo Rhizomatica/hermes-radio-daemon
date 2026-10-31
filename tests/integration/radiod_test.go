@@ -230,4 +230,7 @@ func TestShippedUserINI(t *testing.T) {
 	if r := ws.call("set_profile", map[string]any{"profile": 2}); r.OK {
 		t.Error("set_profile 2 succeeded; the shipped user.ini has two profiles")
 	}
+	if !regexp.MustCompile(`(?m)^default_profile_fallback_timeout\s*=\s*-1\s*$`).Match(b) {
+		t.Error("the shipped user.ini falls back to the default profile; the fallback is off (-1)")
+	}
 }
