@@ -1,10 +1,15 @@
+%global commit ec808ce
+%global gitdate 20261023
 Name:           libspecbleach
-Version:        0.3.0
+Version:        0.4.1~git%{gitdate}.%{commit}
 Release:        1
 Summary:        Voice noise reduction library
 License:        LGPL-2.1-or-later
-URL:            https://github.com/lucianodato/libspecbleach
-Source0:        https://github.com/lucianodato/libspecbleach/archive/refs/tags/v%{version}.tar.gz#/libspecbleach-%{version}.tar.gz
+URL:            https://github.com/Rhizomatica/libspecbleach
+# Rhizomatica's fork at the commit the HERMES Debian package has (upstream
+# f63b64b, the 0.4 API radiod uses). git clone at the commit, .git left out
+# (fetch-sources.sh).
+Source0:        libspecbleach-%{commit}.tar.gz
 BuildRequires:  cmake
 BuildRequires:  fftw-devel
 
@@ -16,29 +21,29 @@ Summary:        Development files for libspecbleach
 Requires:       %{name} = %{version}-%{release}
 
 %description devel
-Headers and the linker link for libspecbleach.
+Headers, pkg-config file and linker link for libspecbleach.
 
 %prep
-%setup -q
+%setup -q -n libspecbleach-%{commit}
 
 %build
-# upstream has no install rules: built shared, files copied in below
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
-      -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DENABLE_AVX=OFF \
-      -DENABLE_TESTS=OFF -DENABLE_EXAMPLES=OFF
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=%{_prefix} \
+      -DCMAKE_INSTALL_LIBDIR=%{_lib} -DBUILD_SHARED_LIBS=ON -DENABLE_AVX=OFF \
+      -DENABLE_TESTS=OFF -DENABLE_EXAMPLES=OFF -DSPECBLEACH_BUILD_EXTRAS=OFF
 cmake --build build %{?_smp_mflags}
 
 %install
-install -D -m 755 build/libspecbleach.so %{buildroot}%{_libdir}/libspecbleach.so
-install -d %{buildroot}%{_includedir}
-install -m 644 include/specbleach_*.h %{buildroot}%{_includedir}/
+DESTDIR=%{buildroot} cmake --install build
+rm -rf %{buildroot}%{_libdir}/cmake
 
 %post -p /sbin/ldconfig
 %postun -p /sbin/ldconfig
 
 %files
 %license LICENSE
-%{_libdir}/libspecbleach.so
+%{_libdir}/libspecbleach.so.*
 
 %files devel
-%{_includedir}/specbleach_*.h
+%{_includedir}/specbleach*
+%{_libdir}/libspecbleach.so
+%{_libdir}/pkgconfig/specbleach.pc

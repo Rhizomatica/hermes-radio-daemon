@@ -31,11 +31,10 @@ lists every package.
 |---|---|
 | `specs/hermes-radio-daemon.spec` | radiod, with mercury linked in; no Go API layer (`/api/v2` answers 503) |
 | `specs/*.spec` | the libraries radiod needs that the Sailfish repositories do not carry: fftw, iniparser, hamlib, i2c-tools, csdr, libspecbleach, mbelib-neo, unixcw |
-| `patches/hamlib-4.6.2-usb-serial.patch` | Hamlib PR #2272 backported to 4.6.2 (see below) |
 | `radiod.service` | the systemd unit, with a wakelock (see below) |
 | `rpmmacros` | an `~/.rpmmacros` for building with busybox |
 | `fetch-sources.sh` | fetches the sources into `~/rpmbuild/SOURCES`, on the device |
-| `make-hamlib-tarball.sh` | makes the patched Hamlib tarball, on a machine with autotools |
+| `make-hamlib-tarball.sh` | makes the Hamlib tarball from Hamlib PR #2272's branch, on a machine with autotools |
 | `build-all.sh` | builds and installs every RPM in dependency order, on the device |
 
 The library versions are the ones the stations run on Debian, and csdr and
@@ -58,7 +57,7 @@ On the device, with developer mode on:
    packaging/sailfish/make-hamlib-tarball.sh /tmp
    ```
 
-   Copy `/tmp/hamlib-4.6.2-usb-serial.tar.gz` to `~/rpmbuild/SOURCES/` on the device.
+   Copy `/tmp/hamlib-5.0.0~git.tar.gz` to `~/rpmbuild/SOURCES/` on the device.
 
 3. Copy this directory to the device and run:
 
@@ -82,9 +81,9 @@ A phone kernel may have no driver for the rig's USB-serial chip. The
 kernel of the phone this was tested on (Sailfish adaptation jp2601) has
 no `CONFIG_USB_SERIAL_CP210X`, so an IC-7100 or IC-7300 gets no
 `/dev/ttyUSB*`. Hamlib PR #2272 lets Hamlib drive the chip itself
-through usbfs, with a `usb:` rig pathname. The Hamlib RPM here has it,
-backported to 4.6.2. The backport needs one change on top of the PR:
-`hamlib/port.h` does not exist in 4.6, so its include is guarded.
+through usbfs, with a `usb:` rig pathname. The Hamlib RPM here is built
+from that PR's branch, which is Hamlib master. Master also sets and reads
+the FT-710's DATA-mode filter width, which 4.6.2 cannot.
 
 In `/etc/hermes/core.ini`:
 
@@ -101,6 +100,19 @@ playback_device = hw:CARD=CODEC,DEV=0
 The IC-7100 has two CP2102s. The one whose serial number ends in `A` is
 CI-V, so give the serial; `cat /sys/bus/usb/devices/*/serial` shows it.
 radiod runs as root, which can open `/dev/bus/usb`.
+
+The FT-710 has one CP2105 with two UARTs; the first is CAT. Its codec
+plays stereo only, so playback goes through `plughw`:
+
+```ini
+radio_model = 1049
+rig_pathname = "usb:10c4:ea70:SERIAL"
+serial_rate = 38400
+capture_device = hw:CARD=Device,DEV=0
+playback_device = plughw:CARD=Device,DEV=0
+```
+
+`@1` at the end of a `usb:` path picks the second UART of such a chip.
 
 Hamlib logs `Unhandled host=usb:...` when it opens such a path. That is
 harmless.
