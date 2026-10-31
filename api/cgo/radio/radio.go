@@ -29,6 +29,16 @@ var (
 // default; it reads as U+FFFD, as encoding/json read it.
 var FromC = jsontext.AllowInvalidUTF8(true)
 
+// Spectrum is one of the spectrums C sends as hermes.v1 binary frames
+// (radiod_api_spectrum).
+type Spectrum int
+
+const (
+	SpectrumRX    Spectrum = iota // the radio's RX spectrum, kind 3
+	SpectrumTX                    // the radio's TX spectrum, kind 4
+	SpectrumModem                 // mercury's, kind 3
+)
+
 // ControlKind is a control's kind in radiod's control vocabulary
 // (radio/radio_controls.h), whichever backend drives the radio.
 type ControlKind int
@@ -203,10 +213,10 @@ type Radio interface {
 	// be opened.
 	Recording(start bool, stream string) (rx, tx bool, err error)
 	// SpectrumSubscribe subscribes (on) or unsubscribes hermes.v1
-	// connection conn to the RX (tx false) or TX spectrum, whose binary
-	// frames C then sends it: ErrNotSupported when the radio has no such
-	// spectrum, ErrBusy when every slot is taken.
-	SpectrumSubscribe(conn int64, tx, on bool) error
+	// connection conn to spectrum s, whose binary frames C then sends it:
+	// ErrNotSupported when the radio has no such spectrum or mercury is not
+	// running, ErrBusy when every slot is taken.
+	SpectrumSubscribe(conn int64, s Spectrum, on bool) error
 
 	// Gps is the station's own position and fix, and its GPS settings.
 	Gps() Gps

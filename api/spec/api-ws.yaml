@@ -117,8 +117,14 @@ info:
     | 3 | station → client | `radio.spectrum.rx`, `modem.spectrum.rx` | `u16 nbins`, `f32 start_hz`, `f32 bin_hz`, `f32 dB × nbins` |
     | 4 | station → client | `radio.spectrum.tx` | as kind 3 |
 
-    Kind 3 is shared by two topics; a client subscribes to one of them at a time. Kinds 1
-    and 2 were raw audio and are retired: audio is on WebRTC.
+    Kind 3 is shared by two topics; a client subscribes to one of them at a time (the other
+    is `bad_request`). Kinds 1 and 2 were raw audio and are retired: audio is on WebRTC.
+
+    The bins are RF-ascending: bin `i` is at `start_hz + i × bin_hz`. `radio.spectrum.*` is
+    the radio's passband at the dial. `modem.spectrum.rx` is Mercury's audio, 0 to
+    `sample_rate / 2`, placed at the dial the same way (flipped in LSB); it carries the
+    station's own signal while Mercury transmits, and flows only while Mercury's spectrum
+    feed is on (`ModemConfig.waterfall`). `seq` grows with each frame of a topic.
 
     ## Choices where the two earlier proposals differ
 

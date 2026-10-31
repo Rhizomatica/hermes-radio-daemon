@@ -27,6 +27,13 @@ func Register(rt *api.Router) {
 	rt.Topic("modem.status", spec.RoleReadonly, func() (any, error) { return h.status() })
 	rt.Topic("modem.config", spec.RoleOperator, func() (any, error) { return h.config() })
 
+	// Mercury's spectrum as binary frames of kind 3, which C sends while
+	// mercury's feed is on (modem.config waterfall); not offered while
+	// mercury is not running.
+	rt.Binary("modem.spectrum.rx", spec.RoleReadonly, 3, func(conn int64, on bool) error {
+		return h.r.SpectrumSubscribe(conn, rad.SpectrumModem, on)
+	}, func() error { _, err := h.status(); return err })
+
 	// Mercury's chat, both planes: the last chatSnapshot lines it holds on
 	// subscribe, then each line as it is stored (sent or received).
 	rt.Stream("modem.chat", spec.RoleReadonly, h.chat)
