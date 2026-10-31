@@ -204,7 +204,9 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     if (radio_h.enable_shm_audio)
         shm_audio_started = shm_audio_init(&radio_h);
 
-    if (radio_h.enable_loop_audio)
+    /* The sBitx runs its own snd-aloop cables (sbitx_alsa.c), under the
+     * same switch. */
+    if (radio_h.enable_loop_audio && radio_h.backend_kind != RADIO_BACKEND_HFSIGNALS)
         loop_audio_started = loop_audio_init(&radio_h);
 
     if (radio_h.enable_rtp_audio)
@@ -244,7 +246,8 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
         headset_started = true;
 
     /* Tell systemd we are up (Type=notify). On the sBitx, wait until the
-     * codec and the snd-aloop cables are configured first: the modem must
+     * codec and the snd-aloop cables (when enable_loop_audio runs them) are
+     * configured first: the modem must
      * open the cables after radiod, which sets the period the codec timer
      * needs (see loop_check_period). Bounded (past the codec's busy wait),
      * so a missing loopback cannot hold the unit in "activating"; but a
