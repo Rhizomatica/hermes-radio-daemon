@@ -14,7 +14,8 @@ import "C"
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"strings"
 	"time"
 	"unsafe"
@@ -188,7 +189,7 @@ func (binding) SetVoiceCodec(name string) error {
 	return codeErr(int(C.radiod_api_set_voice_codec(cs)))
 }
 
-func (binding) DigiLog(after uint64, max int) []json.RawMessage {
+func (binding) DigiLog(after uint64, max int) []jsontext.Value {
 	if max <= 0 {
 		return nil
 	}
@@ -196,22 +197,22 @@ func (binding) DigiLog(after uint64, max int) []json.RawMessage {
 	buf := C.malloc(C.size_t(size))
 	defer C.free(buf)
 	n := int(C.radiod_api_digi_log(C.uint64_t(after), C.int(max), (*C.char)(buf), C.size_t(size)))
-	out := make([]json.RawMessage, 0, n)
+	out := make([]jsontext.Value, 0, n)
 	for _, line := range bytes.Split([]byte(C.GoString((*C.char)(buf))), []byte{'\n'}) {
 		if len(line) > 0 {
-			out = append(out, json.RawMessage(line))
+			out = append(out, jsontext.Value(line))
 		}
 	}
 	return out
 }
 
-func (binding) ModemStatus() (json.RawMessage, bool) {
+func (binding) ModemStatus() (jsontext.Value, bool) {
 	buf := C.malloc(4096)
 	defer C.free(buf)
 	if !bool(C.radiod_api_modem_status((*C.char)(buf), 4096)) {
 		return nil, false
 	}
-	return json.RawMessage(C.GoString((*C.char)(buf))), true
+	return jsontext.Value(C.GoString((*C.char)(buf))), true
 }
 
 // isoTime turns gpsd's unix seconds into the API's ISO 8601 UTC timestamp.
@@ -321,7 +322,7 @@ func (binding) ChatSince(after uint64) ([]ChatLine, uint64, error) {
 		}
 		for _, l := range strings.Split(strings.TrimRight(C.GoStringN((*C.char)(buf), C.int(n)), "\n"), "\n") {
 			var cl ChatLine
-			if json.Unmarshal([]byte(l), &cl) == nil {
+			if json.Unmarshal([]byte(l), &cl, FromC) == nil {
 				lines = append(lines, cl)
 			}
 		}

@@ -1,7 +1,8 @@
 package station_test
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"net/http"
 	"regexp"
 	"strings"
@@ -257,7 +258,7 @@ func checkReply(t *testing.T, r testapi.Response) {
 		if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 			t.Errorf("%d reply is %q, want application/json", r.Status, ct)
 		}
-		if !json.Valid(r.Body) {
+		if !jsontext.Value(r.Body).IsValid() {
 			t.Errorf("%d body is not JSON: %s", r.Status, r.Body)
 		}
 	}

@@ -270,3 +270,29 @@ func TestModemChatSnapshotLimit(t *testing.T) {
 	}
 	w.None(chatEvent, 300*time.Millisecond)
 }
+
+// Text from the air can carry invalid UTF-8. It reaches clients as U+FFFD
+// in valid JSON, and the line after it still arrives (encoding/json/v2
+// refuses invalid UTF-8 both ways unless told otherwise).
+func TestModemInvalidUTF8(t *testing.T) {
+	e := testapi.New(t)
+	e.Radio.SetModem(strings.Replace(statusWith("DATAC3", "null"), `"dest_callsign":""`, "\"dest_callsign\":\"PY2\xffXYZ\"", 1))
+	if r := e.Do("GET", "/modem", ""); r.Status != 200 || r.JSON(t)["peer_call"] != "PY2\uFFFDXYZ" {
+		t.Errorf("GET /modem = %d %s", r.Status, r.Body)
+	}
+	w := e.Open()
+	w.Send(`{"type":"subscribe","id":"s","topics":["modem.status","modem.chat"]}`)
+	if ev := w.Next(modemStatus, time.Second); ev["data"].(map[string]any)["peer_call"] != "PY2\uFFFDXYZ" {
+		t.Errorf("modem.status snapshot = %v", ev)
+	}
+	if r := w.Next(testapi.Type("reply"), time.Second); r["ok"] != true {
+		t.Fatalf("subscribe = %v", r)
+	}
+	e.Radio.AddChat("bcast", "PY2\xffXYZ", "ol\xffa")
+	e.Radio.AddChat("bcast", "PY2XYZ", "next")
+	for _, want := range []string{"ol\uFFFDa", "next"} {
+		if d := w.Next(chatEvent, time.Second)["data"].(map[string]any); d["text"] != want {
+			t.Errorf("chat text = %q, want %q", d["text"], want)
+		}
+	}
+}

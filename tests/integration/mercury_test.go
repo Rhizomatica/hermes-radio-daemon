@@ -9,7 +9,7 @@ package integration
 
 import (
 	"bufio"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"net"
 	"path/filepath"

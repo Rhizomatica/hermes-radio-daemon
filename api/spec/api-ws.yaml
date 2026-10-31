@@ -696,7 +696,12 @@ components:
       required: [type, id, ok]
       properties:
         type: { const: reply }
-        id: { $ref: "#/components/schemas/RequestId" }
+        id:
+          allOf: [{ $ref: "#/components/schemas/RequestId" }]
+          description: >-
+            The command's `id`. A frame refused as unreadable (`bad_request`) still gets
+            its `id` when it has exactly one top-level `id` member, a string; otherwise
+            the `id` is empty.
         ok: { type: boolean }
         data:
           description: Command result, when `ok`.

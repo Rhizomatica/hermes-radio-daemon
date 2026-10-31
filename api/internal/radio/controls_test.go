@@ -1,7 +1,7 @@
 package radio_test
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"strings"
 	"testing"
 	"time"
@@ -92,7 +92,7 @@ func TestRigWatch(t *testing.T) {
 	}
 	w.Send(`{"type":"subscribe","id":"s","topics":["radio.rig"]}`)
 	snap := w.Next(rigEvent, time.Second)
-	if b, _ := json.Marshal(snap["data"]); string(b) != `{"funcs":{},"levels":{},"parms":{}}` {
+	if b, _ := json.Marshal(snap["data"], json.Deterministic(true)); string(b) != `{"funcs":{},"levels":{},"parms":{}}` {
 		t.Fatalf("snapshot without a watch = %s", b)
 	}
 	w.Next(testapi.Type("reply"), time.Second) // the subscribe's, after the snapshot
@@ -109,7 +109,7 @@ func TestRigWatch(t *testing.T) {
 
 	e.Radio.SetControlValue("AF", 0.9) // the front panel
 	ev = w.Next(rigEvent, 2*time.Second)
-	if b, _ := json.Marshal(ev["data"]); string(b) != `{"levels":{"AF":0.9}}` {
+	if b, _ := json.Marshal(ev["data"], json.Deterministic(true)); string(b) != `{"levels":{"AF":0.9}}` {
 		t.Errorf("change event = %s, want only levels.AF", b)
 	}
 

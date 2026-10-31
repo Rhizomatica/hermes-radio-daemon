@@ -5,7 +5,8 @@ package radio
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"net/http"
@@ -161,7 +162,7 @@ func (h handlers) updateProfile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var raw map[string]json.RawMessage
+	var raw map[string]jsontext.Value
 	if !api.Decode(w, r, &raw) {
 		return
 	}
@@ -230,7 +231,7 @@ var modes = map[string]bool{"LSB": true, "USB": true, "CW": true, "FM": true, "A
 
 // parsePatch checks every field before anything is applied. withProfile
 // allows the "profile" key (radio.set). Unknown keys fail.
-func parsePatch(raw map[string]json.RawMessage, withProfile bool) (patch, api.Fields) {
+func parsePatch(raw map[string]jsontext.Value, withProfile bool) (patch, api.Fields) {
 	var p patch
 	f := api.Fields{}
 	intIn := func(key string, lo, hi int64) *int64 {
@@ -360,8 +361,8 @@ func fieldsErr(f api.Fields) *api.CmdError {
 
 // radio.set: any profile fields in one call, all checked first; without
 // "profile", the active profile. Replies with the profile.
-func (h handlers) cmdSet(_ context.Context, _ *api.Conn, args json.RawMessage) (any, *api.CmdError) {
-	var raw map[string]json.RawMessage
+func (h handlers) cmdSet(_ context.Context, _ *api.Conn, args jsontext.Value) (any, *api.CmdError) {
+	var raw map[string]jsontext.Value
 	if cerr := api.DecodeArgs(args, &raw); cerr != nil {
 		return nil, cerr
 	}
@@ -383,7 +384,7 @@ func (h handlers) cmdSet(_ context.Context, _ *api.Conn, args json.RawMessage) (
 	return profileOf(prof), nil
 }
 
-func (h handlers) cmdSelect(_ context.Context, _ *api.Conn, args json.RawMessage) (any, *api.CmdError) {
+func (h handlers) cmdSelect(_ context.Context, _ *api.Conn, args jsontext.Value) (any, *api.CmdError) {
 	var a struct {
 		Profile *int `json:"profile"`
 	}
@@ -402,7 +403,7 @@ func (h handlers) cmdSelect(_ context.Context, _ *api.Conn, args json.RawMessage
 	return stateOf(h.r.State()), nil
 }
 
-func (h handlers) cmdResetProtection(_ context.Context, _ *api.Conn, args json.RawMessage) (any, *api.CmdError) {
+func (h handlers) cmdResetProtection(_ context.Context, _ *api.Conn, args jsontext.Value) (any, *api.CmdError) {
 	var a struct{}
 	if cerr := api.DecodeArgs(args, &a); cerr != nil {
 		return nil, cerr

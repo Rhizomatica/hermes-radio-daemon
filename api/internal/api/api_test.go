@@ -1,10 +1,14 @@
 package api_test
 
 import (
+	"context"
+	"encoding/json/jsontext"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/testapi"
@@ -91,11 +95,29 @@ func TestDecodeErrors(t *testing.T) {
 	if w.Code != 415 {
 		t.Errorf("no Content-Type = %d, want 415", w.Code)
 	}
-	if r := e.Do("PATCH", "/radio/profiles/0", `{"power":`); r.Status != 400 {
-		t.Errorf("broken JSON = %d, want 400", r.Status)
+	if r := e.Do("PUT", "/radio/active-profile", `{"profile":1,"extra":2}`); r.Status != 400 ||
+		r.JSON(t)["detail"] != "extra: unknown field" {
+		t.Errorf("unknown field = %d %s, want 400", r.Status, r.Body)
 	}
-	if r := e.Do("PUT", "/radio/active-profile", `{"profile":1,"extra":2}`); r.Status != 400 {
-		t.Errorf("unknown field = %d, want 400", r.Status)
+	// encoding/json/v2 reads strictly: what encoding/json let through, and
+	// a later reader could read another way, is a 400. The detail is the
+	// API's wording, not the library's.
+	for _, c := range []struct{ method, path, body, detail string }{
+		{"PUT", "/radio/active-profile", `{"Profile":1}`, "Profile: unknown field"},
+		{"PUT", "/radio/active-profile", `{"profile":1,"profile":2}`, "profile: duplicate field"},
+		{"PATCH", "/radio/profiles/0", `{"power":5,"power":90}`, "power: duplicate field"},
+		{"PUT", "/radio/active-profile", `{"profile":1} {"profile":2}`, "malformed JSON at byte 14"},
+		{"PATCH", "/radio/profiles/0", "{\"mode\":\"US\xffB\"}", "mode: invalid UTF-8"},
+		{"PATCH", "/radio/profiles/0", `{"power":`, "malformed JSON: it ends early"},
+		{"PUT", "/radio/active-profile", `[1]`, "expected a JSON object"},
+		{"PUT", "/radio/active-profile", `{"profile":"1"}`, "profile: expected int"},
+	} {
+		if r := e.Do(c.method, c.path, c.body); r.Status != 400 || r.JSON(t)["detail"] != c.detail {
+			t.Errorf("%s %s %q = %d %s, want 400 %q", c.method, c.path, c.body, r.Status, r.Body, c.detail)
+		}
+	}
+	if e.Radio.State().ActiveProfile != 0 {
+		t.Error("a refused body changed the active profile")
 	}
 }
 
@@ -161,5 +183,51 @@ func TestHermesV1Basics(t *testing.T) {
 	}
 	if r := e.Cmd("rtc.offer", "{}"); r["error"].(map[string]any)["code"] != "unknown_cmd" {
 		t.Errorf("a spec command not implemented yet is unknown_cmd: %v", r)
+	}
+}
+
+// A refused frame's reply carries its id when the frame has exactly one
+// top-level "id", so a client with several commands in flight knows which
+// one failed.
+func TestFrameErrorID(t *testing.T) {
+	e := testapi.New(t)
+	w := e.Open()
+	w.Next(testapi.Type("hello"), time.Second)
+	for _, c := range []struct{ frame, id string }{
+		{`{"type":"cmd","id":"a","cmd":"radio.ptt","args":{"on":true,"on":false}}`, "a"},
+		{"{\"type\":\"cmd\",\"cmd\":\"radio.ptt\",\"args\":{\"x\":\"\xff\"},\"id\":\"b\"}", "b"},
+		{`{"id":"c","id":"d","type":"cmd","cmd":"radio.ptt"}`, ""}, // which one?
+		{`{"type":"cmd","cmd":"radio.ptt","args":{"id":"e","id":"e"}}`, ""},
+		{`{"type":"cmd","id":7,"cmd":"radio.ptt","args":{"on":1,"on":2}}`, ""},
+		{`{"type":"cmd","id":"f","cmd":"radio.ptt","args":{"on":`, ""},
+		{`["id","g"]`, ""},
+	} {
+		w.Send(c.frame)
+		r := w.Next(testapi.Type("reply"), time.Second)
+		if er, _ := r["error"].(map[string]any); r["id"] != c.id || er["code"] != "bad_request" {
+			t.Errorf("%q: reply %v, want bad_request with id %q", c.frame, r, c.id)
+		}
+	}
+}
+
+// A command's result is the reply's data even when it is empty: {} and []
+// are values, not a missing member (encoding/json/v2's omitempty would
+// drop them).
+func TestReplyEmptyData(t *testing.T) {
+	e := testapi.New(t)
+	e.R.Command("rtc.offer", spec.RoleUser, func(context.Context, *api.Conn, jsontext.Value) (any, *api.CmdError) {
+		return struct{}{}, nil
+	})
+	e.R.Command("rtc.close", spec.RoleUser, func(context.Context, *api.Conn, jsontext.Value) (any, *api.CmdError) {
+		return []any{}, nil
+	})
+	for name, want := range map[string]any{"rtc.offer": map[string]any{}, "rtc.close": []any{}} {
+		r := e.Cmd(name, "{}")
+		if d, ok := r["data"]; r["ok"] != true || !ok || !reflect.DeepEqual(d, want) {
+			t.Errorf("%s: reply %v, want data %v", name, r, want)
+		}
+		if _, ok := r["error"]; ok {
+			t.Errorf("%s: an ok reply has an error member: %v", name, r)
+		}
 	}
 }

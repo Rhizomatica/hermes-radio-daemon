@@ -2,7 +2,8 @@ package api
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"slices"
@@ -60,7 +61,7 @@ type topic struct {
 // for a stream topic how far it has got.
 type subscription struct {
 	seq    uint64
-	last   map[string]json.RawMessage
+	last   map[string]jsontext.Value
 	cursor uint64
 }
 
@@ -153,27 +154,27 @@ func (rt *Router) Topics(role spec.Role) []string {
 
 // event is api-ws.yaml EventEnvelope.
 type event struct {
-	Type     string                     `json:"type"`
-	Topic    string                     `json:"topic"`
-	Seq      uint64                     `json:"seq"`
-	TS       string                     `json:"ts"`
-	Snapshot bool                       `json:"snapshot,omitempty"`
-	Data     map[string]json.RawMessage `json:"data"`
+	Type     string                    `json:"type"`
+	Topic    string                    `json:"topic"`
+	Seq      uint64                    `json:"seq"`
+	TS       string                    `json:"ts"`
+	Snapshot bool                      `json:"snapshot,omitzero"`
+	Data     map[string]jsontext.Value `json:"data"`
 }
 
 func stamp(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
 
 // fields reads a topic's state (for connection c) as its top-level JSON fields.
-func fields(t topic, c *Conn) (map[string]json.RawMessage, error) {
+func fields(t topic, c *Conn) (map[string]jsontext.Value, error) {
 	v, err := t.state(c)
 	if err != nil {
 		return nil, err
 	}
-	b, err := json.Marshal(v)
+	b, err := json.Marshal(v, output)
 	if err != nil {
 		return nil, err
 	}
-	var m map[string]json.RawMessage
+	var m map[string]jsontext.Value
 	if err := json.Unmarshal(b, &m); err != nil {
 		return nil, fmt.Errorf("topic state is not a JSON object: %w", err)
 	}
@@ -189,9 +190,9 @@ func (c *Conn) subscribe(id string, names []string) {
 		c.reply(id, nil, Errf(CodeMissingArg, "topics"))
 		return
 	}
-	snaps := make([]map[string]json.RawMessage, len(names))
+	snaps := make([]map[string]jsontext.Value, len(names))
 	type history struct {
-		items []map[string]json.RawMessage
+		items []map[string]jsontext.Value
 		next  uint64
 	}
 	hists := make([]*history, len(names))
@@ -217,7 +218,7 @@ func (c *Conn) subscribe(id string, names []string) {
 				var h history
 				h.next = next
 				for _, it := range items {
-					var m map[string]json.RawMessage
+					var m map[string]jsontext.Value
 					if m, err = object(it); err != nil {
 						break
 					}
@@ -290,12 +291,12 @@ func (c *Conn) subscribeBinary(names []string) *CmdError {
 }
 
 // object marshals v as a JSON object's fields.
-func object(v any) (map[string]json.RawMessage, error) {
-	b, err := json.Marshal(v)
+func object(v any) (map[string]jsontext.Value, error) {
+	b, err := json.Marshal(v, output)
 	if err != nil {
 		return nil, err
 	}
-	var m map[string]json.RawMessage
+	var m map[string]jsontext.Value
 	if err := json.Unmarshal(b, &m); err != nil {
 		return nil, fmt.Errorf("topic item is not a JSON object: %w", err)
 	}
@@ -305,7 +306,7 @@ func object(v any) (map[string]json.RawMessage, error) {
 // streamSnapshot (re)starts a stream subscription: the history, one event
 // per item from seq 0, all marked snapshot; then new items from next. With
 // c.mu held.
-func (c *Conn) streamSnapshot(name string, items []map[string]json.RawMessage, next uint64) {
+func (c *Conn) streamSnapshot(name string, items []map[string]jsontext.Value, next uint64) {
 	s := &subscription{cursor: next}
 	c.subs[name] = s
 	now := stamp(time.Now())
@@ -322,7 +323,7 @@ func (c *Conn) streamSnapshot(name string, items []map[string]json.RawMessage, n
 
 // snapshot (re)starts a subscription: the whole state m, seq 0. With c.mu
 // held.
-func (c *Conn) snapshot(name string, m map[string]json.RawMessage) {
+func (c *Conn) snapshot(name string, m map[string]jsontext.Value) {
 	c.subs[name] = &subscription{seq: 0, last: m}
 	c.send(event{Type: "event", Topic: name, Seq: 0, TS: stamp(time.Now()), Snapshot: true, Data: m})
 }
@@ -388,7 +389,7 @@ func (rt *Router) publishOnce(now time.Time) {
 			rt.publishStream(name, t, conns, now)
 			continue
 		}
-		var shared map[string]json.RawMessage
+		var shared map[string]jsontext.Value
 		if !t.each {
 			var err error
 			if shared, err = fields(t, nil); err != nil {
@@ -420,7 +421,7 @@ func (rt *Router) publishOnce(now time.Time) {
 // cursor: one read per cursor, as subscribers that keep up share one.
 func (rt *Router) publishStream(name string, t topic, conns []*Conn, now time.Time) {
 	type batch struct {
-		items []map[string]json.RawMessage
+		items []map[string]jsontext.Value
 		next  uint64
 		err   error
 	}
@@ -469,17 +470,17 @@ func (rt *Router) publishStream(name string, t topic, conns []*Conn, now time.Ti
 // changed returns the fields of cur that differ from (or are not in) last.
 // A field that is a JSON object in both is compared inside, so an event
 // carries only the entries that changed ({"levels":{"AF":0.6}}).
-func changed(last, cur map[string]json.RawMessage) map[string]json.RawMessage {
-	diff := map[string]json.RawMessage{}
+func changed(last, cur map[string]jsontext.Value) map[string]jsontext.Value {
+	diff := map[string]jsontext.Value{}
 	for k, v := range cur {
 		old, ok := last[k]
 		if ok && bytes.Equal(old, v) {
 			continue
 		}
-		var o, n map[string]json.RawMessage
+		var o, n map[string]jsontext.Value
 		if ok && isObject(old) && isObject(v) && json.Unmarshal(old, &o) == nil && json.Unmarshal(v, &n) == nil {
 			if d := changed(o, n); len(d) > 0 {
-				b, _ := json.Marshal(d)
+				b, _ := json.Marshal(d, output)
 				diff[k] = b
 			}
 			continue
@@ -489,7 +490,7 @@ func changed(last, cur map[string]json.RawMessage) map[string]json.RawMessage {
 	return diff
 }
 
-func isObject(b json.RawMessage) bool {
+func isObject(b jsontext.Value) bool {
 	b = bytes.TrimSpace(b)
 	return len(b) > 0 && b[0] == '{'
 }
