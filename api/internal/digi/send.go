@@ -2,7 +2,8 @@ package digi
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"log/slog"
 	"strconv"
@@ -48,7 +49,7 @@ func registerSend(rt *api.Router) {
 // CW and RTTY identify the station: without its callsign the text gets
 // " de <callsign>". The reply says it is queued; the digi topic reports it
 // (dir tx) when it goes out.
-func (s *sender) cmd(ctx context.Context, c *api.Conn, args json.RawMessage) (any, *api.CmdError) {
+func (s *sender) cmd(ctx context.Context, c *api.Conn, args jsontext.Value) (any, *api.CmdError) {
 	var a struct {
 		Mode *string `json:"mode"`
 		Text *string `json:"text"`

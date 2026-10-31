@@ -4,7 +4,8 @@
 package digi
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"net/http"
 	"sort"
@@ -76,7 +77,7 @@ func (h handlers) getLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var picked []json.RawMessage
+	var picked []jsontext.Value
 	var ids []uint64
 	for _, line := range h.r.DigiLog(0, ringMax) {
 		var e entryHead
@@ -108,7 +109,7 @@ func (h handlers) getLog(w http.ResponseWriter, r *http.Request) {
 		idx[i] = i
 	}
 	sort.Slice(idx, func(a, b int) bool { return ids[idx[a]] > ids[idx[b]] })
-	page := api.Page[json.RawMessage]{Data: []json.RawMessage{}}
+	page := api.Page[jsontext.Value]{Data: []jsontext.Value{}}
 	for _, i := range idx {
 		if len(page.Data) == limit {
 			page.NextCursor = api.EncodeCursor(ids[idx[len(page.Data)-1]])

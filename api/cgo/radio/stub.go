@@ -1,7 +1,8 @@
 package radio
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"strings"
 	"sync"
 	"time"
@@ -20,8 +21,8 @@ type Stub struct {
 	rigDown  bool
 	reads    int
 	digi     DigiSettings
-	log      []json.RawMessage
-	modem    json.RawMessage
+	log      []jsontext.Value
+	modem    jsontext.Value
 	gps      Gps
 	listen   string // mercury's listen mode
 	busy     string // "arq", "broadcast" or ""
@@ -105,7 +106,7 @@ func (s *Stub) SetTX(tx bool) { s.mu.Lock(); s.state.TX = tx; s.mu.Unlock() }
 // AddDigi appends a digi log entry (one JSON object).
 func (s *Stub) AddDigi(entry string) {
 	s.mu.Lock()
-	s.log = append(s.log, json.RawMessage(entry))
+	s.log = append(s.log, jsontext.Value(entry))
 	s.mu.Unlock()
 }
 
@@ -115,7 +116,7 @@ func (s *Stub) SetModem(status string) {
 	if status == "" {
 		s.modem = nil
 	} else {
-		s.modem = json.RawMessage(status)
+		s.modem = jsontext.Value(status)
 	}
 	s.mu.Unlock()
 }
@@ -463,7 +464,7 @@ func (s *Stub) DigiSend(text string) error {
 	id := uint64(len(s.log) + 1)
 	s.mu.Unlock()
 	b, _ := json.Marshal(map[string]any{"id": id, "at": time.Now().UTC().Format(time.RFC3339), "mode": st.Mode,
-		"dir": "tx", "text": text, "frequency_hz": st.FrequencyHz})
+		"dir": "tx", "text": text, "frequency_hz": st.FrequencyHz}, json.Deterministic(true))
 	s.AddDigi(string(b))
 	return nil
 }
@@ -523,10 +524,10 @@ func (s *Stub) DigiSent() []string {
 	return append([]string(nil), s.digiSent...)
 }
 
-func (s *Stub) DigiLog(after uint64, max int) []json.RawMessage {
+func (s *Stub) DigiLog(after uint64, max int) []jsontext.Value {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var out []json.RawMessage
+	var out []jsontext.Value
 	for _, e := range s.log {
 		var head struct {
 			ID uint64 `json:"id"`
@@ -541,7 +542,7 @@ func (s *Stub) DigiLog(after uint64, max int) []json.RawMessage {
 	return out
 }
 
-func (s *Stub) ModemStatus() (json.RawMessage, bool) {
+func (s *Stub) ModemStatus() (jsontext.Value, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.modem, s.modem != nil

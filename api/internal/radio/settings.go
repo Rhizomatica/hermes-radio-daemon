@@ -1,7 +1,8 @@
 package radio
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"math"
 	"net/http"
@@ -41,7 +42,7 @@ func (h handlers) getSettings(w http.ResponseWriter, r *http.Request) {
 // updateSettings checks every field (RadioSettingsPatch) before it applies
 // any; then answers with the settings as they are.
 func (h handlers) updateSettings(w http.ResponseWriter, r *http.Request) {
-	var raw map[string]json.RawMessage
+	var raw map[string]jsontext.Value
 	if !api.Decode(w, r, &raw) {
 		return
 	}

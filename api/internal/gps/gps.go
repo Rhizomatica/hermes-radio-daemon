@@ -3,7 +3,8 @@
 package gps
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"net/http"
 	"strings"
@@ -83,7 +84,7 @@ func (h handlers) getGps(w http.ResponseWriter, r *http.Request) {
 // updateSettings checks every field before it applies any, then answers with
 // the settings as they are.
 func (h handlers) updateSettings(w http.ResponseWriter, r *http.Request) {
-	var raw map[string]json.RawMessage
+	var raw map[string]jsontext.Value
 	if !api.Decode(w, r, &raw) {
 		return
 	}
@@ -152,12 +153,12 @@ func (h handlers) problemFor(w http.ResponseWriter, r *http.Request, err error) 
 
 // parseReport checks and merges the report object over the current one; both
 // fields are optional.
-func parseReport(raw json.RawMessage, key string, cur rad.GpsReport, f api.Fields) (rad.GpsReport, bool) {
+func parseReport(raw jsontext.Value, key string, cur rad.GpsReport, f api.Fields) (rad.GpsReport, bool) {
 	if strings.TrimSpace(string(raw)) == "null" {
 		f.Add(key, "an object, not null")
 		return cur, false
 	}
-	var m map[string]json.RawMessage
+	var m map[string]jsontext.Value
 	if err := json.Unmarshal(raw, &m); err != nil {
 		f.Add(key, "an object with enabled and interval_s")
 		return cur, false
@@ -183,7 +184,7 @@ func parseReport(raw json.RawMessage, key string, cur rad.GpsReport, f api.Field
 	return rp, true
 }
 
-func intIn(raw json.RawMessage, key string, lo, hi int64, f api.Fields) (int64, bool) {
+func intIn(raw jsontext.Value, key string, lo, hi int64, f api.Fields) (int64, bool) {
 	var v int64
 	if err := json.Unmarshal(raw, &v); err != nil {
 		f.Add(key, "an integer")

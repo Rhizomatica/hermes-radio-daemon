@@ -13,7 +13,8 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -225,11 +226,11 @@ func dialRadiod(t *testing.T, d *Daemon) *radiodClient {
 
 // reply is one command's answer.
 type reply struct {
-	OK     bool            `json:"ok"`
-	Cmd    string          `json:"cmd"`
-	Status string          `json:"status"`
-	Error  string          `json:"error"`
-	Value  json.RawMessage `json:"value"`
+	OK     bool           `json:"ok"`
+	Cmd    string         `json:"cmd"`
+	Status string         `json:"status"`
+	Error  string         `json:"error"`
+	Value  jsontext.Value `json:"value"`
 }
 
 func (r reply) Number(t *testing.T) int64 {
@@ -291,7 +292,7 @@ func (c *radiodClient) nextReply() reply {
 		if op != opText {
 			continue
 		}
-		var probe map[string]json.RawMessage
+		var probe map[string]jsontext.Value
 		if json.Unmarshal(msg, &probe) != nil {
 			continue
 		}

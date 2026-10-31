@@ -2,7 +2,7 @@ package radio
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"log/slog"
 	"strconv"
@@ -45,7 +45,7 @@ func (p *ptt) closed(c *api.Conn) {
 	}
 }
 
-func (p *ptt) cmd(_ context.Context, c *api.Conn, args json.RawMessage) (any, *api.CmdError) {
+func (p *ptt) cmd(_ context.Context, c *api.Conn, args jsontext.Value) (any, *api.CmdError) {
 	var a struct {
 		On *bool `json:"on"`
 	}

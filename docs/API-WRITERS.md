@@ -100,7 +100,7 @@ hermes-radio-daemon/
 ```
 
 The API is not a GUI's: scripts, other stations and the mesh use it as much as any screen. It
-lives in `api/`, a Go module (go.mod: Go 1.27.2) with the one C file it needs beside it:
+lives in `api/`, a Go module (go.mod: Go 1.27.3) with the one C file it needs beside it:
 
 ```
 api/
@@ -199,7 +199,7 @@ A write is decoded strictly, **validated in full before anything is applied**, a
 422 with every bad field:
 
 ```go
-var raw map[string]json.RawMessage
+var raw map[string]jsontext.Value
 if !api.Decode(w, r, &raw) {            // 415 without application/json, 400 on bad JSON
 	return
 }
@@ -244,7 +244,7 @@ lists, with the lowest role that may run it:
 ```go
 rt.Command("radio.select_profile", spec.RoleOperator, h.cmdSelect)
 
-func (h handlers) cmdSelect(ctx context.Context, c *api.Conn, args json.RawMessage) (any, *api.CmdError) {
+func (h handlers) cmdSelect(ctx context.Context, c *api.Conn, args jsontext.Value) (any, *api.CmdError) {
 	var a struct {
 		Profile *int `json:"profile"`
 	}
@@ -451,6 +451,19 @@ CI runs all three on Debian 13, amd64 and arm64, with and without the Go layer.
   (`internal/api/cors.go`, `main:api_cors_origins`). Cross-origin callers authenticate with a
   Bearer token (or the `hermes.token.` subprotocol on the upgrade), never the cookie, so don't
   add a credentialed path.
+- **JSON is `encoding/json/v2`.** Import `encoding/json/v2` and `encoding/json/jsontext`
+  (`jsontext.Value` where encoding/json had `json.RawMessage`), never `encoding/json`. Read
+  what a client sends only through `api.Decode` and `api.DecodeArgs`: exact member names,
+  none the type does not have, no duplicates, valid UTF-8, one value. The router writes
+  responses, replies and events with object members in a fixed order (the topic publisher
+  compares bytes to see what changed), so a handler returns values and does not marshal them
+  itself. v2 differs from encoding/json in ways that change what goes out: a nil slice or
+  map is `[]` / `{}`, not `null`, and `omitempty` omits only empty JSON (`""`, `null`, `[]`,
+  `{}`), so a `false` or `0` to leave out needs `omitzero`.
+- **What a connection holds goes when it closes.** A domain that takes something in C for a
+  connection (PTT, a subscription) releases it in a `rt.OnClose` hook, which runs after the
+  connection's last command; C's own release on close can come before a command that was
+  still running.
 - **Threads:** handlers run concurrently on Go's goroutines. Blocking in a handler is fine; it
   blocks only that request. Don't start goroutines that outlive their request or connection.
 - **Memory:** the Go heap has a soft 64 MB limit (`GOMEMLIMIT` overrides it) for the 1 GB Pi.

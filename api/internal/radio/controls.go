@@ -17,7 +17,8 @@ package radio
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -150,7 +151,7 @@ func (h *controls) read(names []string) (Values, *api.CmdError) {
 }
 
 // rig.get {names}: the values now.
-func (h *controls) cmdGet(_ context.Context, _ *api.Conn, args json.RawMessage) (any, *api.CmdError) {
+func (h *controls) cmdGet(_ context.Context, _ *api.Conn, args jsontext.Value) (any, *api.CmdError) {
 	var a struct {
 		Names *[]string `json:"names"`
 	}
@@ -172,10 +173,10 @@ func (h *controls) cmdGet(_ context.Context, _ *api.Conn, args json.RawMessage) 
 
 // rig.set {name, value}: a function takes true or false, a level or a
 // parameter a number within the rig's range. Replies with the value set.
-func (h *controls) cmdSet(_ context.Context, _ *api.Conn, args json.RawMessage) (any, *api.CmdError) {
+func (h *controls) cmdSet(_ context.Context, _ *api.Conn, args jsontext.Value) (any, *api.CmdError) {
 	var a struct {
-		Name  *string         `json:"name"`
-		Value json.RawMessage `json:"value"`
+		Name  *string        `json:"name"`
+		Value jsontext.Value `json:"value"`
 	}
 	if cerr := api.DecodeArgs(args, &a); cerr != nil {
 		return nil, cerr
@@ -232,7 +233,7 @@ type watch struct {
 
 // rig.watch {names, interval_ms}: radio.rig events for this client carry
 // these controls, read every interval_ms. An empty list stops.
-func (h *controls) cmdWatch(_ context.Context, c *api.Conn, args json.RawMessage) (any, *api.CmdError) {
+func (h *controls) cmdWatch(_ context.Context, c *api.Conn, args jsontext.Value) (any, *api.CmdError) {
 	var a struct {
 		Names      *[]string `json:"names"`
 		IntervalMS *int      `json:"interval_ms"`

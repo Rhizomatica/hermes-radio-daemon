@@ -2,7 +2,8 @@ package api
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"net/http"
 	"sort"
@@ -53,7 +54,7 @@ func Errf(code, format string, a ...any) *CmdError {
 }
 
 // CommandFunc runs one command: its result is the reply's data.
-type CommandFunc func(ctx context.Context, c *Conn, args json.RawMessage) (any, *CmdError)
+type CommandFunc func(ctx context.Context, c *Conn, args jsontext.Value) (any, *CmdError)
 
 type command struct {
 	role spec.Role
@@ -250,13 +251,13 @@ func (rt *Router) heartbeat() {
 		if !open {
 			continue
 		}
-		b, _ := json.Marshal(heartbeat{"heartbeat", stamp(time.Now())})
+		b, _ := json.Marshal(heartbeat{"heartbeat", stamp(time.Now())}, sorted)
 		_ = rt.radio.WSBroadcast(b)
 	}
 }
 
 func (c *Conn) send(v any) {
-	b, err := json.Marshal(v)
+	b, err := json.Marshal(v, sorted)
 	if err == nil {
 		_ = c.rt.radio.WSSend(c.ID, b)
 	}
@@ -335,18 +336,18 @@ func (c *Conn) release() {
 
 func (c *Conn) handle(frame []byte) {
 	var f struct {
-		Type   string          `json:"type"`
-		ID     string          `json:"id"`
-		Cmd    string          `json:"cmd"`
-		Args   json.RawMessage `json:"args"`
-		Topics []string        `json:"topics"`
+		Type   string         `json:"type"`
+		ID     string         `json:"id"`
+		Cmd    string         `json:"cmd"`
+		Args   jsontext.Value `json:"args"`
+		Topics []string       `json:"topics"`
 	}
 	if len(frame) > maxFrame {
 		c.reply("", nil, Errf(CodeBadRequest, "frame larger than %d bytes", maxFrame))
 		return
 	}
 	if err := json.Unmarshal(frame, &f); err != nil {
-		c.reply("", nil, Errf(CodeBadRequest, "not a JSON object"))
+		c.reply("", nil, Errf(CodeBadRequest, "frame: %s", jsonErr(err)))
 		return
 	}
 	if len(f.ID) > 64 {
@@ -371,7 +372,7 @@ func (c *Conn) handle(frame []byte) {
 			return
 		}
 		if len(f.Args) == 0 || string(f.Args) == "null" {
-			f.Args = json.RawMessage("{}")
+			f.Args = jsontext.Value("{}")
 		}
 		start := time.Now()
 		data, cerr := c.safeRun(f.Cmd, cmd.h, f.Args)
@@ -394,7 +395,7 @@ func (c *Conn) handle(frame []byte) {
 
 // safeRun turns a handler's panic into an internal error, so one bad
 // handler cannot take the daemon (and the radio) down with it.
-func (c *Conn) safeRun(name string, h CommandFunc, args json.RawMessage) (data any, cerr *CmdError) {
+func (c *Conn) safeRun(name string, h CommandFunc, args jsontext.Value) (data any, cerr *CmdError) {
 	defer func() {
 		if p := recover(); p != nil {
 			c.rt.wsLog.Error("cmd "+name+": the command panicked", "conn", c.ID, "panic", fmt.Sprint(p))
@@ -406,12 +407,10 @@ func (c *Conn) safeRun(name string, h CommandFunc, args json.RawMessage) (data a
 	return h(ctx, c, args)
 }
 
-// DecodeArgs reads a command's args strictly (no unknown fields); on
-// failure the CmdError says why.
-func DecodeArgs(args json.RawMessage, dst any) *CmdError {
-	dec := json.NewDecoder(bytesReader(args))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
+// DecodeArgs reads a command's args strictly (strict); on failure the
+// CmdError says why.
+func DecodeArgs(args jsontext.Value, dst any) *CmdError {
+	if err := json.Unmarshal(args, dst, strict); err != nil {
 		return Errf(CodeBadRequest, "args: %s", jsonErr(err))
 	}
 	return nil

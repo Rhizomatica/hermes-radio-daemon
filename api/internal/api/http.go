@@ -1,9 +1,8 @@
 package api
 
 import (
-	"bytes"
 	"encoding/base64"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -54,10 +53,10 @@ func Problem(w http.ResponseWriter, r *http.Request, status int, code, detail st
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(problem{
+	_ = json.MarshalWrite(w, problem{
 		Type: "https://hermes.radio/problems/" + code, Title: title, Status: status, Code: code,
 		Detail: detail, RequestID: RequestID(r), Errors: errors,
-	})
+	}, sorted)
 }
 
 // Invalid answers 422 with the fields that failed.
@@ -73,34 +72,46 @@ func JSON(w http.ResponseWriter, status int, v any) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	_ = json.MarshalWrite(w, v, sorted)
 }
 
 // Decode reads the JSON body into dst: Content-Type application/json, one
-// object, no field the type does not have. On failure it has answered
-// (415 or 400) and returns false.
+// value, read strictly (strict). On failure it has answered (415 or 400)
+// and returns false.
 func Decode(w http.ResponseWriter, r *http.Request, dst any) bool {
 	if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt != "application/json" {
 		Problem(w, r, http.StatusUnsupportedMediaType, "unsupported_media_type", "send application/json", nil)
 		return false
 	}
-	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
+	if err := json.UnmarshalRead(io.LimitReader(r.Body, 1<<20), dst, strict); err != nil {
 		Problem(w, r, http.StatusBadRequest, "bad_request", jsonErr(err), nil)
-		return false
-	}
-	if dec.More() {
-		Problem(w, r, http.StatusBadRequest, "bad_request", "one JSON value expected", nil)
 		return false
 	}
 	return true
 }
 
+// strict is how the API reads what a client sends (request bodies, command
+// args): exact member names, none the type does not have. encoding/json/v2
+// also refuses duplicate names, invalid UTF-8 and anything after the value.
+var strict = json.RejectUnknownMembers(true)
+
+// sorted is how the API writes JSON: object members in a fixed order, so
+// the same value is the same bytes (the topic publisher compares bytes to
+// see what changed).
+var sorted = json.Deterministic(true)
+
+// jsonErr says what was wrong with a client's JSON, naming the field.
 func jsonErr(err error) string {
-	var te *json.UnmarshalTypeError
-	if errors.As(err, &te) && te.Field != "" {
-		return fmt.Sprintf("%s: expected %s", te.Field, te.Type)
+	var se *json.SemanticError
+	if !errors.As(err, &se) || se.JSONPointer == "" {
+		return err.Error()
+	}
+	field := strings.ReplaceAll(strings.TrimPrefix(string(se.JSONPointer), "/"), "/", ".")
+	switch {
+	case errors.Is(err, json.ErrUnknownName):
+		return fmt.Sprintf("%s: unknown field", field)
+	case se.GoType != nil:
+		return fmt.Sprintf("%s: expected %s", field, se.GoType)
 	}
 	return err.Error()
 }
@@ -153,8 +164,6 @@ func DecodeCursor(w http.ResponseWriter, r *http.Request) (uint64, bool) {
 	}
 	return n, true
 }
-
-func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }
 
 // SameOrigin reports whether the request's Origin header names the request's
 // host. It is false when Origin is absent, so callers that exempt other

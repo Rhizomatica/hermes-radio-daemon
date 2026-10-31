@@ -9,7 +9,7 @@
 package integration
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"io"
 	"net/http"
 	"strconv"

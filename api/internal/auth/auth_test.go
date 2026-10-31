@@ -2,7 +2,7 @@ package auth_test
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"io"
 	"net/http/httptest"
 	"path/filepath"

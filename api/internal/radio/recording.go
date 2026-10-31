@@ -2,7 +2,7 @@ package radio
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 
 	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
@@ -15,15 +15,15 @@ import (
 // The reply says which recordings are on afterwards.
 func registerRecording(rt *api.Router) {
 	r := rt.Radio()
-	rt.Command("recording.start", spec.RoleOperator, func(_ context.Context, _ *api.Conn, args json.RawMessage) (any, *api.CmdError) {
+	rt.Command("recording.start", spec.RoleOperator, func(_ context.Context, _ *api.Conn, args jsontext.Value) (any, *api.CmdError) {
 		return record(r, true, args)
 	})
-	rt.Command("recording.stop", spec.RoleOperator, func(_ context.Context, _ *api.Conn, args json.RawMessage) (any, *api.CmdError) {
+	rt.Command("recording.stop", spec.RoleOperator, func(_ context.Context, _ *api.Conn, args jsontext.Value) (any, *api.CmdError) {
 		return record(r, false, args)
 	})
 }
 
-func record(r rad.Radio, start bool, args json.RawMessage) (any, *api.CmdError) {
+func record(r rad.Radio, start bool, args jsontext.Value) (any, *api.CmdError) {
 	var a struct {
 		Stream *string `json:"stream"`
 	}

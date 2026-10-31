@@ -1,7 +1,8 @@
 package users
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"net/http"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
@@ -25,7 +26,7 @@ func (h *handlers) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var raw map[string]json.RawMessage
+	var raw map[string]jsontext.Value
 	if !api.Decode(w, r, &raw) {
 		return
 	}
@@ -193,7 +194,7 @@ func (h *handlers) setPassword(w http.ResponseWriter, r *http.Request) {
 }
 
 // nullableString reads a JSON string or null.
-func nullableString(v json.RawMessage) (*string, bool, error) {
+func nullableString(v jsontext.Value) (*string, bool, error) {
 	if string(v) == "null" {
 		return nil, true, nil
 	}

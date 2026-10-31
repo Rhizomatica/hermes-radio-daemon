@@ -7,7 +7,7 @@
 package radio
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 )
 
@@ -186,7 +186,7 @@ type Radio interface {
 	SetVoiceCodec(name string) error
 	// DigiLog returns up to max entries after id `after`, oldest first,
 	// each one JSON object in digi_log's line format.
-	DigiLog(after uint64, max int) []json.RawMessage
+	DigiLog(after uint64, max int) []jsontext.Value
 	// DigiSend queues text for the active profile's digital text mode:
 	// ErrNotSupported when that is not FT8, CW or RTTY, ErrInvalid for FT8
 	// text the modulator cannot carry, ErrBusy with the queue full. The
@@ -210,7 +210,7 @@ type Radio interface {
 	SetGpsSettings(GpsSettings) error
 
 	// ModemStatus is mercury's last status JSON; false without mercury.
-	ModemStatus() (json.RawMessage, bool)
+	ModemStatus() (jsontext.Value, bool)
 
 	// Mercury's listen mode, its broadcast plane and chat (its host API).
 	// ErrNotSupported while mercury is not running.

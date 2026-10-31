@@ -2,7 +2,7 @@ package modem
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"time"
 
@@ -53,7 +53,7 @@ func (h handlers) chat(after uint64) ([]any, uint64, error) {
 
 // modem.chat.send: one line on either plane; the broadcast plane sends in
 // the listen mode. The line comes back on modem.chat once mercury stores it.
-func (h handlers) cmdChatSend(_ context.Context, _ *api.Conn, args json.RawMessage) (any, *api.CmdError) {
+func (h handlers) cmdChatSend(_ context.Context, _ *api.Conn, args jsontext.Value) (any, *api.CmdError) {
 	var a struct {
 		Plane *string `json:"plane"`
 		Text  *string `json:"text"`

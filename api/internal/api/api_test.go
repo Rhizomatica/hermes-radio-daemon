@@ -94,8 +94,25 @@ func TestDecodeErrors(t *testing.T) {
 	if r := e.Do("PATCH", "/radio/profiles/0", `{"power":`); r.Status != 400 {
 		t.Errorf("broken JSON = %d, want 400", r.Status)
 	}
-	if r := e.Do("PUT", "/radio/active-profile", `{"profile":1,"extra":2}`); r.Status != 400 {
-		t.Errorf("unknown field = %d, want 400", r.Status)
+	if r := e.Do("PUT", "/radio/active-profile", `{"profile":1,"extra":2}`); r.Status != 400 ||
+		r.JSON(t)["detail"] != "extra: unknown field" {
+		t.Errorf("unknown field = %d %s, want 400", r.Status, r.Body)
+	}
+	// encoding/json/v2 reads strictly: what encoding/json let through, and
+	// a later reader could read another way, is a 400.
+	for _, c := range []struct{ method, path, body, why string }{
+		{"PUT", "/radio/active-profile", `{"Profile":1}`, "a member name in another case"},
+		{"PUT", "/radio/active-profile", `{"profile":1,"profile":2}`, "a duplicate member"},
+		{"PATCH", "/radio/profiles/0", `{"power":5,"power":90}`, "a duplicate member in a PATCH"},
+		{"PUT", "/radio/active-profile", `{"profile":1} {"profile":2}`, "a second value"},
+		{"PATCH", "/radio/profiles/0", "{\"mode\":\"US\xffB\"}", "invalid UTF-8"},
+	} {
+		if r := e.Do(c.method, c.path, c.body); r.Status != 400 {
+			t.Errorf("%s: %s %s = %d %s, want 400", c.why, c.method, c.path, r.Status, r.Body)
+		}
+	}
+	if e.Radio.State().ActiveProfile != 0 {
+		t.Error("a refused body changed the active profile")
 	}
 }
 
