@@ -44,7 +44,7 @@ func (h handlers) status() (Status, error) {
 		return Status{}, errNotRunning
 	}
 	var m mercuryStatus
-	if err := json.Unmarshal(raw, &m); err != nil {
+	if err := json.Unmarshal(raw, &m, rad.FromC); err != nil {
 		return Status{}, fmt.Errorf("mercury's status: %w", err)
 	}
 	return statusOf(m), nil

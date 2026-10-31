@@ -75,15 +75,16 @@ func TestPTTClosedWhileKeying(t *testing.T) {
 
 // radio.ptt's args are read strictly: a duplicate "on" (which encoding/json
 // read as its last) or "ON" (which it read as "on") key nothing. A
-// duplicate fails the whole frame, so its reply has no id.
+// duplicate fails the whole frame, but its reply still carries the id.
 func TestPTTArgsStrict(t *testing.T) {
 	e := testapi.New(t)
 	w := e.Open()
-	for i, c := range []struct{ args, id string }{{`{"on":false,"on":true}`, ""}, {`{"ON":true}`, "s1"}} {
-		w.Send(fmt.Sprintf(`{"type":"cmd","id":"s%d","cmd":"radio.ptt","args":%s}`, i, c.args))
-		r := w.Next(func(m map[string]any) bool { return m["type"] == "reply" && m["id"] == c.id }, 2*time.Second)
+	for i, args := range []string{`{"on":false,"on":true}`, `{"ON":true}`} {
+		id := fmt.Sprintf("s%d", i)
+		w.Send(fmt.Sprintf(`{"type":"cmd","id":"%s","cmd":"radio.ptt","args":%s}`, id, args))
+		r := w.Next(func(m map[string]any) bool { return m["type"] == "reply" && m["id"] == id }, 2*time.Second)
 		if code(r) != "bad_request" || e.Radio.State().TX {
-			t.Errorf("args %s = %v, tx = %v; want bad_request", c.args, r, e.Radio.State().TX)
+			t.Errorf("args %s = %v, tx = %v; want bad_request", args, r, e.Radio.State().TX)
 		}
 	}
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/base64"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -56,7 +57,7 @@ func Problem(w http.ResponseWriter, r *http.Request, status int, code, detail st
 	_ = json.MarshalWrite(w, problem{
 		Type: "https://hermes.radio/problems/" + code, Title: title, Status: status, Code: code,
 		Detail: detail, RequestID: RequestID(r), Errors: errors,
-	}, sorted)
+	}, output)
 }
 
 // Invalid answers 422 with the fields that failed.
@@ -72,7 +73,7 @@ func JSON(w http.ResponseWriter, status int, v any) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.MarshalWrite(w, v, sorted)
+	_ = json.MarshalWrite(w, v, output)
 }
 
 // Decode reads the JSON body into dst: Content-Type application/json, one
@@ -95,25 +96,52 @@ func Decode(w http.ResponseWriter, r *http.Request, dst any) bool {
 // also refuses duplicate names, invalid UTF-8 and anything after the value.
 var strict = json.RejectUnknownMembers(true)
 
-// sorted is how the API writes JSON: object members in a fixed order, so
+// output is how the API writes JSON: object members in a fixed order, so
 // the same value is the same bytes (the topic publisher compares bytes to
-// see what changed).
-var sorted = json.Deterministic(true)
+// see what changed); and invalid UTF-8 in text from C or from the air
+// written as U+FFFD, where encoding/json/v2 would refuse the whole value.
+var output = json.JoinOptions(json.Deterministic(true), jsontext.AllowInvalidUTF8(true))
 
-// jsonErr says what was wrong with a client's JSON, naming the field.
+// jsonErr says what was wrong with a client's JSON, naming the field. The
+// words are the API's own, not encoding/json's, which can change between
+// Go releases.
 func jsonErr(err error) string {
-	var se *json.SemanticError
-	if !errors.As(err, &se) || se.JSONPointer == "" {
-		return err.Error()
+	var syn *jsontext.SyntacticError
+	if errors.As(err, &syn) {
+		at := fieldName(syn.JSONPointer)
+		switch {
+		case errors.Is(err, jsontext.ErrDuplicateName):
+			return at + ": duplicate field"
+		case errors.Is(err, io.ErrUnexpectedEOF):
+			return "malformed JSON: it ends early"
+		case strings.Contains(syn.Err.Error(), "invalid UTF-8"): // no exported error; else the byte
+			if at == "" {
+				return "invalid UTF-8"
+			}
+			return at + ": invalid UTF-8"
+		}
+		return fmt.Sprintf("malformed JSON at byte %d", syn.ByteOffset)
 	}
-	field := strings.ReplaceAll(strings.TrimPrefix(string(se.JSONPointer), "/"), "/", ".")
+	var se *json.SemanticError
+	if !errors.As(err, &se) {
+		return "malformed JSON"
+	}
+	field := fieldName(se.JSONPointer)
 	switch {
+	case field == "":
+		return "expected a JSON object"
 	case errors.Is(err, json.ErrUnknownName):
-		return fmt.Sprintf("%s: unknown field", field)
+		return field + ": unknown field"
 	case se.GoType != nil:
 		return fmt.Sprintf("%s: expected %s", field, se.GoType)
 	}
-	return err.Error()
+	return field + ": wrong type"
+}
+
+// fieldName turns a JSON pointer (/a/b) into the dotted name (a.b) the
+// API's messages use.
+func fieldName(p jsontext.Pointer) string {
+	return strings.ReplaceAll(strings.TrimPrefix(string(p), "/"), "/", ".")
 }
 
 // Fields collects validation messages per field (the problem's "errors").

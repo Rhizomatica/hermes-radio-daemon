@@ -33,7 +33,7 @@ func (h handlers) config() (Config, error) {
 		return Config{}, errNotRunning
 	}
 	var m mercuryStatus
-	if err := json.Unmarshal(raw, &m); err != nil {
+	if err := json.Unmarshal(raw, &m, rad.FromC); err != nil {
 		return Config{}, fmt.Errorf("mercury's status: %w", err)
 	}
 	c := Config{TxGainDB: m.TxGainDB, Waterfall: m.Waterfall, ListenMode: listenMode(m.ListenMode)}

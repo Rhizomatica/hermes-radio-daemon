@@ -459,9 +459,13 @@ CI runs all three on Debian 13, amd64 and arm64, with and without the Go layer.
   none the type does not have, no duplicates, valid UTF-8, one value. The router writes
   responses, replies and events with object members in a fixed order (the topic publisher
   compares bytes to see what changed), so a handler returns values and does not marshal them
-  itself. v2 differs from encoding/json in ways that change what goes out: a nil slice or
-  map is `[]` / `{}`, not `null`, and `omitempty` omits only empty JSON (`""`, `null`, `[]`,
-  `{}`), so a `false` or `0` to leave out needs `omitzero`.
+  itself. Invalid UTF-8 in what goes out is written as U+FFFD. Read JSON that radiod or
+  mercury wrote (status, chat and digi lines) with `rad.FromC`: their text can come from
+  the air, and v2 otherwise refuses the whole value over one bad byte. v2 differs from
+  encoding/json in ways that change what goes out: a nil slice or map is `[]` / `{}`, not
+  `null`; `omitempty` omits any empty JSON (`""`, `null`, `[]`, `{}`), so leave out a
+  value only with `omitzero` (the zero value: `false`, `0`, a nil pointer or interface);
+  and nothing is HTML-escaped and no newline follows a body.
 - **What a connection holds goes when it closes.** A domain that takes something in C for a
   connection (PTT, a subscription) releases it in a `rt.OnClose` hook, which runs after the
   connection's last command; C's own release on close can come before a command that was

@@ -322,7 +322,7 @@ func (binding) ChatSince(after uint64) ([]ChatLine, uint64, error) {
 		}
 		for _, l := range strings.Split(strings.TrimRight(C.GoStringN((*C.char)(buf), C.int(n)), "\n"), "\n") {
 			var cl ChatLine
-			if json.Unmarshal([]byte(l), &cl) == nil {
+			if json.Unmarshal([]byte(l), &cl, FromC) == nil {
 				lines = append(lines, cl)
 			}
 		}

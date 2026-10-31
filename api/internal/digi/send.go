@@ -129,7 +129,7 @@ func (s *sender) stream(after uint64) ([]any, uint64, error) {
 	for i, e := range entries {
 		items[i] = e
 		var h entryHead
-		if json.Unmarshal(e, &h) == nil && h.ID > next {
+		if json.Unmarshal(e, &h, rad.FromC) == nil && h.ID > next {
 			next = h.ID
 		}
 	}

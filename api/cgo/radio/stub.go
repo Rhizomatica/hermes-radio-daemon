@@ -532,7 +532,7 @@ func (s *Stub) DigiLog(after uint64, max int) []jsontext.Value {
 		var head struct {
 			ID uint64 `json:"id"`
 		}
-		if json.Unmarshal(e, &head) == nil && head.ID > after {
+		if json.Unmarshal(e, &head, FromC) == nil && head.ID > after {
 			out = append(out, e)
 			if len(out) == max {
 				break

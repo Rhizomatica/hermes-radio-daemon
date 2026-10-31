@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
@@ -9,6 +10,7 @@ import (
 	"sort"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/spec"
 )
@@ -251,13 +253,13 @@ func (rt *Router) heartbeat() {
 		if !open {
 			continue
 		}
-		b, _ := json.Marshal(heartbeat{"heartbeat", stamp(time.Now())}, sorted)
+		b, _ := json.Marshal(heartbeat{"heartbeat", stamp(time.Now())}, output)
 		_ = rt.radio.WSBroadcast(b)
 	}
 }
 
 func (c *Conn) send(v any) {
-	b, err := json.Marshal(v, sorted)
+	b, err := json.Marshal(v, output)
 	if err == nil {
 		_ = c.rt.radio.WSSend(c.ID, b)
 	}
@@ -284,8 +286,8 @@ type reply struct {
 	Type  string    `json:"type"`
 	ID    string    `json:"id"`
 	OK    bool      `json:"ok"`
-	Data  any       `json:"data,omitempty"`
-	Error *CmdError `json:"error,omitempty"`
+	Data  any       `json:"data,omitzero"`
+	Error *CmdError `json:"error,omitzero"`
 }
 
 func (c *Conn) reply(id string, data any, cerr *CmdError) {
@@ -347,7 +349,7 @@ func (c *Conn) handle(frame []byte) {
 		return
 	}
 	if err := json.Unmarshal(frame, &f); err != nil {
-		c.reply("", nil, Errf(CodeBadRequest, "frame: %s", jsonErr(err)))
+		c.reply(frameID(frame), nil, Errf(CodeBadRequest, "frame: %s", jsonErr(err)))
 		return
 	}
 	if len(f.ID) > 64 {
@@ -405,6 +407,40 @@ func (c *Conn) safeRun(name string, h CommandFunc, args jsontext.Value) (data an
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return h(ctx, c, args)
+}
+
+// frameID finds a refused frame's id, so a client with several commands
+// in flight can tell which one failed: a frame that is an object with one
+// "id" member, a string of at most 64 characters, read past duplicate
+// names and invalid UTF-8 elsewhere in it. Otherwise "".
+func frameID(frame []byte) string {
+	d := jsontext.NewDecoder(bytes.NewReader(frame),
+		jsontext.AllowDuplicateNames(true), jsontext.AllowInvalidUTF8(true))
+	if t, err := d.ReadToken(); err != nil || t.Kind() != '{' {
+		return ""
+	}
+	id, n := "", 0
+	for d.PeekKind() != '}' {
+		name, err := d.ReadToken()
+		if err != nil {
+			return ""
+		}
+		if name.String() != "id" {
+			if d.SkipValue() != nil {
+				return ""
+			}
+			continue
+		}
+		v, err := d.ReadToken()
+		if err != nil || v.Kind() != '"' {
+			return ""
+		}
+		id, n = v.String(), n+1
+	}
+	if n != 1 || len(id) > 64 || !utf8.ValidString(id) {
+		return ""
+	}
+	return id
 }
 
 // DecodeArgs reads a command's args strictly (strict); on failure the

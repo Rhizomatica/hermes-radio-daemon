@@ -170,7 +170,7 @@ func fields(t topic, c *Conn) (map[string]jsontext.Value, error) {
 	if err != nil {
 		return nil, err
 	}
-	b, err := json.Marshal(v, sorted)
+	b, err := json.Marshal(v, output)
 	if err != nil {
 		return nil, err
 	}
@@ -292,7 +292,7 @@ func (c *Conn) subscribeBinary(names []string) *CmdError {
 
 // object marshals v as a JSON object's fields.
 func object(v any) (map[string]jsontext.Value, error) {
-	b, err := json.Marshal(v, sorted)
+	b, err := json.Marshal(v, output)
 	if err != nil {
 		return nil, err
 	}
@@ -480,7 +480,7 @@ func changed(last, cur map[string]jsontext.Value) map[string]jsontext.Value {
 		var o, n map[string]jsontext.Value
 		if ok && isObject(old) && isObject(v) && json.Unmarshal(old, &o) == nil && json.Unmarshal(v, &n) == nil {
 			if d := changed(o, n); len(d) > 0 {
-				b, _ := json.Marshal(d, sorted)
+				b, _ := json.Marshal(d, output)
 				diff[k] = b
 			}
 			continue

@@ -81,7 +81,7 @@ func (h handlers) getLog(w http.ResponseWriter, r *http.Request) {
 	var ids []uint64
 	for _, line := range h.r.DigiLog(0, ringMax) {
 		var e entryHead
-		if json.Unmarshal(line, &e) != nil {
+		if json.Unmarshal(line, &e, rad.FromC) != nil {
 			continue
 		}
 		if before != 0 && e.ID >= before {

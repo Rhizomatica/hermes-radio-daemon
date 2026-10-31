@@ -24,6 +24,11 @@ var (
 	ErrNoPTT        = errors.New("this client does not hold PTT")
 )
 
+// FromC is how Go reads JSON that radiod or mercury wrote. Its text can
+// come from the air with invalid UTF-8, which encoding/json/v2 refuses by
+// default; it reads as U+FFFD, as encoding/json read it.
+var FromC = jsontext.AllowInvalidUTF8(true)
+
 // ControlKind is a control's kind in radiod's control vocabulary
 // (radio/radio_controls.h), whichever backend drives the radio.
 type ControlKind int
