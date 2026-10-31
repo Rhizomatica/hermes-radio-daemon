@@ -884,6 +884,11 @@ every caller `admin`. A `hermes.v1` connection lasts only as long as its session
 session ends or its role changes, radiod closes it (1008). Use `wss://` beyond a trusted
 link: over `ws://` passwords and session tokens cross the network in the clear.
 
+`https://<station>:8080/spectrum.html` is the station's spectrum and waterfall on this API
+(`gui_interface/web/spectrum.html`, installed with the web page): log in, and it subscribes
+to `radio.state` and `radio.spectrum.rx`/`.tx`; a click centres a signal, the wheel tunes.
+Served from elsewhere, it logs in to the station named in its login form (CORS).
+
 A daemon built without Go answers `/api/v2` with 503 (`not_supported`).
 Errors are RFC 9457 `application/problem+json` with a stable `code`, and every
 reply carries an `X-Request-Id`.

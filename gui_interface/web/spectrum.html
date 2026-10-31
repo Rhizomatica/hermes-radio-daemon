@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HERMES spectrum</title>
+<!--
+  The station's spectrum and waterfall, on the station API (hermes.v1):
+  log in, subscribe to radio.state and radio.spectrum.rx/.tx, and draw the
+  binary frames radiod sends (api-ws.yaml, "Binary frames"). Self-contained:
+  stations are often offline, so no library and no web font.
+-->
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #121821; --line: #1f2a37; --fg: #d7e0ea; --dim: #7d8b9a;
+    --accent: #3ad1a0; --tx: #ff5d5d; --warn: #ffb84d;
+    --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 22px;
+    padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .dial { font: 600 30px/1 var(--mono); letter-spacing: .02em; }
+  .dial small { font-size: 16px; color: var(--dim); }
+  .tag { font: 600 12px/1 var(--mono); padding: 4px 7px; border-radius: 4px;
+    background: var(--line); color: var(--fg); letter-spacing: .06em; }
+  .tag.tx { background: var(--tx); color: #fff; }
+  .stat { font: 13px var(--mono); color: var(--dim); }
+  .stat b { color: var(--fg); font-weight: 600; }
+  .grow { flex: 1; }
+  #conn { font-size: 12px; }
+  #conn.ok { color: var(--accent); } #conn.bad { color: var(--tx); }
+  main { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 0 16px 10px; }
+  #view { position: relative; flex: 1; min-height: 320px; margin-top: 10px; cursor: crosshair;
+    border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: #05080c; }
+  canvas { display: block; width: 100%; }
+  #spec { height: 38%; } #axis { height: 26px; } #wf { height: calc(62% - 26px); }
+  #readout { position: absolute; top: 8px; right: 10px; font: 12px var(--mono); color: var(--fg);
+    background: rgba(5,8,12,.75); padding: 4px 8px; border-radius: 4px; pointer-events: none; }
+  #msg { position: absolute; left: 10px; top: 8px; font: 12px var(--mono); color: var(--warn); }
+  footer { display: flex; flex-wrap: wrap; gap: 8px 22px; align-items: center; padding: 10px 16px;
+    border-top: 1px solid var(--line); background: var(--panel); font-size: 13px; }
+  footer label { display: flex; align-items: center; gap: 8px; color: var(--dim); }
+  input[type=range] { width: 120px; accent-color: var(--accent); }
+  select, input, button { font: inherit; color: var(--fg); background: #0d131b;
+    border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; }
+  button { cursor: pointer; } button:hover { border-color: var(--accent); }
+  #login { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(5,8,12,.88); }
+  #login form { display: grid; gap: 10px; width: min(320px, 90vw); padding: 22px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  #login h1 { margin: 0 0 6px; font-size: 18px; }
+  #login .err { color: var(--tx); font-size: 13px; min-height: 1.2em; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <div class="dial" id="dial">–<small> MHz</small></div>
+  <span class="tag" id="mode">–</span>
+  <span class="tag" id="txrx">RX</span>
+  <span class="stat">S <b id="smeter">–</b></span>
+  <span class="stat" id="swrbox" hidden>SWR <b id="swr">–</b></span>
+  <span class="stat">profile <b id="profile">–</b></span>
+  <span class="grow"></span>
+  <span class="stat" id="span">–</span>
+  <span id="conn" class="bad">offline</span>
+  <button id="logout" type="button" hidden>Log out</button>
+</header>
+
+<main>
+  <div id="view">
+    <canvas id="spec"></canvas>
+    <canvas id="axis"></canvas>
+    <canvas id="wf"></canvas>
+    <div id="readout" hidden></div>
+    <div id="msg"></div>
+  </div>
+</main>
+
+<footer>
+  <label>Average <input id="avg" type="range" min="0" max="95" value="60"></label>
+  <label>Peak hold <input id="peak" type="checkbox" checked></label>
+  <label>Auto levels <input id="auto" type="checkbox" checked></label>
+  <label>Floor <input id="lo" type="range" min="-140" max="0" value="-100"> <span id="lov" class="stat"></span></label>
+  <label>Range <input id="range" type="range" min="10" max="100" value="50"> <span id="rangev" class="stat"></span></label>
+  <label>Palette
+    <select id="pal"><option value="turbo">Turbo</option><option value="ocean">Ocean</option><option value="ember">Ember</option><option value="grey">Grey</option></select>
+  </label>
+  <label>Speed <select id="speed"><option value="1">1×</option><option value="2" selected>2×</option><option value="3">3×</option><option value="4">4×</option></select></label>
+  <span class="stat">click: centre a signal · wheel: tune (shift ×10)</span>
+</footer>
+
+<div id="login" hidden>
+  <form id="loginform">
+    <h1>Log in to the station</h1>
+    <input id="station" placeholder="station (host:port)" autocomplete="off">
+    <input id="user" placeholder="username" autocomplete="username" required>
+    <input id="pass" type="password" placeholder="password" autocomplete="current-password" required>
+    <button type="submit">Log in</button>
+    <div class="err" id="loginerr"></div>
+  </form>
+</div>
+
+<script>
+'use strict';
+var $ = function (id) { return document.getElementById(id); };
+
+// ── session ──────────────────────────────────────────────────────────────
+// The token is kept for this tab only. Any page, on the station or not, can
+// use the API with it (CORS, and the hermes.token. subprotocol on the socket).
+function store(k, v) { try { if (v == null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch (e) {} }
+function load(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
+
+var station = load('hermes.station') || location.host || '';
+var token = load('hermes.token');
+var secure = location.protocol === 'https:';
+
+function apiBase() { return (secure ? 'https://' : 'http://') + station + '/api/v2'; }
+function wsURL() { return (secure ? 'wss://' : 'ws://') + station + '/api/v2/ws'; }
+
+function showLogin(why) {
+  $('station').value = station;
+  $('loginerr').textContent = why || '';
+  $('login').hidden = false;
+  $('logout').hidden = true;
+  $('user').focus();
+}
+
+$('loginform').addEventListener('submit', function (ev) {
+  ev.preventDefault();
+  station = $('station').value.trim() || location.host;
+  fetch(apiBase() + '/session', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({username: $('user').value, password: $('pass').value})
+  }).then(function (r) {
+    return r.json().then(function (j) { return {status: r.status, body: j}; });
+  }).then(function (r) {
+    if (r.status !== 201 || !r.body.token) { $('loginerr').textContent = r.body.detail || ('login failed (' + r.status + ')'); return; }
+    token = r.body.token;
+    store('hermes.token', token); store('hermes.station', station);
+    $('pass').value = '';
+    $('loginerr').textContent = '';
+    $('login').hidden = true;
+    connect();
+  }).catch(function () { $('loginerr').textContent = 'cannot reach ' + station; });
+});
+
+$('logout').addEventListener('click', function () {
+  fetch(apiBase() + '/session', {method: 'DELETE', headers: {Authorization: 'Bearer ' + token}}).catch(function () {});
+  token = null; store('hermes.token', null);
+  if (ws) ws.close();
+  showLogin();
+});
+
+// ── hermes.v1 ────────────────────────────────────────────────────────────
+var ws = null, helloSeen = false, nextId = 1, pending = {};
+var state = {};               // radio.state, the snapshot then each change merged in
+
+function cmd(name, args) {
+  if (!ws || ws.readyState !== 1) return Promise.reject(new Error('not connected'));
+  var id = String(nextId++);
+  ws.send(JSON.stringify({type: 'cmd', id: id, cmd: name, args: args || {}}));
+  return new Promise(function (ok, fail) { pending[id] = {ok: ok, fail: fail}; });
+}
+
+function connect() {
+  if (!token) { showLogin(); return; }
+  helloSeen = false;
+  setConn('connecting', false);
+  try { ws = new WebSocket(wsURL(), ['hermes.v1', 'hermes.token.' + token]); }
+  catch (e) { setConn('bad URL', false); showLogin('cannot open ' + wsURL()); return; }
+  ws.binaryType = 'arraybuffer';
+  ws.onmessage = function (ev) {
+    if (typeof ev.data !== 'string') { onFrame(ev.data); return; }
+    var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (m.type === 'hello') {
+      helloSeen = true;
+      $('logout').hidden = false;
+      setConn('live · ' + m.role, true);
+      ws.send(JSON.stringify({type: 'subscribe', id: 'sub', topics: ['radio.state', 'radio.spectrum.rx', 'radio.spectrum.tx']}));
+    } else if (m.type === 'event' && m.topic === 'radio.state') {
+      if (m.snapshot) state = {};
+      for (var k in m.data) state[k] = m.data[k];
+      showState();
+    } else if (m.type === 'reply') {
+      var p = pending[m.id];
+      if (p) { delete pending[m.id]; if (m.ok) p.ok(m.data); else p.fail(m.error); }
+      else if (m.id === 'sub' && !m.ok) say(m.error ? m.error.message : 'subscribe failed');
+    }
+  };
+  ws.onclose = function (ev) {
+    setConn('offline', false);
+    if (ev.code === 1008 || !helloSeen) {    // session ended, or the upgrade was refused (401)
+      token = null; store('hermes.token', null);
+      showLogin(ev.code === 1008 ? 'the session ended: log in again' : 'log in to the station');
+      return;
+    }
+    setTimeout(connect, 2000);
+  };
+}
+
+function setConn(text, ok) { var c = $('conn'); c.textContent = text; c.className = ok ? 'ok' : 'bad'; }
+var msgTimer = 0;
+function say(text) { $('msg').textContent = text; clearTimeout(msgTimer); msgTimer = setTimeout(function () { $('msg').textContent = ''; }, 3000); }
+
+function showState() {
+  if (state.frequency_hz) {
+    var f = state.frequency_hz / 1e6;
+    $('dial').innerHTML = f.toFixed(6).replace(/(\d{3})$/, ' $1') + '<small> MHz</small>';
+  }
+  if (state.mode) $('mode').textContent = state.mode;
+  $('txrx').textContent = state.tx ? 'TX' : 'RX';
+  $('txrx').className = 'tag' + (state.tx ? ' tx' : '');
+  $('profile').textContent = state.active_profile == null ? '–' : state.active_profile;
+  $('smeter').textContent = sUnits(state.s_meter_db);
+  $('swrbox').hidden = !state.tx;
+  if (state.swr != null) $('swr').textContent = state.swr.toFixed(1);
+}
+
+// s_meter_db is dB relative to S9 (S9 = 0, 6 dB an S-unit).
+function sUnits(db) {
+  if (db == null || db <= -199) return '–';
+  if (db > 0) return 'S9+' + Math.round(db);
+  return 'S' + Math.max(0, Math.round(9 + db / 6));
+}
+
+// ── binary frames (api-ws.yaml): a 12-byte header, then the spectrum ─────
+var spec = null;              // {nbins, start, binHz, db: Float32Array, tx}
+var avgBins = null, peakBins = null;
+var lastFrameAt = 0, fps = 0;
+
+function onFrame(buf) {
+  var dv = new DataView(buf);
+  if (buf.byteLength < 22 || dv.getUint8(1) !== 1) return;
+  var kind = dv.getUint8(0);
+  if (kind !== 3 && kind !== 4) return;
+  var tx = kind === 4;
+  if (tx !== !!state.tx) return;            // show the side the radio is on
+  var n = dv.getUint16(12, true);
+  if (buf.byteLength < 22 + 4 * n) return;
+  var db = new Float32Array(n);
+  for (var i = 0; i < n; i++) db[i] = dv.getFloat32(22 + 4 * i, true);
+  spec = {nbins: n, start: dv.getFloat32(14, true), binHz: dv.getFloat32(18, true), db: db, tx: tx};
+
+  var a = +$('avg').value / 100;
+  if (!avgBins || avgBins.length !== n) { avgBins = Float32Array.from(db); peakBins = Float32Array.from(db); }
+  for (i = 0; i < n; i++) {
+    avgBins[i] = a * avgBins[i] + (1 - a) * db[i];
+    peakBins[i] = Math.max(avgBins[i], peakBins[i] - 0.4);     // peak hold, slow decay
+  }
+  autoLevels();
+  for (i = 0; i < +$('speed').value; i++) waterfallRow(avgBins);
+  var now = performance.now();
+  if (lastFrameAt) fps = 0.9 * fps + 0.1 * (1000 / (now - lastFrameAt));
+  lastFrameAt = now;
+  $('span').textContent = Math.round(n * spec.binHz) + ' Hz span · ' + spec.binHz.toFixed(1) + ' Hz/bin · ' + fps.toFixed(0) + ' fps';
+}
+
+// ── levels and colours ───────────────────────────────────────────────────
+var floorDb = -100, rangeDb = 50;
+
+function autoLevels() {
+  if (!$('auto').checked) { floorDb = +$('lo').value; rangeDb = +$('range').value; return; }
+  var s = Array.prototype.slice.call(avgBins).sort(function (x, y) { return x - y; });
+  var noise = s[Math.floor(s.length * 0.2)], top = s[s.length - 1];
+  floorDb = 0.95 * floorDb + 0.05 * (noise - 3);                       // the noise in the palette's dark end
+  rangeDb = 0.95 * rangeDb + 0.05 * Math.max(30, top - noise + 12);
+  $('lo').value = Math.round(floorDb); $('range').value = Math.round(rangeDb);
+  showLevels();
+}
+function showLevels() { $('lov').textContent = Math.round(floorDb) + ' dB'; $('rangev').textContent = Math.round(rangeDb) + ' dB'; }
+['lo', 'range'].forEach(function (id) {
+  $(id).addEventListener('input', function () { $('auto').checked = false; floorDb = +$('lo').value; rangeDb = +$('range').value; showLevels(); });
+});
+
+// 256-entry palettes; Turbo is Google's polynomial fit of it.
+function clamp(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
+var PALETTES = {
+  turbo: function (t) {
+    return [0.13572138 + t * (4.61539260 + t * (-42.66032258 + t * (132.13108234 + t * (-152.94239396 + t * 59.28637943)))),
+            0.09140261 + t * (2.19418839 + t * (4.84296658 + t * (-14.18503333 + t * (4.27729857 + t * 2.82956604)))),
+            0.10667330 + t * (12.64194608 + t * (-60.58204836 + t * (110.36276771 + t * (-89.90310912 + t * 27.34824973))))];
+  },
+  ocean: function (t) { return [Math.pow(t, 3), Math.pow(t, 1.4), 0.15 + 0.85 * Math.pow(t, 0.6)]; },
+  ember: function (t) { return [Math.pow(t, 0.6), Math.pow(t, 1.8), Math.pow(t, 4) * 0.9]; },
+  grey: function (t) { return [t, t, t]; }
+};
+var lut = new Uint8ClampedArray(256 * 3);
+function setPalette(name) {
+  var f = PALETTES[name] || PALETTES.turbo;
+  for (var i = 0; i < 256; i++) {
+    var c = f(i / 255);
+    lut[3 * i] = 255 * clamp(c[0]); lut[3 * i + 1] = 255 * clamp(c[1]); lut[3 * i + 2] = 255 * clamp(c[2]);
+  }
+  store('hermes.palette', name);
+}
+$('pal').value = load('hermes.palette') || 'turbo';
+setPalette($('pal').value);
+$('pal').addEventListener('change', function () { setPalette(this.value); });
+
+// ── canvases ─────────────────────────────────────────────────────────────
+var cSpec = $('spec'), cAxis = $('axis'), cWf = $('wf');
+var hist = document.createElement('canvas');    // the waterfall, one pixel a bin and a row
+var histRows = 600;
+
+function fit() {
+  var dpr = window.devicePixelRatio || 1;
+  [cSpec, cAxis, cWf].forEach(function (c) {
+    var r = c.getBoundingClientRect();
+    c.width = Math.max(1, Math.round(r.width * dpr)); c.height = Math.max(1, Math.round(r.height * dpr));
+  });
+}
+window.addEventListener('resize', fit);
+
+function waterfallRow(bins) {
+  var n = bins.length;
+  if (hist.width !== n) { hist.width = n; hist.height = histRows; hctx = hist.getContext('2d'); hctx.fillStyle = '#05080c'; hctx.fillRect(0, 0, n, histRows); }
+  hctx.drawImage(hist, 0, 1);
+  var row = hctx.createImageData(n, 1), d = row.data;
+  for (var i = 0; i < n; i++) {
+    var k = Math.round(255 * clamp((bins[i] - floorDb) / rangeDb)) * 3;
+    d[4 * i] = lut[k]; d[4 * i + 1] = lut[k + 1]; d[4 * i + 2] = lut[k + 2]; d[4 * i + 3] = 255;
+  }
+  hctx.putImageData(row, 0, 0);
+}
+var hctx = hist.getContext('2d');
+
+// Frequency of a horizontal position (0..1), and back.
+function freqAt(x) { return spec ? spec.start + x * spec.nbins * spec.binHz : 0; }
+function xAt(f) { return spec ? (f - spec.start) / (spec.nbins * spec.binHz) : 0; }
+
+var hoverX = -1;
+
+function draw() {
+  requestAnimationFrame(draw);
+  if (!spec) return;
+  var dpr = window.devicePixelRatio || 1, n = spec.nbins;
+  var W = cSpec.width, H = cSpec.height;
+  var g = cSpec.getContext('2d');
+  g.clearRect(0, 0, W, H);
+
+  // grid: every 10 dB
+  g.strokeStyle = 'rgba(125,139,154,0.15)'; g.lineWidth = 1;
+  g.fillStyle = 'rgba(125,139,154,0.7)'; g.font = (10 * dpr) + 'px ' + getComputedStyle(document.body).getPropertyValue('--mono');
+  for (var db = Math.ceil(floorDb / 10) * 10; db < floorDb + rangeDb; db += 10) {
+    var y = H - (db - floorDb) / rangeDb * H;
+    g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke();
+    g.fillText(db + ' dB', 4 * dpr, y - 3 * dpr);
+  }
+
+  function yOf(v) { return H - clamp((v - floorDb) / rangeDb) * H; }
+  function trace(bins) {
+    g.beginPath();
+    for (var i = 0; i < n; i++) {
+      var x = (i + 0.5) / n * W, y = yOf(bins[i]);
+      if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+    }
+  }
+  var col = spec.tx ? '#ff5d5d' : '#3ad1a0';
+  // filled trace
+  trace(avgBins); g.lineTo(W, H); g.lineTo(0, H); g.closePath();
+  var grad = g.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, spec.tx ? 'rgba(255,93,93,0.45)' : 'rgba(58,209,160,0.45)');
+  grad.addColorStop(1, 'rgba(58,209,160,0.02)');
+  g.fillStyle = grad; g.fill();
+  trace(avgBins); g.strokeStyle = col; g.lineWidth = 1.5 * dpr; g.stroke();
+  if ($('peak').checked) { trace(peakBins); g.strokeStyle = 'rgba(255,184,77,0.75)'; g.lineWidth = 1 * dpr; g.stroke(); }
+
+  // the dial (the suppressed carrier): at the left edge in USB, the right in LSB
+  if (state.frequency_hz) {
+    var xd = xAt(state.frequency_hz) * W;
+    g.strokeStyle = 'rgba(255,255,255,0.55)'; g.setLineDash([4 * dpr, 4 * dpr]);
+    g.beginPath(); g.moveTo(xd, 0); g.lineTo(xd, H); g.stroke(); g.setLineDash([]);
+  }
+
+  // waterfall, scaled up smoothly from its bin-wide history
+  var w = cWf.getContext('2d');
+  w.imageSmoothingEnabled = true; w.imageSmoothingQuality = 'high';
+  w.drawImage(hist, 0, 0, hist.width, Math.min(histRows, cWf.height / dpr), 0, 0, cWf.width, cWf.height);
+
+  drawAxis(dpr);
+
+  // hover cursor
+  if (hoverX >= 0) {
+    [g, w].forEach(function (c, i) {
+      var h = i ? cWf.height : H;
+      c.strokeStyle = 'rgba(255,255,255,0.8)'; c.lineWidth = 1;
+      c.beginPath(); c.moveTo(hoverX * W, 0); c.lineTo(hoverX * W, h); c.stroke();
+    });
+    var bi = Math.min(n - 1, Math.max(0, Math.floor(hoverX * n)));
+    $('readout').hidden = false;
+    $('readout').textContent = (freqAt(hoverX) / 1e6).toFixed(6) + ' MHz  ' + avgBins[bi].toFixed(0) + ' dB';
+  } else $('readout').hidden = true;
+}
+
+// RF axis: ticks at a round step, labels in MHz.
+function drawAxis(dpr) {
+  var a = cAxis.getContext('2d'), W = cAxis.width, H = cAxis.height;
+  a.fillStyle = '#0d131b'; a.fillRect(0, 0, W, H);
+  var span = spec.nbins * spec.binHz, steps = [50, 100, 200, 250, 500, 1000, 2000, 5000, 10000, 20000, 50000];
+  var step = steps.find(function (s) { return span / s <= Math.max(3, W / dpr / 90); }) || 100000;
+  a.strokeStyle = 'rgba(125,139,154,0.6)'; a.fillStyle = '#9fb0c2';
+  a.font = (11 * dpr) + 'px ' + getComputedStyle(document.body).getPropertyValue('--mono');
+  a.textAlign = 'center';
+  for (var f = Math.ceil(spec.start / step) * step; f <= spec.start + span; f += step) {
+    var x = xAt(f) * W;
+    a.beginPath(); a.moveTo(x, 0); a.lineTo(x, 6 * dpr); a.stroke();
+    if (x > 34 * dpr && x < W - 34 * dpr)          // no label cut off at an edge
+      a.fillText((f / 1e6).toFixed(step < 1000 ? 4 : 3), x, H - 6 * dpr);
+  }
+}
+
+// ── tuning ───────────────────────────────────────────────────────────────
+var view = $('view');
+function relX(ev) { var r = view.getBoundingClientRect(); return (ev.clientX - r.left) / r.width; }
+view.addEventListener('mousemove', function (ev) { hoverX = relX(ev); });
+view.addEventListener('mouseleave', function () { hoverX = -1; });
+
+function tune(hz) {
+  hz = Math.round(hz / 10) * 10;
+  cmd('radio.set', {frequency_hz: hz}).catch(function (e) { say(e && e.message ? e.message : String(e)); });
+}
+
+// A click moves that signal to the middle of the passband.
+view.addEventListener('click', function (ev) {
+  if (!spec || !state.frequency_hz) return;
+  var centre = spec.start + spec.nbins * spec.binHz / 2;
+  tune(state.frequency_hz + (freqAt(relX(ev)) - centre));
+});
+view.addEventListener('wheel', function (ev) {
+  if (!state.frequency_hz) return;
+  ev.preventDefault();
+  var step = (ev.shiftKey ? 100 : 10) * (ev.deltaY < 0 ? 1 : -1);
+  tune(state.frequency_hz + step);
+}, {passive: false});
+
+// ── start ────────────────────────────────────────────────────────────────
+showLevels();
+fit();
+requestAnimationFrame(draw);
+connect();
+</script>
+</body>
+</html>
