@@ -628,3 +628,15 @@ int radiod_api_ws_broadcast(const char *data, size_t len)
     pthread_mutex_unlock(&s_ws_lock);
     return rc;
 }
+
+int radiod_api_ws_close(long conn_id, int code, const char *reason)
+{
+    int rc = -1;
+    if (code < 1000 || code > 4999)
+        return -1;
+    pthread_mutex_lock(&s_ws_lock);
+    if (s_ws)
+        rc = ws_server_close_conn(s_ws, conn_id, (uint16_t) code, reason);
+    pthread_mutex_unlock(&s_ws_lock);
+    return rc;
+}

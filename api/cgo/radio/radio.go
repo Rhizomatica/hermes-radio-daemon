@@ -216,6 +216,10 @@ type Radio interface {
 	// WSBroadcast for every hermes.v1 connection.
 	WSSend(conn int64, frame []byte) error
 	WSBroadcast(frame []byte) error
+	// WSClose closes one hermes.v1 connection with a WebSocket close code
+	// and reason, after the frames already queued for it; the C server
+	// then calls HermesWSClose as for any other close.
+	WSClose(conn int64, code int, reason string) error
 
 	// Log writes one line to radiod's logger: its format, file and levels.
 	Log(level LogLevel, component, message string)

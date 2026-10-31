@@ -30,6 +30,7 @@ type Stub struct {
 	wfall    bool
 	logs     []string
 	Sent     map[int64][][]byte // frames by connection; 0 = broadcast
+	closed   map[int64]WSCloseFrame
 }
 
 // NewStub returns a Stub tuned to 7.1 MHz USB.
@@ -57,6 +58,7 @@ func NewStub() *Stub {
 			Report: GpsReport{IntervalS: 900}}},
 		listen: "DATAC3",
 		Sent:   map[int64][][]byte{},
+		closed: map[int64]WSCloseFrame{},
 	}
 	return s
 }
@@ -568,6 +570,29 @@ func (s *Stub) WSSend(conn int64, f []byte) error {
 }
 
 func (s *Stub) WSBroadcast(f []byte) error { return s.WSSend(0, f) }
+
+// WSClose records the close (Closed); the test calls the router's WSClose
+// itself, as radiod's C server would.
+func (s *Stub) WSClose(conn int64, code int, reason string) error {
+	s.mu.Lock()
+	s.closed[conn] = WSCloseFrame{Code: code, Reason: reason}
+	s.mu.Unlock()
+	return nil
+}
+
+// WSCloseFrame is a close the API layer asked for.
+type WSCloseFrame struct {
+	Code   int
+	Reason string
+}
+
+// Closed returns the close asked for conn, and whether there was one.
+func (s *Stub) Closed(conn int64) (WSCloseFrame, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.closed[conn]
+	return c, ok
+}
 
 // Frames returns a copy of what was sent to conn (0: broadcasts).
 func (s *Stub) Frames(conn int64) [][]byte {

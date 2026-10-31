@@ -223,6 +223,10 @@ int radiod_api_modem_chat_send(const char *plane, const char *text);
 
 int radiod_api_ws_send(long conn_id, const char *data, size_t len);
 int radiod_api_ws_broadcast(const char *data, size_t len);
+/* Close one connection with a WebSocket close code (1000-4999) and a reason
+ * (at most 123 bytes), after the frames already queued for it. The server
+ * then runs its close as for any other (HermesWSClose, PTT release). */
+int radiod_api_ws_close(long conn_id, int code, const char *reason);
 
 /* ── what Go answers an HTTP request with (HermesHTTP) ──
  * Every pointer malloc'd by Go (C.CString / C.CBytes), freed by C. */
