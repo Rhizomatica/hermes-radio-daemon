@@ -17,9 +17,9 @@ import (
 )
 
 // NewRouter returns the station's router over a radio, every domain
-// registered, with no sessions: every caller is admin (radiod answers
-// /api/v2 only on loopback until api_v2_enable). The self-check and the
-// domain unit tests use this.
+// registered, with no sessions: every caller is admin, so the router answers
+// only on loopback. radiod falls back to it when its database cannot be
+// opened; the self-check and the domain unit tests use it.
 func NewRouter(r rad.Radio) *api.Router {
 	return newRouter(r, nil, setup.Config{})
 }

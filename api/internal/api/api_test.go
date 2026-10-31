@@ -128,6 +128,21 @@ func TestServeRawLoopbackOnly(t *testing.T) {
 	}
 }
 
+// Which peers count as this machine for the no-session router.
+func TestServeRawLoopbackPeers(t *testing.T) {
+	e := testapi.New(t)
+	for peer, want := range map[string]int{
+		"127.0.0.1": 200, "127.0.0.1:1234": 200, "::1": 200, "[::1]:1234": 200,
+		"::ffff:127.0.0.1": 200, "127.8.9.1": 200,
+		"10.0.0.1": 403, "192.0.2.1:80": 403, "::ffff:10.0.0.1": 403, "2001:db8::1": 403,
+		"": 403, "garbage": 403,
+	} {
+		if st, _, _, _ := e.R.ServeRaw("GET", "/api/v2/health", "", "", peer, nil); st != want {
+			t.Errorf("peer %q = %d, want %d", peer, st, want)
+		}
+	}
+}
+
 // hermes.v1: hello on open, unknown commands and subscriptions answered.
 func TestHermesV1Basics(t *testing.T) {
 	e := testapi.New(t)

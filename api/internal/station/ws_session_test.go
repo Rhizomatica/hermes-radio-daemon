@@ -1,6 +1,7 @@
 package station_test
 
 import (
+	"net/http/httptest"
 	"strconv"
 	"testing"
 	"time"
@@ -79,4 +80,31 @@ func TestWSKeepsALiveSession(t *testing.T) {
 	if _, closed := e.Radio.Closed(w.ID); closed {
 		t.Fatal("a live session's connection was closed")
 	}
+}
+
+// With sessions, a remote peer is answered by the role gate (401 without a
+// session, the operation with one), never refused for its address.
+func TestRemotePeerWithSessions(t *testing.T) {
+	e := testapi.NewAuth(t)
+	e.SeedUser("op", "password1", "operator")
+	token := e.Login("op", "password1")
+	bearer := "Authorization: Bearer " + token + "\r\n"
+
+	if st, _, _, _ := e.R.ServeRaw("GET", "/api/v2/radio", "", "", "192.0.2.10", nil); st != 401 {
+		t.Errorf("remote, no session = %d, want 401", st)
+	}
+	if st, _, _, b := e.R.ServeRaw("GET", "/api/v2/radio", "", bearer, "192.0.2.10", nil); st != 200 {
+		t.Errorf("remote, with a session = %d %s, want 200", st, b)
+	}
+	if st, _, _, _ := e.R.ServeRaw("GET", "/api/v2/health", "", "", "192.0.2.10", nil); st != 200 {
+		t.Errorf("remote, public operation = %d, want 200", st)
+	}
+
+	req := httptest.NewRequest("GET", "/api/v2/ws", nil)
+	req.RemoteAddr = "192.0.2.10"
+	if st := e.R.WSOpen(9001, req); st != 401 {
+		t.Errorf("remote upgrade, no session = %d, want 401", st)
+	}
+	w := e.OpenAuth(token) // a remote peer with a session is accepted
+	w.Next(testapi.Type("hello"), time.Second)
 }

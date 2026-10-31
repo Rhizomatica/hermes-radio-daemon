@@ -28,8 +28,10 @@ func sessionCookie(value string, maxAge int, secure bool) *http.Cookie {
 
 // secureRequest reports whether the session cookie should be Secure: the
 // request came over TLS, or a TLS-terminating proxy on the loopback set
-// X-Forwarded-Proto: https. A remote client's X-Forwarded-Proto is not
-// trusted (radiod answers /api/v2 only on loopback until api_v2_enable).
+// X-Forwarded-Proto: https. The header describes the hop in front of a
+// proxy, which only the proxy can know, and radiod has no proxy but a local
+// TLS terminator; so it is believed from a loopback peer only, never from a
+// remote client, which talks to radiod directly.
 func secureRequest(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
