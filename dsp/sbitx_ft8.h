@@ -10,6 +10,7 @@
 #define SBITX_FT8_H_
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 bool sbitx_ft8_init(void);
@@ -38,6 +39,12 @@ typedef struct {
 } sbitx_ft8_decode_result;
 
 int  sbitx_ft8_decode_ex(float *audio_12k, int nsamples, sbitx_ft8_decode_result *out, int max_out);
+
+/* The locator a decoded grid field names, into out: "JN49" for "JN49" or
+ * "R JN49" (a roger with the locator); "" for "RR73", which WSJT-X sends
+ * in the locator's place as the final acknowledgement, and for anything
+ * that is not a 4-character locator. Exposed for tests. */
+void sbitx_ft8_grid(const char *field, char *out, size_t out_size);
 
 /* Log a window's decodes to the digi log: one entry per message, timed
  * from `window_start` (unix seconds of the window's first sample), dt
