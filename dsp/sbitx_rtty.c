@@ -140,6 +140,7 @@ int sbitx_rtty_encode(const char *message, float *signal, int max_n,
 #define RTTY_FLUSH_S    2.0f           /* this long without a character ends a line */
 #define RTTY_Q_MIN      0.5f           /* mean |d| over a frame's bits, d in -1..1 */
 #define RTTY_SCORE_MIN  4              /* good frames net before a polarity gives text */
+#define RTTY_SCORE_LOW  -3             /* noise between overs: a station back is in text in ~7 frames */
 
 typedef struct {
     bool     in_frame;
@@ -151,6 +152,7 @@ typedef struct {
     float    prev_d;
     bool     figs;
     int      score;                    /* good frames minus bad, recent */
+    int      best;                     /* the best score since the line began */
     char     text[RTTY_LINE_MAX];
     int      len;
 } rtty_uart;
@@ -218,8 +220,9 @@ static void line_flush(rtty_chan *c, rtty_uart *u, int pol, sbitx_rtty_rx_cb cb,
     while (start < u->len && u->text[start] == ' ')
         start++;
     u->text[u->len] = '\0';
-    /* noise frames now and then: text only once the polarity frames */
-    if (u->len > start && u->score >= RTTY_SCORE_MIN && cb) {
+    /* noise frames now and then: text only from a polarity that framed
+     * during the line (not at its end, after the pause's noise frames) */
+    if (u->len > start && u->best >= RTTY_SCORE_MIN && cb) {
         sbitx_rtty_rx_line line = {
             .text = u->text + start,
             .mark_hz = pol ? c->lo_hz : c->hi_hz,
@@ -229,6 +232,7 @@ static void line_flush(rtty_chan *c, rtty_uart *u, int pol, sbitx_rtty_rx_cb cb,
         cb(&line, user);
     }
     u->len = 0;
+    u->best = u->score;
 }
 
 /* The polarity that frames: its score leads the other's. */
@@ -296,6 +300,7 @@ static void uart_step(rtty_chan *c, int pol, float d, sbitx_rtty_rx_cb cb, void 
             ok = is_mark;             /* stop bit is mark */
             if (ok && u->q / 7.0f >= RTTY_Q_MIN) {
                 if (u->score < 20) u->score++;
+                if (u->score > u->best) u->best = u->score;
                 uart_char(c, pol, u->word, cb, user);
             } else {
                 ok = false;
@@ -304,7 +309,7 @@ static void uart_step(rtty_chan *c, int pol, float d, sbitx_rtty_rx_cb cb, void 
             u->mark_run = ok ? (int) c->spb : 0;   /* the stop bit counts as idle mark */
         }
         if (!ok) {
-            if (u->score > -20) u->score--;
+            if (u->score > RTTY_SCORE_LOW) u->score--;
             u->in_frame = false;
             u->mark_run = 0;
         } else if (u->in_frame) {

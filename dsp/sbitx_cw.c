@@ -367,12 +367,24 @@ static void chan_flush(cw_chan *c, sbitx_cw_rx_cb cb, void *user)
     c->text[len] = '\0';
 
     /* A line is Morse when its marks were: at least a few, nearly all near
-     * one dot or three. Voice, data tones and noise on a channel are not. */
-    if (len > 0 && marks >= 4 && good * 5 >= marks * 4 && cb) {
+     * one dot or three. Voice, data tones and noise on a channel are not.
+     * Nor is an RTTY tone, whose 22 ms bits are a 55 WPM "dot" and whose
+     * runs of bits pass for dashes: past 45 WPM it is not a person
+     * sending, and text that is mostly E, I, T and unknown characters is
+     * a channel reading noise or data, not Morse. */
+    int wpm = (int) lrintf(1.2f / (c->dot * CW_TICK_S)), junk = 0, chars = 0;
+    for (int j = 0; j < len; j++) {
+        char ch = c->text[j];
+        if (ch == ' ')
+            continue;
+        chars++;
+        junk += ch == 'E' || ch == 'I' || ch == 'T' || ch == '*';
+    }
+    if (len > 0 && marks >= 4 && good * 5 >= marks * 4 && wpm <= 45 && junk * 2 <= chars && cb) {
         sbitx_cw_rx_line line = {
             .text = c->text,
             .pitch_hz = c->pitch,
-            .wpm = (int) lrintf(1.2f / (c->dot * CW_TICK_S)),
+            .wpm = wpm,
             .snr_db = c->snr_sum / (float) n,
         };
         cb(&line, user);
@@ -490,14 +502,36 @@ static void chan_sample(cw_chan *c, float x, sbitx_cw_rx_cb cb, void *user)
     chan_tick(c, hypotf(s[0], s[1]) / (c->hann_sum * CW_TICK), cb, user);
 }
 
+/* Whether the tone at bin b has a partner 170 Hz away: one of an RTTY
+ * pair, whose 22 ms bits key a CW channel like a 55 WPM station. By the
+ * peaks, not the means: a station idling on mark sends its space tone
+ * only now and then. */
+static bool rtty_pair(int b)
+{
+    const float *m = tone_scan_mean(cw_scan), *pk = tone_scan_peak(cw_scan);
+    const int sb = (int) lrintf(170.0f / TONE_SCAN_HZ);
+    const int lo = tone_scan_lo_bin(cw_scan), hi = tone_scan_hi_bin(cw_scan);
+    for (int d = -2; d <= 2; d++)
+        for (int side = -1; side <= 1; side += 2) {
+            int p = b + side * sb + d;
+            /* keyed too (a carrier's mean is its peak), and as strong */
+            if (p >= lo && p <= hi && pk[p] > 0.3f * pk[b] && m[p] < 0.7f * pk[p])
+                return true;
+        }
+    return false;
+}
+
 /* New channels on the narrow peaks well above the floor that no channel
  * has yet. Narrow: over a second, voice smears across the band, a keyed
- * carrier does not. */
+ * carrier does not. No channel opens on one of an RTTY pair; a CW
+ * station 170 Hz from another, both sending, is taken for one too, and
+ * waits until the other pauses. */
 static void cw_find(void)
 {
     const float *m = tone_scan_mean(cw_scan);
     const float fl = tone_scan_floor(cw_scan);
     const int lo = tone_scan_lo_bin(cw_scan) + 10, hi = tone_scan_hi_bin(cw_scan) - 10;
+
 
     for (int b = lo; b <= hi; b++) {
         if (m[b] < 6.0f * fl)
@@ -507,6 +541,8 @@ static void cw_find(void)
             if (d && m[b + d] > m[b])
                 top = false;
         if (!top || m[b] < 4.0f * m[b - 10] || m[b] < 4.0f * m[b + 10])
+            continue;
+        if (rtty_pair(b))
             continue;
         float hz = tone_scan_peak_hz(m, b);
         cw_chan *free_ch = NULL;
