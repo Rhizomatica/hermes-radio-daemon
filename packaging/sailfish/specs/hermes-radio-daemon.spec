@@ -17,7 +17,6 @@ BuildRequires:  fftw-devel
 BuildRequires:  i2c-tools-devel
 BuildRequires:  csdr-devel
 BuildRequires:  libspecbleach-devel
-BuildRequires:  unixcw-devel
 BuildRequires:  mbelib-neo-devel
 
 %description

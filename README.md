@@ -7,7 +7,7 @@ Radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-net)
 - **`hfsignals` backend** — embedded sBitx/zBitx DSP + ALSA path with all original hardware control (Si5351, GPIO, I2C, WM8731 codec)
 - **`hamlib` backend** — Hamlib CAT/PTT control for IC-7100, IC-7300, FT-710, TS-480 and every other rig Hamlib supports
 - **8 modulation modes**: LSB, USB, CW, **FM** (NBFM), **AM** (broadcast), **DRM** (Digital Radio Mondiale), **FT8**, **RTTY**, plus RADEv2 digital voice on top of USB
-- **Digital text modes**: FT8 (8-FSK), CW (Morse via unixcw), RTTY (Baudot FSK) with unified websocket API and a real outbound text queue (`digi_send`)
+- **Digital text modes**: FT8 (8-FSK), CW (Morse) and RTTY (Baudot FSK), CW and RTTY decoded as skimmers (every station in the passband), with unified websocket API and a real outbound text queue (`digi_send`)
 - **SSB voice DSP chain**: 3-band pre-EQ, wideband compressor, pre-emphasis, DC block, limiter
 - **RX voice DSP chain**: DC block, adaptive noise reduction (libspecbleach), AGC (SLOW/MEDIUM/FAST), soft limiter
 - **Audio bridge** for websocket RX/TX streaming, RX/TX spectrum waterfall, and `.wav` recording — on both backends, sharing the same audio rings. csdr-based polyphase resampler (`audio_bridge.c`) decouples the rig USB codec rate from the daemon ring rate.
@@ -85,7 +85,7 @@ backend = one new file with a vtable.
 ```bash
 apt-get install libhamlib-dev libiniparser-dev libasound2-dev libfftw3-dev \
                 libssl-dev libi2c-dev csdr libspecbleach-dev \
-                libsndfile1-dev libcw-dev meson ninja-build pkg-config
+                libsndfile1-dev meson ninja-build pkg-config
 ```
 
 `libfftw3-dev` includes the single-precision `fftw3f` library. `csdr` (the
@@ -95,8 +95,6 @@ package repository.
 **libspecbleach** provides adaptive spectral noise reduction on RX.
 
 **libcsdr** provides FM/AM modulation/demodulation, AGC, DC blocking, resampling, and filter design.
-
-**libunixcw** (`-lcw`) provides the CW receiver state machine (mark/space → characters).
 
 **mbelib-neo** (`-lmbe-neo`) provides the D-STAR AMBE 3600x2400 codec, encoder included. Build it
 from upstream [arancormonk/mbelib-neo](https://github.com/arancormonk/mbelib-neo) `main` (the
@@ -240,8 +238,7 @@ packages are at <http://debian.hermes.radio/sailfish/>.
    ```
 
    `pkcon` brings in the libraries the Sailfish repositories do not have:
-   Hamlib, fftw, iniparser, i2c-tools, csdr, libspecbleach, mbelib-neo,
-   unixcw.
+   Hamlib, fftw, iniparser, i2c-tools, csdr, libspecbleach, mbelib-neo.
 3. Plug in the rig and set it in `/etc/hermes/core.ini`. The rig's
    USB-serial chip is named by its USB ids and serial number;
    `cat /sys/bus/usb/devices/*/serial` lists them. An IC-7100 and an FT-710:
@@ -578,12 +575,22 @@ Standard single-sideband with the full voice DSP chain:
 
 ### CW (Morse code)
 
-Uses `libunixcw` for the receiver state machine and a DDS tone generator for the transmitter:
-- **RX**: SSB USB → Goertzel single-bin tone detector → mark/space events → unixcw decoder → spool
-- **TX**: Text → Morse lookup → DDS sine + raised-cosine envelope → SSB TX
-- Configurable WPM (`cw_wpm`, default 20) and pitch (`cw_pitch`, default 700 Hz)
-- Narrow filter centred around the CW pitch
-- End-of-message: 3× word-space silence threshold
+The receiver is a skimmer (`dsp/sbitx_cw.c`): it decodes every CW station
+in the passband at once, each at its own pitch and speed, so the rig needs
+no CW filter and no tuning onto a station.
+- **RX**: USB audio at 12 kHz → `dsp/tone_scan.c` finds the keyed carriers
+  (narrow peaks well above the noise floor, over each second) → a channel
+  per station: a mixer to its pitch, a Hann-weighted envelope filter a dot
+  long, its own noise and peak levels → marks and gaps → its speed (a
+  2-means split of the recent marks into dots and dashes) → Morse → one
+  digi log entry per line, with the station's pitch as `offset_hz` and an
+  approximate SNR. A line ends at a 1.5 s pause or about 40 characters.
+- A new channel starts from the last 3 s of audio, so a station's first
+  characters (its CQ) are not lost while the scan finds it. Steady carriers,
+  voice and data tones on a channel are not Morse-timed and print nothing.
+- **TX**: Text → Morse lookup → DDS sine + raised-cosine envelope → SSB TX,
+  at `cw_wpm` (default 20, also each RX channel's first guess) and
+  `cw_pitch` (default 700 Hz)
 
 ### NBFM (Narrow Band FM)
 
@@ -622,12 +629,21 @@ Uses vendored `ft8_lib` for encoding and `decode_ft8` pipe for decoding:
 
 ### RTTY (Radio Teletype — 45.45 baud FSK)
 
-Uses vendored `minimodem` FSK core (FFT-based FSK detector + Baudot codec):
-- **TX**: Text → Baudot encoding (5-bit + start/1.5 stop) → FSK tone generator @ 96 kHz → SSB TX
-- **RX**: SSB USB → 12 kHz audio → `fsk_find_frame()` → Baudot decode → spool
-- Configurable baud, mark frequency, and shift
-- End-of-message: CR+LF or 3-second idle timeout
-- Vendored library at `vendor/minimodem/` (GPLv3-licensed)
+The receiver is a skimmer too (`dsp/sbitx_rtty.c`): every RTTY station of
+the configured baud and shift in the passband, wherever its tones are.
+- **RX**: USB audio at 12 kHz → `dsp/tone_scan.c` finds the FSK signals (two
+  narrow peaks a shift apart, with less between them) → a channel per
+  station: each tone mixed to DC and averaged over a bit, each against its
+  own recent peak (threshold correction for selective fading) → a UART per
+  polarity; the polarity whose frames check gives the text (so a station
+  sending reversed decodes too) → ITA2 with unshift-on-space → one digi log
+  entry per line, with the station's mark tone as `offset_hz`. A line ends
+  at CR/LF, 2 s without a character, or about 70 characters.
+- **TX**: Text → Baudot encoding (5-bit + start/1.5 stop, the vendored
+  `minimodem` codec, GPLv3) → FSK tone generator @ 96 kHz → SSB TX, at
+  `rtty_mark` and `rtty_shift`
+- `rtty_baud` (default 45) and `rtty_shift` (default 170) also set what RX
+  looks for; `rtty_mark` is for TX only
 
 ### Digital Voice (RADEv2)
 

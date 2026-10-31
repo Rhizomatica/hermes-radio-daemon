@@ -31,15 +31,15 @@ lists every package.
 | File | |
 |---|---|
 | `specs/hermes-radio-daemon.spec` | radiod, with mercury linked in; no Go API layer (`/api/v2` answers 503) |
-| `specs/*.spec` | the libraries radiod needs that the Sailfish repositories do not carry: fftw, iniparser, hamlib, i2c-tools, csdr, libspecbleach, mbelib-neo, unixcw |
+| `specs/*.spec` | the libraries radiod needs that the Sailfish repositories do not carry: fftw, iniparser, hamlib, i2c-tools, csdr, libspecbleach, mbelib-neo |
 | `radiod.service` | the systemd unit, with a wakelock (see below) |
 | `rpmmacros` | an `~/.rpmmacros` for building with busybox |
 | `fetch-sources.sh` | fetches the sources into `~/rpmbuild/SOURCES`, on the device |
 | `make-hamlib-tarball.sh` | makes the Hamlib tarball from Hamlib PR #2272's branch, on a machine with autotools |
 | `build-all.sh` | builds and installs every RPM in dependency order, on the device |
 
-The library versions are the ones the stations run on Debian, and csdr and
-unixcw are Rhizomatica's trees, at the commits their specs name.
+The library versions are the ones the stations run on Debian, and csdr is
+Rhizomatica's tree, at the commit its spec names.
 
 ## Building
 

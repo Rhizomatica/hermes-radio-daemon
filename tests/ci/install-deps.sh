@@ -3,7 +3,7 @@
 # CI jobs run this in a debian:trixie container, and it works the same on a
 # fresh station or a developer's machine.
 #
-#   Debian:      hamlib, iniparser, ALSA, FFTW, OpenSSL, i2c, libunixcw, ...
+#   Debian:      hamlib, iniparser, ALSA, FFTW, OpenSSL, i2c, ...
 #   HERMES repo: csdr (debian.hermes.radio, signing key pinned below)
 #   upstream:    libspecbleach and mbelib-neo, built at the commits the
 #                HERMES packages of them are made from
@@ -30,7 +30,7 @@ apt-get update
 apt-get install -y --no-install-recommends \
     ca-certificates curl gnupg git build-essential pkg-config cmake \
     libhamlib-dev libiniparser-dev libasound2-dev libfftw3-dev libssl-dev \
-    libi2c-dev libsndfile1-dev libcw-dev
+    libi2c-dev libsndfile1-dev
 
 # csdr from the HERMES repository.  The key comes over plain http (the
 # server's TLS certificate does not verify), so it is accepted only if its

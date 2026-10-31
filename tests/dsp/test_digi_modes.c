@@ -7,6 +7,8 @@
  * the CW keyer sent no gaps between elements and its detector never
  * triggered on normalized audio, and RTTY looked for frames only at fixed
  * block starts, read the stop/start bits as data and sent 1 as space.
+ * Then both listened only at cw_pitch / rtty_mark; they are skimmers now,
+ * and two stations at once, away from those, must decode.
  */
 #include <math.h>
 #include <stdio.h>
@@ -51,40 +53,81 @@ static int to12k(const float *x96, int n, float noise_rms, float *y)
     return m;
 }
 
-static char rx_text[512];
-static int  rx_len;
-static void rtty_cb(char c)
+/* What the skimmers gave out: every line's text joined by spaces, and the
+ * lines one by one with their tone, to check a station at a time. */
+#define MAX_LINES 32
+static char  rx_text[1024];
+static int   rx_len;
+static struct { char text[128]; float hz; bool reversed; } rx_lines[MAX_LINES];
+static int   rx_nlines;
+
+static void rx_add(const char *text, float hz, bool reversed)
 {
-    if (c != '\r' && c != '\n' && rx_len < (int) sizeof(rx_text) - 1)
-        rx_text[rx_len++] = c;
+    if (rx_len > 0 && rx_len < (int) sizeof rx_text - 1)
+        rx_text[rx_len++] = ' ';
+    for (const char *p = text; *p && rx_len < (int) sizeof rx_text - 1; p++)
+        rx_text[rx_len++] = *p;
     rx_text[rx_len] = '\0';
+    if (rx_nlines < MAX_LINES) {
+        snprintf(rx_lines[rx_nlines].text, sizeof rx_lines[0].text, "%s", text);
+        rx_lines[rx_nlines].hz = hz;
+        rx_lines[rx_nlines].reversed = reversed;
+        rx_nlines++;
+    }
 }
 
+static void rx_clear(void)
+{
+    rx_len = 0;
+    rx_text[0] = '\0';
+    rx_nlines = 0;
+}
+
+static void cw_cb(const sbitx_cw_rx_line *l, void *user)
+{
+    (void) user;
+    rx_add(l->text, l->pitch_hz, false);
+}
+
+static void rtty_cb(const sbitx_rtty_rx_line *l, void *user)
+{
+    (void) user;
+    rx_add(l->text, l->mark_hz, l->reversed);
+}
+
+/* In DSP-sized blocks, as the RX paths feed them. */
 static const char *cw_decode(const float *y, int m)
 {
-    rx_len = 0; rx_text[0] = '\0';
+    rx_clear();
     sbitx_cw_init(20, 700);
-    int blk = sbitx_cw_rx_samples_per_block();
-    for (int p = 0; p + blk <= m; p += blk) {
-        char d[64];
-        int g = sbitx_cw_rx_process(y + p, blk, d, sizeof d, 20, 700);
-        for (int i = 0; i < g && rx_len < (int) sizeof(rx_text) - 1; i++)
-            rx_text[rx_len++] = d[i];
-    }
-    rx_text[rx_len] = '\0';
-    while (rx_len > 0 && rx_text[rx_len - 1] == ' ')
-        rx_text[--rx_len] = '\0';
+    for (int p = 0; p < m; p += 600)
+        sbitx_cw_rx_feed(y + p, m - p < 600 ? m - p : 600, cw_cb, NULL);
+    sbitx_cw_rx_flush(cw_cb, NULL);
     return rx_text;
 }
 
 static const char *rtty_decode(const float *y, int m)
 {
-    rx_len = 0; rx_text[0] = '\0';
+    rx_clear();
     sbitx_rtty_init(45, 1585, 170);
-    int blk = sbitx_rtty_rx_samples_per_block();
-    for (int p = 0; p + blk <= m; p += blk)
-        sbitx_rtty_rx_process(y + p, blk, 45, 1585, 170, rtty_cb);
+    for (int p = 0; p < m; p += 600)
+        sbitx_rtty_rx_feed(y + p, m - p < 600 ? m - p : 600, 45, 170, rtty_cb, NULL);
+    sbitx_rtty_rx_flush(rtty_cb, NULL);
     return rx_text;
+}
+
+/* The line nearest hz, or "". */
+static const char *rx_line_at(float hz, float *got_hz)
+{
+    const char *best = "";
+    float d = 1e9f;
+    for (int i = 0; i < rx_nlines; i++)
+        if (fabsf(rx_lines[i].hz - hz) < d) {
+            d = fabsf(rx_lines[i].hz - hz);
+            best = rx_lines[i].text;
+            *got_hz = rx_lines[i].hz;
+        }
+    return best;
 }
 
 /* Signal amplitudes: CW 1.0, RTTY 0.4 (the encoders'). Noise RMS is over
@@ -114,6 +157,54 @@ static void check_rtty(float noise_rms)
     const char *got = rtty_decode(y, m);
     printf("RTTY noise %.3f: [%s]\n", noise_rms, got);
     TEST_ASSERT_EQUAL_STRING_MESSAGE("RYRY HERMES TEST RTTY 73", got, test_msg("RTTY at noise %.3f decoded [%s]", noise_rms, got));
+}
+
+/* Two CW stations at once, at their own pitches and speeds, neither at
+ * cw_pitch: the old receiver heard neither. */
+static void test_cw_two_stations(void)
+{
+    static float x[96000 * 14], y[12000 * 14];
+    static float a[96000 * 12];
+    memset(x, 0, sizeof x);
+    int na = sbitx_cw_encode("CQ DE PY2ABC K", a, 96000 * 12, 16, 560);
+    for (int i = 0; i < na && 96000 + i < 96000 * 14; i++) x[96000 + i] += a[i];
+    int nb = sbitx_cw_encode("TEST DE LU1XYZ", a, 96000 * 12, 28, 1430);
+    for (int i = 0; i < nb && 48000 + i < 96000 * 14; i++) x[48000 + i] += 0.7f * a[i];
+    int m = to12k(x, 96000 * 14, 0.2f, y);
+    cw_decode(y, m);
+    float hz_a = 0, hz_b = 0;
+    char la[128], lb[128];
+    snprintf(la, sizeof la, "%s", rx_line_at(560, &hz_a));
+    snprintf(lb, sizeof lb, "%s", rx_line_at(1430, &hz_b));
+    printf("CW   two stations: %.0f Hz [%s], %.0f Hz [%s]\n", hz_a, la, hz_b, lb);
+    TEST_ASSERT_EQUAL_STRING("CQ DE PY2ABC K", la);
+    TEST_ASSERT_EQUAL_STRING("TEST DE LU1XYZ", lb);
+    TEST_ASSERT_FLOAT_WITHIN(5.0f, 560.0f, hz_a);
+    TEST_ASSERT_FLOAT_WITHIN(5.0f, 1430.0f, hz_b);
+}
+
+/* Two RTTY stations at once, away from rtty_mark, one of them reversed
+ * (mark the lower tone): both decode, each in its own polarity. */
+static void test_rtty_two_stations(void)
+{
+    static float x[96000 * 12], y[12000 * 12], a[96000 * 10];
+    memset(x, 0, sizeof x);
+    int na = sbitx_rtty_encode("CQ CQ DE PY2RTY K", a, 96000 * 10, 45, 915, 170);
+    for (int i = 0; i < na && 48000 + i < 96000 * 12; i++) x[48000 + i] += a[i];
+    /* reversed: the "mark" given is the lower tone's space */
+    int nb = sbitx_rtty_encode("599 001 BK", a, 96000 * 10, 45, 2040, -170);
+    for (int i = 0; i < nb && 96000 + i < 96000 * 12; i++) x[96000 + i] += a[i];
+    int m = to12k(x, 96000 * 12, 0.2f, y);
+    rtty_decode(y, m);
+    float hz_a = 0, hz_b = 0;
+    char la[128], lb[128];
+    snprintf(la, sizeof la, "%s", rx_line_at(915, &hz_a));
+    snprintf(lb, sizeof lb, "%s", rx_line_at(2040, &hz_b));
+    printf("RTTY two stations: %.0f Hz [%s], %.0f Hz [%s]\n", hz_a, la, hz_b, lb);
+    TEST_ASSERT_EQUAL_STRING("CQ CQ DE PY2RTY K", la);
+    TEST_ASSERT_EQUAL_STRING("599 001 BK", lb);
+    TEST_ASSERT_FLOAT_WITHIN(5.0f, 915.0f, hz_a);
+    TEST_ASSERT_FLOAT_WITHIN(5.0f, 2040.0f, hz_b);
 }
 
 static void check_ft8(float noise_rms)
@@ -358,6 +449,8 @@ int main(void)
     RUN_TEST(test_cw_noisy);
     RUN_TEST(test_rtty_clean);
     RUN_TEST(test_rtty_noisy);
+    RUN_TEST(test_cw_two_stations);
+    RUN_TEST(test_rtty_two_stations);
     RUN_TEST(test_ft8_clean);
     RUN_TEST(test_ft8_noisy);
     RUN_TEST(test_noise_only);

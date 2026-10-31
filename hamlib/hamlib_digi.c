@@ -179,20 +179,10 @@ typedef struct {
     bool ft8_inited;
     bool rtty_inited;
 
-    /* CW RX accumulator (Goertzel block size from sbitx_cw_rx_samples_per_block). */
-    float    *cw_rx_buf;
-    int       cw_rx_buf_n;
-    int       cw_rx_buf_block;
-
     /* FT8 RX 15-second slot accumulator @ 12 kHz. */
     float    *ft8_rx_buf;
     int       ft8_rx_buf_n;
     int       ft8_rx_buf_cap;
-
-    /* RTTY RX block accumulator. */
-    float    *rtty_rx_buf;
-    int       rtty_rx_buf_n;
-    int       rtty_rx_buf_block;
 
     /* RADAE: resamplers between the ring rate and the modem/speech rates. */
     resamp_state ring_to_radae_speech;   /* ring rate -> 16k speech (TX in) */
@@ -413,79 +403,31 @@ static size_t pull_rx_12k(hamlib_digi_state *s, uint32_t ring_rate,
     return n;
 }
 
-/* The decoders' character callbacks take no state, so the values each
- * entry needs are cached here by do_rtty_rx / do_cw_rx just before they run
- * the decoder. The mark and pitch go into offset_hz exactly as the sbitx
- * backend logs them; passing 0 made offset_hz null for the same decode on
- * this backend. */
-static int g_rtty_freq_hz_cache;
-static int g_rtty_mark_cache;
-static int g_cw_pitch_cache;
-static void rtty_rx_char_cb(char c)
+/* A line from the RTTY skimmer, at the station's own mark tone. */
+static void rtty_rx_line_cb(const sbitx_rtty_rx_line *l, void *user)
 {
-    static char line[256];
-    static int  pos = 0;
-    if (c == '\r' || c == '\n') {
-        if (pos > 0) {
-            line[pos] = '\0';
-            digi_spool_log("RTTY", "rx", (uint32_t) g_rtty_freq_hz_cache, line, g_rtty_mark_cache);
-            pos = 0;
-        }
-        return;
-    }
-    if (pos < (int) sizeof(line) - 1)
-        line[pos++] = c;
+    uint32_t freq_hz = *(const uint32_t *) user;
+    digi_spool_log("RTTY", "rx", freq_hz, l->text, (int) lrintf(l->mark_hz));
 }
 
-static void cw_rx_char_cb(char c)
+/* A line from the CW skimmer, at the station's own pitch. */
+static void cw_rx_line_cb(const sbitx_cw_rx_line *l, void *user)
 {
-    static char line[256];
-    static int  pos = 0;
-    if (c == ' ' || c == '\n') {
-        if (pos > 0) {
-            line[pos] = '\0';
-            digi_spool_log("CW", "rx", (uint32_t) g_rtty_freq_hz_cache, line, g_cw_pitch_cache);
-            pos = 0;
-        }
-        return;
-    }
-    if (pos < (int) sizeof(line) - 1)
-        line[pos++] = c;
+    uint32_t freq_hz = *(const uint32_t *) user;
+    digi_log_entry e = { .mode = "CW", .dir = "rx", .freq_hz = freq_hz, .text = l->text,
+                         .has_offset = true, .offset_hz = (int) lrintf(l->pitch_hz),
+                         .has_snr = true, .snr_db = l->snr_db };
+    digi_log_add(&e);
 }
 
-static void do_cw_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz,
-                     int wpm, int pitch)
+static void do_cw_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz)
 {
-    g_rtty_freq_hz_cache = (int) freq_hz;       /* for the CW spool line too */
-    g_cw_pitch_cache = pitch;
-    if (s->cw_rx_buf_block == 0)
-        s->cw_rx_buf_block = sbitx_cw_rx_samples_per_block();
-
-    if (!s->cw_rx_buf) {
-        s->cw_rx_buf = calloc(s->cw_rx_buf_block * 2, sizeof(float));
-        if (!s->cw_rx_buf) return;
-    }
+    float audio[DIGI_DECODE_RATE / 20 + 64];
 
     /* Pull ~50 ms of audio. */
-    size_t n = pull_rx_12k(s, ring_rate, ring_rate / 20,
-                           s->cw_rx_buf + s->cw_rx_buf_n,
-                           s->cw_rx_buf_block * 2 - s->cw_rx_buf_n);
-    if (!n)
-        return;
-    s->cw_rx_buf_n += (int) n;
-
-    while (s->cw_rx_buf_n >= s->cw_rx_buf_block) {
-        char decoded[64] = {0};
-        int got = sbitx_cw_rx_process(s->cw_rx_buf, s->cw_rx_buf_block,
-                                      decoded, sizeof(decoded), wpm, pitch);
-        if (got > 0) {
-            for (int i = 0; i < got && decoded[i]; i++)
-                cw_rx_char_cb(decoded[i]);
-        }
-        memmove(s->cw_rx_buf, s->cw_rx_buf + s->cw_rx_buf_block,
-                (s->cw_rx_buf_n - s->cw_rx_buf_block) * sizeof(float));
-        s->cw_rx_buf_n -= s->cw_rx_buf_block;
-    }
+    size_t n = pull_rx_12k(s, ring_rate, ring_rate / 20, audio, sizeof audio / sizeof audio[0]);
+    if (n)
+        sbitx_cw_rx_feed(audio, (int) n, cw_rx_line_cb, &freq_hz);
 }
 
 static void do_ft8_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz)
@@ -534,31 +476,14 @@ static void do_ft8_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz
 }
 
 static void do_rtty_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz,
-                       int baud, int mark, int shift)
+                       int baud, int shift)
 {
-    if (s->rtty_rx_buf_block == 0)
-        s->rtty_rx_buf_block = sbitx_rtty_rx_samples_per_block();
-    if (!s->rtty_rx_buf) {
-        s->rtty_rx_buf = calloc(s->rtty_rx_buf_block * 2, sizeof(float));
-        if (!s->rtty_rx_buf) return;
-    }
+    float audio[DIGI_DECODE_RATE / 20 + 64];
 
-    size_t n = pull_rx_12k(s, ring_rate, ring_rate / 20,
-                           s->rtty_rx_buf + s->rtty_rx_buf_n,
-                           s->rtty_rx_buf_block * 2 - s->rtty_rx_buf_n);
-    if (!n)
-        return;
-    s->rtty_rx_buf_n += (int) n;
-
-    while (s->rtty_rx_buf_n >= s->rtty_rx_buf_block) {
-        g_rtty_freq_hz_cache = (int) freq_hz;
-        g_rtty_mark_cache = mark;
-        sbitx_rtty_rx_process(s->rtty_rx_buf, s->rtty_rx_buf_block,
-                              baud, mark, shift, rtty_rx_char_cb);
-        memmove(s->rtty_rx_buf, s->rtty_rx_buf + s->rtty_rx_buf_block,
-                (s->rtty_rx_buf_n - s->rtty_rx_buf_block) * sizeof(float));
-        s->rtty_rx_buf_n -= s->rtty_rx_buf_block;
-    }
+    /* Pull ~50 ms of audio. */
+    size_t n = pull_rx_12k(s, ring_rate, ring_rate / 20, audio, sizeof audio / sizeof audio[0]);
+    if (n)
+        sbitx_rtty_rx_feed(audio, (int) n, baud, shift, rtty_rx_line_cb, &freq_hz);
 }
 
 /* ─── D-STAR DV: GMSK modem + AMBE over the rig audio path ───────
@@ -1066,8 +991,8 @@ static void *hamlib_digi_thread(void *radio_h_v)
             continue;
         }
 
-        /* Lazy per-mode init (sbitx_*_init is idempotent — the libcw etc.
-         * libraries handle re-init OK but we still gate to avoid spam). */
+        /* Lazy per-mode init, once: the CW and RTTY inits also forget the
+         * skimmers' channels. */
         if (mode == MODE_CW && !s->cw_inited) {
             sbitx_cw_init(radio_h->cw_wpm, radio_h->cw_pitch);
             s->cw_inited = true;
@@ -1154,14 +1079,13 @@ static void *hamlib_digi_thread(void *radio_h_v)
             s->tx_pend_len = s->tx_pend_pos = 0;
             switch (mode) {
             case MODE_CW:
-                do_cw_rx(s, ring_rate, freq_hz, radio_h->cw_wpm, radio_h->cw_pitch);
+                do_cw_rx(s, ring_rate, freq_hz);
                 break;
             case MODE_FT8:
                 do_ft8_rx(s, ring_rate, freq_hz);
                 break;
             case MODE_RTTY:
-                do_rtty_rx(s, ring_rate, freq_hz,
-                           radio_h->rtty_baud, radio_h->rtty_mark, radio_h->rtty_shift);
+                do_rtty_rx(s, ring_rate, freq_hz, radio_h->rtty_baud, radio_h->rtty_shift);
                 break;
             case MODE_DSTAR:
                 do_dstar_rx(s, ring_rate);
@@ -1187,9 +1111,7 @@ static void *hamlib_digi_thread(void *radio_h_v)
     resamp_free(&s->dstar_24k_to_ring);
     resamp_free(&s->ring_to_dstar_24k);
     resamp_free(&s->dstar_8k_to_ring);
-    free(s->cw_rx_buf);
     free(s->ft8_rx_buf);
-    free(s->rtty_rx_buf);
     if (s->cw_inited) sbitx_cw_shutdown();
     if (s->ft8_inited) sbitx_ft8_shutdown();
     if (s->rtty_inited) sbitx_rtty_shutdown();
