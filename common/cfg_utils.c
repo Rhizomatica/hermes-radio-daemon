@@ -480,6 +480,8 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     snprintf(radio_h->log_file, sizeof(radio_h->log_file), "%s", s);
     b = iniparser_getboolean(ini, "main:log_jsonl", 0);
     radio_h->log_jsonl = (bool) b;
+    b = iniparser_getboolean(ini, "main:log_utc", 0);
+    radio_h->log_utc = (bool) b;
 
     s = iniparser_getstring(ini, "main:capture_device", "default");
     snprintf(radio_h->capture_device, sizeof(radio_h->capture_device), "%s", s);
