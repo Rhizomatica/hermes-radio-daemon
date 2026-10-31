@@ -25,7 +25,6 @@ var problemTitles = map[string]string{
 	"busy":                   "Busy",
 	"not_running":            "Not running",
 	"not_supported":          "Not supported",
-	"encryption_not_allowed": "Encryption not allowed",
 	"rate_limited":           "Rate limited",
 	"csrf":                   "CSRF check failed",
 	"bad_setup_code":         "Bad setup code",

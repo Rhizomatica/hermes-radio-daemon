@@ -102,8 +102,8 @@ Anyone on the Wi-Fi may use it, as Reticulum expects, so its storage is capped
 ## Rules
 
 - **Encryption.** Reticulum encrypts everything, including what crosses the air on
-  backhaul links. It stays off until an admin turns on `settings.encryption.reticulum`,
-  for a station licensed to use encryption, like the other encryption switches.
+  backhaul links. Like every encryption switch, `enabled` is an ordinary setting, on and
+  off through the API; where it may be used is the station operators' decision.
 - **Identification.** ARQ sessions carry Mercury's callsigns, so backhaul calls identify
   the station.
 - **Untrusted input.** LXMF titles, contents, display names and attachment names come

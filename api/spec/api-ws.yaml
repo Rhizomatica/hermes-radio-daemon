@@ -69,8 +69,6 @@ info:
       per user (`settings.tx_rate_limit`, error `rate_limited`) and is written to the audit
       log as `radio.tx`. The transmit timeout is enforced by the station, not the client,
       and PTT is released when its client disconnects.
-    - **D-STAR encrypted voice** keys only when `settings.encryption.dstar_voice` is on;
-      otherwise PTT is refused with `encryption_not_allowed`.
     - **CW and RTTY identify the station:** if the text of a `digi.send` doesn't contain
       the station callsign, the station appends ` de <callsign>`.
     - **Untrusted text.** `digi` and `modem.chat` text, decoded callsigns and every
@@ -722,7 +720,6 @@ components:
                 - no_link
                 - queue_full
                 - rate_limited
-                - encryption_not_allowed
                 - tx_timeout
                 - internal
             message: { type: string }
