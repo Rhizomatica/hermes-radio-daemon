@@ -100,6 +100,7 @@ void radiod_log_configure(const radio *radio_h)
         HLOGW(LOG_C, "main:log_level = %s is not trace, debug, timing, info, warn or error; using info",
               radio_h->log_level);
     hermes_log_set_level(level);
+    hermes_log_set_utc(radio_h->log_utc);
 
     if (radiod_log_components(radio_h->log_component_levels, set_component, NULL) < 0)
         HLOGW(LOG_C, "main:log_component_levels = %s: want \"component=level, ...\"; "

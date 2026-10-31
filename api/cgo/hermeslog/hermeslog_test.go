@@ -48,7 +48,8 @@ func TestTextLines(t *testing.T) {
 	})
 	want := []string{"[INF] [test] hello", "[WRN] [test] n=3 x", "[DBG] [test.sub] detail",
 		"[TMG] [test] tick", "[ERR] [test] bad"}
-	line := regexp.MustCompile(`^\d\d:\d\d:\d\d\.\d{3} \[\+\d+\.\d{3}s\] (\[[A-Z]{3}\] \[[a-z.]+\] .*)$`)
+	// "2026-10-31 19:32:12.668 [+0.306s] [INF] [test] hello", local time
+	line := regexp.MustCompile(`^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} \[\+\d+\.\d{3}s\] (\[[A-Z]{3}\] \[[a-z.]+\] .*)$`)
 	var msgs []string
 	for _, l := range strings.Split(strings.TrimSpace(got), "\n") {
 		m := line.FindStringSubmatch(l)

@@ -108,14 +108,42 @@ static void test_file_sink(void)
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(log, "] [INF] [radiod] hello 42\n"), test_msg("file: %s", log));
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(log, "] [DBG] [hamlib] a detail\n"), test_msg("file: %s", log));
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(log, "writing log to "), test_msg("file: %s", log));
-    /* hh:mm:ss.mmm [+s.mmms] [LVL] [component] message */
-    int hh, mm, ss, ms;
+    /* YYYY-MM-DD hh:mm:ss.mmm [+s.mmms] [LVL] [component] message, local time */
+    int y, mo, d, hh, mm, ss, ms;
     unsigned up_s, up_ms;
     const char *line = strstr(log, "hello 42");
     while (line > log && line[-1] != '\n')
         line--;
-    TEST_ASSERT_EQUAL_INT_MESSAGE(6, sscanf(line, "%2d:%2d:%2d.%3d [+%u.%3us]", &hh, &mm, &ss, &ms, &up_s, &up_ms),
+    TEST_ASSERT_EQUAL_INT_MESSAGE(9, sscanf(line, "%4d-%2d-%2d %2d:%2d:%2d.%3d [+%u.%3us]",
+                                            &y, &mo, &d, &hh, &mm, &ss, &ms, &up_s, &up_ms),
                                   test_msg("line: %.80s", line));
+    TEST_ASSERT_EQUAL_CHAR_MESSAGE(' ', line[23], test_msg("local time has no Z: %.80s", line));
+}
+
+/* main:log_utc: the same stamp in UTC, with a Z. */
+static void test_file_sink_utc(void)
+{
+    char path[sizeof r.log_file];
+    snprintf(path, sizeof path, "%s/radiod-utc.log", tmpdir);
+    snprintf(r.log_file, sizeof r.log_file, "%s", path);
+    r.log_utc = true;
+
+    radiod_log_start();
+    radiod_log_configure(&r);
+    HLOGI("radiod", "in utc");
+    radiod_log_stop();
+    r.log_utc = false;
+
+    const char *log = slurp(path);
+    const char *line = strstr(log, "in utc");
+    TEST_ASSERT_NOT_NULL_MESSAGE(line, test_msg("file: %s", log));
+    while (line > log && line[-1] != '\n')
+        line--;
+    int y, mo, d, hh, mm, ss, ms;
+    char z = 0;
+    TEST_ASSERT_EQUAL_INT_MESSAGE(8, sscanf(line, "%4d-%2d-%2d %2d:%2d:%2d.%3d%c", &y, &mo, &d, &hh, &mm, &ss, &ms, &z),
+                                  test_msg("line: %.80s", line));
+    TEST_ASSERT_EQUAL_CHAR_MESSAGE('Z', z, test_msg("line: %.80s", line));
 }
 
 static void test_file_sink_jsonl(void)
@@ -166,6 +194,7 @@ int main(void)
     RUN_TEST(test_level_names);
     RUN_TEST(test_component_list);
     RUN_TEST(test_file_sink);
+    RUN_TEST(test_file_sink_utc);
     RUN_TEST(test_file_sink_jsonl);
     RUN_TEST(test_bad_level);
     int rc = UNITY_END();
