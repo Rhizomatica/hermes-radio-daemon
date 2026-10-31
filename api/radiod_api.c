@@ -71,13 +71,31 @@ int radiod_api_digi_send(const char *text)
     return digi_tx_queue_push(&s_radio->digi_tx, text) ? RADIOD_API_OK : RADIOD_API_EBUSY;
 }
 
-int radiod_api_spectrum_subscribe(long conn_id, bool tx, bool on)
+int radiod_api_spectrum_subscribe(long conn_id, int spectrum, bool on)
 {
+    char status[2];
+    int ws;
+
     if (!s_radio)
         return RADIOD_API_ENOTSUP;
-    if (on && !radio_pipeline_supports_spectrum(s_radio, tx))
-        return RADIOD_API_ENOTSUP;
-    return radio_websocket_spectrum_subscribe(conn_id, tx, on) == 0 ? RADIOD_API_OK : RADIOD_API_EBUSY;
+    switch (spectrum)
+    {
+    case RADIOD_API_SPECTRUM_RX:
+    case RADIOD_API_SPECTRUM_TX:
+        if (on && !radio_pipeline_supports_spectrum(s_radio, spectrum == RADIOD_API_SPECTRUM_TX))
+            return RADIOD_API_ENOTSUP;
+        ws = spectrum == RADIOD_API_SPECTRUM_TX ? RADIO_WS_SPECTRUM_TX : RADIO_WS_SPECTRUM_RX;
+        break;
+    case RADIOD_API_SPECTRUM_MODEM:
+        /* Running: mercury has sent a status (truncated here, only asked). */
+        if (on && !radiod_api_modem_status(status, sizeof(status)))
+            return RADIOD_API_ENOTSUP;
+        ws = RADIO_WS_SPECTRUM_MODEM;
+        break;
+    default:
+        return RADIOD_API_EINVAL;
+    }
+    return radio_websocket_spectrum_subscribe(conn_id, ws, on) == 0 ? RADIOD_API_OK : RADIOD_API_EBUSY;
 }
 
 int radiod_api_recording(bool start, const char *stream, bool *rx, bool *tx)

@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/testapi"
 )
@@ -18,26 +19,26 @@ func TestSpectrumTopics(t *testing.T) {
 		return w.Next(func(m map[string]any) bool { return m["type"] == "reply" && m["id"] == id }, time.Second)
 	}
 	w.Send(`{"type":"subscribe","id":"s","topics":["radio.spectrum.rx","radio.spectrum.tx"]}`)
-	if r := reply("s"); r["ok"] != true || !e.Radio.Spectrum(w.ID, false) || !e.Radio.Spectrum(w.ID, true) {
+	if r := reply("s"); r["ok"] != true || !e.Radio.Spectrum(w.ID, rad.SpectrumRX) || !e.Radio.Spectrum(w.ID, rad.SpectrumTX) {
 		t.Fatalf("subscribe = %v", r)
 	}
 	w.None(func(m map[string]any) bool { return m["type"] == "event" }, 300*time.Millisecond)
 
 	w.Send(`{"type":"unsubscribe","id":"u","topics":["radio.spectrum.tx"]}`)
-	if reply("u"); !e.Radio.Spectrum(w.ID, false) || e.Radio.Spectrum(w.ID, true) {
+	if reply("u"); !e.Radio.Spectrum(w.ID, rad.SpectrumRX) || e.Radio.Spectrum(w.ID, rad.SpectrumTX) {
 		t.Fatal("unsubscribe did not reach C")
 	}
 
 	// A subscribe that fails leaves what the connection already held.
 	w.Send(`{"type":"subscribe","id":"r","topics":["radio.spectrum.rx","no.such.topic"]}`)
-	if r := reply("r"); r["ok"] != false || !e.Radio.Spectrum(w.ID, false) {
-		t.Fatalf("a failed re-subscribe = %v, rx still subscribed = %v", r, e.Radio.Spectrum(w.ID, false))
+	if r := reply("r"); r["ok"] != false || !e.Radio.Spectrum(w.ID, rad.SpectrumRX) {
+		t.Fatalf("a failed re-subscribe = %v, rx still subscribed = %v", r, e.Radio.Spectrum(w.ID, rad.SpectrumRX))
 	}
 
 	x := e.Open()
 	x.Send(`{"type":"subscribe","id":"b","topics":["radio.spectrum.rx","no.such.topic"]}`)
 	x.Next(func(m map[string]any) bool { return m["type"] == "reply" && m["id"] == "b" }, time.Second)
-	if e.Radio.Spectrum(x.ID, false) {
+	if e.Radio.Spectrum(x.ID, rad.SpectrumRX) {
 		t.Fatal("a failed subscribe left the C subscription")
 	}
 
@@ -45,7 +46,7 @@ func TestSpectrumTopics(t *testing.T) {
 	// after C's own close dropped them.
 	w.Close()
 	deadline := time.Now().Add(time.Second)
-	for e.Radio.Spectrum(w.ID, false) {
+	for e.Radio.Spectrum(w.ID, rad.SpectrumRX) {
 		if time.Now().After(deadline) {
 			t.Fatal("a closed connection kept its spectrum subscription")
 		}
@@ -70,7 +71,7 @@ func TestSpectrumPerUser(t *testing.T) {
 		ws = append(ws, w)
 	}
 	over := e.Open()
-	if r := sub(over, "s"); code(r) != "busy" || e.Radio.Spectrum(over.ID, false) {
+	if r := sub(over, "s"); code(r) != "busy" || e.Radio.Spectrum(over.ID, rad.SpectrumRX) {
 		t.Fatalf("one connection over the cap = %v", r)
 	}
 	ws[0].Close()

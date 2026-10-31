@@ -338,22 +338,25 @@ rt.Stream("modem.chat", spec.RoleReadonly, func(after uint64) ([]any, uint64, er
 })
 ```
 
-A topic of binary frames (`radio.spectrum.rx`, `radio.spectrum.tx`) is produced and sent by C
-(rule 4 of section 2): Go registers it with `rt.Binary`, whose function subscribes or
-unsubscribes one connection in C. There is no JSON snapshot; the frames start coming from C,
-and C drops a closed connection's subscriptions itself (the router drops them again after the
-connection's last command). C's slots are the station's (16 for each spectrum), so the router
-lets one user hold a binary topic on at most `api.BinaryPerUser` (4) connections. A subscribe
-over that is `busy`. Return `api.ErrBinaryBusy` when C has no slot left (also `busy`):
+A topic of binary frames (`radio.spectrum.rx`, `radio.spectrum.tx`, `modem.spectrum.rx`) is
+produced and sent by C (rule 4 of section 2): Go registers it with `rt.Binary`, giving its frame
+kind, the function that subscribes or unsubscribes one connection in C, and optionally whether
+it is offered now (an error leaves it out of `hello` and refuses a subscribe, as a state
+function's does). There is no JSON snapshot; the frames start coming from C, and C drops a
+closed connection's subscriptions itself (the router drops them again after the connection's
+last command). C's slots are the station's (16 for each spectrum), so the router lets one user
+hold a binary topic on at most `api.BinaryPerUser` (4) connections. A subscribe over that is
+`busy`, as is C's `radio.ErrBusy` (no slot left). Two topics can share a kind (both spectrums
+of kind 3), and the frames don't say which topic they are, so the router lets a connection hold
+one of them at a time; subscribing to the other is `bad_request`:
 
 ```go
-rt.Binary("radio.spectrum.rx", spec.RoleReadonly, func(conn int64, on bool) error {
-	return h.r.SpectrumSubscribe(conn, false, on) // radiod_api_spectrum_subscribe
-})
+rt.Binary("modem.spectrum.rx", spec.RoleReadonly, 3, func(conn int64, on bool) error {
+	return h.r.SpectrumSubscribe(conn, rad.SpectrumModem, on) // radiod_api_spectrum_subscribe
+}, func() error { _, err := h.status(); return err }) // offered while mercury runs
 ```
 
-Not there yet: `modem.spectrum.rx` (mercury's spectrum, kind 3), and WebRTC signalling
-(`rtc.offer`).
+Not there yet: WebRTC signalling (`rtc.offer`).
 
 ## 8. Reaching the radio
 
@@ -504,8 +507,7 @@ CI runs all three on Debian 13, amd64 and arm64, with and without the Go layer.
   do: the mailbox helper behind user create/password (a new radiod C API verb), avatars, and
   LXMF identity export.
 - **More topics**: `radio.profiles`, the list topics (`digi`, `modem.chat`,
-  `messages`), mercury's `modem.config`; then **binary frames** (spectrum)
-  and **WebRTC** audio (in C, with libdatachannel; the signalling arrives as `rtc.offer`
+  `messages`), mercury's `modem.config`; then **WebRTC** audio (in C, with libdatachannel; the signalling arrives as `rtc.offer`
   commands).
 - **A transmit timeout** (`tx_timeout_s` in `/radio/settings`): in the spec, not in radiod
   yet, so it is null and a PATCH of it is refused.

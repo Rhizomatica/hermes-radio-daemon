@@ -204,6 +204,23 @@ static void copy_field(char *dst, size_t n, const char *text, int start, int end
     }
 }
 
+void sbitx_ft8_grid(const char *field, char *out, size_t out_size)
+{
+    if (!out || out_size == 0)
+        return;
+    out[0] = '\0';
+    if (!field)
+        return;
+    if (field[0] == 'R' && field[1] == ' ')
+        field += 2;
+    if (strlen(field) != 4 || out_size < 5 || !strcmp(field, "RR73"))
+        return;
+    if (field[0] < 'A' || field[0] > 'R' || field[1] < 'A' || field[1] > 'R' ||
+        field[2] < '0' || field[2] > '9' || field[3] < '0' || field[3] > '9')
+        return;
+    memcpy(out, field, 5);
+}
+
 /* From the decoder's field map: in "CQ PU2UIT GG66" the token is the
  * addressee and the call the sender; in "PU2UIT PY2XYZ -12" the first call
  * is the addressee and the second the sender. */
@@ -228,9 +245,12 @@ static void parse_fields(sbitx_ft8_decode_result *r, const ftx_message_offsets_t
             else if (!r->from[0])
                 copy_field(r->from, sizeof(r->from), r->text, start, end);
             break;
-        case FTX_FIELD_GRID:
-            copy_field(r->grid, sizeof(r->grid), r->text, start, end);
+        case FTX_FIELD_GRID: {
+            char field[sizeof(r->grid)];
+            copy_field(field, sizeof(field), r->text, start, end);
+            sbitx_ft8_grid(field, r->grid, sizeof(r->grid));
             break;
+        }
         default:
             break;
         }

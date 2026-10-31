@@ -396,6 +396,28 @@ static void test_ft8_passes_keep_clean(void)
 }
 
 static void test_ft8_fields_report(void)    { check_ft8_fields("PU2UIT PY2XYZ -12", 0.05f, "PU2UIT", "PY2XYZ", ""); }
+static void test_ft8_fields_rr73(void)      { check_ft8_fields("PU2UIT PY2XYZ RR73", 0.05f, "PU2UIT", "PY2XYZ", ""); }
+
+/* A grid field is a locator only when it is one. WSJT-X sends RR73 in the
+ * locator's place (the square RR73 is reserved for it), which ft8_lib then
+ * types as a grid; a roger with the locator comes as "R JN49". */
+static void test_ft8_grid_field(void)
+{
+    static const struct { const char *field, *want; } cases[] = {
+        { "JN49", "JN49" }, { "GG66", "GG66" }, { "R JN49", "JN49" },
+        { "RR73", "" }, { "R RR73", "" }, { "RR72", "RR72" },
+        { "JN4", "" }, { "JN490", "" }, { "jn49", "" }, { "SS00", "" }, { "", "" },
+    };
+    char out[8];
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        sbitx_ft8_grid(cases[i].field, out, sizeof out);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(cases[i].want, out,
+                                         test_msg("grid field [%s] -> [%s], want [%s]",
+                                                  cases[i].field, out, cases[i].want));
+    }
+    sbitx_ft8_grid(NULL, out, sizeof out);
+    TEST_ASSERT_EQUAL_STRING("", out);
+}
 static void test_ft8_fields_free_text(void) { check_ft8_fields("HERMES TEST.9", 0.05f, "", "", ""); }
 static void test_cw_clean(void)             { check_cw(0.0f); }
 static void test_cw_noisy(void)             { check_cw(0.4f); }
@@ -409,6 +431,8 @@ int main(void)
     UNITY_BEGIN();
     RUN_TEST(test_ft8_snr_falls_with_noise);
     RUN_TEST(test_ft8_fields_report);
+    RUN_TEST(test_ft8_fields_rr73);
+    RUN_TEST(test_ft8_grid_field);
     RUN_TEST(test_ft8_combining);
     RUN_TEST(test_ft8_passes_keep_clean);
     RUN_TEST(test_ft8_fields_free_text);
