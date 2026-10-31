@@ -53,6 +53,26 @@ func TestPTTOwnership(t *testing.T) {
 	}
 }
 
+// A radio.ptt on still queued or running when the connection closes cannot
+// leave the transmitter keyed: C's close may unkey before it runs, so the
+// connection's own release unkeys after its last command.
+func TestPTTClosedWhileKeying(t *testing.T) {
+	e := testapi.New(t)
+	for i := range 200 {
+		w := e.Open()
+		w.Send(fmt.Sprintf(`{"type":"cmd","id":"k%d","cmd":"radio.ptt","args":{"on":true}}`, i))
+		e.Radio.ReleasePTT(w.ID) // radiod's close, before Go has run the command
+		w.Close()
+		deadline := time.Now().Add(time.Second)
+		for e.Radio.State().TX {
+			if time.Now().After(deadline) {
+				t.Fatalf("round %d: the transmitter stayed keyed after the connection closed", i)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
 func TestPTTRefusals(t *testing.T) {
 	e := testapi.New(t)
 	w := e.Open()

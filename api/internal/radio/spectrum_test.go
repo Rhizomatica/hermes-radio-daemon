@@ -33,4 +33,15 @@ func TestSpectrumTopics(t *testing.T) {
 	if e.Radio.Spectrum(x.ID, false) {
 		t.Fatal("a failed subscribe left the C subscription")
 	}
+
+	// A connection that closes drops its C subscriptions, even one taken
+	// after C's own close dropped them.
+	w.Close()
+	deadline := time.Now().Add(time.Second)
+	for e.Radio.Spectrum(w.ID, false) {
+		if time.Now().After(deadline) {
+			t.Fatal("a closed connection kept its spectrum subscription")
+		}
+		time.Sleep(time.Millisecond)
+	}
 }

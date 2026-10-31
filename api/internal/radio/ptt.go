@@ -32,6 +32,17 @@ type ptt struct {
 func registerPTT(rt *api.Router) {
 	p := &ptt{r: rt.Radio(), limit: &ratelimit.Limiter{}, log: logging.New(rt.Radio(), "api.tx")}
 	rt.Command("radio.ptt", spec.RoleOperator, p.cmd)
+	rt.OnClose(p.closed)
+}
+
+// closed unkeys for a connection that closed holding PTT. radiod's C server
+// unkeys on close already; this catches a radio.ptt on that was still
+// running then, which would otherwise leave the transmitter keyed by a
+// connection that no longer exists.
+func (p *ptt) closed(c *api.Conn) {
+	if p.r.PTT(c.ID, false) == nil {
+		p.log.Info("radio.tx off: the connection closed holding PTT", "user", c.User, "conn", c.ID)
+	}
 }
 
 func (p *ptt) cmd(_ context.Context, c *api.Conn, args json.RawMessage) (any, *api.CmdError) {

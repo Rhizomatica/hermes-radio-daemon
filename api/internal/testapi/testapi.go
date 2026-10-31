@@ -155,6 +155,10 @@ func (e *Env) OpenAuth(token string) *WS {
 	return &WS{e: e, ID: id}
 }
 
+// Close is radiod's C server closing the connection (WSClose); a second
+// close, as at the end of the test, does nothing.
+func (w *WS) Close() { w.e.R.WSClose(w.ID) }
+
 // Send sends one text frame.
 func (w *WS) Send(frame string) { w.e.R.WSMessage(w.ID, []byte(frame)) }
 
