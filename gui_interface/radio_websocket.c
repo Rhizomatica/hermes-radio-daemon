@@ -1360,8 +1360,9 @@ static void broadcast_spectrum(websocket_ctx *ctx, bool tx)
 }
 
 /* Mercury's spectrum frame (its docs/WEBSOCKET_API.md, 5.7: u32 magic
- * "MCRY", u16 fft_size, u16 sample_rate, then fft_size f32 dB bins from 0
- * to sample_rate / 2, all little-endian) as modem.spectrum.rx's kind 3:
+ * 0x4D435259, the bytes "YRCM"; u16 fft_size, u16 sample_rate; then
+ * fft_size f32 dB bins from 0 to sample_rate / 2, all little-endian) as
+ * modem.spectrum.rx's kind 3:
  * RF-ascending at the dial, as the radio's spectrum is. The bins are the
  * modem's audio, so in LSB they are flipped. Runs on mercury's spectrum
  * thread, as a ui_hub sink: it only queues. */
