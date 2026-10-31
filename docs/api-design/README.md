@@ -258,7 +258,7 @@ The daemon that drives the transmitter now also parses requests from the network
 
 | Risk | Rule |
 | --- | --- |
-| Encryption on the air is not allowed on amateur bands | Encrypted messages, attachments and D-STAR voice are refused, and Reticulum doesn't run, unless an admin enables them in `settings.encryption` for a licensed station. All off by default |
+| Encryption on the air is not allowed on amateur bands | Encryption (messages, attachments, D-STAR and RADE V2 voice, Reticulum) is an ordinary setting, on and off through the API; the API does not decide where it may be used (decided 2026-10-31) |
 | Anyone on the Wi-Fi making the station transmit | Transmitting needs `operator`, is rate-limited per user, and every transmission is in the audit log (`radio.tx`). CW and RTTY append the station callsign when the text lacks it. The transmit timeout is enforced by the station |
 | Text that arrives over the air (FT8, CW, RTTY, D-STAR, chat, `.hmp`) is attacker-controlled | Control characters removed, lengths capped, always valid JSON, rendered as plain text. Decoded callsigns are claims, not identities |
 | A forged sender inside an `.hmp` file | The origin is the UUCP system that delivered the file |

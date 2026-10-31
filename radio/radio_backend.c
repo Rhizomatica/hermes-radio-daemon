@@ -209,6 +209,43 @@ void radio_backend_end_ptt(radio *radio_h, ptt_source src, long id)
     pthread_mutex_unlock(&ptt_lock);
 }
 
+int radio_backend_claim_ptt(radio *radio_h, ptt_source src, long id)
+{
+    int rc = 0;
+
+    pthread_mutex_lock(&ptt_lock);
+    if (ptt_owner_src != PTT_SRC_NONE && !(ptt_owner_src == src && ptt_owner_id == id))
+        rc = -1;
+    else if (ptt_owner_src == PTT_SRC_NONE && radio_h->txrx_state == IN_TX)
+        rc = -1;                        /* keyed with no owner on record */
+    else if (ptt_owner_src == PTT_SRC_NONE)
+    {
+        ptt_owner_src = src;
+        ptt_owner_id = id;
+        HLOGI(LOG_C, "PTT ON by %s %ld", ptt_source_name(src), id);
+        ptt_apply(radio_h, IN_TX);
+    }
+    pthread_mutex_unlock(&ptt_lock);
+    return rc;
+}
+
+bool radio_backend_unkey_ptt(radio *radio_h, ptt_source src, long id)
+{
+    bool unkeyed = false;
+
+    pthread_mutex_lock(&ptt_lock);
+    if (src != PTT_SRC_NONE && ptt_owner_src == src && ptt_owner_id == id)
+    {
+        ptt_owner_src = PTT_SRC_NONE;
+        ptt_owner_id = 0;
+        HLOGI(LOG_C, "PTT OFF by %s %ld", ptt_source_name(src), id);
+        ptt_apply(radio_h, IN_RX);
+        unkeyed = true;
+    }
+    pthread_mutex_unlock(&ptt_lock);
+    return unkeyed;
+}
+
 bool radio_backend_release_ptt(radio *radio_h, ptt_source src, long id,
                                const char *why)
 {

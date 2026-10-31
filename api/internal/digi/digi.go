@@ -21,6 +21,7 @@ func Register(rt *api.Router) {
 	rt.Op("getDigiLog", h.getLog)
 	rt.Op("getDigiSettings", h.getSettings)
 	rt.Op("updateDigiSettings", h.updateSettings)
+	registerSend(rt)
 }
 
 type handlers struct{ r rad.Radio }
@@ -135,6 +136,9 @@ type Settings struct {
 		Denoise bool   `json:"denoise"`
 		Verbose bool   `json:"verbose"`
 	} `json:"dstar"`
+	Rade struct {
+		Encrypt bool `json:"encrypt"`
+	} `json:"rade"`
 	VoiceCodec string `json:"voice_codec"`
 }
 
@@ -144,6 +148,7 @@ func settingsOf(d rad.DigiSettings) Settings {
 	s.RTTY.Baud, s.RTTY.ShiftHz, s.RTTY.MarkHz = d.RTTYBaud, d.RTTYShiftHz, d.RTTYMarkHz
 	s.Dstar.Mycall, s.Dstar.Encrypt = d.DstarMycall, d.DstarEncrypt
 	s.Dstar.Denoise, s.Dstar.Verbose = d.DstarDenoise, d.DstarVerbose
+	s.Rade.Encrypt = d.RadeEncrypt
 	s.VoiceCodec = d.VoiceCodec
 	return s
 }
@@ -169,6 +174,9 @@ type settingsPatch struct {
 		Denoise *bool   `json:"denoise"`
 		Verbose *bool   `json:"verbose"`
 	} `json:"dstar"`
+	Rade *struct {
+		Encrypt *bool `json:"encrypt"`
+	} `json:"rade"`
 	VoiceCodec *string `json:"voice_codec"`
 }
 
@@ -224,21 +232,10 @@ func (h handlers) updateSettings(w http.ResponseWriter, r *http.Request) {
 		if p.Dstar.Mycall != nil && *p.Dstar.Mycall != h.r.DigiSettings().DstarMycall {
 			f.Add("dstar.mycall", "set in radiod's configuration (main:dstar_mycall)")
 		}
-		if p.Dstar.Encrypt != nil {
-			// The spec gates encryption on settings.encryption.dstar_voice,
-			// which radiod does not have yet: until it does, the API may
-			// only turn encryption off.
-			if *p.Dstar.Encrypt {
-				api.Problem(w, r, http.StatusForbidden, "encryption_not_allowed",
-					"D-STAR encryption is not allowed on this station", nil)
-				return
-			}
-			sets = append(sets, set{"dstar_encrypt", 0, "dstar.encrypt"})
-		}
 		for _, b := range []struct {
 			v   *bool
 			key string
-		}{{p.Dstar.Denoise, "dstar_denoise"}, {p.Dstar.Verbose, "dstar_verbose"}} {
+		}{{p.Dstar.Encrypt, "dstar_encrypt"}, {p.Dstar.Denoise, "dstar_denoise"}, {p.Dstar.Verbose, "dstar_verbose"}} {
 			if b.v != nil {
 				n := 0
 				if *b.v {
@@ -247,6 +244,13 @@ func (h handlers) updateSettings(w http.ResponseWriter, r *http.Request) {
 				sets = append(sets, set{b.key, n, "dstar." + strings.TrimPrefix(b.key, "dstar_")})
 			}
 		}
+	}
+	if p.Rade != nil && p.Rade.Encrypt != nil {
+		n := 0
+		if *p.Rade.Encrypt {
+			n = 1
+		}
+		sets = append(sets, set{"rade_encrypt", n, "rade.encrypt"})
 	}
 	if p.VoiceCodec != nil {
 		c := strings.ToUpper(*p.VoiceCodec)

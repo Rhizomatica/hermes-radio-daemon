@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -617,5 +618,125 @@ func TestHermesV1ModemChat(t *testing.T) {
 	_ = ws.writeFrame(opText, []byte(`{"type":"cmd","id":"c2","cmd":"modem.chat.send","args":{"plane":"arq","text":"x"}}`))
 	if r := next(reply("c2")); r["ok"] != false || r["error"].(map[string]any)["code"] != "no_link" {
 		t.Errorf("ARQ send with no session = %v, want no_link", r)
+	}
+}
+
+// v1cmd sends one hermes.v1 command and returns its reply.
+func v1cmd(t *testing.T, ws *wsConn, id, frame string) map[string]any {
+	t.Helper()
+	if err := ws.writeFrame(opText, []byte(frame)); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if r := readFrame(t, ws, 5*time.Second); r["type"] == "reply" && r["id"] == id {
+			return r
+		}
+	}
+}
+
+// radio.ptt through the real daemon: the connection that keys owns PTT,
+// another is refused, and closing the owner's socket unkeys the radio (C's
+// close path, which no unit test reaches).
+func TestHermesV1PTT(t *testing.T) {
+	needGoAPI(t)
+	d := startAPIDaemon(t)
+	token := setupAPI(t, d)
+	url := strings.TrimSuffix(d.WSURL, "/") + "/api/v2/ws"
+	rig := dialRigctl(t, d)
+
+	a, _, err := wsDialAuth(url, "hermes.v1", token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _, err := wsDialAuth(url, "hermes.v1", token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	if r := v1cmd(t, a, "1", `{"type":"cmd","id":"1","cmd":"radio.ptt","args":{"on":true}}`); r["ok"] != true {
+		t.Fatalf("key = %v\n--- daemon log ---\n%s", r, d.Log())
+	}
+	if got := rig.cmd("t"); got != "1" {
+		t.Fatalf("after radio.ptt on, rigctl t = %q", got)
+	}
+	r := v1cmd(t, b, "2", `{"type":"cmd","id":"2","cmd":"radio.ptt","args":{"on":true}}`)
+	if e, _ := r["error"].(map[string]any); r["ok"] != false || e["code"] != "busy" {
+		t.Fatalf("a second connection keying = %v, want busy", r)
+	}
+	r = v1cmd(t, b, "3", `{"type":"cmd","id":"3","cmd":"radio.ptt","args":{"on":false}}`)
+	if e, _ := r["error"].(map[string]any); e["code"] != "no_ptt" || rig.cmd("t") != "1" {
+		t.Fatalf("a second connection unkeying = %v", r)
+	}
+
+	a.Close()
+	if !eventually(5*time.Second, func() bool { return rig.cmd("t") == "0" }) {
+		t.Fatalf("closing the keying socket left the radio in TX\n--- daemon log ---\n%s", d.Log())
+	}
+	if r := v1cmd(t, b, "4", `{"type":"cmd","id":"4","cmd":"radio.ptt","args":{"on":true}}`); r["ok"] != true {
+		t.Fatalf("keying after the holder left = %v", r)
+	}
+	if r := v1cmd(t, b, "5", `{"type":"cmd","id":"5","cmd":"radio.ptt","args":{"on":false}}`); r["ok"] != true || rig.cmd("t") != "0" {
+		t.Fatalf("unkey = %v", r)
+	}
+}
+
+// digi.send through the real daemon: refused outside a digital mode, FT8
+// text radiod's modulator can't carry refused by its own check, and a CW
+// line queued.
+func TestHermesV1DigiSend(t *testing.T) {
+	needGoAPI(t)
+	d := startAPIDaemon(t)
+	token := setupAPI(t, d)
+	ws, _, err := wsDialAuth(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1", token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	errCode := func(r map[string]any) any { e, _ := r["error"].(map[string]any); return e["code"] }
+
+	if r := v1cmd(t, ws, "1", `{"type":"cmd","id":"1","cmd":"digi.send","args":{"text":"CQ"}}`); errCode(r) != "wrong_mode" {
+		t.Fatalf("outside a digital mode = %v", r)
+	}
+	if r := v1cmd(t, ws, "2", `{"type":"cmd","id":"2","cmd":"radio.set","args":{"mode":"FT8"}}`); r["ok"] != true {
+		t.Fatalf("radio.set FT8 = %v", r)
+	}
+	if r := v1cmd(t, ws, "3", `{"type":"cmd","id":"3","cmd":"digi.send","args":{"text":"THIS IS FAR TOO LONG FOR FT8"}}`); errCode(r) != "out_of_range" {
+		t.Fatalf("long FT8 = %v\n--- daemon log ---\n%s", r, d.Log())
+	}
+	if r := v1cmd(t, ws, "4", `{"type":"cmd","id":"4","cmd":"radio.set","args":{"mode":"CW"}}`); r["ok"] != true {
+		t.Fatalf("radio.set CW = %v", r)
+	}
+	r := v1cmd(t, ws, "5", `{"type":"cmd","id":"5","cmd":"digi.send","args":{"text":"TEST"}}`)
+	if r["ok"] != true || r["data"].(map[string]any)["queued"] != true {
+		t.Fatalf("CW = %v\n--- daemon log ---\n%s", r, d.Log())
+	}
+}
+
+// recording.start / recording.stop through the real daemon: WAV files appear
+// in recording_dir, and the reply says which recordings are on.
+func TestHermesV1Recording(t *testing.T) {
+	needGoAPI(t)
+	d := startAPIDaemon(t)
+	token := setupAPI(t, d)
+	ws, _, err := wsDialAuth(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1", token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	data := func(r map[string]any) map[string]any { m, _ := r["data"].(map[string]any); return m }
+
+	r := v1cmd(t, ws, "1", `{"type":"cmd","id":"1","cmd":"recording.start","args":{"stream":"rx"}}`)
+	if r["ok"] != true || data(r)["rx"] != true || data(r)["tx"] != false {
+		t.Fatalf("recording.start rx = %v\n--- daemon log ---\n%s", r, d.Log())
+	}
+	time.Sleep(500 * time.Millisecond)
+	r = v1cmd(t, ws, "2", `{"type":"cmd","id":"2","cmd":"recording.stop","args":{}}`)
+	if r["ok"] != true || data(r)["rx"] != false {
+		t.Fatalf("recording.stop = %v", r)
+	}
+	files, _ := filepath.Glob(filepath.Join(d.Dir, "recordings", "rx-*.wav"))
+	if len(files) != 1 {
+		t.Fatalf("rx recordings = %v", files)
 	}
 }

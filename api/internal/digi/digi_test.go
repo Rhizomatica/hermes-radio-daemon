@@ -64,9 +64,15 @@ func TestDigiSettings(t *testing.T) {
 	if s := e.Radio.DigiSettings(); s.CWWPM != 25 || s.RTTYShiftHz != 425 {
 		t.Errorf("a refused patch changed settings: %+v", s)
 	}
-	if r := e.Do("PATCH", "/radio/digi", `{"dstar":{"encrypt":true}}`); r.Status != 403 ||
-		r.JSON(t)["code"] != "encryption_not_allowed" {
+	// Voice encryption is a setting like any other, on and off.
+	r = e.Do("PATCH", "/radio/digi", `{"dstar":{"encrypt":true},"rade":{"encrypt":true}}`)
+	if r.Status != 200 || !e.Radio.DigiSettings().DstarEncrypt || !e.Radio.DigiSettings().RadeEncrypt ||
+		r.JSON(t)["rade"].(map[string]any)["encrypt"] != true {
 		t.Errorf("encrypt on = %d %s", r.Status, r.Body)
+	}
+	r = e.Do("PATCH", "/radio/digi", `{"dstar":{"encrypt":false},"rade":{"encrypt":false}}`)
+	if r.Status != 200 || e.Radio.DigiSettings().DstarEncrypt || e.Radio.DigiSettings().RadeEncrypt {
+		t.Errorf("encrypt off = %d %s", r.Status, r.Body)
 	}
 	if r := e.Do("PATCH", "/radio/digi", `{"voice_codec":"DSTAR"}`); r.Status != 422 {
 		t.Errorf("DSTAR codec on hamlib = %d, want 422", r.Status)

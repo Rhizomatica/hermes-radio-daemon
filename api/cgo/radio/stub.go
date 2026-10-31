@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Stub is an in-memory Radio for tests and Go-only development: two
@@ -31,6 +32,10 @@ type Stub struct {
 	logs     []string
 	Sent     map[int64][][]byte // frames by connection; 0 = broadcast
 	closed   map[int64]WSCloseFrame
+	pttOwner int64 // the hermes.v1 connection holding PTT, 0 for none
+	digiSent []string
+	recRX    bool
+	recTX    bool
 }
 
 // NewStub returns a Stub tuned to 7.1 MHz USB.
@@ -213,6 +218,40 @@ func (s *Stub) SetDigitalVoice(n int, on bool) error {
 }
 
 func (s *Stub) ResetProtection() { s.mu.Lock(); s.state.Protection = false; s.mu.Unlock() }
+
+// SetProtection trips (or clears) the SWR protection, for tests.
+func (s *Stub) SetProtection(on bool) { s.mu.Lock(); s.state.Protection = on; s.mu.Unlock() }
+
+// PTT follows radiod's rules (radiod_api_ptt): one owner at a time, refused
+// with the protection tripped, and only the owner unkeys.
+func (s *Stub) PTT(conn int64, on bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !on {
+		if s.pttOwner != conn || conn == 0 {
+			return ErrNoPTT
+		}
+		s.pttOwner, s.state.TX = 0, false
+		return nil
+	}
+	if s.state.Protection {
+		return ErrProtection
+	}
+	if s.pttOwner != 0 && s.pttOwner != conn || s.pttOwner == 0 && s.state.TX {
+		return ErrBusy
+	}
+	s.pttOwner, s.state.TX = conn, true
+	return nil
+}
+
+// ReleasePTT is radiod's close: unkey if conn holds PTT.
+func (s *Stub) ReleasePTT(conn int64) {
+	s.mu.Lock()
+	if s.pttOwner == conn && conn != 0 {
+		s.pttOwner, s.state.TX = 0, false
+	}
+	s.mu.Unlock()
+}
 
 func (s *Stub) Controls() []Control {
 	s.mu.Lock()
@@ -406,6 +445,49 @@ func (s *Stub) SetVoiceCodec(name string) error {
 	s.digi.VoiceCodec = strings.ToUpper(name)
 	s.mu.Unlock()
 	return nil
+}
+
+// DigiSend follows radiod's checks (radiod_api_digi_send) and logs the text
+// as sent at once (dir tx), as radiod does when it goes out.
+func (s *Stub) DigiSend(text string) error {
+	st := s.State()
+	if st.Mode != "FT8" && st.Mode != "CW" && st.Mode != "RTTY" {
+		return ErrNotSupported
+	}
+	if st.Mode == "FT8" && (len(text) > 13 || strings.Trim(strings.ToUpper(text), "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 +-./?") != "") {
+		return ErrInvalid
+	}
+	s.mu.Lock()
+	s.digiSent = append(s.digiSent, text)
+	id := uint64(len(s.log) + 1)
+	s.mu.Unlock()
+	b, _ := json.Marshal(map[string]any{"id": id, "at": time.Now().UTC().Format(time.RFC3339), "mode": st.Mode,
+		"dir": "tx", "text": text, "frequency_hz": st.FrequencyHz})
+	s.AddDigi(string(b))
+	return nil
+}
+
+// Recording keeps which streams are on, as radiod does.
+func (s *Stub) Recording(start bool, stream string) (bool, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if stream != "rx" && stream != "tx" && stream != "both" {
+		return s.recRX, s.recTX, ErrInvalid
+	}
+	if stream != "tx" {
+		s.recRX = start
+	}
+	if stream != "rx" {
+		s.recTX = start
+	}
+	return s.recRX, s.recTX, nil
+}
+
+// DigiSent returns what DigiSend queued.
+func (s *Stub) DigiSent() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.digiSent...)
 }
 
 func (s *Stub) DigiLog(after uint64, max int) []json.RawMessage {

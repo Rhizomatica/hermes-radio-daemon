@@ -26,6 +26,8 @@
 #define RADIOD_API_EIO      -5    /* the rig refused or did not answer (CAT) */
 #define RADIOD_API_ENOLINK  -6    /* the modem has no ARQ session up */
 #define RADIOD_API_E2BIG    -7    /* too long for one broadcast frame */
+#define RADIOD_API_EPROTECT -8    /* the SWR protection has tripped: reset it first */
+#define RADIOD_API_ENOPTT   -9    /* this client does not hold PTT */
 
 /* ── radio ── */
 
@@ -85,6 +87,12 @@ int radiod_api_set_default_profile_fallback(int32_t seconds);   /* -1: never */
 int radiod_api_set_step(uint32_t hz);
 int radiod_api_set_swr_limit(uint32_t swr_x10);                  /* >= 10 */
 int radiod_api_set_bfo(uint32_t hz);                             /* ENOTSUP on Hamlib */
+/* PTT for hermes.v1 connection conn_id, which then owns it: the radio
+ * unkeys when that connection closes, as for any websocket client.
+ * on: 0; EPROTECT with the SWR protection tripped; EBUSY while another
+ * client (or the daemon) holds PTT. off: 0; ENOPTT when this connection
+ * does not hold it (nothing changes). */
+int radiod_api_ptt(long conn_id, bool on);
 void radiod_api_reset_protection(void);
 
 /* ── radio controls: levels, functions and parameters, in radiod's control
@@ -131,6 +139,20 @@ void radiod_api_digi_settings_get(radiod_api_digi_settings *out);
 /* key is radiod's: cw_wpm, cw_pitch, rtty_baud, rtty_mark, rtty_shift,
  * dstar_verbose, dstar_denoise, dstar_encrypt, rade_encrypt. */
 int radiod_api_digi_set(const char *key, long value);
+/* Queue text (at most 255 bytes) for the active profile's digital text
+ * mode, as it is sent today: 0; ENOTSUP when the active profile is not in
+ * FT8, CW or RTTY; EINVAL for FT8 text the modulator cannot carry (free
+ * text: 13 characters, A-Z 0-9 space + - . / ?); EBUSY with the queue full.
+ * The digi log reports it (dir tx) when it goes out. */
+int radiod_api_digi_send(const char *text);
+
+/* ── recording ── */
+
+/* Start (start true) or stop recording stream "rx", "tx" or "both" to WAV
+ * files in main:recording_dir, as the older protocol's start_recording
+ * and stop_recording do; then *rx and *tx say which recordings are on.
+ * 0; EINVAL for another stream name; EIO when a file could not be opened. */
+int radiod_api_recording(bool start, const char *stream, bool *rx, bool *tx);
 int radiod_api_set_voice_codec(const char *name);
 
 /* The digi log's in-memory ring, oldest first: up to max entries after id

@@ -33,6 +33,10 @@ const (
 	CodeRigTimeout   = "rig_timeout"
 	CodeQueueFull    = "queue_full"
 	CodeInternal     = "internal"
+	CodeNoPTT        = "no_ptt"
+	CodeRateLimited  = "rate_limited"
+	CodeWrongMode    = "wrong_mode"
+	CodeTxTimeout    = "tx_timeout"
 )
 
 // CmdError is a command's failure: a code from the list above and a message.
@@ -93,6 +97,9 @@ type Conn struct {
 	// they still resolve to that session and role (sessionLive).
 	cred    *http.Request
 	session int64
+	// User is the session's user (0 without sessions): per-user limits, and
+	// who transmitted, for the log.
+	User int64
 
 	// mu orders this connection's events: its goroutine (snapshots) and
 	// the publisher both send under it.
@@ -114,10 +121,10 @@ func (rt *Router) WSOpen(id int64, r *http.Request) int {
 		rt.wsLog.Info("refused: remote with no sessions", "conn", id, "peer", r.RemoteAddr)
 		return http.StatusForbidden
 	}
-	role, session := rt.RoleOf(r), int64(0)
+	role, session, user := rt.RoleOf(r), int64(0), int64(0)
 	if rt.Resolve != nil {
 		p, ok := rt.Resolve(r)
-		role, session = p.Role, p.SessionID
+		role, session, user = p.Role, p.SessionID, p.UserID
 		if !ok {
 			role = spec.RoleNone
 		}
@@ -137,7 +144,7 @@ func (rt *Router) WSOpen(id int64, r *http.Request) int {
 		return http.StatusForbidden
 	}
 	c := &Conn{ID: id, Role: role, rt: rt, in: make(chan []byte, connQueue), done: make(chan struct{}),
-		cred: r.Clone(context.Background()), session: session, subs: map[string]*subscription{}}
+		cred: r.Clone(context.Background()), session: session, User: user, subs: map[string]*subscription{}}
 	c.send(hello{
 		Type: "hello", Protocol: "hermes.v1", Service: "hermes-radio-daemon",
 		Version: rt.radio.Version(), Role: string(role),

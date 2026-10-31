@@ -148,7 +148,6 @@ curl -sS -X GET "$BASE/health"
 | `forward_email` | string or null (email) |  |  |
 | `sos_recipients` | array of [UucpName](#schema-uucpname) |  |  |
 | `idle_logout_s` | integer |  | min 60 |
-| `encryption` | object |  | Encryption on the air is not allowed on amateur bands. Turn these on only for a station licensed to use encryption. Admin only; all default to off |
 | `webrtc` | object |  | Browser audio (`api-ws.yaml`, Audio) |
 | `tx_rate_limit` | object |  | Per-user limits on making the station transmit |
 | `broadcast` | object |  | radiod's messaging layer, which runs broadcasts |
@@ -935,14 +934,14 @@ A draft has exactly one of `recipients` (UUCP), `broadcast` (an area) or `lxmf`
 | `broadcast` | [BroadcastCreate](#schema-broadcastcreate) |  | The whole broadcast (the `.hmp` file with its attachment, plus the header) is at most 1.44 MB; larger is refused at send (413) |
 | `lxmf` | [LxmfCreate](#schema-lxmfcreate) |  |  |
 | `attachment_ids` | array of integer (int64) |  | One attachment per message, as `.hmp` carries today |
-| `passphrase` | string |  | When given, the body is encrypted with it (AES-256, as today). Refused unless `settings.encryption.messages` is on. Not for LXMF, which is already encrypted end to end; write-only |
+| `passphrase` | string |  | When given, the body is encrypted with it (AES-256, as today). Not for LXMF, which is already encrypted end to end; write-only |
 
 **Responses**
 
 | Status | Meaning | Body |
 | --- | --- | --- |
 | 201 | Draft stored. | `application/json` [Message](#schema-message) |
-| 403 | Attachments are not allowed for this role (`settings.allow_attachments_role`, `code` = `forbidden`), or a passphrase was given while `settings.encryption.messages` is off (`code` = `encryption_not_allowed`). | `application/problem+json` [Problem](#schema-problem) |
+| 403 | Attachments are not allowed for this role (`settings.allow_attachments_role`, `code` = `forbidden`). | `application/problem+json` [Problem](#schema-problem) |
 | 422 | Validation failed (`code` = `invalid`; `errors` per field). | `application/problem+json` [Problem](#schema-problem) |
 
 <a id="op-getmessage"></a>
@@ -1060,7 +1059,6 @@ A broadcast is refused while the listen mode can't carry broadcast messages
 | Status | Meaning | Body |
 | --- | --- | --- |
 | 200 | Queued; `recipients` carries each one's state and job id, or `broadcast` its state. | `application/json` [Message](#schema-message) |
-| 403 | The draft is encrypted (a passphrase, or `broadcast.encrypt`) and `settings.encryption.messages` is off (`code` = `encryption_not_allowed`). | `application/problem+json` [Problem](#schema-problem) |
 | 429 | The user has sent `settings.tx_rate_limit.broadcasts_per_hour` broadcasts this hour (`code` = `rate_limited`). | `application/problem+json` [Problem](#schema-problem) |
 | 409 | Conflicts with the current state (`code` says which). | `application/problem+json` [Problem](#schema-problem) |
 | 413 | Over the size limit for HF (`code` = `too_large`). | `application/problem+json` [Problem](#schema-problem) |
@@ -1240,8 +1238,7 @@ Files attached to messages.
 - Status: **planned (not implemented yet)**
 
 Images are recompressed (VVC) and audio encoded (LPCNet) for HF unless `codec` is
-`none`. With a passphrase the stored file is encrypted, which needs
-`settings.encryption.messages`.
+`none`. With a passphrase the stored file is encrypted.
 
 **Request body** (`multipart/form-data`, required): object
 
@@ -1256,7 +1253,6 @@ Images are recompressed (VVC) and audio encoded (LPCNet) for HF unless `codec` i
 | Status | Meaning | Body |
 | --- | --- | --- |
 | 201 | Stored. | `application/json` [Attachment](#schema-attachment) |
-| 403 | A passphrase was given while `settings.encryption.messages` is off (`code` = `encryption_not_allowed`). | `application/problem+json` [Problem](#schema-problem) |
 | 413 | Over the size limit for HF (`code` = `too_large`). | `application/problem+json` [Problem](#schema-problem) |
 
 <a id="op-downloadattachment"></a>
@@ -1490,7 +1486,7 @@ The station's Reticulum node: a transport and LXMF propagation node for phones o
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `enabled` | boolean |  | Needs `settings.encryption.reticulum`; default `False` |
+| `enabled` | boolean |  | default `False` |
 | `propagation` | object |  |  |
 | `local` | object |  | How phones and computers on the station's Wi-Fi reach its node |
 | `announce_interval_s` | integer |  | How often the station and its users' addresses are announced. Over backhaul, Reticulum's own announce cap applies; min 300; default `1800` |
@@ -1501,7 +1497,6 @@ The station's Reticulum node: a transport and LXMF propagation node for phones o
 | Status | Meaning | Body |
 | --- | --- | --- |
 | 200 | Applied and saved. | `application/json` [ReticulumSettings](#schema-reticulumsettings) |
-| 403 | `enabled` while `settings.encryption.reticulum` is off (`code` = `encryption_not_allowed`). | `application/problem+json` [Problem](#schema-problem) |
 | 422 | Validation failed (`code` = `invalid`; `errors` per field). | `application/problem+json` [Problem](#schema-problem) |
 
 <a id="op-listreticulumlinks"></a>
@@ -2219,12 +2214,10 @@ curl -sS -X GET "$BASE/radio/digi" \
 <a id="op-updatedigisettings"></a>
 ### `PATCH /radio/digi`
 
-**Change CW, RTTY or D-STAR settings.** (`updateDigiSettings`)
+**Change CW, RTTY, D-STAR or RADE V2 settings, voice encryption included.** (`updateDigiSettings`)
 
 - Role: **operator**
 - Status: **implemented**
-
-Turning on `dstar.encrypt` also needs `settings.encryption.dstar_voice`.
 
 **Request body** (`application/json`, required): [DigiSettings](#schema-digisettings)
 
@@ -2233,6 +2226,7 @@ Turning on `dstar.encrypt` also needs `settings.encryption.dstar_voice`.
 | `cw` | object |  |  |
 | `rtty` | object |  |  |
 | `dstar` | object |  |  |
+| `rade` | object |  |  |
 | `voice_codec` | one of `RADEV2`, `DSTAR` |  | The codec digital voice uses (radiod's `digital_voice_codec`). `DSTAR` needs the sBitx backend; refused while transmitting |
 
 **Responses**
@@ -2240,7 +2234,6 @@ Turning on `dstar.encrypt` also needs `settings.encryption.dstar_voice`.
 | Status | Meaning | Body |
 | --- | --- | --- |
 | 200 | Applied. | `application/json` [DigiSettings](#schema-digisettings) |
-| 403 | D-STAR encryption is not allowed on this station (`code` = `encryption_not_allowed`). | `application/problem+json` [Problem](#schema-problem) |
 | 422 | Validation failed (`code` = `invalid`; `errors` per field). | `application/problem+json` [Problem](#schema-problem) |
 
 **Example**
@@ -2927,7 +2920,7 @@ most 1.44 MB; larger is refused at send (413).
 | `area` | [AreaName](#schema-areaname) | yes | A broadcast area's name, as in the NNCP configuration; pattern `^[A-Za-z0-9_-]{1,32}$` |
 | `cycles` | integer |  | Passes of the carousel. A receiver that falls short decodes nothing at all, and extra passes cost airtime but not delivery time, so err high on a fading path; min 1; max 16; default `2` |
 | `with_author` | boolean |  | Put the sender's username on the air, so receivers can show it and reply to the user. Without it the broadcast comes from the station; the audit log records the user either way; default `False` |
-| `encrypt` | boolean |  | Encrypt to the area as an NNCP area packet. Needs the area's keys (`has_keys`) and `settings.encryption.messages`; otherwise the message goes out in the clear, signed; default `False` |
+| `encrypt` | boolean |  | Encrypt to the area as an NNCP area packet. Needs the area's keys (`has_keys`); otherwise the message goes out in the clear, signed; default `False` |
 | `expires_at` | [Timestamp](#schema-timestamp) or null |  | Receivers drop the broadcast after this, decoded or not |
 | `supersedes` | integer or null (int64) |  | An earlier broadcast of this station to the same area that this one replaces |
 
@@ -3025,6 +3018,7 @@ Type: one of `FT8`, `CW`, `RTTY`, `DSTAR`
 | `cw` | object |  |  |
 | `rtty` | object |  |  |
 | `dstar` | object |  |  |
+| `rade` | object |  |  |
 | `voice_codec` | one of `RADEV2`, `DSTAR` |  | The codec digital voice uses (radiod's `digital_voice_codec`). `DSTAR` needs the sBitx backend; refused while transmitting |
 
 <a id="schema-event"></a>
@@ -3232,7 +3226,7 @@ Exactly one of `recipients`, `broadcast` or `lxmf`. For LXMF, `subject` is the t
 | `broadcast` | [BroadcastCreate](#schema-broadcastcreate) |  | The whole broadcast (the `.hmp` file with its attachment, plus the header) is at most 1.44 MB; larger is refused at send (413) |
 | `lxmf` | [LxmfCreate](#schema-lxmfcreate) |  |  |
 | `attachment_ids` | array of integer (int64) |  | One attachment per message, as `.hmp` carries today |
-| `passphrase` | string |  | When given, the body is encrypted with it (AES-256, as today). Refused unless `settings.encryption.messages` is on. Not for LXMF, which is already encrypted end to end; write-only |
+| `passphrase` | string |  | When given, the body is encrypted with it (AES-256, as today). Not for LXMF, which is already encrypted end to end; write-only |
 
 <a id="schema-messagepage"></a>
 ### MessagePage
@@ -3487,7 +3481,7 @@ Settings radiod keeps once for the station, not per profile.
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `enabled` | boolean |  | Needs `settings.encryption.reticulum`; default `False` |
+| `enabled` | boolean |  | default `False` |
 | `propagation` | object |  |  |
 | `local` | object |  | How phones and computers on the station's Wi-Fi reach its node |
 | `announce_interval_s` | integer |  | How often the station and its users' addresses are announced. Over backhaul, Reticulum's own announce cap applies; min 300; default `1800` |
@@ -3584,7 +3578,6 @@ Type: one of `readonly`, `user`, `operator`, `admin`
 | `forward_email` | string or null (email) |  |  |
 | `sos_recipients` | array of [UucpName](#schema-uucpname) |  |  |
 | `idle_logout_s` | integer |  | min 60 |
-| `encryption` | object |  | Encryption on the air is not allowed on amateur bands. Turn these on only for a station licensed to use encryption. Admin only; all default to off |
 | `webrtc` | object |  | Browser audio (`api-ws.yaml`, Audio) |
 | `tx_rate_limit` | object |  | Per-user limits on making the station transmit |
 | `broadcast` | object |  | radiod's messaging layer, which runs broadcasts |

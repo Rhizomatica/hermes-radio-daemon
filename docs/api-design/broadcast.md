@@ -86,8 +86,8 @@ that `MsgHash` deduplication still covers both paths (broadcast and ARQ relay).
 
 ## The object: a signed header
 
-Encryption on the air isn't allowed on amateur bands, so a station without
-`settings.encryption.messages` sends broadcasts in the clear. Signing hides nothing, so
+A broadcast without `broadcast.encrypt` goes out in the clear (encryption is the
+station's choice, an ordinary setting). Signing hides nothing, so
 every object is signed. A plain broadcast gets what NNCP gives an encrypted one: a known
 sender, a message identity and a way to withdraw.
 

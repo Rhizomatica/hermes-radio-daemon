@@ -16,6 +16,8 @@
 #include "radio.h"
 #include "radio_backend.h"
 #include "radio_controls.h"
+#include "dsp/sbitx_ft8.h"
+#include "radio_media.h"
 #include "cfg_utils.h"
 #include "dsp/digi_log.h"
 #include "gps/gps.h"
@@ -51,6 +53,41 @@ void radiod_api_attach_ws(void *server)
 const char *radiod_api_version(void)
 {
     return RADIOD_GIT_HASH;
+}
+
+int radiod_api_digi_send(const char *text)
+{
+    if (!s_radio || !text)
+        return RADIOD_API_ENOTSUP;
+    uint16_t mode = s_radio->profiles[s_radio->profile_active_idx].mode;
+    if (mode != MODE_FT8 && mode != MODE_CW && mode != MODE_RTTY)
+        return RADIOD_API_ENOTSUP;
+    if (strlen(text) >= DIGI_TX_MSG_MAX)
+        return RADIOD_API_EINVAL;
+    if (mode == MODE_FT8 && !sbitx_ft8_can_encode(text))
+        return RADIOD_API_EINVAL;
+    return digi_tx_queue_push(&s_radio->digi_tx, text) ? RADIOD_API_OK : RADIOD_API_EBUSY;
+}
+
+int radiod_api_recording(bool start, const char *stream, bool *rx, bool *tx)
+{
+    int rc = RADIOD_API_OK;
+    if (!s_radio || !stream)
+        return RADIOD_API_ENOTSUP;
+    if (strcmp(stream, "rx") && strcmp(stream, "tx") && strcmp(stream, "both"))
+        return RADIOD_API_EINVAL;
+    if (start)
+    {
+        if (!radio_media_start_recording(s_radio, stream))
+            rc = RADIOD_API_EIO;
+    }
+    else
+        radio_media_stop_recording(s_radio, stream);
+    if (rx)
+        *rx = s_radio->rx_recording.active;
+    if (tx)
+        *tx = s_radio->tx_recording.active;
+    return rc;
 }
 
 const char *radiod_api_cors_origins(void)
@@ -287,6 +324,19 @@ int radiod_api_set_bfo(uint32_t hz)
         return RADIOD_API_ENOTSUP;
     radio_backend_set_bfo(s_radio, hz);
     return RADIOD_API_OK;
+}
+
+int radiod_api_ptt(long conn_id, bool on)
+{
+    if (!s_radio)
+        return RADIOD_API_ENOTSUP;
+    if (!on)
+        return radio_backend_unkey_ptt(s_radio, PTT_SRC_WEBSOCKET, conn_id) ?
+               RADIOD_API_OK : RADIOD_API_ENOPTT;
+    if (s_radio->swr_protection_enabled)
+        return RADIOD_API_EPROTECT;
+    return radio_backend_claim_ptt(s_radio, PTT_SRC_WEBSOCKET, conn_id) == 0 ?
+           RADIOD_API_OK : RADIOD_API_EBUSY;
 }
 
 void radiod_api_reset_protection(void)

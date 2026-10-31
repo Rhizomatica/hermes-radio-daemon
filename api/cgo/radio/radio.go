@@ -20,6 +20,8 @@ var (
 	ErrIO           = errors.New("the rig refused or did not answer")
 	ErrNoLink       = errors.New("the modem has no ARQ session up")
 	ErrTooLong      = errors.New("too long for one broadcast frame")
+	ErrProtection   = errors.New("the SWR protection has tripped")
+	ErrNoPTT        = errors.New("this client does not hold PTT")
 )
 
 // ControlKind is a control's kind in radiod's control vocabulary
@@ -155,6 +157,11 @@ type Radio interface {
 	SetFilterWidth(profile int, hz uint32) error
 	SetDigitalVoice(profile int, on bool) error
 	ResetProtection()
+	// PTT keys (on) or unkeys the transmitter for hermes.v1 connection conn,
+	// which then owns it; radiod unkeys when that connection closes. On:
+	// ErrProtection with the SWR protection tripped, ErrBusy while another
+	// client holds PTT. Off: ErrNoPTT when conn does not hold it.
+	PTT(conn int64, on bool) error
 
 	Settings() Settings
 	SetDefaultProfile(n int) error
@@ -180,6 +187,16 @@ type Radio interface {
 	// DigiLog returns up to max entries after id `after`, oldest first,
 	// each one JSON object in digi_log's line format.
 	DigiLog(after uint64, max int) []json.RawMessage
+	// DigiSend queues text for the active profile's digital text mode:
+	// ErrNotSupported when that is not FT8, CW or RTTY, ErrInvalid for FT8
+	// text the modulator cannot carry, ErrBusy with the queue full. The
+	// digi log reports it (dir tx) when it goes out.
+	DigiSend(text string) error
+	// Recording starts (start) or stops recording stream "rx", "tx" or
+	// "both" to WAV files on the station, and says which recordings are on
+	// after it: ErrInvalid for another stream, ErrIO when a file could not
+	// be opened.
+	Recording(start bool, stream string) (rx, tx bool, err error)
 
 	// Gps is the station's own position and fix, and its GPS settings.
 	Gps() Gps
@@ -246,6 +263,10 @@ func codeErr(rc int) error {
 		return ErrNoLink
 	case -7:
 		return ErrTooLong
+	case -8:
+		return ErrProtection
+	case -9:
+		return ErrNoPTT
 	default:
 		return ErrNotSupported
 	}

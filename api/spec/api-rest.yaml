@@ -61,11 +61,10 @@ info:
     - **First boot.** `/setup` needs the one-time setup code the installer writes to the
       console and to `/etc/hermes/setup-code` (root only). Anyone on the Wi-Fi could
       otherwise claim a new station before its owner does.
-    - **Encryption on the air** is not allowed on amateur bands. Passphrase-encrypted
-      messages and attachments, and D-STAR encrypted voice, are refused (403
-      `encryption_not_allowed`) unless an admin turns them on in `settings.encryption`
-      for a station licensed to use them. Reticulum encrypts everything it carries, so it
-      can't run at all until `settings.encryption.reticulum` is on. All default to off.
+    - **Encryption** is a setting like any other, on and off through this API:
+      passphrase-encrypted messages and attachments, D-STAR and RADE V2 voice encryption
+      (`PATCH /radio/digi`), and Reticulum. The API does not decide where encryption may
+      be used; the station's operators do.
     - **Transmissions are accountable.** Only `operator` and above control the radio
       directly (PTT, digital modes, transmit audio). Users send messages, by UUCP or by
       broadcast, and the station transmits them; that is rate-limited per user. Every
@@ -656,8 +655,7 @@ paths:
         "403":
           description: |
             Attachments are not allowed for this role (`settings.allow_attachments_role`,
-            `code` = `forbidden`), or a passphrase was given while
-            `settings.encryption.messages` is off (`code` = `encryption_not_allowed`).
+            `code` = `forbidden`).
           content:
             application/problem+json:
               schema: {$ref: "#/components/schemas/Problem"}
@@ -734,13 +732,6 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Message"}
-        "403":
-          description: |
-            The draft is encrypted (a passphrase, or `broadcast.encrypt`) and
-            `settings.encryption.messages` is off (`code` = `encryption_not_allowed`).
-          content:
-            application/problem+json:
-              schema: {$ref: "#/components/schemas/Problem"}
         "429":
           description: The user has sent `settings.tx_rate_limit.broadcasts_per_hour` broadcasts this hour (`code` = `rate_limited`).
           headers:
@@ -885,8 +876,7 @@ paths:
       summary: Upload a file before attaching it to a draft.
       description: |
         Images are recompressed (VVC) and audio encoded (LPCNet) for HF unless `codec` is
-        `none`. With a passphrase the stored file is encrypted, which needs
-        `settings.encryption.messages`.
+        `none`. With a passphrase the stored file is encrypted.
       x-hermes-role: user
       requestBody:
         required: true
@@ -907,11 +897,6 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Attachment"}
-        "403":
-          description: A passphrase was given while `settings.encryption.messages` is off (`code` = `encryption_not_allowed`).
-          content:
-            application/problem+json:
-              schema: {$ref: "#/components/schemas/Problem"}
         "413": {$ref: "#/components/responses/TooLarge"}
   /attachments/{attachment_id}:
     parameters:
@@ -1091,11 +1076,6 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/ReticulumSettings"}
-        "403":
-          description: "`enabled` while `settings.encryption.reticulum` is off (`code` = `encryption_not_allowed`)."
-          content:
-            application/problem+json:
-              schema: {$ref: "#/components/schemas/Problem"}
         "422": {$ref: "#/components/responses/Invalid"}
   /reticulum/links:
     get:
@@ -1600,8 +1580,7 @@ paths:
     patch:
       tags: [digi]
       operationId: updateDigiSettings
-      summary: Change CW, RTTY or D-STAR settings.
-      description: Turning on `dstar.encrypt` also needs `settings.encryption.dstar_voice`.
+      summary: Change CW, RTTY, D-STAR or RADE V2 settings, voice encryption included.
       x-hermes-role: operator
       requestBody:
         required: true
@@ -1614,11 +1593,6 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/DigiSettings"}
-        "403":
-          description: D-STAR encryption is not allowed on this station (`code` = `encryption_not_allowed`).
-          content:
-            application/problem+json:
-              schema: {$ref: "#/components/schemas/Problem"}
         "422": {$ref: "#/components/responses/Invalid"}
 
   /modem:
@@ -2627,9 +2601,8 @@ components:
           type: string
           writeOnly: true
           description: |
-            When given, the body is encrypted with it (AES-256, as today). Refused unless
-            `settings.encryption.messages` is on. Not for LXMF, which is already encrypted
-            end to end.
+            When given, the body is encrypted with it (AES-256, as today). Not for LXMF,
+            which is already encrypted end to end.
     MessagePatch:
       type: object
       description: A draft keeps its channel; `recipients`, `broadcast` and `lxmf` can't swap.
@@ -2717,8 +2690,7 @@ components:
           default: false
           description: |
             Encrypt to the area as an NNCP area packet. Needs the area's keys
-            (`has_keys`) and `settings.encryption.messages`; otherwise the message goes out
-            in the clear, signed.
+            (`has_keys`); otherwise the message goes out in the clear, signed.
         expires_at:
           oneOf: [$ref: "#/components/schemas/Timestamp", type: "null"]
           description: Receivers drop the broadcast after this, decoded or not.
@@ -2873,7 +2845,6 @@ components:
         enabled:
           type: boolean
           default: false
-          description: Needs `settings.encryption.reticulum`.
         propagation:
           type: object
           properties:
@@ -3300,24 +3271,6 @@ components:
           type: array
           items: {$ref: "#/components/schemas/UucpName"}
         idle_logout_s: {type: integer, minimum: 60}
-        encryption:
-          type: object
-          description: |
-            Encryption on the air is not allowed on amateur bands. Turn these on only for a
-            station licensed to use encryption. Admin only; all default to off.
-          properties:
-            messages:
-              type: boolean
-              default: false
-              description: Allow passphrase-encrypted message bodies and attachments.
-            dstar_voice:
-              type: boolean
-              default: false
-              description: Allow D-STAR encrypted voice; otherwise the radio refuses to key with it on.
-            reticulum:
-              type: boolean
-              default: false
-              description: Allow Reticulum, which encrypts everything it sends, including over the air on backhaul links.
         webrtc:
           type: object
           description: Browser audio (`api-ws.yaml`, Audio).
@@ -3566,9 +3519,13 @@ components:
           type: object
           properties:
             mycall: {type: string, maxLength: 8, description: "radiod's `dstar_mycall`."}
-            encrypt: {type: boolean, description: Needs `settings.encryption.dstar_voice`.}
+            encrypt: {type: boolean, description: "Encrypt every over this station sends (radiod's `dstar_encrypt`)."}
             denoise: {type: boolean}
             verbose: {type: boolean}
+        rade:
+          type: object
+          properties:
+            encrypt: {type: boolean, description: "Encrypt every RADE V2 over this station sends (radiod's `rade_encrypt`)."}
         voice_codec:
           type: string
           enum: [RADEV2, DSTAR]

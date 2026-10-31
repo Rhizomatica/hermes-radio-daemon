@@ -228,8 +228,7 @@ The common library (`internal/api`):
 | `api.Page[T]{Data, NextCursor}` | the collection shape |
 | `api.RequestID(r)` | the request's `X-Request-Id` (set on every reply for you) |
 
-Status codes and `code`s used so far: 400 `bad_request`, 403 `forbidden` /
-`encryption_not_allowed`, 404 `not_found`, 405 `method_not_allowed`, 409 `busy` (refused while
+Status codes and `code`s used so far: 400 `bad_request`, 403 `forbidden`, 404 `not_found`, 405 `method_not_allowed`, 409 `busy` (refused while
 transmitting), 415 `unsupported_media_type`, 422 `invalid`, 503 `not_running` (mercury absent) /
 `not_supported`, 500 `internal`. Use the spec's codes; add a new one to the spec first.
 

@@ -56,6 +56,10 @@ type Router struct {
 	hbStart sync.Once
 
 	cors map[string]bool // origins allowed cross-origin (cors.go); empty: none
+
+	// StationCallsign, when set, is the callsign first-boot setup recorded
+	// (the setup domain installs it); "" when there is none.
+	StationCallsign func(ctx context.Context) string
 }
 
 // NewRouter returns an empty router over a radio.
