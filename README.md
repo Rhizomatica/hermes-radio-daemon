@@ -614,11 +614,17 @@ DRM TX is not implemented (use Dream's native transmitter if needed).
 
 ### FT8 (Weak-signal digital mode)
 
-Uses vendored `ft8_lib` for encoding and `decode_ft8` pipe for decoding:
+Uses the vendored `ft8_lib` (`vendor/ft8_lib/`, MIT) in process:
 - **TX**: Text → 77-bit LDPC → 8-FSK tones → GFSK @ 12 kHz → SSB TX
-- **RX**: SSB USB demod → audio → `decode_ft8` WAV pipe → decoded message → spool
-- 15-second slots, standard FT8 protocol
-- Vendored library at `vendor/ft8_lib/` (MIT-licensed)
+- **RX**: SSB USB demod → 12 kHz audio → a 15 s window every 2 s →
+  `ft8_lib` decode → the digi log, `GET /digi/log` and the `digi` topic.
+  On the sBitx the decode runs on its own thread, off the DSP core.
+- When `ft8_lib` cannot decode a candidate, `dsp/ft8_js8.c` tries again
+  with JS8Call's weak-signal techniques: LDPC feedback, noise-whitened and
+  linear bit metrics, and adding up a station's repeated receptions. On
+  real 40 m audio this decodes about 12 % more messages for about 3.5x the
+  decode time. `make ft8-bench` builds `tests/dsp/ft8_bench`, which
+  measures it on a recording.
 
 ### RTTY (Radio Teletype — 45.45 baud FSK)
 

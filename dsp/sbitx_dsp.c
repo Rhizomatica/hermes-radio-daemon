@@ -25,6 +25,7 @@
  * code
  */
 
+#define _GNU_SOURCE             /* sched_getcpu, CPU_SET, pthread_attr_setaffinity_np */
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -33,6 +34,9 @@
 #include <complex.h>
 #include <fftw3.h>
 #include <math.h>
+#include <pthread.h>
+#include <sched.h>
+#include <string.h>
 #include <unistd.h>
 
 
@@ -1158,6 +1162,101 @@ bool dsp_digi_tx_busy(void)
     return digi_tx_sending;
 }
 
+/* FT8 decodes run here, not on the DSP thread: a decode takes a few hundred
+ * ms on a Pi 4 (more with ft8_js8's passes), and the DSP thread has ~21 ms
+ * of codec buffer. The DSP thread hands over a copy of the window; if the
+ * last one is still decoding it skips this one, which the next window,
+ * 2 s later, overlaps anyway. The worker runs at normal priority on the
+ * CPUs other than the DSP thread's. */
+static struct {
+    pthread_mutex_t lock;
+    pthread_cond_t  wake;
+    bool            started, pending, busy;
+    float          *buf;
+    int             n;
+    double          window_start;
+    uint64_t        freq_hz;
+} g_ft8w = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, false, false, false, NULL, 0, 0.0, 0 };
+
+static void *ft8_worker(void *arg)
+{
+    (void) arg;
+    static sbitx_ft8_decode_result res[50];
+
+    for (;;) {
+        pthread_mutex_lock(&g_ft8w.lock);
+        while (!g_ft8w.pending)
+            pthread_cond_wait(&g_ft8w.wake, &g_ft8w.lock);
+        g_ft8w.pending = false;
+        g_ft8w.busy = true;
+        double start = g_ft8w.window_start;
+        uint64_t freq = g_ft8w.freq_hz;
+        int n = g_ft8w.n;
+        pthread_mutex_unlock(&g_ft8w.lock);
+
+        int nres = sbitx_ft8_decode_at(g_ft8w.buf, n, start, res, 50);
+        sbitx_ft8_log_decodes(res, nres, start, freq);
+
+        pthread_mutex_lock(&g_ft8w.lock);
+        g_ft8w.busy = false;
+        pthread_mutex_unlock(&g_ft8w.lock);
+    }
+    return NULL;
+}
+
+static bool ft8_worker_start(int samples)
+{
+    pthread_attr_t attr;
+    struct sched_param sp = { 0 };
+    cpu_set_t cpus;
+    int dsp_cpu = sched_getcpu(), ncpu = (int) sysconf(_SC_NPROCESSORS_ONLN), others = 0;
+    pthread_t t;
+
+    g_ft8w.buf = calloc((size_t) samples, sizeof(float));
+    if (!g_ft8w.buf)
+        return false;
+
+    pthread_attr_init(&attr);
+    pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
+    pthread_attr_setschedpolicy(&attr, SCHED_OTHER);
+    pthread_attr_setschedparam(&attr, &sp);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    CPU_ZERO(&cpus);
+    for (int c = 0; c < ncpu && c < CPU_SETSIZE; c++)
+        if (c != dsp_cpu) { CPU_SET(c, &cpus); others++; }
+    if (others)
+        pthread_attr_setaffinity_np(&attr, sizeof(cpus), &cpus);
+
+    bool ok = pthread_create(&t, &attr, ft8_worker, NULL) == 0;
+    pthread_attr_destroy(&attr);
+    if (!ok) {
+        free(g_ft8w.buf);
+        g_ft8w.buf = NULL;
+        return false;
+    }
+    HLOGI(LOG_C, "FT8 decodes on their own thread, off CPU %d", dsp_cpu);
+    return true;
+}
+
+/* Hand a window to the worker; false if it is still busy with the last. */
+static bool ft8_worker_post(const float *slot, int n, double window_start, uint64_t freq_hz)
+{
+    bool posted = false;
+
+    pthread_mutex_lock(&g_ft8w.lock);
+    if (!g_ft8w.busy && !g_ft8w.pending) {
+        memcpy(g_ft8w.buf, slot, (size_t) n * sizeof(float));
+        g_ft8w.n = n;
+        g_ft8w.window_start = window_start;
+        g_ft8w.freq_hz = freq_hz;
+        g_ft8w.pending = true;
+        pthread_cond_signal(&g_ft8w.wake);
+        posted = true;
+    }
+    pthread_mutex_unlock(&g_ft8w.lock);
+    return posted;
+}
+
 static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, int freq_khz)
 {
     static stream_resampler dec;
@@ -1244,9 +1343,15 @@ static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, in
              * it twice. Overlapping windows decode the same transmission
              * more than once; sbitx_ft8_log_decodes() keeps one entry. */
             const double window_start = digi_log_now() - (double) slotn / DIGI_RX_RATE;
-            sbitx_ft8_decode_result res[50];
-            int nres = sbitx_ft8_decode_ex(slot, slot_samples, res, 50);
-            sbitx_ft8_log_decodes(res, nres, window_start, (uint64_t) freq_khz * 1000);
+            if (!g_ft8w.started)
+                g_ft8w.started = ft8_worker_start(slot_samples);
+            if (g_ft8w.started) {
+                ft8_worker_post(slot, slot_samples, window_start, (uint64_t) freq_khz * 1000);
+            } else {                    /* no thread: decode here, as before */
+                static sbitx_ft8_decode_result res[50];
+                int nres = sbitx_ft8_decode_at(slot, slot_samples, window_start, res, 50);
+                sbitx_ft8_log_decodes(res, nres, window_start, (uint64_t) freq_khz * 1000);
+            }
             /* Slide by only 2 s. FT8 here isn't UTC-slot-aligned, so the
              * ~12.6 s burst sits at an arbitrary offset in the 15 s window;
              * a small step guarantees some window contains the full burst
