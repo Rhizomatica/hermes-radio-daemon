@@ -34,7 +34,6 @@ get https://www.fftw.org/fftw-3.3.10.tar.gz fftw-3.3.10.tar.gz
 get https://gitlab.com/iniparser/iniparser/-/archive/v4.2.6/iniparser-v4.2.6.tar.gz iniparser-v4.2.6.tar.gz
 get https://mirrors.edge.kernel.org/pub/software/utils/i2c-tools/i2c-tools-4.4.tar.xz i2c-tools-4.4.tar.xz
 gitsrc https://github.com/Rhizomatica/csdr "$(commit csdr)" csdr
-gitsrc https://github.com/Rhizomatica/unixcw "$(commit unixcw)" unixcw
 gitsrc https://github.com/Rhizomatica/libspecbleach "$(commit libspecbleach)" libspecbleach
 gitsrc https://github.com/Rhizomatica/mbelib-neo "$(commit mbelib-neo)" mbelib-neo
 gitsrc https://github.com/Rhizomatica/hermes-radio-daemon "$(commit hermes-radio-daemon)" hermes-radio-daemon
