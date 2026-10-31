@@ -193,6 +193,8 @@ function connect() {
   };
   ws.onclose = function (ev) {
     setConn('offline', false);
+    for (var id in pending) pending[id].fail({code: 'closed', message: 'the connection closed'});
+    pending = {};
     if (ev.code === 1008 || !helloSeen) {    // session ended, or the upgrade was refused (401)
       token = null; store('hermes.token', null);
       showLogin(ev.code === 1008 ? 'the session ended: log in again' : 'log in to the station');
@@ -363,8 +365,9 @@ function draw() {
   // filled trace
   trace(avgBins); g.lineTo(W, H); g.lineTo(0, H); g.closePath();
   var grad = g.createLinearGradient(0, 0, 0, H);
-  grad.addColorStop(0, spec.tx ? 'rgba(255,93,93,0.45)' : 'rgba(58,209,160,0.45)');
-  grad.addColorStop(1, 'rgba(58,209,160,0.02)');
+  var rgb = spec.tx ? '255,93,93' : '58,209,160';
+  grad.addColorStop(0, 'rgba(' + rgb + ',0.45)');
+  grad.addColorStop(1, 'rgba(' + rgb + ',0.02)');
   g.fillStyle = grad; g.fill();
   trace(avgBins); g.strokeStyle = col; g.lineWidth = 1.5 * dpr; g.stroke();
   if ($('peak').checked) { trace(peakBins); g.strokeStyle = 'rgba(255,184,77,0.75)'; g.lineWidth = 1 * dpr; g.stroke(); }

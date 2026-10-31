@@ -6,6 +6,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 
@@ -69,41 +70,70 @@ const publishPeriod = 100 * time.Millisecond // 10 events a second at most
 // Topic registers a hermes.v1 topic, readable by role and above. It panics
 // if api-ws.yaml has no such topic, or on a second registration.
 func (rt *Router) Topic(name string, role spec.Role, state StateFunc) {
+	rt.topic(name, topic{role: role, state: func(*Conn) (any, error) { return state() }})
+}
+
+// topic registers t as name. It panics if api-ws.yaml has no such topic,
+// or on a second registration.
+func (rt *Router) topic(name string, t topic) {
 	if !spec.HasTopic(name) {
 		panic(fmt.Sprintf("api: no topic %q in api-ws.yaml", name))
 	}
 	if _, dup := rt.topics[name]; dup {
 		panic(fmt.Sprintf("api: topic %s registered twice", name))
 	}
-	rt.topics[name] = topic{role: role, state: func(*Conn) (any, error) { return state() }}
+	rt.topics[name] = t
 }
 
 // TopicConn registers a topic whose state is per connection. Its function
 // is read once per subscriber each publishing cycle, so it should return
 // what the domain keeps (a cache), not do slow I/O itself.
 func (rt *Router) TopicConn(name string, role spec.Role, state ConnStateFunc) {
-	rt.Topic(name, role, func() (any, error) { return nil, nil })
-	rt.topics[name] = topic{role: role, state: state, each: true}
+	rt.topic(name, topic{role: role, state: state, each: true})
 }
 
 // Stream registers a stream topic, readable by role and above: one event
 // per item, never a diff. Subscribing sends the stored history as events
 // marked snapshot (seq 0, 1, ...), and then each new item as it comes.
 func (rt *Router) Stream(name string, role spec.Role, read StreamFunc) {
-	rt.Topic(name, role, func() (any, error) { return nil, nil })
-	rt.topics[name] = topic{role: role, stream: read, state: func(*Conn) (any, error) {
+	rt.topic(name, topic{role: role, stream: read, state: func(*Conn) (any, error) {
 		_, _, err := read(^uint64(0)) // available: nothing after the end
 		return struct{}{}, err
-	}}
+	}})
 }
 
 // Binary registers a topic of binary frames, readable by role and above:
 // subscribing calls sub(conn, true) and sends no snapshot (the frames start
 // coming from C); unsubscribing calls sub(conn, false). C drops a closed
-// connection's subscriptions itself.
+// connection's subscriptions itself. C's slots are the station's, so one
+// user holds at most BinaryPerUser of them per topic.
 func (rt *Router) Binary(name string, role spec.Role, sub BinaryFunc) {
-	rt.Topic(name, role, func() (any, error) { return struct{}{}, nil })
-	rt.topics[name] = topic{role: role, binary: sub, state: func(*Conn) (any, error) { return struct{}{}, nil }}
+	rt.topic(name, topic{role: role, binary: sub, state: func(*Conn) (any, error) { return struct{}{}, nil }})
+}
+
+// BinaryPerUser is how many of one user's connections may hold a binary
+// topic at once. C has a fixed number of slots for the whole station (16
+// for each spectrum), and without this one user opening sockets could
+// take them all.
+const BinaryPerUser = 4
+
+// binaryHolders counts user's connections other than except that hold
+// topic name.
+func (rt *Router) binaryHolders(user int64, name string, except int64) int {
+	n := 0
+	rt.conns.Range(func(_, v any) bool {
+		o := v.(*Conn)
+		if o.ID != except && o.User == user {
+			o.mu.Lock()
+			_, held := o.subs[name]
+			o.mu.Unlock()
+			if held {
+				n++
+			}
+		}
+		return true
+	})
+	return n
 }
 
 // Topics lists the topics a role may subscribe to now, sorted: registered,
@@ -166,36 +196,21 @@ func (c *Conn) subscribe(id string, names []string) {
 		next  uint64
 	}
 	hists := make([]*history, len(names))
-	var binaries []string // subscribed in C, to undo if a later topic fails
-	undo := func() {
-		for _, b := range binaries {
-			_ = c.rt.topics[b].binary(c.ID, false)
-		}
-	}
 	for i, name := range names {
 		t, ok := c.rt.topics[name]
 		switch {
 		case !spec.HasTopic(name):
-			undo()
 			c.reply(id, nil, Errf(CodeBadRequest, "no topic %q", name))
 			return
 		case !ok:
-			undo()
 			c.reply(id, nil, Errf(CodeNotSupported, "this station does not serve %s", name))
 			return
 		case !AtLeast(c.Role, t.role):
-			undo()
 			c.reply(id, nil, Errf(CodeForbidden, "%s needs the %s role", name, t.role))
 			return
 		}
 		if t.binary != nil {
-			if err := t.binary(c.ID, true); err != nil {
-				undo()
-				c.reply(id, nil, binaryErr(name, err))
-				return
-			}
-			binaries = append(binaries, name)
-			continue
+			continue // subscribed in C below, once every topic has passed
 		}
 		if t.stream != nil {
 			items, next, err := t.stream(0)
@@ -212,7 +227,6 @@ func (c *Conn) subscribe(id string, names []string) {
 				hists[i] = &h
 			}
 			if err != nil {
-				undo()
 				c.reply(id, nil, Errf(CodeNotSupported, "%s: %v", name, err))
 				return
 			}
@@ -220,11 +234,14 @@ func (c *Conn) subscribe(id string, names []string) {
 		}
 		m, err := fields(t, c)
 		if err != nil {
-			undo()
 			c.reply(id, nil, Errf(CodeNotSupported, "%s: %v", name, err))
 			return
 		}
 		snaps[i] = m
+	}
+	if cerr := c.subscribeBinary(names); cerr != nil {
+		c.reply(id, nil, cerr)
+		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -240,6 +257,37 @@ func (c *Conn) subscribe(id string, names []string) {
 		c.snapshot(name, snaps[i])
 	}
 	c.reply(id, nil, nil)
+}
+
+// subscribeBinary subscribes the connection in C to the binary topics among
+// names it does not hold yet. If one fails it undoes the others it took, and
+// leaves the ones the connection already held as they were.
+func (c *Conn) subscribeBinary(names []string) *CmdError {
+	var took []string
+	undo := func() {
+		for _, name := range took {
+			_ = c.rt.topics[name].binary(c.ID, false)
+		}
+	}
+	for _, name := range names {
+		t := c.rt.topics[name]
+		c.mu.Lock()
+		_, held := c.subs[name]
+		c.mu.Unlock()
+		if t.binary == nil || held || slices.Contains(took, name) {
+			continue
+		}
+		if c.rt.binaryHolders(c.User, name, c.ID) >= BinaryPerUser {
+			undo()
+			return Errf(CodeBusy, "%s: this user already has %d connections on it", name, BinaryPerUser)
+		}
+		if err := t.binary(c.ID, true); err != nil {
+			undo()
+			return binaryErr(name, err)
+		}
+		took = append(took, name)
+	}
+	return nil
 }
 
 // object marshals v as a JSON object's fields.
