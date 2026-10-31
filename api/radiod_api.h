@@ -145,6 +145,14 @@ int radiod_api_digi_set(const char *key, long value);
  * text: 13 characters, A-Z 0-9 space + - . / ?); EBUSY with the queue full.
  * The digi log reports it (dir tx) when it goes out. */
 int radiod_api_digi_send(const char *text);
+
+/* ── recording ── */
+
+/* Start (start true) or stop recording stream "rx", "tx" or "both" to WAV
+ * files in main:recording_dir, as the older protocol's start_recording
+ * and stop_recording do; then *rx and *tx say which recordings are on.
+ * 0; EINVAL for another stream name; EIO when a file could not be opened. */
+int radiod_api_recording(bool start, const char *stream, bool *rx, bool *tx);
 int radiod_api_set_voice_codec(const char *name);
 
 /* The digi log's in-memory ring, oldest first: up to max entries after id

@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -709,5 +710,33 @@ func TestHermesV1DigiSend(t *testing.T) {
 	r := v1cmd(t, ws, "5", `{"type":"cmd","id":"5","cmd":"digi.send","args":{"text":"TEST"}}`)
 	if r["ok"] != true || r["data"].(map[string]any)["queued"] != true {
 		t.Fatalf("CW = %v\n--- daemon log ---\n%s", r, d.Log())
+	}
+}
+
+// recording.start / recording.stop through the real daemon: WAV files appear
+// in recording_dir, and the reply says which recordings are on.
+func TestHermesV1Recording(t *testing.T) {
+	needGoAPI(t)
+	d := startAPIDaemon(t)
+	token := setupAPI(t, d)
+	ws, _, err := wsDialAuth(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1", token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	data := func(r map[string]any) map[string]any { m, _ := r["data"].(map[string]any); return m }
+
+	r := v1cmd(t, ws, "1", `{"type":"cmd","id":"1","cmd":"recording.start","args":{"stream":"rx"}}`)
+	if r["ok"] != true || data(r)["rx"] != true || data(r)["tx"] != false {
+		t.Fatalf("recording.start rx = %v\n--- daemon log ---\n%s", r, d.Log())
+	}
+	time.Sleep(500 * time.Millisecond)
+	r = v1cmd(t, ws, "2", `{"type":"cmd","id":"2","cmd":"recording.stop","args":{}}`)
+	if r["ok"] != true || data(r)["rx"] != false {
+		t.Fatalf("recording.stop = %v", r)
+	}
+	files, _ := filepath.Glob(filepath.Join(d.Dir, "recordings", "rx-*.wav"))
+	if len(files) != 1 {
+		t.Fatalf("rx recordings = %v", files)
 	}
 }

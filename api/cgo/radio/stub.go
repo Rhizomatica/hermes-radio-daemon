@@ -34,6 +34,8 @@ type Stub struct {
 	closed   map[int64]WSCloseFrame
 	pttOwner int64 // the hermes.v1 connection holding PTT, 0 for none
 	digiSent []string
+	recRX    bool
+	recTX    bool
 }
 
 // NewStub returns a Stub tuned to 7.1 MHz USB.
@@ -463,6 +465,22 @@ func (s *Stub) DigiSend(text string) error {
 		"dir": "tx", "text": text, "frequency_hz": st.FrequencyHz})
 	s.AddDigi(string(b))
 	return nil
+}
+
+// Recording keeps which streams are on, as radiod does.
+func (s *Stub) Recording(start bool, stream string) (bool, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if stream != "rx" && stream != "tx" && stream != "both" {
+		return s.recRX, s.recTX, ErrInvalid
+	}
+	if stream != "tx" {
+		s.recRX = start
+	}
+	if stream != "rx" {
+		s.recTX = start
+	}
+	return s.recRX, s.recTX, nil
 }
 
 // DigiSent returns what DigiSend queued.

@@ -192,6 +192,11 @@ type Radio interface {
 	// text the modulator cannot carry, ErrBusy with the queue full. The
 	// digi log reports it (dir tx) when it goes out.
 	DigiSend(text string) error
+	// Recording starts (start) or stops recording stream "rx", "tx" or
+	// "both" to WAV files on the station, and says which recordings are on
+	// after it: ErrInvalid for another stream, ErrIO when a file could not
+	// be opened.
+	Recording(start bool, stream string) (rx, tx bool, err error)
 
 	// Gps is the station's own position and fix, and its GPS settings.
 	Gps() Gps

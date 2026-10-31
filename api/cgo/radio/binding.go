@@ -67,6 +67,14 @@ func prof(n int) C.uint32_t {
 
 func (binding) SelectProfile(n int) error { return codeErr(int(C.radiod_api_select_profile(prof(n)))) }
 
+func (binding) Recording(start bool, stream string) (bool, bool, error) {
+	cs := C.CString(stream)
+	defer C.free(unsafe.Pointer(cs))
+	var rx, tx C.bool
+	err := codeErr(int(C.radiod_api_recording(C.bool(start), cs, &rx, &tx)))
+	return bool(rx), bool(tx), err
+}
+
 func (binding) DigiSend(text string) error {
 	ct := C.CString(text)
 	defer C.free(unsafe.Pointer(ct))
