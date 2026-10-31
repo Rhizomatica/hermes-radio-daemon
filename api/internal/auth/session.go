@@ -52,7 +52,7 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 	// The attempt is counted before the Argon2id work, so parallel guesses
 	// cannot all pass the check first; a success (or a server fault) gives
 	// the reservation back via its token.
-	key := "login:" + ClientIP(r)
+	key := "login:" + RateKey(r)
 	ok, retry, token := h.loginLimiter.Reserve(key, 5, time.Minute)
 	if !ok {
 		w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))

@@ -13,6 +13,7 @@ import (
 
 	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/auth"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/passwd"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/setup"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/station"
@@ -194,5 +195,23 @@ func TestLoginPurgesExpiredSessions(t *testing.T) {
 	}
 	if _, err := st.SessionByID(context.Background(), old.ID); err == nil {
 		t.Fatal("expired session was not purged")
+	}
+}
+
+func TestRateKey(t *testing.T) {
+	for peer, want := range map[string]string{
+		"192.0.2.7:4000":              "192.0.2.7",
+		"192.0.2.7":                   "192.0.2.7",
+		"[::ffff:192.0.2.7]:4000":     "192.0.2.7",
+		"[2001:db8:1:2::5]:4000":      "2001:db8:1:2::/64",
+		"[2001:db8:1:2:ffff::9]:4000": "2001:db8:1:2::/64",
+		"[2001:db8:1:3::5]:4000":      "2001:db8:1:3::/64",
+		"garbage":                     "garbage",
+	} {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = peer
+		if got := auth.RateKey(r); got != want {
+			t.Errorf("RateKey(%q) = %q, want %q", peer, got, want)
+		}
 	}
 }
