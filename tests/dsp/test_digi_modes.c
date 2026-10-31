@@ -17,6 +17,7 @@
 #include "dsp/sbitx_cw.h"
 #include "dsp/sbitx_rtty.h"
 #include "dsp/sbitx_ft8.h"
+#include "dsp/ft8_js8.h"
 #include "dsp/digi_log.h"
 #include <unistd.h>
 #include "unity.h"
@@ -312,6 +313,88 @@ static void test_ft8_snr_falls_with_noise(void)
         test_msg("FT8 SNR should fall with noise: %.0f dB quiet, %.0f dB noisy", snr_quiet, snr_noisy));
 }
 
+/* One FT8 reception at 12 kHz: the message at 1500 Hz, starting `lead`
+ * seconds into a 15 s window, in Gaussian noise of its own (seeded). */
+static void ft8_reception(float *w, float noise_rms, float lead, unsigned seed)
+{
+    static float s12[12000 * 16];
+    int n12 = sbitx_ft8_encode("PU2UIT PY2XYZ -12", s12, 12000 * 16, 1500.0f);
+    uint64_t x = 0x9e3779b97f4a7c15ULL * (seed + 1);
+    for (int i = 0; i < 12000 * 15; i++) {
+        /* Box-Muller on a 64-bit LCG: the same noise on every run */
+        x = x * 6364136223846793005ULL + 1442695040888963407ULL;
+        double u1 = ((x >> 11) + 1.0) / 9007199254740993.0;
+        x = x * 6364136223846793005ULL + 1442695040888963407ULL;
+        double u2 = (x >> 11) / 9007199254740992.0;
+        w[i] = noise_rms * (float) (sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2));
+    }
+    int at = (int) (lead * 12000);
+    for (int i = 0; i < n12 && at + i < 12000 * 15; i++)
+        w[at + i] += 0.1f * s12[i];
+}
+
+static int ft8_decodes_at(float *w, double start_s)
+{
+    sbitx_ft8_decode_result r[8];
+    int n = sbitx_ft8_decode_at(w, 12000 * 15, start_s, r, 8);
+    for (int i = 0; i < n; i++)
+        if (!strcmp(r[i].text, "PU2UIT PY2XYZ -12"))
+            return r[i].pass == FT8_JS8_COMBINE ? 2 : 1;
+    return 0;
+}
+
+/* A message too weak to decode from one reception decodes from two, 15 s
+ * apart (a repeat), added together: and at the same level, two windows of
+ * ONE transmission (2 s apart, as the digi pump's overlap) are not added,
+ * which would only count it twice. */
+static void test_ft8_combining(void)
+{
+    static float a[12000 * 15], b[12000 * 15];
+    unsigned saved = ft8_js8_passes;
+    float level = 0.0f;
+
+    for (float noise = 0.3f; noise < 3.0f && level == 0.0f; noise += 0.05f) {
+        ft8_js8_passes = 0;                         /* one reception, ft8_lib alone */
+        ft8_reception(a, noise, 0.5f, 1);
+        if (ft8_decodes_at(a, 1000.0))
+            continue;
+        ft8_js8_passes = FT8_JS8_COMBINE;
+        ft8_js8_reset();
+        ft8_reception(a, noise, 0.5f, 1);
+        ft8_reception(b, noise, 0.5f, 2);
+        int first = ft8_decodes_at(a, 1000.0), second = ft8_decodes_at(b, 1015.0);
+        if (!first && second == 2)
+            level = noise;
+    }
+    printf("FT8  combining: two receptions decode at noise %.2f where one does not\n", level);
+    TEST_ASSERT_TRUE_MESSAGE(level > 0.0f, "no noise level where two receptions decode and one does not");
+
+    /* the same transmission twice: the second window starts 2 s later, so
+     * the signal sits 2 s earlier in it */
+    ft8_js8_passes = FT8_JS8_COMBINE;
+    ft8_js8_reset();
+    ft8_reception(a, level, 2.5f, 1);
+    ft8_reception(b, level, 0.5f, 1);
+    int one = ft8_decodes_at(a, 1000.0), same = ft8_decodes_at(b, 1002.0);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, one + same, "one transmission, seen in two overlapping windows, was combined");
+
+    ft8_js8_passes = saved;
+    ft8_js8_reset();
+}
+
+/* Every pass on: what ft8_lib decodes alone still decodes, as itself. */
+static void test_ft8_passes_keep_clean(void)
+{
+    static float a[12000 * 15];
+    sbitx_ft8_decode_result r[8];
+    ft8_js8_reset();
+    ft8_reception(a, 0.05f, 0.5f, 3);
+    int n = sbitx_ft8_decode_at(a, 12000 * 15, 2000.0, r, 8);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, n, test_msg("%d decodes of a clean signal", n));
+    TEST_ASSERT_EQUAL_STRING("PU2UIT PY2XYZ -12", r[0].text);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, r[0].pass, test_msg("a clean signal decoded by pass %d, not ft8_lib's", r[0].pass));
+}
+
 static void test_ft8_fields_report(void)    { check_ft8_fields("PU2UIT PY2XYZ -12", 0.05f, "PU2UIT", "PY2XYZ", ""); }
 static void test_ft8_fields_free_text(void) { check_ft8_fields("HERMES TEST.9", 0.05f, "", "", ""); }
 static void test_cw_clean(void)             { check_cw(0.0f); }
@@ -326,6 +409,8 @@ int main(void)
     UNITY_BEGIN();
     RUN_TEST(test_ft8_snr_falls_with_noise);
     RUN_TEST(test_ft8_fields_report);
+    RUN_TEST(test_ft8_combining);
+    RUN_TEST(test_ft8_passes_keep_clean);
     RUN_TEST(test_ft8_fields_free_text);
     RUN_TEST(test_ft8_log_once);
     RUN_TEST(test_ft8_same_text_two_stations);

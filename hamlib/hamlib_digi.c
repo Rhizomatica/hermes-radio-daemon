@@ -520,7 +520,7 @@ static void do_ft8_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz
          * a transmission more than once; sbitx_ft8_log_decodes() keeps one. */
         const double window_start = newest_at - (double) s->ft8_rx_buf_n / DIGI_DECODE_RATE;
         sbitx_ft8_decode_result res[50];
-        int nres = sbitx_ft8_decode_ex(s->ft8_rx_buf, slot_samples, res, 50);
+        int nres = sbitx_ft8_decode_at(s->ft8_rx_buf, slot_samples, window_start, res, 50);
         sbitx_ft8_log_decodes(res, nres, window_start, freq_hz);
         /* Slide by 2 s. Transmissions here are not UTC-slot aligned, and a
          * 12.64 s burst fits a 15 s window only if it starts within its

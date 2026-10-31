@@ -20,6 +20,7 @@
 #include "ft8/encode.h"
 #include "ft8/decode.h"
 #include "ft8/message.h"
+#include "ft8_js8.h"
 #include "ft8/text.h"
 #include "common/wave.h"
 #include "common/monitor.h"
@@ -243,6 +244,12 @@ static void parse_fields(sbitx_ft8_decode_result *r, const ftx_message_offsets_t
 int sbitx_ft8_decode_ex(float *audio_12k, int nsamples,
                         sbitx_ft8_decode_result *out, int max_out)
 {
+    return sbitx_ft8_decode_at(audio_12k, nsamples, -1.0, out, max_out);
+}
+
+int sbitx_ft8_decode_at(float *audio_12k, int nsamples, double start_s,
+                        sbitx_ft8_decode_result *out, int max_out)
+{
     const int   kSampleRate    = 12000;
     const int   kTimeOSR       = 2;
     const int   kFreqOSR       = 2;
@@ -284,7 +291,17 @@ int sbitx_ft8_decode_ex(float *audio_12k, int nsamples,
     for (int i = 0; i < num_candidates && num_seen < kMaxDecoded && count < max_out; i++) {
         ftx_message_t       msg;
         ftx_decode_status_t status;
-        if (!ftx_decode_candidate(&mon.wf, &candidates[i], kLDPCIters, &msg, &status))
+        ft8_js8_how         how;
+        /* ft8_lib leaves status.freq and status.time unset; these are its
+         * demo's formulas: bins from min_bin at 1/symbol_period Hz, blocks
+         * of one symbol period, plus the sub-bin and sub-block shifts. */
+        const ftx_candidate_t *cand = &candidates[i];
+        float freq_hz = (mon.min_bin + cand->freq_offset + (float) cand->freq_sub / mon.wf.freq_osr)
+                        / mon.symbol_period;
+        float time_s = (cand->time_offset + (float) cand->time_sub / mon.wf.time_osr) * mon.symbol_period
+                       - FT8_LIB_TIME_BIAS_S;
+        if (!ft8_js8_decode(&mon.wf, cand, kLDPCIters, start_s >= 0.0 ? start_s + time_s : -1.0,
+                            freq_hz, &msg, &status, &how))
             continue;
 
         bool dup = false;
@@ -301,14 +318,10 @@ int sbitx_ft8_decode_ex(float *audio_12k, int nsamples,
         memset(&offsets, 0xff, sizeof(offsets.offsets));
         if (ftx_message_decode(&msg, NULL, r->text, &offsets) != FTX_MESSAGE_RC_OK)
             continue;
-        /* ft8_lib leaves status.freq and status.time unset; these are its
-         * demo's formulas: bins from min_bin at 1/symbol_period Hz, blocks
-         * of one symbol period, plus the sub-bin and sub-block shifts. */
-        const ftx_candidate_t *cand = &candidates[i];
-        r->freq_hz = (mon.min_bin + cand->freq_offset + (float) cand->freq_sub / mon.wf.freq_osr)
-                     / mon.symbol_period;
-        r->time_s = (cand->time_offset + (float) cand->time_sub / mon.wf.time_osr) * mon.symbol_period
-                    - FT8_LIB_TIME_BIAS_S;
+        r->freq_hz = freq_hz;
+        r->time_s = time_s;
+        r->pass = how.pass;
+        r->receptions = how.receptions;
         r->has_snr = estimate_snr(&mon.wf, &candidates[i], &msg, noise_db, &r->snr_db);
         parse_fields(r, &offsets);
         count++;

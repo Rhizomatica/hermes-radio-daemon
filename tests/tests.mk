@@ -166,12 +166,24 @@ tests/dsp/test_mic_filter: tests/dsp/test_mic_filter.c dsp/mic_filter.c dsp/mic_
 	$(CC) $(TEST_CFLAGS) -Idsp $< dsp/mic_filter.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lm
 
 tests/dsp/test_digi_modes: tests/dsp/test_digi_modes.c dsp/stream_resampler.c dsp/sbitx_cw.c dsp/sbitx_rtty.c \
-                           dsp/sbitx_ft8.c dsp/sbitx_ft8.h dsp/digi_log.c dsp/digi_log.h \
+                           dsp/sbitx_ft8.c dsp/sbitx_ft8.h dsp/ft8_js8.c dsp/ft8_js8.h dsp/digi_log.c dsp/digi_log.h \
                            $(FT8_TEST_SRCS) $(FT8_TEST_LIBS) $(MM_FSK_SRCS)
 	$(CC) $(TEST_CFLAGS) -w -I/usr/include/csdr -Idsp $(FT8_LIB_CPPFLAGS) $(MM_FSK_CPPFLAGS) \
-	      $< dsp/stream_resampler.c dsp/sbitx_cw.c dsp/sbitx_rtty.c dsp/sbitx_ft8.c dsp/digi_log.c \
+	      $< dsp/stream_resampler.c dsp/sbitx_cw.c dsp/sbitx_rtty.c dsp/sbitx_ft8.c dsp/ft8_js8.c dsp/digi_log.c \
 	      $(FT8_TEST_SRCS) $(MM_FSK_SRCS) $(FT8_TEST_LIBS) $(UNITY_SRC) $(HERMES_LOG_SRC) \
 	      -o $@ -lcsdr -lfftw3f -lfftw3 -lcw -lpthread -lm
+
+# Not a test: counts what the FT8 decoder finds in a recording (ft8_bench.c),
+# to compare decoder changes on real audio.  make ft8-bench
+tests/dsp/ft8_bench: tests/dsp/ft8_bench.c dsp/stream_resampler.c dsp/sbitx_ft8.c dsp/sbitx_ft8.h \
+                     dsp/ft8_js8.c dsp/ft8_js8.h \
+                     dsp/digi_log.c dsp/digi_log.h $(FT8_TEST_SRCS) $(FT8_TEST_LIBS)
+	$(CC) -O2 -g -std=gnu11 -pthread -w $(filter -I%,$(TEST_CFLAGS)) -Idsp -I/usr/include/csdr \
+	      $(FT8_LIB_CPPFLAGS) $< dsp/stream_resampler.c dsp/sbitx_ft8.c dsp/ft8_js8.c dsp/digi_log.c \
+	      $(FT8_TEST_SRCS) $(FT8_TEST_LIBS) $(HERMES_LOG_SRC) -o $@ -lcsdr -lfftw3f -lfftw3 -lpthread -lm
+
+.PHONY: ft8-bench
+ft8-bench: tests/dsp/ft8_bench
 
 # The logger: mercury's hermes_log (vendor/hermes_log) as core.ini sets it up.
 tests/common/test_radiod_log: tests/common/test_radiod_log.c common/radiod_log.c common/radiod_log.h \
