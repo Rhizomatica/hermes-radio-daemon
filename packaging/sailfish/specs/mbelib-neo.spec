@@ -1,10 +1,15 @@
+%global commit a8e56d7
+%global gitdate 20261031
 Name:           mbelib-neo
-Version:        2.4.0
+Version:        2.6.5~git%{gitdate}.%{commit}
 Release:        1
 Summary:        AMBE and IMBE vocoder library
 License:        ISC and GPL-2.0-or-later
-URL:            https://github.com/arancormonk/mbelib-neo
-Source0:        https://github.com/arancormonk/mbelib-neo/archive/refs/tags/v%{version}.tar.gz#/mbelib-neo-%{version}.tar.gz
+URL:            https://github.com/Rhizomatica/mbelib-neo
+# Rhizomatica's fork: upstream v2.6.5 with the PFFFT it pins vendored in
+# third_party/, so the build fetches nothing (branch upstream-2.6.5). git
+# clone at the commit, .git left out (fetch-sources.sh).
+Source0:        mbelib-neo-%{commit}.tar.gz
 BuildRequires:  cmake
 
 %description
@@ -18,11 +23,12 @@ Requires:       %{name} = %{version}-%{release}
 Headers, pkg-config file and linker links for mbelib-neo.
 
 %prep
-%setup -q
+%setup -q -n mbelib-neo-%{commit}
 
 %build
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=%{_prefix} \
-      -DCMAKE_INSTALL_LIBDIR=%{_lib}
+      -DCMAKE_INSTALL_LIBDIR=%{_lib} -DMBELIB_BUILD_TESTS=OFF \
+      -DMBELIB_BUILD_EXAMPLES=OFF -DMBELIB_WARNINGS_AS_ERRORS=OFF
 cmake --build build %{?_smp_mflags}
 
 %install

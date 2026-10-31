@@ -1,26 +1,28 @@
 #!/bin/sh
-# Make hamlib-4.6.2-usb-serial.tar.gz: Hamlib's 4.6.2 tag with Hamlib PR
-# #2272 (USB-serial chips driven from user space, "usb:" rig pathnames)
-# backported.  The patch changes src/Makefile.am and configure.ac, so the
+# Make hamlib-5.0.0~git.tar.gz: Hamlib master with Hamlib PR #2272
+# (USB-serial chips driven from user space, "usb:" rig pathnames), from that
+# PR's branch.  The PR changes src/Makefile.am and configure.ac, so the
 # tarball is made with `make dist` here, on a machine with autotools: the
 # device has no automake.
 #
-#   make-hamlib-tarball.sh [OUTDIR]
+#   make-hamlib-tarball.sh [OUTDIR [COMMIT]]
+#
+# COMMIT defaults to the branch's head.
 #
 # Copyright (C) 2026 Rhizomatica
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 set -eu
-here=$(cd "$(dirname "$0")" && pwd)
 out=$(cd "${1:-.}" && pwd)
 t=$(mktemp -d)
-git clone -q --depth 1 --branch 4.6.2 https://github.com/Hamlib/Hamlib "$t/hamlib"
+git clone -q --branch usb-serial-userspace https://github.com/Rhizomatica/Hamlib "$t/hamlib"
 cd "$t/hamlib"
-git apply "$here/patches/hamlib-4.6.2-usb-serial.patch"
+[ -z "${2:-}" ] || git checkout -q "$2"
+git log -1 --format='Hamlib %h %s'
 ./bootstrap
 ./configure --without-readline --without-xml-support --without-indi \
             --without-cxx-binding --disable-static >/dev/null
 make dist-gzip >/dev/null
-mv hamlib-4.6.2.tar.gz "$out/hamlib-4.6.2-usb-serial.tar.gz"
+mv hamlib-*.tar.gz "$out/"
 rm -rf "$t"
-ls -l "$out/hamlib-4.6.2-usb-serial.tar.gz"
+ls -l "$out"/hamlib-*.tar.gz

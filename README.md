@@ -222,9 +222,62 @@ Installs to `/usr/bin/` and `/etc/hermes/` (configs are only placed if they do n
 - `/etc/hermes/core.ini`
 - `/etc/hermes/user.ini`
 
-On a Sailfish OS phone, install the RPMs from
-<http://debian.hermes.radio/sailfish/> instead; see
-[packaging/sailfish/README.md](packaging/sailfish/README.md).
+### Sailfish OS
+
+radiod runs natively on a Sailfish OS phone (aarch64, tested on Sailfish OS
+5.2), with the rig on the phone's USB port. Hamlib drives the rig's
+USB-serial chip itself, so the phone's kernel needs no driver for it. The
+packages are at <http://debian.hermes.radio/sailfish/>.
+
+1. On the phone, turn on developer mode (Settings → Developer tools), set a
+   password, and open a terminal or `ssh defaultuser@<phone>`.
+2. As root (`devel-su`), add the repository and install radiod:
+
+   ```sh
+   ssu ar hermes http://debian.hermes.radio/sailfish/aarch64/
+   pkcon refresh
+   pkcon install hermes-radio-daemon
+   ```
+
+   `pkcon` brings in the libraries the Sailfish repositories do not have:
+   Hamlib, fftw, iniparser, i2c-tools, csdr, libspecbleach, mbelib-neo,
+   unixcw.
+3. Plug in the rig and set it in `/etc/hermes/core.ini`. The rig's
+   USB-serial chip is named by its USB ids and serial number;
+   `cat /sys/bus/usb/devices/*/serial` lists them. An IC-7100 and an FT-710:
+
+   ```ini
+   radio_backend = hamlib
+   ; IC-7100: CI-V is the CP2102 whose serial ends in A
+   radio_model = 3070
+   rig_pathname = "usb:10c4:ea60:IC-7100 NNNNNNNN A"
+   serial_rate = 19200
+   capture_device = hw:CARD=CODEC,DEV=0
+   playback_device = hw:CARD=CODEC,DEV=0
+   ```
+
+   ```ini
+   radio_backend = hamlib
+   ; FT-710: CAT is the first UART of its CP2105; its codec plays stereo only
+   radio_model = 1049
+   rig_pathname = "usb:10c4:ea70:SERIAL"
+   serial_rate = 38400
+   capture_device = hw:CARD=Device,DEV=0
+   playback_device = plughw:CARD=Device,DEV=0
+   ```
+
+4. Start radiod, and start it at boot:
+
+   ```sh
+   systemctl enable --now radiod
+   ```
+
+To update, as root: `pkcon refresh && pkcon update`.
+
+radiod holds a wakelock while it runs, because Sailfish's autosleep
+otherwise stops USB audio several times a second. The phone stays awake,
+which costs battery. Building the packages yourself, and the details, are
+in [packaging/sailfish/README.md](packaging/sailfish/README.md).
 
 ## Configuration
 
