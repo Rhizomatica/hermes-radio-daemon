@@ -1,4 +1,4 @@
-%global commit 03b0a5b
+%global commit 2152e55
 %global gitdate 20261031
 Name:           hermes-radio-daemon
 Version:        0~git%{gitdate}.%{commit}
