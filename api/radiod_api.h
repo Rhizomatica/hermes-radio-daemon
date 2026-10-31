@@ -146,6 +146,15 @@ int radiod_api_digi_set(const char *key, long value);
  * The digi log reports it (dir tx) when it goes out. */
 int radiod_api_digi_send(const char *text);
 
+/* ── spectrum (hermes.v1 radio.spectrum.rx / .tx) ── */
+
+/* Subscribe (on) or unsubscribe hermes.v1 connection conn_id to the RX
+ * (tx false) or TX spectrum: C then sends it the spec's kind 3 / kind 4
+ * binary frames as the spectrum updates, and drops the subscription when
+ * the connection closes. 0; ENOTSUP when this radio's pipeline has no such
+ * spectrum; EBUSY when every subscription slot is taken. */
+int radiod_api_spectrum_subscribe(long conn_id, bool tx, bool on);
+
 /* ── recording ── */
 
 /* Start (start true) or stop recording stream "rx", "tx" or "both" to WAV

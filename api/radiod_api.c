@@ -18,6 +18,8 @@
 #include "radio_controls.h"
 #include "dsp/sbitx_ft8.h"
 #include "radio_media.h"
+#include "radio_pipeline.h"
+#include "radio_websocket.h"
 #include "cfg_utils.h"
 #include "dsp/digi_log.h"
 #include "gps/gps.h"
@@ -67,6 +69,15 @@ int radiod_api_digi_send(const char *text)
     if (mode == MODE_FT8 && !sbitx_ft8_can_encode(text))
         return RADIOD_API_EINVAL;
     return digi_tx_queue_push(&s_radio->digi_tx, text) ? RADIOD_API_OK : RADIOD_API_EBUSY;
+}
+
+int radiod_api_spectrum_subscribe(long conn_id, bool tx, bool on)
+{
+    if (!s_radio)
+        return RADIOD_API_ENOTSUP;
+    if (on && !radio_pipeline_supports_spectrum(s_radio, tx))
+        return RADIOD_API_ENOTSUP;
+    return radio_websocket_spectrum_subscribe(conn_id, tx, on) == 0 ? RADIOD_API_OK : RADIOD_API_EBUSY;
 }
 
 int radiod_api_recording(bool start, const char *stream, bool *rx, bool *tx)

@@ -72,6 +72,13 @@ func (rt *Router) Command(name string, role spec.Role, h CommandFunc) {
 	rt.commands[name] = command{role, h}
 }
 
+// OnClose registers what a domain releases for a closed hermes.v1
+// connection (radio.ptt: the transmitter it keyed). It runs once the
+// connection's last command has, so it also catches a command that was
+// still running when radiod's C server released the connection itself.
+// Register before connections open.
+func (rt *Router) OnClose(f func(c *Conn)) { rt.closers = append(rt.closers, f) }
+
 // Commands lists the registered commands a role may run, sorted.
 func (rt *Router) Commands(role spec.Role) []string {
 	out := []string{}
@@ -289,13 +296,40 @@ func (c *Conn) reply(id string, data any, cerr *CmdError) {
 }
 
 func (c *Conn) run() {
+	defer c.release()
 	for {
 		select {
 		case <-c.done:
 			return
 		case frame := <-c.in:
+			select {
+			case <-c.done: // closed while it waited: it does not run
+				return
+			default:
+			}
 			c.handle(frame)
 		}
+	}
+}
+
+// release runs when the connection's goroutine ends, after its last
+// command: C's spectrum subscriptions and what the domains registered with
+// OnClose. C drops them on close too, but a command it raced with may have
+// taken them again since.
+func (c *Conn) release() {
+	c.mu.Lock()
+	var binaries []BinaryFunc
+	for name := range c.subs {
+		if t := c.rt.topics[name]; t.binary != nil {
+			binaries = append(binaries, t.binary)
+		}
+	}
+	c.mu.Unlock()
+	for _, b := range binaries {
+		_ = b(c.ID, false)
+	}
+	for _, f := range c.rt.closers {
+		f(c)
 	}
 }
 

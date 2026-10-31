@@ -9,10 +9,12 @@ package integration
 import (
 	"bufio"
 	"debug/elf"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -738,5 +740,57 @@ func TestHermesV1Recording(t *testing.T) {
 	files, _ := filepath.Glob(filepath.Join(d.Dir, "recordings", "rx-*.wav"))
 	if len(files) != 1 {
 		t.Fatalf("rx recordings = %v", files)
+	}
+}
+
+// radio.spectrum.rx through the real daemon: binary frames with the spec's
+// 12-byte header (kind 3, version 1), then nbins, start_hz at the dial (USB),
+// bin_hz and the bins; none after unsubscribing.
+func TestHermesV1Spectrum(t *testing.T) {
+	needGoAPI(t)
+	// The spectrum comes from the audio the daemon bridges: ALSA's null
+	// device feeds it silence (CI and dev machines have no sound card).
+	d := startAPIDaemon(t, "enable_audio_bridge = 1", "capture_device = null", "playback_device = null")
+	token := setupAPI(t, d)
+	ws, _, err := wsDialAuth(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1", token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	r := v1cmd(t, ws, "1", `{"type":"cmd","id":"1","cmd":"radio.set","args":{"mode":"USB","frequency_hz":7100000}}`)
+	if r["ok"] != true {
+		t.Fatalf("radio.set = %v", r)
+	}
+	if err := ws.writeFrame(opText, []byte(`{"type":"subscribe","id":"s","topics":["radio.spectrum.rx"]}`)); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var frame []byte
+	for frame == nil {
+		op, msg, err := ws.readMessage(deadline)
+		if err != nil {
+			t.Fatalf("waiting for a spectrum frame: %v\n--- daemon log ---\n%s", err, d.Log())
+		}
+		if op == opText {
+			var m map[string]any
+			if json.Unmarshal(msg, &m) == nil && m["id"] == "s" && m["ok"] != true {
+				t.Fatalf("subscribe = %s", msg)
+			}
+			continue
+		}
+		frame = msg
+	}
+	le := binary.LittleEndian
+	if len(frame) < 22 || frame[0] != 3 || frame[1] != 1 || le.Uint16(frame[2:]) != 0 {
+		t.Fatalf("header = % x", frame[:min(len(frame), 22)])
+	}
+	nbins := int(le.Uint16(frame[12:]))
+	start := math.Float32frombits(le.Uint32(frame[14:]))
+	binHz := math.Float32frombits(le.Uint32(frame[18:]))
+	if nbins == 0 || len(frame) != 22+4*nbins || start != 7100000 || !(binHz > 0) {
+		t.Fatalf("payload: nbins %d (frame %d bytes), start_hz %v, bin_hz %v", nbins, len(frame), start, binHz)
+	}
+	if le.Uint32(frame[8:]) == 0 {
+		t.Errorf("sample_rate is 0")
 	}
 }

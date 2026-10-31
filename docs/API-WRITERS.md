@@ -323,7 +323,7 @@ interval and keeps the latest values; the topic function returns them, and stops
 which the publisher calls every 100 ms. Nested objects are compared inside, so a `radio.rig`
 event carries only the controls that changed (`{"levels":{"AF":0.6}}`).
 
-A topic that is a list of new entries rather than state (`modem.chat`; later `digi` and
+A topic that is a list of new entries rather than state (`modem.chat`, `digi`; later
 `messages`) is a stream, registered with `rt.Stream`. Its function reads the items after a
 cursor and returns them with the cursor after the last; cursor 0 is the snapshot, as much
 history as the topic offers. Each item is one event, never a diff: on subscribe the history goes
@@ -338,8 +338,22 @@ rt.Stream("modem.chat", spec.RoleReadonly, func(after uint64) ([]any, uint64, er
 })
 ```
 
-Not there yet: binary topics (`radio.spectrum.*`, `modem.spectrum.rx`), sent by C; and WebRTC
-signalling (`rtc.offer`).
+A topic of binary frames (`radio.spectrum.rx`, `radio.spectrum.tx`) is produced and sent by C
+(rule 4 of section 2): Go registers it with `rt.Binary`, whose function subscribes or
+unsubscribes one connection in C. There is no JSON snapshot; the frames start coming from C,
+and C drops a closed connection's subscriptions itself (the router drops them again after the
+connection's last command). C's slots are the station's (16 for each spectrum), so the router
+lets one user hold a binary topic on at most `api.BinaryPerUser` (4) connections. A subscribe
+over that is `busy`. Return `api.ErrBinaryBusy` when C has no slot left (also `busy`):
+
+```go
+rt.Binary("radio.spectrum.rx", spec.RoleReadonly, func(conn int64, on bool) error {
+	return h.r.SpectrumSubscribe(conn, false, on) // radiod_api_spectrum_subscribe
+})
+```
+
+Not there yet: `modem.spectrum.rx` (mercury's spectrum, kind 3), and WebRTC signalling
+(`rtc.offer`).
 
 ## 8. Reaching the radio
 

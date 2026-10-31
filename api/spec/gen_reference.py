@@ -40,7 +40,7 @@ def registered(pattern):
 
 IMPL_OPS = registered(r'\.Op\("(\w+)"')
 IMPL_CMDS = registered(r'\.Command\("([\w.]+)"')
-IMPL_TOPICS = registered(r'\.(?:Topic|TopicConn|Stream)\("([\w.]+)"')
+IMPL_TOPICS = registered(r'\.(?:Topic|TopicConn|Stream|Binary)\("([\w.]+)"')
 
 
 # ── small helpers ──────────────────────────────────────────────────────────

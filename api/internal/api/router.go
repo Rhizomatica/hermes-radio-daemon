@@ -60,6 +60,8 @@ type Router struct {
 	// StationCallsign, when set, is the callsign first-boot setup recorded
 	// (the setup domain installs it); "" when there is none.
 	StationCallsign func(ctx context.Context) string
+
+	closers []func(c *Conn) // OnClose
 }
 
 // NewRouter returns an empty router over a radio.
