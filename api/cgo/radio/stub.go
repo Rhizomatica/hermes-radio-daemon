@@ -471,15 +471,15 @@ func (s *Stub) DigiSend(text string) error {
 
 // SpectrumSubscribe records the subscription (Spectrum); the stub sends no
 // frames.
-func (s *Stub) SpectrumSubscribe(conn int64, tx, on bool) error {
+func (s *Stub) SpectrumSubscribe(conn int64, sp Spectrum, on bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.spectrum == nil {
 		s.spectrum = map[[2]int64]bool{}
 	}
-	k := [2]int64{conn, 0}
-	if tx {
-		k[1] = 1
+	k := [2]int64{conn, int64(sp)}
+	if on && sp == SpectrumModem && s.modem == nil {
+		return ErrNotSupported // mercury is not running
 	}
 	if on {
 		s.spectrum[k] = true
@@ -489,16 +489,11 @@ func (s *Stub) SpectrumSubscribe(conn int64, tx, on bool) error {
 	return nil
 }
 
-// Spectrum reports whether conn is subscribed to the RX (tx false) or TX
-// spectrum.
-func (s *Stub) Spectrum(conn int64, tx bool) bool {
+// Spectrum reports whether conn is subscribed to spectrum sp.
+func (s *Stub) Spectrum(conn int64, sp Spectrum) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	k := [2]int64{conn, 0}
-	if tx {
-		k[1] = 1
-	}
-	return s.spectrum[k]
+	return s.spectrum[[2]int64{conn, int64(sp)}]
 }
 
 // Recording keeps which streams are on, as radiod does.
