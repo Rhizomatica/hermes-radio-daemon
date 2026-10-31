@@ -153,6 +153,8 @@ type daemonOpts struct {
 	wsHost string
 	// Extra [main] lines for user.ini, e.g. "mercury_listen_mode = DATAC4".
 	userMain []string
+	// A whole user.ini instead of the harness's one-profile file.
+	userINI string
 }
 
 // apiSetupCode is the one-time setup code the harness writes for the daemon
@@ -218,6 +220,9 @@ func startDaemon(t *testing.T, o daemonOpts) *Daemon {
 	userINI := filepath.Join(dir, "user.ini")
 	writeFile(t, coreINI, strings.Join(core, "\n")+"\n")
 	user := fmt.Sprintf(defaultUserINI, o.freq)
+	if o.userINI != "" {
+		user = o.userINI
+	}
 	if len(o.userMain) > 0 {
 		user = strings.Replace(user, "[main]\n", "[main]\n"+strings.Join(o.userMain, "\n")+"\n", 1)
 	}

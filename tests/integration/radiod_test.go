@@ -201,3 +201,36 @@ func TestModuleCommandWithoutModule(t *testing.T) {
 		t.Errorf("reply = %v, want error \"no handler\"", r)
 	}
 }
+
+// The user.ini radiod installs (config/user.ini) is a station's two
+// profiles, as sbitx_controller had them: data on profile 0, voice on
+// profile 1, and no other.
+func TestShippedUserINI(t *testing.T) {
+	b, err := os.ReadFile("../../config/user.ini")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := startDaemon(t, daemonOpts{userINI: string(b)})
+	ws := dialRadiod(t, d)
+	for _, p := range []struct {
+		profile int
+		freq    int64
+		mode    string
+	}{{0, 7050000, "LSB"}, {1, 7100000, "LSB"}} {
+		if r := ws.call("set_profile", map[string]any{"profile": p.profile}); !r.OK {
+			t.Fatalf("set_profile %d: %+v", p.profile, r)
+		}
+		if got := ws.call("get_frequency", nil).Number(t); got != p.freq {
+			t.Errorf("profile %d frequency = %d, want %d", p.profile, got, p.freq)
+		}
+		if got := ws.call("get_mode", nil).String(t); got != p.mode {
+			t.Errorf("profile %d mode = %q, want %s", p.profile, got, p.mode)
+		}
+	}
+	if r := ws.call("set_profile", map[string]any{"profile": 2}); r.OK {
+		t.Error("set_profile 2 succeeded; the shipped user.ini has two profiles")
+	}
+	if !regexp.MustCompile(`(?m)^default_profile_fallback_timeout\s*=\s*-1\s*$`).Match(b) {
+		t.Error("the shipped user.ini falls back to the default profile; the fallback is off (-1)")
+	}
+}
