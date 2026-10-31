@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/testapi"
 )
 
@@ -294,5 +295,53 @@ func TestModemInvalidUTF8(t *testing.T) {
 		if d := w.Next(chatEvent, time.Second)["data"].(map[string]any); d["text"] != want {
 			t.Errorf("chat text = %q, want %q", d["text"], want)
 		}
+	}
+}
+
+// modem.spectrum.rx: offered while mercury runs; C sends the frames. It
+// shares kind 3 with radio.spectrum.rx, so a connection holds one of the
+// two at a time (kind 4, radio.spectrum.tx, is another kind).
+func TestModemSpectrum(t *testing.T) {
+	e := testapi.New(t)
+	reply := func(w *testapi.WS, frame string) map[string]any {
+		w.Send(frame)
+		return w.Next(testapi.Type("reply"), time.Second)
+	}
+	code := func(r map[string]any) any { er, _ := r["error"].(map[string]any); return er["code"] }
+
+	w := e.Open()
+	if h := w.Next(testapi.Type("hello"), time.Second); strings.Contains(fmt.Sprint(h["topics"]), "modem.spectrum.rx") {
+		t.Errorf("hello offers modem.spectrum.rx without mercury: %v", h["topics"])
+	}
+	if r := reply(w, `{"type":"subscribe","id":"a","topics":["modem.spectrum.rx"]}`); code(r) != "not_supported" {
+		t.Errorf("subscribe without mercury = %v", r)
+	}
+
+	e.Radio.SetModem(mercuryStatus(0))
+	w = e.Open()
+	if h := w.Next(testapi.Type("hello"), time.Second); !strings.Contains(fmt.Sprint(h["topics"]), "modem.spectrum.rx") {
+		t.Errorf("hello does not offer modem.spectrum.rx with mercury running: %v", h["topics"])
+	}
+	if r := reply(w, `{"type":"subscribe","id":"b","topics":["modem.spectrum.rx","radio.spectrum.tx"]}`); r["ok"] != true ||
+		!e.Radio.Spectrum(w.ID, rad.SpectrumModem) || !e.Radio.Spectrum(w.ID, rad.SpectrumTX) {
+		t.Fatalf("subscribe = %v", r)
+	}
+	if r := reply(w, `{"type":"subscribe","id":"c","topics":["radio.spectrum.rx"]}`); code(r) != "bad_request" ||
+		e.Radio.Spectrum(w.ID, rad.SpectrumRX) || !e.Radio.Spectrum(w.ID, rad.SpectrumModem) {
+		t.Errorf("radio.spectrum.rx beside modem.spectrum.rx = %v", r)
+	}
+	if r := reply(w, `{"type":"unsubscribe","id":"d","topics":["modem.spectrum.rx"]}`); r["ok"] != true ||
+		e.Radio.Spectrum(w.ID, rad.SpectrumModem) {
+		t.Fatalf("unsubscribe = %v", r)
+	}
+	if r := reply(w, `{"type":"subscribe","id":"e","topics":["radio.spectrum.rx"]}`); r["ok"] != true {
+		t.Errorf("radio.spectrum.rx after unsubscribing modem.spectrum.rx = %v", r)
+	}
+
+	// Both in one subscribe: refused, and neither taken.
+	x := e.Open()
+	if r := reply(x, `{"type":"subscribe","id":"f","topics":["radio.spectrum.rx","modem.spectrum.rx"]}`); code(r) != "bad_request" ||
+		e.Radio.Spectrum(x.ID, rad.SpectrumRX) || e.Radio.Spectrum(x.ID, rad.SpectrumModem) {
+		t.Errorf("both kind 3 topics at once = %v", r)
 	}
 }

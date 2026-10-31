@@ -146,14 +146,23 @@ int radiod_api_digi_set(const char *key, long value);
  * The digi log reports it (dir tx) when it goes out. */
 int radiod_api_digi_send(const char *text);
 
-/* ── spectrum (hermes.v1 radio.spectrum.rx / .tx) ── */
+/* ── spectrum (hermes.v1 radio.spectrum.rx / .tx, modem.spectrum.rx) ── */
 
-/* Subscribe (on) or unsubscribe hermes.v1 connection conn_id to the RX
- * (tx false) or TX spectrum: C then sends it the spec's kind 3 / kind 4
- * binary frames as the spectrum updates, and drops the subscription when
- * the connection closes. 0; ENOTSUP when this radio's pipeline has no such
- * spectrum; EBUSY when every subscription slot is taken. */
-int radiod_api_spectrum_subscribe(long conn_id, bool tx, bool on);
+enum radiod_api_spectrum
+{
+    RADIOD_API_SPECTRUM_RX,     /* the radio's RX spectrum, kind 3 */
+    RADIOD_API_SPECTRUM_TX,     /* the radio's TX spectrum, kind 4 */
+    RADIOD_API_SPECTRUM_MODEM,  /* mercury's, kind 3 */
+};
+
+/* Subscribe (on) or unsubscribe hermes.v1 connection conn_id to a
+ * radiod_api_spectrum: C then sends it the spec's binary frames as that
+ * spectrum updates, and drops the subscription when the connection closes.
+ * 0; ENOTSUP when this radio's pipeline has no such spectrum, or mercury is
+ * not running; EINVAL for another spectrum; EBUSY when every subscription
+ * slot is taken. Mercury sends its spectrum only while its feed is on
+ * (radiod_api_modem_set_waterfall). */
+int radiod_api_spectrum_subscribe(long conn_id, int spectrum, bool on);
 
 /* ── recording ── */
 

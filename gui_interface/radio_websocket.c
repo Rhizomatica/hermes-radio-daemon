@@ -333,9 +333,13 @@ static void hub_text(const char *json, size_t len, void *user)
     ws_server_broadcast((ws_server_t *) user, json, len, true);
 }
 
+static void send_v2_modem_spectrum(websocket_ctx *ctx, const uint8_t *frame, size_t len);
+
 static void hub_binary(const uint8_t *frame, size_t len, void *user)
 {
     ws_server_broadcast((ws_server_t *) user, frame, len, false);
+    if (len && frame[0] == UI_HUB_STREAM_MERCURY_SPECTRUM)
+        send_v2_modem_spectrum(&ws_ctx, frame + 1, len - 1);
 }
 
 /* A text message with no "cmd": a module's command (mercury's, by its key),
@@ -1210,14 +1214,19 @@ static void broadcast_rx_audio(websocket_ctx *ctx)
 #define V2_SPECTRUM_SUBS  16
 #define V2_KIND_RX_SPECTRUM 3
 #define V2_KIND_TX_SPECTRUM 4
+#define V2_SPECTRUM_MAX_BINS 512   /* mercury's MODEM_STATS_NSPEC; radio's is WATERFALL_BINS */
 
+_Static_assert(WATERFALL_BINS <= V2_SPECTRUM_MAX_BINS, "a radio spectrum frame holds WATERFALL_BINS");
+
+/* Per connection, a bit per RADIO_WS_SPECTRUM_* it is subscribed to. */
 static pthread_mutex_t s_spec_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct { long conn; bool rx, tx; } s_spec[V2_SPECTRUM_SUBS];
+static struct { long conn; unsigned on; } s_spec[V2_SPECTRUM_SUBS];
 static int s_spec_n;
 
-int radio_websocket_spectrum_subscribe(long conn_id, bool tx, bool on)
+int radio_websocket_spectrum_subscribe(long conn_id, int spectrum, bool on)
 {
     int rc = 0, i;
+    unsigned bit = 1u << spectrum;
 
     pthread_mutex_lock(&s_spec_lock);
     for (i = 0; i < s_spec_n && s_spec[i].conn != conn_id; i++)
@@ -1232,14 +1241,14 @@ int radio_websocket_spectrum_subscribe(long conn_id, bool tx, bool on)
             goto out;
         }
         s_spec[s_spec_n].conn = conn_id;
-        s_spec[s_spec_n].rx = s_spec[s_spec_n].tx = false;
+        s_spec[s_spec_n].on = 0;
         s_spec_n++;
     }
-    if (tx)
-        s_spec[i].tx = on;
+    if (on)
+        s_spec[i].on |= bit;
     else
-        s_spec[i].rx = on;
-    if (!s_spec[i].rx && !s_spec[i].tx)
+        s_spec[i].on &= ~bit;
+    if (!s_spec[i].on)
         s_spec[i] = s_spec[--s_spec_n];
 out:
     pthread_mutex_unlock(&s_spec_lock);
@@ -1248,8 +1257,14 @@ out:
 
 static void spectrum_drop_conn(long conn_id)
 {
-    radio_websocket_spectrum_subscribe(conn_id, false, false);
-    radio_websocket_spectrum_subscribe(conn_id, true, false);
+    pthread_mutex_lock(&s_spec_lock);
+    for (int i = 0; i < s_spec_n; i++)
+        if (s_spec[i].conn == conn_id)
+        {
+            s_spec[i] = s_spec[--s_spec_n];
+            break;
+        }
+    pthread_mutex_unlock(&s_spec_lock);
 }
 
 /* api-ws.yaml's binary frame: a 12-byte header (u8 kind, u8 version 1,
@@ -1260,32 +1275,44 @@ static void spectrum_drop_conn(long conn_id)
 _Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
                "hermes.v1 binary frames are little-endian; send_v2_spectrum copies host order");
 
-static void send_v2_spectrum(websocket_ctx *ctx, bool tx, const float *bins, uint16_t nbins,
-                             uint32_t seq, uint32_t sample_rate, float bin_hz)
+/* The connections subscribed to spectrum, copied out so the sends don't
+ * hold the lock that subscribing (from Go) and closing take. */
+static int spectrum_subscribers(int spectrum, long to[V2_SPECTRUM_SUBS])
 {
-    uint8_t frame[12 + 2 + 4 + 4 + WATERFALL_BINS * sizeof(float)];
-    long to[V2_SPECTRUM_SUBS];
     int nto = 0;
+    pthread_mutex_lock(&s_spec_lock);
+    for (int i = 0; i < s_spec_n; i++)
+        if (s_spec[i].on & (1u << spectrum))
+            to[nto++] = s_spec[i].conn;
+    pthread_mutex_unlock(&s_spec_lock);
+    return nto;
+}
+
+/* The lowest RF frequency of a spectrum nbins * bin_hz wide at the active
+ * profile's dial. Unlocked, as the older protocol's status reads it: a
+ * retune between the two reads places one frame at the old dial. */
+static float spectrum_start_hz(websocket_ctx *ctx, uint16_t nbins, float bin_hz, bool *lsb)
+{
     radio *r = ctx->radio_h;
-    /* Unlocked, as the older protocol's status reads it: a retune between
-     * the two reads places one frame at the old dial. */
     const radio_profile *p = &r->profiles[r->profile_active_idx];
     float dial = (float) p->freq;
-    float start_hz = p->mode == MODE_LSB ? dial - (float) nbins * bin_hz : dial;
+    *lsb = p->mode == MODE_LSB;
+    return *lsb ? dial - (float) nbins * bin_hz : dial;
+}
+
+static void send_v2_spectrum(websocket_ctx *ctx, int spectrum, const float *bins, uint16_t nbins,
+                             uint32_t seq, uint32_t sample_rate, float bin_hz, float start_hz)
+{
+    uint8_t frame[12 + 2 + 4 + 4 + V2_SPECTRUM_MAX_BINS * sizeof(float)];
+    long to[V2_SPECTRUM_SUBS];
+    int nto = spectrum_subscribers(spectrum, to);
     uint16_t flags = 0;
     size_t off = 0;
 
-    /* The subscribers, copied out so the sends don't hold the lock that
-     * subscribing (from Go) and closing take. */
-    pthread_mutex_lock(&s_spec_lock);
-    for (int i = 0; i < s_spec_n; i++)
-        if (tx ? s_spec[i].tx : s_spec[i].rx)
-            to[nto++] = s_spec[i].conn;
-    pthread_mutex_unlock(&s_spec_lock);
-    if (nto == 0)
+    if (nto == 0 || nbins > V2_SPECTRUM_MAX_BINS)
         return;
 
-    frame[off++] = tx ? V2_KIND_TX_SPECTRUM : V2_KIND_RX_SPECTRUM;
+    frame[off++] = spectrum == RADIO_WS_SPECTRUM_TX ? V2_KIND_TX_SPECTRUM : V2_KIND_RX_SPECTRUM;
     frame[off++] = 1;
     memcpy(frame + off, &flags, 2);        off += 2;
     memcpy(frame + off, &seq, 4);          off += 4;
@@ -1327,7 +1354,49 @@ static void broadcast_spectrum(websocket_ctx *ctx, bool tx)
     memcpy(frame + off, bins, sizeof(bins)); off += sizeof(bins);
 
     ws_server_broadcast(ctx->server, frame, sizeof(frame), false);
-    send_v2_spectrum(ctx, tx, bins, nbins, seq, sample_rate, bin_hz);
+    bool lsb;
+    send_v2_spectrum(ctx, tx ? RADIO_WS_SPECTRUM_TX : RADIO_WS_SPECTRUM_RX, bins, nbins, seq,
+                     sample_rate, bin_hz, spectrum_start_hz(ctx, nbins, bin_hz, &lsb));
+}
+
+/* Mercury's spectrum frame (its docs/WEBSOCKET_API.md, 5.7: u32 magic
+ * "MCRY", u16 fft_size, u16 sample_rate, then fft_size f32 dB bins from 0
+ * to sample_rate / 2, all little-endian) as modem.spectrum.rx's kind 3:
+ * RF-ascending at the dial, as the radio's spectrum is. The bins are the
+ * modem's audio, so in LSB they are flipped. Runs on mercury's spectrum
+ * thread, as a ui_hub sink: it only queues. */
+static void send_v2_modem_spectrum(websocket_ctx *ctx, const uint8_t *frame, size_t len)
+{
+    static uint32_t seq;
+    float bins[V2_SPECTRUM_MAX_BINS];
+    uint32_t magic;
+    uint16_t nbins, sample_rate;
+    long to[V2_SPECTRUM_SUBS];
+
+    if (len < 8)
+        return;
+    memcpy(&magic, frame, 4);
+    memcpy(&nbins, frame + 4, 2);
+    memcpy(&sample_rate, frame + 6, 2);
+    if (magic != 0x4D435259U || nbins == 0 || nbins > V2_SPECTRUM_MAX_BINS ||
+        len < 8 + (size_t) nbins * sizeof(float) || sample_rate == 0)
+        return;
+    seq++;
+    if (spectrum_subscribers(RADIO_WS_SPECTRUM_MODEM, to) == 0)
+        return;
+
+    float bin_hz = (float) sample_rate / (2.0f * (float) nbins);
+    bool lsb;
+    float start_hz = spectrum_start_hz(ctx, nbins, bin_hz, &lsb);
+    memcpy(bins, frame + 8, (size_t) nbins * sizeof(float));
+    if (lsb)
+        for (int i = 0, j = nbins - 1; i < j; i++, j--)
+        {
+            float t = bins[i];
+            bins[i] = bins[j];
+            bins[j] = t;
+        }
+    send_v2_spectrum(ctx, RADIO_WS_SPECTRUM_MODEM, bins, nbins, seq, sample_rate, bin_hz, start_hz);
 }
 
 /* ─────────────────────── static assets (web root) ─────────────────────── */

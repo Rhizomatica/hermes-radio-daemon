@@ -10,6 +10,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/spec"
 )
 
@@ -46,7 +47,8 @@ type StreamFunc func(after uint64) (items []any, next uint64, err error)
 // BinaryFunc subscribes (on) or unsubscribes connection conn to a topic
 // whose events are binary frames radiod's C server produces and sends
 // itself (api-ws.yaml's binary frames: spectrum). Go only decides who may
-// subscribe, and tells C.
+// subscribe, and tells C. radio.ErrBusy is C with no slot left; another
+// error is not_supported.
 type BinaryFunc func(conn int64, on bool) error
 
 type topic struct {
@@ -55,6 +57,7 @@ type topic struct {
 	each   bool       // per connection: read for each subscriber
 	stream StreamFunc // a stream topic: items, not state
 	binary BinaryFunc // a binary topic: C sends the frames
+	kind   byte       // a binary topic's frame kind (api-ws.yaml)
 }
 
 // subscription is one topic on one connection: what it last received, or
@@ -102,13 +105,24 @@ func (rt *Router) Stream(name string, role spec.Role, read StreamFunc) {
 	}})
 }
 
-// Binary registers a topic of binary frames, readable by role and above:
-// subscribing calls sub(conn, true) and sends no snapshot (the frames start
-// coming from C); unsubscribing calls sub(conn, false). C drops a closed
-// connection's subscriptions itself. C's slots are the station's, so one
-// user holds at most BinaryPerUser of them per topic.
-func (rt *Router) Binary(name string, role spec.Role, sub BinaryFunc) {
-	rt.topic(name, topic{role: role, binary: sub, state: func(*Conn) (any, error) { return struct{}{}, nil }})
+// Binary registers a topic of binary frames of kind, readable by role and
+// above: subscribing calls sub(conn, true) and sends no snapshot (the frames
+// start coming from C); unsubscribing calls sub(conn, false). C drops a
+// closed connection's subscriptions itself. C's slots are the station's, so
+// one user holds at most BinaryPerUser of them per topic. Two topics can
+// share a kind (radio.spectrum.rx and modem.spectrum.rx are both 3), and a
+// connection holds one of them at a time, as the frames do not say which
+// topic they are. avail, when not nil, says whether the topic is offered
+// now, as a StateFunc's error does.
+func (rt *Router) Binary(name string, role spec.Role, kind byte, sub BinaryFunc, avail func() error) {
+	rt.topic(name, topic{role: role, binary: sub, kind: kind, state: func(*Conn) (any, error) {
+		if avail != nil {
+			if err := avail(); err != nil {
+				return nil, err
+			}
+		}
+		return struct{}{}, nil
+	}})
 }
 
 // BinaryPerUser is how many of one user's connections may hold a binary
@@ -277,6 +291,11 @@ func (c *Conn) subscribeBinary(names []string) *CmdError {
 		if t.binary == nil || held || slices.Contains(took, name) {
 			continue
 		}
+		if other := c.binaryOfKind(t.kind, name, took); other != "" {
+			undo()
+			return Errf(CodeBadRequest, "%s: this connection has %s, whose frames are the same kind (%d); unsubscribe it first",
+				name, other, t.kind)
+		}
 		if c.rt.binaryHolders(c.User, name, c.ID) >= BinaryPerUser {
 			undo()
 			return Errf(CodeBusy, "%s: this user already has %d connections on it", name, BinaryPerUser)
@@ -346,17 +365,30 @@ func (c *Conn) unsubscribe(id string, names []string) {
 	c.reply(id, nil, nil)
 }
 
+// binaryOfKind is a binary topic of kind other than name that the
+// connection holds or is taking (took), or "".
+func (c *Conn) binaryOfKind(kind byte, name string, took []string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for other, t := range c.rt.topics {
+		if other == name || t.binary == nil || t.kind != kind {
+			continue
+		}
+		if _, held := c.subs[other]; held || slices.Contains(took, other) {
+			return other
+		}
+	}
+	return ""
+}
+
 // binaryErr is a binary topic's refusal: the radio has no such frames, or C
 // has no slot left.
 func binaryErr(name string, err error) *CmdError {
-	if errors.Is(err, ErrBinaryBusy) {
+	if errors.Is(err, radio.ErrBusy) {
 		return Errf(CodeBusy, "%s: too many subscribers", name)
 	}
 	return Errf(CodeNotSupported, "%s: %v", name, err)
 }
-
-// ErrBinaryBusy is what a BinaryFunc returns when C has no subscription slot.
-var ErrBinaryBusy = errors.New("no subscription slot left")
 
 // publish runs for the router's lifetime once a connection has opened.
 func (rt *Router) publish() {

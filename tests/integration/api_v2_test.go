@@ -794,3 +794,92 @@ func TestHermesV1Spectrum(t *testing.T) {
 		t.Errorf("sample_rate is 0")
 	}
 }
+
+// modem.spectrum.rx through the real daemon with mercury inside: mercury's
+// own spectrum frame as the spec's kind 3, its audio placed at the dial
+// (USB at it, LSB below it); radio.spectrum.rx, the other kind 3 topic, is
+// refused on the same connection; none after unsubscribing.
+func TestHermesV1ModemSpectrum(t *testing.T) {
+	needGoAPI(t)
+	d, _ := startMercuryDaemon(t, "api_v2_enable = 1")
+	token := setupAPI(t, d)
+	waitModem(t, d, token, "/modem") // mercury has published a status
+	ws, _, err := wsDialAuth(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1", token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	le := binary.LittleEndian
+	frame := func() []byte {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			op, msg, err := ws.readMessage(deadline)
+			if err != nil {
+				t.Fatalf("waiting for a modem spectrum frame: %v\n--- daemon log ---\n%s", err, d.Log())
+			}
+			if op == opBinary {
+				return msg
+			}
+		}
+	}
+	tune := func(mode string) {
+		if r := v1cmd(t, ws, mode, `{"type":"cmd","id":"`+mode+`","cmd":"radio.set","args":{"mode":"`+mode+`","frequency_hz":7100000}}`); r["ok"] != true {
+			t.Fatalf("radio.set %s = %v", mode, r)
+		}
+	}
+
+	tune("USB")
+	if r := v1cmd(t, ws, "s", `{"type":"subscribe","id":"s","topics":["modem.spectrum.rx"]}`); r["ok"] != true {
+		t.Fatalf("subscribe = %v\n--- daemon log ---\n%s", r, d.Log())
+	}
+	f := frame()
+	if len(f) < 22 || f[0] != 3 || f[1] != 1 || le.Uint16(f[2:]) != 0 {
+		t.Fatalf("header = % x", f[:min(len(f), 22)])
+	}
+	rate := le.Uint32(f[8:])
+	nbins := int(le.Uint16(f[12:]))
+	start := math.Float32frombits(le.Uint32(f[14:]))
+	binHz := math.Float32frombits(le.Uint32(f[18:]))
+	if rate == 0 || nbins != 512 || len(f) != 22+4*nbins || start != 7100000 || binHz != float32(rate)/1024 {
+		t.Fatalf("payload: rate %d, nbins %d (frame %d bytes), start_hz %v, bin_hz %v", rate, nbins, len(f), start, binHz)
+	}
+	seq := le.Uint32(f[4:])
+	if next := frame(); le.Uint32(next[4:]) <= seq {
+		t.Errorf("seq %d after %d", le.Uint32(next[4:]), seq)
+	}
+
+	tune("LSB")
+	want := float32(7100000) - 512*binHz
+	for i := 0; ; i++ {
+		if f = frame(); math.Float32frombits(le.Uint32(f[14:])) == want {
+			break
+		}
+		if i == 40 {
+			t.Fatalf("LSB start_hz = %v, want %v", math.Float32frombits(le.Uint32(f[14:])), want)
+		}
+	}
+
+	r := v1cmd(t, ws, "r", `{"type":"subscribe","id":"r","topics":["radio.spectrum.rx"]}`)
+	if er, _ := r["error"].(map[string]any); r["ok"] != false || er["code"] != "bad_request" {
+		t.Errorf("radio.spectrum.rx beside modem.spectrum.rx = %v, want bad_request", r)
+	}
+
+	if r := v1cmd(t, ws, "u", `{"type":"unsubscribe","id":"u","topics":["modem.spectrum.rx"]}`); r["ok"] != true {
+		t.Fatalf("unsubscribe = %v", r)
+	}
+	// One frame can be in flight: mercury's thread had copied the
+	// subscribers out before the unsubscribe and queues it after the reply.
+	late, deadline := 0, time.Now().Add(time.Second)
+	for {
+		op, _, err := ws.readMessage(deadline)
+		if err != nil {
+			break
+		}
+		if op == opBinary {
+			late++
+		}
+	}
+	if late > 1 {
+		t.Errorf("%d binary frames after unsubscribing", late)
+	}
+}
