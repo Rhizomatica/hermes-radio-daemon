@@ -1206,6 +1206,7 @@ static void broadcast_rx_audio(websocket_ctx *ctx)
 
 /* ── hermes.v1 spectrum subscriptions ── */
 
+/* Station-wide: one user holds at most api.BinaryPerUser of them (Go). */
 #define V2_SPECTRUM_SUBS  16
 #define V2_KIND_RX_SPECTRUM 3
 #define V2_KIND_TX_SPECTRUM 4
@@ -1253,26 +1254,35 @@ static void spectrum_drop_conn(long conn_id)
 
 /* api-ws.yaml's binary frame: a 12-byte header (u8 kind, u8 version 1,
  * u16 flags 0, u32 seq, u32 sample_rate), then u16 nbins, f32 start_hz,
- * f32 bin_hz and the bins in dB. The bins are RF-ascending (LSB comes
- * flipped), so start_hz is the dial in USB and the dial less the span in
- * LSB. */
+ * f32 bin_hz and the bins in dB, all little-endian, which the fields are
+ * copied as. The bins are RF-ascending (LSB comes flipped), so start_hz is
+ * the dial in USB and the dial less the span in LSB. */
+_Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
+               "hermes.v1 binary frames are little-endian; send_v2_spectrum copies host order");
+
 static void send_v2_spectrum(websocket_ctx *ctx, bool tx, const float *bins, uint16_t nbins,
                              uint32_t seq, uint32_t sample_rate, float bin_hz)
 {
     uint8_t frame[12 + 2 + 4 + 4 + WATERFALL_BINS * sizeof(float)];
+    long to[V2_SPECTRUM_SUBS];
+    int nto = 0;
     radio *r = ctx->radio_h;
+    /* Unlocked, as the older protocol's status reads it: a retune between
+     * the two reads places one frame at the old dial. */
     const radio_profile *p = &r->profiles[r->profile_active_idx];
     float dial = (float) p->freq;
     float start_hz = p->mode == MODE_LSB ? dial - (float) nbins * bin_hz : dial;
     uint16_t flags = 0;
     size_t off = 0;
-    bool any = false;
 
+    /* The subscribers, copied out so the sends don't hold the lock that
+     * subscribing (from Go) and closing take. */
     pthread_mutex_lock(&s_spec_lock);
-    for (int i = 0; i < s_spec_n && !any; i++)
-        any = tx ? s_spec[i].tx : s_spec[i].rx;
+    for (int i = 0; i < s_spec_n; i++)
+        if (tx ? s_spec[i].tx : s_spec[i].rx)
+            to[nto++] = s_spec[i].conn;
     pthread_mutex_unlock(&s_spec_lock);
-    if (!any)
+    if (nto == 0)
         return;
 
     frame[off++] = tx ? V2_KIND_TX_SPECTRUM : V2_KIND_RX_SPECTRUM;
@@ -1285,11 +1295,8 @@ static void send_v2_spectrum(websocket_ctx *ctx, bool tx, const float *bins, uin
     memcpy(frame + off, &bin_hz, 4);       off += 4;
     memcpy(frame + off, bins, (size_t) nbins * sizeof(float)); off += (size_t) nbins * sizeof(float);
 
-    pthread_mutex_lock(&s_spec_lock);
-    for (int i = 0; i < s_spec_n; i++)
-        if (tx ? s_spec[i].tx : s_spec[i].rx)
-            (void) ws_server_send_to(ctx->server, s_spec[i].conn, frame, off, false);
-    pthread_mutex_unlock(&s_spec_lock);
+    for (int i = 0; i < nto; i++)
+        (void) ws_server_send_to(ctx->server, to[i], frame, off, false);
 }
 
 static void broadcast_spectrum(websocket_ctx *ctx, bool tx)

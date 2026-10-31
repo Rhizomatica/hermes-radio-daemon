@@ -341,8 +341,10 @@ rt.Stream("modem.chat", spec.RoleReadonly, func(after uint64) ([]any, uint64, er
 A topic of binary frames (`radio.spectrum.rx`, `radio.spectrum.tx`) is produced and sent by C
 (rule 4 of section 2): Go registers it with `rt.Binary`, whose function subscribes or
 unsubscribes one connection in C. There is no JSON snapshot; the frames start coming from C,
-and C drops a closed connection's subscriptions itself. Return `api.ErrBinaryBusy` when C has no
-slot left (the reply is `busy`):
+and C drops a closed connection's subscriptions itself (the router drops them again after the
+connection's last command). C's slots are the station's (16 for each spectrum), so the router
+lets one user hold a binary topic on at most `api.BinaryPerUser` (4) connections. A subscribe
+over that is `busy`. Return `api.ErrBinaryBusy` when C has no slot left (also `busy`):
 
 ```go
 rt.Binary("radio.spectrum.rx", spec.RoleReadonly, func(conn int64, on bool) error {
