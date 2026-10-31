@@ -7,7 +7,8 @@ For developers who write the HERMES station API (`/api/v2`, `hermes.v1`) in herm
 ## Where things are
 - **Code:** [`api/`](../api/)
 - **Guide (read this first):** [API-WRITERS.md](API-WRITERS.md) covers how it fits together, the layout, adding a REST operation or a hermes.v1 command, testing, and the rules.
-- **The contract:** hermes-documentation `tech_docs/api-redesign/`, with `api-rest.yaml` (OpenAPI, REST under `/api/v2`) and `api-ws.yaml` (AsyncAPI, the `hermes.v1` WebSocket at `/api/v2/ws`). Read its README's **Security** section too. A copy is pinned in `api/spec/`. You register handlers **by operationId**, and the method, path and role come from the spec.
+- **Using the API (log in, users, GPS, ...):** [API-USAGE.md](API-USAGE.md) is a task-by-task how-to; [API-REFERENCE.md](API-REFERENCE.md) and [API-WS-REFERENCE.md](API-WS-REFERENCE.md) list every operation, parameter and field (generated from the spec).
+- **The contract:** [`api/spec/`](../api/spec/), with `api-rest.yaml` (OpenAPI, REST under `/api/v2`) and `api-ws.yaml` (AsyncAPI, the `hermes.v1` WebSocket at `/api/v2/ws`). Read the **Security** section of the design notes, [api-design/README.md](api-design/README.md), too. You register handlers **by operationId**, and the method, path and role come from the spec.
 
 ## Up and running in 5 minutes (no radio, no C)
 ```bash
@@ -41,7 +42,7 @@ store cannot be opened it still answers only on localhost.
   - WebRTC (in C; Go only builds the signalling).
 
 ## House rules
-1. **Spec first.** No operation, field or error code that isn't in the contract. To change the API, propose it in hermes-documentation first.
+1. **Spec first.** No operation, field or error code that isn't in the contract. To change the API, change the spec in `api/spec/` first, in the same PR or before it.
 2. **Validate everything, apply nothing until all of it is valid.** A refused write changes nothing.
 3. **Roles come from the spec;** don't check them by hand. **No secrets in URLs or logs.** **Over-the-air text is untrusted.**
 4. **Only `api/cgo/radio` talks to C.** If you need something from radiod that the C API doesn't offer, ask for a new C API function; don't reach into radiod.

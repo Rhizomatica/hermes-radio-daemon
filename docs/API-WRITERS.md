@@ -8,19 +8,20 @@ C memory.
 
 ## 1. The contract
 
-What the API looks like is decided in hermes-documentation, not here:
+What the API looks like is decided by the contract in [`api/spec/`](../api/spec/), which
+this repository maintains:
 
-- `tech_docs/api-redesign/api-rest.yaml`: REST, OpenAPI 3.1, every operation with an
-  `operationId`;
-- `tech_docs/api-redesign/api-ws.yaml`: `hermes.v1`, AsyncAPI 3.1: frames, commands, topics;
-- the redesign README's **Security** section: roles on every route, transmit rate limits,
-  the audit log, no secrets in URLs or logs, over-the-air text treated as untrusted.
+- `api/spec/api-rest.yaml`: REST, OpenAPI 3.1, every operation with an `operationId`;
+- `api/spec/api-ws.yaml`: `hermes.v1`, AsyncAPI 3.1: frames, commands, topics;
+- the **Security** section of the design notes, [api-design/README.md](api-design/README.md):
+  roles on every route, transmit rate limits, the audit log, no secrets in URLs or logs,
+  over-the-air text treated as untrusted. [api-design/COMPARISON.md](api-design/COMPARISON.md)
+  is the decision register (the D-numbers).
 
-A copy of the two YAML files is pinned in [`api/spec/`](../api/spec/)
-with the commit it came from. The router reads it: **you register a handler by
-`operationId`, and its method, path and role come from the spec.** A renamed path needs no
-code change, and `go test` fails if you register something the spec does not have. To change
-the API, change the spec in hermes-documentation first, then re-pin it here.
+The router reads the spec: **you register a handler by `operationId`, and its method, path and
+role come from the spec.** A renamed path needs no code change, and `go test` fails if you
+register something the spec does not have. To change the API, change the spec first, in the
+same PR as the code or before it.
 
 Conventions you get from the helpers (section 5): JSON in and out, `snake_case`, integer Hz,
 ISO 8601 UTC timestamps, RFC 9457 `application/problem+json` errors with a stable string
@@ -160,8 +161,8 @@ front of radiod's port** (nginx's `/api` goes to hermes-api, not radiod): radiod
 ## 5. Adding a REST operation
 
 1. **Find the operation in the spec** (`spec/api-rest.yaml`): its `operationId`, request and
-   response schemas, `x-hermes-role`. If it is not there, it does not exist yet: propose it to
-   hermes-documentation.
+   response schemas, `x-hermes-role`. If it is not there, it does not exist yet: add it to the
+   spec first.
 2. **Write a handler** in the domain's package: a plain `net/http` handler.
 3. **Register it** with `rt.Op(operationId, handler)` in the package's `Register`.
 4. **Test it** with `testapi`.
@@ -382,12 +383,22 @@ e.Radio.SetTX(true)                                       // a change from elsew
 ev := w.Next(isState, time.Second)                        // seq 1, {"tx": true, ...}
 ```
 
+**You get a contract check for free.** `TestContract` (`internal/station/contract_test.go`) walks
+every operation the router registers, so your new one is covered the moment you `rt.Op` it. It
+checks that: no session gives 401; each role below the spec's `x-hermes-role` gives 403; the
+allowed role reaches your handler; the status you answer is one `api-rest.yaml` documents
+(besides the generic 400/404/413/415/422/429); and every reply has `X-Request-Id`, errors are
+`application/problem+json` with a matching `status`, `code` and `request_id`, and a 204 has no
+body. If it fails because your handler answers a status the spec does not list, add it to the
+spec first (rule 1), not to the test.
+
 Test the refusals as much as the happy path: every 4xx your handler can give, and that a
 refused write changed nothing.
 
-Integration tests (`tests/integration/api_v2_test.go`) run the real radiod on Hamlib's dummy
+Integration tests (`tests/integration/api_v2_test.go`, `api_auth_test.go`) run the real radiod on Hamlib's dummy
 rig and check what crosses the C/Go boundary (a REST write that moves the rig as rigctl sees
-it, the hermes.v1 upgrade). Add one when your operation touches the radio in a new way.
+it, the hermes.v1 upgrade; `api_auth_test.go` runs the account
+lifecycle: login, users, sessions, the cookie and its CSRF rule, the login limit). Add one when your operation touches the radio in a new way.
 
 ```bash
 make go-test            # Go unit tests, race detector
