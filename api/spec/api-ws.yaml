@@ -21,6 +21,12 @@ info:
     - Authentication is the REST session: the `hermes_session` cookie (browsers send it
       on the upgrade by themselves) or `Authorization: Bearer <token>` (tools). No
       session, no upgrade (401). The session's role gates every command.
+    - The connection lasts only as long as its session. When the session ends (logout,
+      revocation, expiry, the user disabled or deleted) or its role changes, the station
+      closes the connection with close code 1008: before it runs any further command or
+      subscription, and within one heartbeat otherwise. The reason is `session ended`, or
+      `role changed; connect again`; the client logs in again, or reconnects for the hello
+      of its new role.
     - Only same-origin browsers are accepted (`Origin` is checked).
     - The upgrade response carries `X-Request-Id`, which the station's logs use for this
       connection; each command's `id` is logged with it.

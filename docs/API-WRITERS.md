@@ -154,9 +154,15 @@ Then `curl http://127.0.0.1:8080/api/v2/radio`. **With the session store open, `
 answers any client**; a session token (the `hermes_session` cookie or `Authorization: Bearer`)
 sets the role, and without one only `security: []` operations answer (the rest are 401). If
 the store cannot be opened, radiod answers only on loopback, every caller `admin`. A radiod
-built without Go answers `/api/v2` with 503. **Never put a reverse proxy on the station in
-front of radiod's port** (nginx's `/api` goes to hermes-api, not radiod): radiod trusts
-`X-Forwarded-Proto` only from a loopback peer.
+built without Go answers `/api/v2` with 503.
+
+**Use `wss://` beyond a trusted link.** With `ws://`, the setup code, passwords and session
+tokens cross the network in the clear, and the session cookie is not `Secure`.
+
+**Don't put a reverse proxy in front of radiod's port** (nginx's `/api` goes to hermes-api,
+not radiod). Every client would then reach radiod from the proxy's loopback address: one
+rate-limit bucket for all of them, so one client's wrong passwords lock everyone out of login,
+and radiod believes the proxy's `X-Forwarded-Proto`.
 
 ## 5. Adding a REST operation
 
@@ -417,6 +423,19 @@ CI runs all three on Debian 13, amd64 and arm64, with and without the Go layer.
 - **No secrets in URLs or logs.** Passphrases go in bodies or headers.
 - **Over-the-air text is untrusted** (decodes, callsigns, chat): pass it through as JSON
   strings, never as markup, and keep the length caps.
+- **No sockets in Go.** radiod's C server owns every socket (section 2). Go gets requests
+  and frames through the `Hermes*` exports and answers through the radiod C API
+  (`radio.WSSend`, `WSBroadcast`, `WSClose`); never `net.Listen`, `http.Serve`, a hijacked
+  connection or a WebSocket library.
+- **A connection lasts as long as its session.** A `hermes.v1` connection's session and role
+  are checked again before every frame and on every heartbeat; when the session has ended
+  (logout, revocation, expiry, a disabled or deleted user) or the role changed, the router
+  closes it (1008). Anything else long-lived that acts for a client follows the same rule:
+  re-check the session, don't trust the one seen at the start.
+- **Bound what clients can grow.** Anything keyed by what a client sends (its address, a
+  username, a token) has a cap: `ratelimit.Limiter` holds at most `MaxKeys`, and buckets go
+  by `auth.RateKey` (an IPv6 /64, not one address). A secret guessed at, like the setup code,
+  also gets a station-wide budget, so many addresses don't buy many tries.
 - **Threads:** handlers run concurrently on Go's goroutines. Blocking in a handler is fine; it
   blocks only that request. Don't start goroutines that outlive their request or connection.
 - **Memory:** the Go heap has a soft 64 MB limit (`GOMEMLIMIT` overrides it) for the 1 GB Pi.

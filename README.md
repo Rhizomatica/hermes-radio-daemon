@@ -873,7 +873,9 @@ radiod answers any client that can reach `websocket_url`:
 - a session's role (`readonly`, `user`, `operator`, `admin`) gates each operation, command and topic.
 
 If the session store cannot be opened, radiod falls back to answering loopback only,
-every caller `admin`.
+every caller `admin`. A `hermes.v1` connection lasts only as long as its session: when the
+session ends or its role changes, radiod closes it (1008). Use `wss://` beyond a trusted
+link: over `ws://` passwords and session tokens cross the network in the clear.
 
 A daemon built without Go answers `/api/v2` with 503 (`not_supported`).
 Errors are RFC 9457 `application/problem+json` with a stable `code`, and every
