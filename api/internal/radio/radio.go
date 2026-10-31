@@ -35,6 +35,11 @@ func Register(rt *api.Router) {
 	registerPTT(rt)
 	registerRecording(rt)
 
+	// The radio's spectrum: binary frames (kinds 3 and 4) that C sends to
+	// each subscriber as the spectrum updates.
+	rt.Binary("radio.spectrum.rx", spec.RoleReadonly, h.spectrum(false))
+	rt.Binary("radio.spectrum.tx", spec.RoleReadonly, h.spectrum(true))
+
 	// The same RadioState as getRadioState, pushed as it changes.
 	rt.Topic("radio.state", spec.RoleReadonly, func() (any, error) { return stateOf(h.r.State()), nil })
 
@@ -42,6 +47,17 @@ func Register(rt *api.Router) {
 }
 
 type handlers struct{ r rad.Radio }
+
+// spectrum subscribes a connection to the RX or TX spectrum in C.
+func (h handlers) spectrum(tx bool) api.BinaryFunc {
+	return func(conn int64, on bool) error {
+		err := h.r.SpectrumSubscribe(conn, tx, on)
+		if errors.Is(err, rad.ErrBusy) {
+			return api.ErrBinaryBusy
+		}
+		return err
+	}
+}
 
 // ── response schemas (api-rest.yaml components) ──
 

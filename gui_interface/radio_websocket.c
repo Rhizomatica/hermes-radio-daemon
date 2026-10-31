@@ -1204,6 +1204,94 @@ static void broadcast_rx_audio(websocket_ctx *ctx)
             break;
 }
 
+/* ── hermes.v1 spectrum subscriptions ── */
+
+#define V2_SPECTRUM_SUBS  16
+#define V2_KIND_RX_SPECTRUM 3
+#define V2_KIND_TX_SPECTRUM 4
+
+static pthread_mutex_t s_spec_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct { long conn; bool rx, tx; } s_spec[V2_SPECTRUM_SUBS];
+static int s_spec_n;
+
+int radio_websocket_spectrum_subscribe(long conn_id, bool tx, bool on)
+{
+    int rc = 0, i;
+
+    pthread_mutex_lock(&s_spec_lock);
+    for (i = 0; i < s_spec_n && s_spec[i].conn != conn_id; i++)
+        ;
+    if (i == s_spec_n)
+    {
+        if (!on)
+            goto out;
+        if (s_spec_n == V2_SPECTRUM_SUBS)
+        {
+            rc = -1;
+            goto out;
+        }
+        s_spec[s_spec_n].conn = conn_id;
+        s_spec[s_spec_n].rx = s_spec[s_spec_n].tx = false;
+        s_spec_n++;
+    }
+    if (tx)
+        s_spec[i].tx = on;
+    else
+        s_spec[i].rx = on;
+    if (!s_spec[i].rx && !s_spec[i].tx)
+        s_spec[i] = s_spec[--s_spec_n];
+out:
+    pthread_mutex_unlock(&s_spec_lock);
+    return rc;
+}
+
+static void spectrum_drop_conn(long conn_id)
+{
+    radio_websocket_spectrum_subscribe(conn_id, false, false);
+    radio_websocket_spectrum_subscribe(conn_id, true, false);
+}
+
+/* api-ws.yaml's binary frame: a 12-byte header (u8 kind, u8 version 1,
+ * u16 flags 0, u32 seq, u32 sample_rate), then u16 nbins, f32 start_hz,
+ * f32 bin_hz and the bins in dB. The bins are RF-ascending (LSB comes
+ * flipped), so start_hz is the dial in USB and the dial less the span in
+ * LSB. */
+static void send_v2_spectrum(websocket_ctx *ctx, bool tx, const float *bins, uint16_t nbins,
+                             uint32_t seq, uint32_t sample_rate, float bin_hz)
+{
+    uint8_t frame[12 + 2 + 4 + 4 + WATERFALL_BINS * sizeof(float)];
+    radio *r = ctx->radio_h;
+    const radio_profile *p = &r->profiles[r->profile_active_idx];
+    float dial = (float) p->freq;
+    float start_hz = p->mode == MODE_LSB ? dial - (float) nbins * bin_hz : dial;
+    uint16_t flags = 0;
+    size_t off = 0;
+    bool any = false;
+
+    pthread_mutex_lock(&s_spec_lock);
+    for (int i = 0; i < s_spec_n && !any; i++)
+        any = tx ? s_spec[i].tx : s_spec[i].rx;
+    pthread_mutex_unlock(&s_spec_lock);
+    if (!any)
+        return;
+
+    frame[off++] = tx ? V2_KIND_TX_SPECTRUM : V2_KIND_RX_SPECTRUM;
+    frame[off++] = 1;
+    memcpy(frame + off, &flags, 2);        off += 2;
+    memcpy(frame + off, &seq, 4);          off += 4;
+    memcpy(frame + off, &sample_rate, 4);  off += 4;
+    memcpy(frame + off, &nbins, 2);        off += 2;
+    memcpy(frame + off, &start_hz, 4);     off += 4;
+    memcpy(frame + off, &bin_hz, 4);       off += 4;
+    memcpy(frame + off, bins, (size_t) nbins * sizeof(float)); off += (size_t) nbins * sizeof(float);
+
+    pthread_mutex_lock(&s_spec_lock);
+    for (int i = 0; i < s_spec_n; i++)
+        if (tx ? s_spec[i].tx : s_spec[i].rx)
+            (void) ws_server_send_to(ctx->server, s_spec[i].conn, frame, off, false);
+    pthread_mutex_unlock(&s_spec_lock);
+}
+
 static void broadcast_spectrum(websocket_ctx *ctx, bool tx)
 {
     float bins[WATERFALL_BINS];
@@ -1232,6 +1320,7 @@ static void broadcast_spectrum(websocket_ctx *ctx, bool tx)
     memcpy(frame + off, bins, sizeof(bins)); off += sizeof(bins);
 
     ws_server_broadcast(ctx->server, frame, sizeof(frame), false);
+    send_v2_spectrum(ctx, tx, bins, nbins, seq, sample_rate, bin_hz);
 }
 
 /* ─────────────────────── static assets (web root) ─────────────────────── */
@@ -1450,6 +1539,7 @@ static void on_ws_close(ws_conn_t *c, void *user_data)
     if (ws_conn_class(c) == WS_CLASS_V2)
         HermesWSClose(ws_conn_id(c));
 #endif
+    spectrum_drop_conn(ws_conn_id(c));
 
     /* A push-to-talk client (browser tab, hermes-voice-key) that drops its
      * connection while keyed would otherwise leave the radio in TX. */

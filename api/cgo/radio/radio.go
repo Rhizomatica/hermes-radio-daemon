@@ -197,6 +197,11 @@ type Radio interface {
 	// after it: ErrInvalid for another stream, ErrIO when a file could not
 	// be opened.
 	Recording(start bool, stream string) (rx, tx bool, err error)
+	// SpectrumSubscribe subscribes (on) or unsubscribes hermes.v1
+	// connection conn to the RX (tx false) or TX spectrum, whose binary
+	// frames C then sends it: ErrNotSupported when the radio has no such
+	// spectrum, ErrBusy when every slot is taken.
+	SpectrumSubscribe(conn int64, tx, on bool) error
 
 	// Gps is the station's own position and fix, and its GPS settings.
 	Gps() Gps

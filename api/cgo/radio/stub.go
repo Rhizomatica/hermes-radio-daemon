@@ -36,6 +36,7 @@ type Stub struct {
 	digiSent []string
 	recRX    bool
 	recTX    bool
+	spectrum map[[2]int64]bool
 }
 
 // NewStub returns a Stub tuned to 7.1 MHz USB.
@@ -465,6 +466,38 @@ func (s *Stub) DigiSend(text string) error {
 		"dir": "tx", "text": text, "frequency_hz": st.FrequencyHz})
 	s.AddDigi(string(b))
 	return nil
+}
+
+// SpectrumSubscribe records the subscription (Spectrum); the stub sends no
+// frames.
+func (s *Stub) SpectrumSubscribe(conn int64, tx, on bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.spectrum == nil {
+		s.spectrum = map[[2]int64]bool{}
+	}
+	k := [2]int64{conn, 0}
+	if tx {
+		k[1] = 1
+	}
+	if on {
+		s.spectrum[k] = true
+	} else {
+		delete(s.spectrum, k)
+	}
+	return nil
+}
+
+// Spectrum reports whether conn is subscribed to the RX (tx false) or TX
+// spectrum.
+func (s *Stub) Spectrum(conn int64, tx bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := [2]int64{conn, 0}
+	if tx {
+		k[1] = 1
+	}
+	return s.spectrum[k]
 }
 
 // Recording keeps which streams are on, as radiod does.
