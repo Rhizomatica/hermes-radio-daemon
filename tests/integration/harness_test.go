@@ -87,12 +87,25 @@ func wsHostOr(h string) string {
 // freePort asks the kernel for a free TCP port on 127.0.0.1.
 func freePort(t *testing.T) int {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("free port: %v", err)
+	return freePorts(t, 1)[0]
+}
+
+// freePorts returns n distinct free TCP ports on 127.0.0.1. Every probe
+// listener stays open until all n are picked: closing one before asking for
+// the next lets the kernel hand the same port out twice (it did: the
+// daemon's websocket and rigctl ports collided).
+func freePorts(t *testing.T, n int) []int {
+	t.Helper()
+	ports := make([]int, n)
+	for i := range ports {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("free port: %v", err)
+		}
+		defer l.Close()
+		ports[i] = l.Addr().(*net.TCPAddr).Port
 	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
+	return ports
 }
 
 // freePortPair returns a port p with p and p+1 both free (mercury's TNC
@@ -179,7 +192,8 @@ enable_ptt = 1
 func startDaemon(t *testing.T, o daemonOpts) *Daemon {
 	t.Helper()
 	dir := t.TempDir()
-	wsPort, rigPort := freePort(t), freePort(t)
+	ports := freePorts(t, 2)
+	wsPort, rigPort := ports[0], ports[1]
 	if o.freq == 0 {
 		o.freq = 7100000
 	}
