@@ -31,7 +31,7 @@ CFLAGS  = -Ofast -Wall -std=gnu11 -fstack-protector -MMD -MP \
           -I. $(MODULE_INCLUDES) -I/usr/include/iniparser -I/usr/include/csdr \
           -Wno-deprecated-declarations
 LDFLAGS = -liniparser -lhamlib -lasound -lcrypto -lssl -lfftw3f -lfftw3 \
-          -lpthread -lm -li2c -lcsdr -lspecbleach -lcw -lrt -lmbe-neo
+          -lpthread -lm -li2c -lcsdr -lspecbleach -lrt -lmbe-neo
 
 # The in-tree gui_interface/websocket/ module serves as the transport in gui_interface/radio_websocket.c;
 # wss:// is provided by OpenSSL.
@@ -115,6 +115,7 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              dsp/sbitx_drm.o \
              dsp/sbitx_ft8.o \
              dsp/sbitx_cw.o \
+             dsp/tone_scan.o \
              dsp/sbitx_rtty.o \
              dsp/sbitx_dstar.o \
              dsp/dstar_voice.o \

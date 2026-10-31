@@ -1,123 +1,54 @@
 /* sBitx CW (Morse code) modem
  *
  * TX: DDS sine oscillator with raised-cosine envelope.
- * RX: Goertzel single-bin detector + unixcw receiver state machine.
+ * RX: a skimmer. tone_scan finds the keyed carriers in the passband; each
+ * gets a channel of its own (a mixer to its pitch, an envelope filter half
+ * a dot long, levels and speed of its own), and gives out lines of text.
  *
- * Copyright (C) 2024-2025 Rhizomatica
+ * Copyright (C) 2024-2026 Rhizomatica
  * Author: Rafael Diniz <rafael@riseup.net>
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-#include <errno.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/time.h>
-
-#include <libcw2.h>
 
 #include "sbitx_cw.h"
+#include "tone_scan.h"
 
-#define CW_SAMPLE_RATE 12000
-#define CW_GOERTZEL_N 128          /* 10.67 ms per detector decision */
-
-static cw_rec_t *cw_rec = NULL;
 static int cw_pitch_hz = 700;
 static int cw_wpm = 20;
 
-static float goertzel_coeff;
-static float goertzel_q1, goertzel_q2;
-static int goertzel_count = 0;
-
-/* Tone detector state. Levels are tone amplitudes (the Goertzel magnitude
- * scaled by 2/N), so they do not depend on the audio's absolute scale.
- * The old detector started "high" at 500 and never let it fall, while a
- * full-scale tone measures ~64 on this Goertzel: no mark was ever seen. */
-static float peak_level = 0.0f;       /* recent tone level: fast attack, slow decay */
-static float noise_level = 0.0f;      /* between marks: fast fall, slow rise */
-static bool  tone_on = false;
-static bool  levels_seeded = false;
-static int   tone_pending = 0;        /* consecutive decisions disagreeing */
-
-/* Receiver time comes from the sample count, not the wall clock: audio
- * arrives in bursts, and gettimeofday() gave marks that were jittered,
- * or of zero length when a burst held several decisions. */
-static uint64_t cw_samples = 0;
-static bool  cw_have_marks = false;   /* marks since the last character */
-static bool  cw_char_done = false;    /* character given out; word gap pending */
-
-static struct timeval cw_now(void)
-{
-    struct timeval tv;
-    tv.tv_sec = (time_t) (cw_samples / CW_SAMPLE_RATE);
-    tv.tv_usec = (suseconds_t) ((cw_samples % CW_SAMPLE_RATE) * 1000000ULL / CW_SAMPLE_RATE);
-    return tv;
-}
-
-static void cw_detector_reset(void)
-{
-    float omega = 2.0f * (float) M_PI * cw_pitch_hz / CW_SAMPLE_RATE;
-    goertzel_coeff = 2.0f * cosf(omega);
-    goertzel_q1 = 0.0f;
-    goertzel_q2 = 0.0f;
-    goertzel_count = 0;
-    peak_level = 0.0f;
-    noise_level = 0.0f;
-    levels_seeded = false;
-    tone_on = false;
-    tone_pending = 0;
-    cw_have_marks = false;
-    cw_char_done = false;
-}
-
 bool sbitx_cw_init(int wpm, int pitch)
 {
-    cw_pitch_hz = pitch;
+    if (pitch > 0)
+        cw_pitch_hz = pitch;
     if (wpm > 0)
         cw_wpm = wpm;
-
-    if (!cw_rec)
-    {
-        cw_rec = cw_rec_new();
-        if (!cw_rec)
-            return false;
-    }
-    cw_rec_reset_state(cw_rec);
-    /* Fixed speed at the configured WPM (libcw tolerates the usual
-     * spread). Adaptive mode misread the first character of every
-     * transmission while it settled: "HERMES" came out "ETNERMES". */
-    cw_rec_disable_adaptive_mode(cw_rec);
-    cw_rec_set_speed(cw_rec, cw_wpm);
-    cw_detector_reset();
+    sbitx_cw_rx_reset();
     return true;
 }
 
 void sbitx_cw_shutdown(void)
 {
-    if (cw_rec)
-    {
-        cw_rec_delete(&cw_rec);
-        cw_rec = NULL;
-    }
+    sbitx_cw_rx_reset();
 }
 
 void sbitx_cw_set_wpm(int wpm)
 {
-    if (wpm <= 0)
-        return;
-    cw_wpm = wpm;
-    if (cw_rec)
-        cw_rec_set_speed(cw_rec, cw_wpm);
+    if (wpm > 0)
+        cw_wpm = wpm;
 }
 
 void sbitx_cw_set_pitch(int pitch)
 {
-    cw_pitch_hz = pitch;
-    cw_detector_reset();
+    if (pitch > 0)
+        cw_pitch_hz = pitch;
 }
 
 static int lookup_morse(const char *text, char *pattern, int max_pat)
@@ -217,141 +148,419 @@ int sbitx_cw_encode(const char *message, float *signal, int max_n,
     idx = cw_emit(signal, idx, max_n, 3 * dot_n, false, slope_n, &phase, dds_step);
     return idx;
 }
+/* ─── RX: the skimmer ──────────────────────────────────────────────
+ *
+ * The old receiver listened on one Goertzel bin at cw_pitch at a fixed
+ * speed: on a rig in USB with a 3 kHz filter the stations are wherever
+ * they are in the passband, at their own speeds, and it decoded almost
+ * nothing on air.
+ *
+ * Time here is in ticks of 2 ms (24 samples). A channel's envelope is the
+ * magnitude of its baseband over its last k ticks, Hann-weighted, k a dot
+ * (12 to 150 ms): as quick as a boxcar of half a dot, and with sidelobes
+ * low enough (below -30 dB 80 Hz away at 20 WPM) that a strong neighbour
+ * or a carrier does not key the channel. Its marks and the gaps after
+ * them are kept until the line ends, and only then read as text, each
+ * with the speed measured at the time: so the first characters of a line,
+ * sent before the speed was known, are read at the speed found later. */
 
-int sbitx_cw_rx_samples_per_block(void)
+#define CW_RATE        12000
+#define CW_TICK        24
+#define CW_TICK_S      ((float) CW_TICK / CW_RATE)
+#define CW_MAX_CH      16
+#define CW_MAX_K       76
+#define CW_MIN_MARK    5              /* ticks: shorter is a glitch, not a dot */
+#define CW_MAX_EL      400            /* marks a line holds: ~90 characters */
+#define CW_HIST        10
+#define CW_LO_HZ       200.0f
+#define CW_HI_HZ       3000.0f
+#define CW_SEP_HZ      30.0f          /* a candidate nearer a channel is that channel */
+#define CW_CARRIER_S   4.0f           /* a mark this long is a carrier, not keying */
+#define CW_IDLE_S      30.0f          /* a channel this long without a mark is freed */
+#define CW_FLUSH_S     1.5f           /* a gap this long ends a line */
+#define CW_LINE_EL     150            /* after this many marks, a word space ends it */
+
+typedef struct {
+    uint16_t mark, gap;               /* ticks; gap 0: the line's last mark */
+    float    dot;                     /* the speed then, 0 before it was known */
+} cw_el;
+
+typedef struct {
+    bool     used, on, carrier, first;
+    uint32_t first_mark_t;            /* when the channel's first mark began */
+    float    pitch;
+    float    rot[2], osc[2];
+    float    tick[2];
+    int      tick_n;
+    float    ring[CW_MAX_K][2];
+    float    hann[CW_MAX_K], hann_sum;
+    int      ring_i, k;
+    float    noise, peak;
+    int      pending;
+    uint32_t t, edge_t, last_mark_t;
+    float    dot;                     /* ticks */
+    bool     locked;                  /* dot measured, not the first guess */
+    float    hist[CW_HIST];
+    int      nhist;
+    cw_el    el[CW_MAX_EL];
+    int      nel;
+    float    snr_sum;
+    char     text[CW_MAX_EL / 2];
+} cw_chan;
+
+static cw_chan    cw_ch[CW_MAX_CH];
+static tone_scan *cw_scan;
+static float      cw_replay[TONE_SCAN_HISTORY];
+
+static const struct { const char *p; char c; } cw_table[] = {
+    { ".-", 'A' }, { "-...", 'B' }, { "-.-.", 'C' }, { "-..", 'D' }, { ".", 'E' },
+    { "..-.", 'F' }, { "--.", 'G' }, { "....", 'H' }, { "..", 'I' }, { ".---", 'J' },
+    { "-.-", 'K' }, { ".-..", 'L' }, { "--", 'M' }, { "-.", 'N' }, { "---", 'O' },
+    { ".--.", 'P' }, { "--.-", 'Q' }, { ".-.", 'R' }, { "...", 'S' }, { "-", 'T' },
+    { "..-", 'U' }, { "...-", 'V' }, { ".--", 'W' }, { "-..-", 'X' }, { "-.--", 'Y' },
+    { "--..", 'Z' },
+    { "-----", '0' }, { ".----", '1' }, { "..---", '2' }, { "...--", '3' }, { "....-", '4' },
+    { ".....", '5' }, { "-....", '6' }, { "--...", '7' }, { "---..", '8' }, { "----.", '9' },
+    { "-..-.", '/' }, { "..--..", '?' }, { "-...-", '=' }, { ".-.-.-", '.' }, { "--..--", ',' },
+    { ".-.-.", '+' }, { "-....-", '-' }, { "-.--.", '(' }, { "-.--.-", ')' }, { ".--.-.", '@' },
+};
+
+static char cw_char(const char *el)
 {
-    return CW_GOERTZEL_N;
+    for (size_t i = 0; i < sizeof cw_table / sizeof cw_table[0]; i++)
+        if (!strcmp(cw_table[i].p, el))
+            return cw_table[i].c;
+    return 0;
 }
 
-/* One detector decision (a Goertzel block). Returns chars written. */
-static int cw_decide(float amp, char *decoded, int max_len)
+void sbitx_cw_rx_reset(void)
 {
-    int out = 0;
+    memset(cw_ch, 0, sizeof cw_ch);
+    tone_scan_free(cw_scan);
+    cw_scan = NULL;
+}
 
-    /* Levels: the noise is the mean level in the gaps; the peak is the
-     * recent mark level (instant attack, slow decay). A mark starts above
-     * 4x the noise mean (a Rayleigh noise sample gets there with p ~ 4e-6,
-     * twice in a row ~1e-11), halfway to the peak, and a tiny absolute
-     * floor (digital silence has no noise to measure against); it ends
-     * 35% of the way from noise to peak. */
-    if (!levels_seeded) {                   /* digital silence reads 0: seed once */
-        noise_level = amp;
-        levels_seeded = true;
+static void chan_k(cw_chan *c)
+{
+    int k = (int) lrintf(c->dot);
+    if (k < 6) k = 6;
+    if (k > CW_MAX_K) k = CW_MAX_K;
+    if (k == c->k)
+        return;
+    c->k = k;
+    c->hann_sum = 0.0f;
+    for (int j = 0; j < k; j++) {
+        c->hann[j] = 0.5f - 0.5f * cosf(2.0f * (float) M_PI * (j + 0.5f) / k);
+        c->hann_sum += c->hann[j];
     }
-    if (!tone_on) {
-        /* Readings from a tone's edges (gaps between elements are only ~5
-         * decisions long) are not noise: they only nudge it up. */
-        if (amp < 2.0f * noise_level || noise_level < 1e-6f)
-            noise_level += 0.05f * (amp - noise_level);
-        else
-            noise_level *= 1.01f;
-    }
-    if (amp > peak_level)
-        peak_level = amp;
+}
+
+static void chan_open(cw_chan *c, float pitch, float floor_power)
+{
+    memset(c, 0, sizeof *c);
+    c->used = true;
+    c->first = true;
+    c->pitch = pitch;
+    float w = 2.0f * (float) M_PI * pitch / CW_RATE;
+    c->rot[0] = cosf(w);
+    c->rot[1] = -sinf(w);
+    c->osc[0] = 1.0f;
+    c->dot = 1.2f / (float) cw_wpm / CW_TICK_S;
+    chan_k(c);
+    /* The scan's floor is white noise of variance floor / sum(w^2) per
+     * sample (w its Hann window); the envelope's mean is then
+     * sqrt(pi / 4) * sqrt(variance * sum(h^2)) / sum(h), h this channel's
+     * weights over its samples, and sum(h^2) = 3/8 k CW_TICK * hann's peak. */
+    float var = floor_power / (3.0f * TONE_SCAN_N / 8.0f);
+    c->noise = 0.886f * sqrtf(var * 0.375f * (float) (c->k * CW_TICK)) / (c->hann_sum * CW_TICK);
+    c->peak = c->noise;
+}
+
+/* Speed: the marks of the last few characters fall in two groups, dots and
+ * dashes three times as long. A 2-means split of the recent mark lengths
+ * finds both once a dash and a dot have been seen, at any speed. */
+static void chan_speed(cw_chan *c, float len)
+{
+    if (c->nhist == CW_HIST)
+        memmove(c->hist, c->hist + 1, (CW_HIST - 1) * sizeof(float));
     else
-        peak_level *= 0.998f;                      /* ~17%/s */
+        c->nhist++;
+    c->hist[c->nhist - 1] = len;
+    if (c->nhist < 4)
+        return;
 
-    float on_th = noise_level + 0.5f * (peak_level - noise_level);
-    if (on_th < 4.0f * noise_level)
-        on_th = 4.0f * noise_level;
-    if (on_th < 1e-4f)
-        on_th = 1e-4f;
-    float off_th = noise_level + 0.35f * (peak_level - noise_level);
-    bool want = tone_on ? amp > off_th : amp > on_th;
-
-    /* Two agreeing decisions (~21 ms) to change state: rejects clicks. */
-    if (want != tone_on) {
-        if (++tone_pending < 2)
-            want = tone_on;
-    } else {
-        tone_pending = 0;
+    float lo = c->hist[0], hi = c->hist[0];
+    for (int i = 1; i < c->nhist; i++) {
+        if (c->hist[i] < lo) lo = c->hist[i];
+        if (c->hist[i] > hi) hi = c->hist[i];
     }
-
-    struct timeval now = cw_now();
-    if (want && !tone_on) {
-        /* A new mark after a finished character: the gap was only
-         * between characters, so drop the character we already gave. */
-        if (cw_char_done) {
-            cw_rec_reset_state(cw_rec);
-            cw_char_done = false;
-        }
-        if (cw_rec_mark_begin(cw_rec, &now) != CW_SUCCESS) {
-            /* libcw refuses marks while in an error state; start over. */
-            cw_rec_reset_state(cw_rec);
-            cw_rec_mark_begin(cw_rec, &now);
-        }
-        cw_have_marks = true;
-    } else if (!want && tone_on) {
-        /* A mark of no valid length (a noise burst, a fading dot) puts
-         * libcw in an error state that refuses every later mark until a
-         * reset: one bad mark used to silence CW decoding for good. */
-        if (cw_rec_mark_end(cw_rec, &now) != CW_SUCCESS) {
-            cw_rec_reset_state(cw_rec);
-            cw_have_marks = false;
-            cw_char_done = false;
-        }
-    } else if (!want && cw_have_marks) {
-        /* In a gap: ask libcw whether it now holds a character, and
-         * later whether the gap has grown into a word space. */
-        char ch = 0;
-        bool is_iws = false, is_err = false;
-        cw_ret_t prc = cw_rec_poll_character(cw_rec, &now, &ch, &is_iws, &is_err);
-        if (prc != CW_SUCCESS && errno != EAGAIN && errno != ERANGE) {
-            /* Not "wait, the gap is still short": a broken character. */
-            cw_rec_reset_state(cw_rec);
-            cw_have_marks = false;
-            cw_char_done = false;
-        } else if (prc == CW_SUCCESS) {
-            if (!cw_char_done) {
-                if (!is_err && ch && out < max_len - 1)
-                    decoded[out++] = ch;
-                cw_char_done = true;
-            }
-            if (is_iws) {
-                if (out < max_len - 1)
-                    decoded[out++] = ' ';
-                cw_rec_reset_state(cw_rec);
-                cw_have_marks = false;
-                cw_char_done = false;
-            }
-        }
+    for (int it = 0; it < 6; it++) {
+        float th = sqrtf(lo * hi), sl = 0, sh = 0;
+        int nl = 0, nh = 0;
+        for (int i = 0; i < c->nhist; i++)
+            if (c->hist[i] < th) { sl += c->hist[i]; nl++; } else { sh += c->hist[i]; nh++; }
+        if (!nl || !nh)
+            return;
+        lo = sl / nl;
+        hi = sh / nh;
     }
-    tone_on = want;
-    decoded[out] = '\0';
-    return out;
+    float r = hi / lo;
+    if (r < 2.0f || r > 4.5f)
+        return;                       /* one kind only, or not Morse */
+    float dot = 0.5f * (lo + hi / 3.0f);
+    c->dot = c->locked ? c->dot + 0.5f * (dot - c->dot) : dot;
+    if (c->dot < 10.0f) c->dot = 10.0f;     /* 60 WPM */
+    if (c->dot > 75.0f) c->dot = 75.0f;     /* 8 WPM */
+    c->locked = true;
+    chan_k(c);
 }
 
-int sbitx_cw_rx_process(const float *audio_12k, int n, char *decoded, int max_len,
-                         int wpm, int pitch)
+/* Read the line's marks as text, give it out, and start a new line. */
+static void chan_flush(cw_chan *c, sbitx_cw_rx_cb cb, void *user)
 {
-    decoded[0] = '\0';
-    if (!cw_rec || max_len < 2) return 0;
+    int n = c->nel, marks = 0, good = 0, len = 0, i = 0;
+    char el[8];
+    int nel = 0;
 
-    /* Follow the configured speed and pitch (digi_config cw_wpm/cw_pitch);
-     * they used to be ignored after init. */
-    if (wpm > 0 && wpm != cw_wpm)
-        sbitx_cw_set_wpm(wpm);
-    if (pitch > 0 && pitch != cw_pitch_hz)
-        sbitx_cw_set_pitch(pitch);
+    c->nel = 0;
+    if (n == 0)
+        return;
+    if (!c->locked)
+        return;                       /* never saw both dots and dashes */
+    float first_dot = c->dot;
+    for (int j = 0; j < n; j++)
+        if (c->el[j].dot > 0.0f) { first_dot = c->el[j].dot; break; }
 
-    int out = 0;
-    for (int i = 0; i < n; i++)
-    {
-        float q0 = goertzel_coeff * goertzel_q1 - goertzel_q2 + audio_12k[i];
-        goertzel_q2 = goertzel_q1;
-        goertzel_q1 = q0;
-        cw_samples++;
-        if (++goertzel_count < CW_GOERTZEL_N)
-            continue;
-
-        float mag2 = goertzel_q1 * goertzel_q1 + goertzel_q2 * goertzel_q2 -
-                     goertzel_coeff * goertzel_q1 * goertzel_q2;
-        float amp = sqrtf(mag2 > 0.0f ? mag2 : 0.0f) * 2.0f / CW_GOERTZEL_N;
-        goertzel_q1 = 0.0f;
-        goertzel_q2 = 0.0f;
-        goertzel_count = 0;
-
-        out += cw_decide(amp, decoded + out, max_len - out);
+    /* A channel that opened mid-character (its audio began less than a
+     * character gap before its first mark) has that character partial. */
+    if (c->first && c->first_mark_t < 3.0f * first_dot) {
+        while (i < n && c->el[i].gap && c->el[i].gap <= 2.0f * (c->el[i].dot > 0 ? c->el[i].dot : first_dot))
+            i++;
+        i++;
     }
-    return out;
+    c->first = false;
+    for (; i < n; i++) {
+        const cw_el *e = &c->el[i];
+        float dot = e->dot > 0.0f ? e->dot : first_dot;
+        float x = e->mark / dot;
+        marks++;
+        if ((x > 0.5f && x < 1.7f) || (x > 2.2f && x < 4.3f))
+            good++;
+        if (nel < (int) sizeof el - 1)
+            el[nel++] = x > 2.0f ? '-' : '.';
+        else
+            nel = (int) sizeof el;    /* too long: not a character */
+        if (e->gap && e->gap <= 2.0f * dot)
+            continue;
+        if (nel < (int) sizeof el) {
+            el[nel] = '\0';
+            char ch = cw_char(el);
+            if (len < (int) sizeof c->text - 2)
+                c->text[len++] = ch ? ch : '*';
+        }
+        nel = 0;
+        if (e->gap > 5.0f * dot && len > 0 && c->text[len - 1] != ' ')
+            c->text[len++] = ' ';
+    }
+    while (len > 0 && c->text[len - 1] == ' ')
+        len--;
+    c->text[len] = '\0';
+
+    /* A line is Morse when its marks were: at least a few, nearly all near
+     * one dot or three. Voice, data tones and noise on a channel are not. */
+    if (len > 0 && marks >= 4 && good * 5 >= marks * 4 && cb) {
+        sbitx_cw_rx_line line = {
+            .text = c->text,
+            .pitch_hz = c->pitch,
+            .wpm = (int) lrintf(1.2f / (c->dot * CW_TICK_S)),
+            .snr_db = c->snr_sum / (float) n,
+        };
+        cb(&line, user);
+    }
+    c->snr_sum = 0.0f;
+}
+
+static void chan_mark_end(cw_chan *c, uint32_t len, sbitx_cw_rx_cb cb, void *user)
+{
+    if (c->nel > 0) {
+        uint32_t gap = c->edge_t - len - c->last_mark_t;
+        cw_el *p = &c->el[c->nel - 1];
+        p->gap = (uint16_t) (gap > 65535 ? 65535 : gap ? gap : 1);
+        /* a long line ends at a word space */
+        if (c->nel >= CW_LINE_EL && p->gap > 5.0f * c->dot)
+            chan_flush(c, cb, user);
+        else if (c->nel == CW_MAX_EL)
+            chan_flush(c, cb, user);
+    }
+    chan_speed(c, (float) len);
+    cw_el *e = &c->el[c->nel++];
+    e->mark = (uint16_t) (len > 65535 ? 65535 : len);
+    e->gap = 0;
+    e->dot = c->locked ? c->dot : 0.0f;
+    float snr = c->peak > c->noise ? 20.0f * log10f(c->peak / c->noise) : 0.0f;
+    /* in 2500 Hz, as the FT8 SNR, from the envelope filter's bandwidth */
+    c->snr_sum += snr - 10.0f * log10f(2500.0f * c->k * CW_TICK_S);
+}
+
+/* One envelope reading, every tick. */
+static void chan_tick(cw_chan *c, float a, sbitx_cw_rx_cb cb, void *user)
+{
+    c->t++;
+    /* The noise is the mean envelope in the gaps, readings well above it
+     * (a station's edges, a neighbour's burst) all but left out. A tracker
+     * that fell faster than it rose sat near the noise's 4th percentile,
+     * a fifth of its mean, and the noise itself then passed for marks. */
+    if (!c->on)
+        c->noise += (a < 2.5f * c->noise ? 0.01f : 0.0005f) * (a - c->noise);
+    if (c->noise < 1e-6f)
+        c->noise = 1e-6f;             /* -120 dBFS: digital silence is not quiet noise */
+    if (a > c->peak)
+        c->peak = a;
+    else
+        c->peak += 0.0015f * (c->noise - c->peak);      /* ~1.3 s */
+
+    bool want;
+    if (c->peak < 4.0f * c->noise)
+        want = false;                 /* nothing above the noise (it gets to 4x ~4e-6 of the time) */
+    else if (c->on)
+        want = a > c->noise + 0.35f * (c->peak - c->noise);
+    else
+        want = a > c->noise + 0.5f * (c->peak - c->noise);
+
+    if (want != c->on) {
+        if (++c->pending < 2)
+            want = c->on;
+    } else {
+        c->pending = 0;
+    }
+
+    if (want && !c->on) {
+        c->edge_t = c->t;
+        if (c->first && !c->first_mark_t)
+            c->first_mark_t = c->t;
+    } else if (!want && c->on) {
+        uint32_t len = c->t - c->edge_t;
+        if (c->carrier) {
+            c->carrier = false;       /* the carrier went: listen again */
+            c->edge_t = c->last_mark_t = c->t;
+        } else if (len < CW_MIN_MARK) {
+            c->edge_t = c->last_mark_t;   /* never there: the gap goes on */
+        } else {
+            c->edge_t = c->t;
+            chan_mark_end(c, len, cb, user);
+            c->last_mark_t = c->t;
+        }
+    } else if (want && c->on) {
+        if (!c->carrier && (float) (c->t - c->edge_t) * CW_TICK_S > CW_CARRIER_S) {
+            c->carrier = true;
+            c->nel = 0;
+            c->first = true;
+        }
+    } else if (c->nel > 0 && (float) (c->t - c->edge_t) * CW_TICK_S > CW_FLUSH_S) {
+        chan_flush(c, cb, user);
+    }
+    c->on = want;
+}
+
+static void chan_sample(cw_chan *c, float x, sbitx_cw_rx_cb cb, void *user)
+{
+    c->tick[0] += x * c->osc[0];
+    c->tick[1] += x * c->osc[1];
+    float re = c->osc[0] * c->rot[0] - c->osc[1] * c->rot[1];
+    c->osc[1] = c->osc[0] * c->rot[1] + c->osc[1] * c->rot[0];
+    c->osc[0] = re;
+    if (++c->tick_n < CW_TICK)
+        return;
+
+    float g = 1.0f / hypotf(c->osc[0], c->osc[1]);
+    c->osc[0] *= g;
+    c->osc[1] *= g;
+    c->ring[c->ring_i][0] = c->tick[0];
+    c->ring[c->ring_i][1] = c->tick[1];
+    c->ring_i = (c->ring_i + 1) % CW_MAX_K;
+    c->tick[0] = c->tick[1] = 0.0f;
+    c->tick_n = 0;
+
+    float s[2] = { 0.0f, 0.0f };
+    for (int j = 0; j < c->k; j++) {
+        const float *r = c->ring[(c->ring_i - 1 - j + CW_MAX_K) % CW_MAX_K];
+        s[0] += c->hann[j] * r[0];
+        s[1] += c->hann[j] * r[1];
+    }
+    chan_tick(c, hypotf(s[0], s[1]) / (c->hann_sum * CW_TICK), cb, user);
+}
+
+/* New channels on the narrow peaks well above the floor that no channel
+ * has yet. Narrow: over a second, voice smears across the band, a keyed
+ * carrier does not. */
+static void cw_find(void)
+{
+    const float *m = tone_scan_mean(cw_scan);
+    const float fl = tone_scan_floor(cw_scan);
+    const int lo = tone_scan_lo_bin(cw_scan) + 10, hi = tone_scan_hi_bin(cw_scan) - 10;
+
+    for (int b = lo; b <= hi; b++) {
+        if (m[b] < 6.0f * fl)
+            continue;
+        bool top = true;
+        for (int d = -5; d <= 5 && top; d++)
+            if (d && m[b + d] > m[b])
+                top = false;
+        if (!top || m[b] < 4.0f * m[b - 10] || m[b] < 4.0f * m[b + 10])
+            continue;
+        float hz = tone_scan_peak_hz(m, b);
+        cw_chan *free_ch = NULL;
+        bool known = false;
+        for (int i = 0; i < CW_MAX_CH; i++) {
+            if (!cw_ch[i].used) { if (!free_ch) free_ch = &cw_ch[i]; continue; }
+            if (fabsf(cw_ch[i].pitch - hz) < CW_SEP_HZ) known = true;
+        }
+        if (!known && free_ch)
+            chan_open(free_ch, hz, fl);
+    }
+}
+
+void sbitx_cw_rx_feed(const float *audio_12k, int n, sbitx_cw_rx_cb cb, void *user)
+{
+    if (!cw_scan && !(cw_scan = tone_scan_new(12, CW_LO_HZ, CW_HI_HZ)))
+        return;
+
+    while (n > 0) {
+        int k = n < TONE_SCAN_HOP ? n : TONE_SCAN_HOP;
+        if (tone_scan_feed(cw_scan, audio_12k, k)) {
+            bool was[CW_MAX_CH];
+            for (int i = 0; i < CW_MAX_CH; i++)
+                was[i] = cw_ch[i].used;
+            cw_find();
+            /* a new channel starts from the scan's history */
+            int nh = -1;
+            for (int i = 0; i < CW_MAX_CH; i++)
+                if (cw_ch[i].used && !was[i]) {
+                    if (nh < 0)
+                        nh = tone_scan_history(cw_scan, cw_replay);
+                    for (int j = 0; j < nh; j++)
+                        chan_sample(&cw_ch[i], cw_replay[j], cb, user);
+                }
+        }
+        for (int i = 0; i < CW_MAX_CH; i++) {
+            cw_chan *c = &cw_ch[i];
+            if (!c->used)
+                continue;
+            for (int j = 0; j < k; j++)
+                chan_sample(c, audio_12k[j], cb, user);
+            if (!c->on && (float) (c->t - c->last_mark_t) * CW_TICK_S > CW_IDLE_S) {
+                chan_flush(c, cb, user);
+                c->used = false;
+            }
+        }
+        audio_12k += k;
+        n -= k;
+    }
+}
+
+void sbitx_cw_rx_flush(sbitx_cw_rx_cb cb, void *user)
+{
+    for (int i = 0; i < CW_MAX_CH; i++)
+        if (cw_ch[i].used && !cw_ch[i].carrier)
+            chan_flush(&cw_ch[i], cb, user);
 }

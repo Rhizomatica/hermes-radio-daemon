@@ -487,14 +487,6 @@ static void dsp_process_digital_voice_rx(double *rx_baseband_i, double *rx_baseb
  * here (csdr polyphase) and feed the active mode's decoder, logging
  * decodes to the digi spool the same way the TX path does. Decoders
  * live in dsp/sbitx_{ft8,cw,rtty}.c. */
-static void digi_rx_spool(const char *mode, int freq_khz, const char *text)
-{
-    digi_log_entry e = { .mode = mode, .dir = "rx", .freq_hz = (uint64_t) freq_khz * 1000, .text = text };
-    if (!strcmp(mode, "RTTY")) { e.has_offset = true; e.offset_hz = radio_h_dsp->rtty_mark; }
-    else if (!strcmp(mode, "CW")) { e.has_offset = true; e.offset_hz = radio_h_dsp->cw_pitch; }
-    digi_log_add(&e);
-}
-
 /* A transmitted digital-mode message, at the active profile's frequency. */
 static void digi_tx_log(const char *mode, const char *text, int offset_hz)
 {
@@ -506,38 +498,25 @@ static void digi_tx_log(const char *mode, const char *text, int offset_hz)
     digi_log_add(&e);
 }
 
-static char     g_rtty_rx_line[256];
-static int      g_rtty_rx_pos;
-static int      g_rtty_rx_freq_khz;
-static void     digi_rtty_char_cb(char c)
+/* A line from the RTTY skimmer, at the station's own mark tone. */
+static void digi_rtty_line_cb(const sbitx_rtty_rx_line *l, void *user)
 {
-    if (c == '\r' || c == '\n') {
-        if (g_rtty_rx_pos > 0) {
-            g_rtty_rx_line[g_rtty_rx_pos] = '\0';
-            digi_rx_spool("RTTY", g_rtty_rx_freq_khz, g_rtty_rx_line);
-            g_rtty_rx_pos = 0;
-        }
-        return;
-    }
-    if (g_rtty_rx_pos < (int) sizeof(g_rtty_rx_line) - 1)
-        g_rtty_rx_line[g_rtty_rx_pos++] = c;
+    digi_log_entry e = {
+        .mode = "RTTY", .dir = "rx", .freq_hz = (uint64_t) *(const int *) user * 1000, .text = l->text,
+        .has_offset = true, .offset_hz = (int) lrintf(l->mark_hz),
+    };
+    digi_log_add(&e);
 }
 
-static char g_cw_rx_line[256];
-static int  g_cw_rx_pos;
-static int  g_cw_rx_freq_khz;
-static void digi_cw_char_cb(char c)
+/* A line from the CW skimmer, at the station's own pitch. */
+static void digi_cw_line_cb(const sbitx_cw_rx_line *l, void *user)
 {
-    if (c == ' ' || c == '\n') {
-        if (g_cw_rx_pos > 0) {
-            g_cw_rx_line[g_cw_rx_pos] = '\0';
-            digi_rx_spool("CW", g_cw_rx_freq_khz, g_cw_rx_line);
-            g_cw_rx_pos = 0;
-        }
-        return;
-    }
-    if (g_cw_rx_pos < (int) sizeof(g_cw_rx_line) - 1)
-        g_cw_rx_line[g_cw_rx_pos++] = c;
+    digi_log_entry e = {
+        .mode = "CW", .dir = "rx", .freq_hz = (uint64_t) *(const int *) user * 1000, .text = l->text,
+        .has_offset = true, .offset_hz = (int) lrintf(l->pitch_hz),
+        .has_snr = true, .snr_db = l->snr_db,
+    };
+    digi_log_add(&e);
 }
 
 #define DIGI_RX_DECIM   8           /* 96 kHz -> 12 kHz */
@@ -1181,49 +1160,11 @@ static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, in
     if (mode == MODE_CW) {
         static bool inited = false;
         if (!inited) { sbitx_cw_init(radio_h_dsp->cw_wpm, radio_h_dsp->cw_pitch); inited = true; }
-        int block = sbitx_cw_rx_samples_per_block();
-        static float acc[8192]; static int accn = 0;
-        for (int i = 0; i < n12 && accn < (int) (sizeof(acc)/sizeof(acc[0])); i++)
-            acc[accn++] = out12[i];
-        g_cw_rx_freq_khz = freq_khz;
-        while (accn >= block) {
-            char decoded[64] = {0};
-            int got = sbitx_cw_rx_process(acc, block, decoded, sizeof(decoded),
-                                          radio_h_dsp->cw_wpm, radio_h_dsp->cw_pitch);
-            for (int i = 0; i < got && decoded[i]; i++)
-                digi_cw_char_cb(decoded[i]);
-            memmove(acc, acc + block, (accn - block) * sizeof(float));
-            accn -= block;
-        }
+        sbitx_cw_rx_feed(out12, n12, digi_cw_line_cb, &freq_khz);
     }
     else if (mode == MODE_RTTY) {
-        static bool inited = false;
-        if (!inited) {
-            sbitx_rtty_init(radio_h_dsp->rtty_baud, radio_h_dsp->rtty_mark,
-                            radio_h_dsp->rtty_shift);
-            inited = true;
-        }
-        int block = sbitx_rtty_rx_samples_per_block();
-        static float acc[16384]; static int accn = 0;
-        for (int i = 0; i < n12 && accn < (int) (sizeof(acc)/sizeof(acc[0])); i++)
-            acc[accn++] = out12[i];
-        g_rtty_rx_freq_khz = freq_khz;
-        while (accn >= block) {
-            int before = g_rtty_rx_pos;
-            sbitx_rtty_rx_process(acc, block, radio_h_dsp->rtty_baud,
-                                  radio_h_dsp->rtty_mark, radio_h_dsp->rtty_shift,
-                                  digi_rtty_char_cb);
-            memmove(acc, acc + block, (accn - block) * sizeof(float));
-            accn -= block;
-            /* Log a line left without CR/LF after 2 s of no new text. */
-            static int idle = 0;
-            if (g_rtty_rx_pos != before)
-                idle = 0;
-            else if (g_rtty_rx_pos > 0 && (idle += block) >= 2 * DIGI_RX_RATE) {
-                digi_rtty_char_cb('\n');
-                idle = 0;
-            }
-        }
+        sbitx_rtty_rx_feed(out12, n12, radio_h_dsp->rtty_baud, radio_h_dsp->rtty_shift,
+                           digi_rtty_line_cb, &freq_khz);
     }
     else if (mode == MODE_FT8) {
         static bool inited = false;
