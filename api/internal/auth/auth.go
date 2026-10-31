@@ -81,7 +81,10 @@ func hashToken(raw string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// tokenFrom reads the session token: the cookie, or Authorization: Bearer.
+// tokenFrom reads the session token: the cookie, Authorization: Bearer, or
+// (on a WebSocket upgrade from another origin's page) the hermes.token.
+// subprotocol. Only the cookie is subject to the Origin and CSRF rules: the
+// other two are sent by code that already holds the token.
 func tokenFrom(r *http.Request) string {
 	if c, err := r.Cookie(api.SessionCookie); err == nil && c.Value != "" {
 		return c.Value
@@ -89,7 +92,7 @@ func tokenFrom(r *http.Request) string {
 	if a := r.Header.Get("Authorization"); strings.HasPrefix(a, "Bearer ") {
 		return strings.TrimPrefix(a, "Bearer ")
 	}
-	return ""
+	return api.WSToken(r)
 }
 
 // csrfOK is the router's CSRF check (api-rest.yaml Security): a request that
@@ -106,15 +109,27 @@ func (h *handlers) csrfOK(r *http.Request) bool {
 	return api.SameOrigin(r)
 }
 
-// ClientIP is the request's address without its port, for rate limiting and
-// the session list. radiod's C server hands over the real peer address, so
-// each client has its own bucket (until api_v2_enable, /api/v2 is
-// loopback-only and every client is 127.0.0.1).
+// ClientIP is the request's address without its port, for the session list.
+// radiod's C server hands over the real peer address.
 func ClientIP(r *http.Request) string {
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host
 	}
 	return r.RemoteAddr
+}
+
+// RateKey is the client's rate-limit bucket: its IPv4 address, or its IPv6
+// /64. One IPv6 host commonly owns a whole /64, so a bucket per address would
+// let it rotate addresses for fresh attempts.
+func RateKey(r *http.Request) string {
+	ip := net.ParseIP(ClientIP(r))
+	if ip == nil {
+		return ClientIP(r)
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4.String()
+	}
+	return ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
 }
 
 func expired(expiresAt string) bool {

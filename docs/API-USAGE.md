@@ -172,6 +172,27 @@ curl -sS -b jar.txt -X PATCH "$BASE/users/1" \
 A JavaScript page served by the station can simply `fetch("/api/v2/session", {method: "POST", ...})`;
 the browser supplies the cookie and `Origin`.
 
+### From a page on another origin (CORS)
+
+A web app served from somewhere else (another machine on the LAN, or a public site) can call the station
+too: by default every origin is allowed (`main:api_cors_origins = *`; a list such as
+`https://app.example.org http://192.168.10.5:3000` narrows it, and empty turns CORS off). Such a page
+**cannot use the cookie** (the station never allows credentials cross-origin), so it logs in, keeps the
+token from the reply, and sends it as a Bearer token:
+
+```js
+const base = "http://station.local:8080/api/v2";
+const s = await (await fetch(base + "/session", {
+  method: "POST", headers: {"Content-Type": "application/json"},
+  body: JSON.stringify({username: "alice", password: "a-long-passphrase"}),
+})).json();
+const radio = await (await fetch(base + "/radio", {
+  headers: {Authorization: "Bearer " + s.token},
+})).json();
+```
+
+Its WebSocket sends the token as a second subprotocol (see section 8).
+
 ### Check who is logged in
 
 ```bash
@@ -478,7 +499,9 @@ Push-to-talk and sending digital-mode text are not on REST: they are WebSocket c
 
 For live state (radio, GPS, modem chat) and commands, use one WebSocket at `/api/v2/ws`, protocol
 `hermes.v1`. It uses the same session as REST: a Bearer token for tools, or the cookie for a page served by
-the station (the browser must come from the station's own origin, or the upgrade is refused with 403).
+the station (the browser must come from the station's own origin, or the upgrade is refused with 403). A
+page from another origin can set neither, so it sends the token as a second subprotocol:
+`new WebSocket("ws://station.local:8080/api/v2/ws", ["hermes.v1", "hermes.token." + token])`.
 
 ```bash
 # with websocat (https://github.com/vi/websocat)

@@ -36,7 +36,8 @@ type handlers struct {
 	store    *store.Store
 	codePath string
 	lifetime time.Duration
-	limiter  *ratelimit.Limiter // wrong setup codes: 5, then locked 10 minutes
+	limiter  *ratelimit.Limiter // wrong setup codes: 5 per client, then locked 10 minutes
+	global   *ratelimit.Limiter // and MaxWrongCodesPerHour per hour from all clients together
 }
 
 // Register adds the setup operations.
@@ -49,7 +50,7 @@ func Register(rt *api.Router, st *store.Store, cfg Config) {
 	}
 	h := &handlers{
 		store: st, codePath: cfg.SetupCodePath,
-		lifetime: cfg.SessionLifetime, limiter: &ratelimit.Limiter{},
+		lifetime: cfg.SessionLifetime, limiter: &ratelimit.Limiter{}, global: &ratelimit.Limiter{},
 	}
 	rt.Op("getSetupStatus", h.status)
 	rt.Op("runSetup", h.run)
@@ -60,6 +61,10 @@ var (
 	countryRe  = regexp.MustCompile(`^[A-Z]{2}$`)
 	locales    = map[string]bool{"en": true, "es": true, "pt-BR": true, "fr": true}
 )
+
+// MaxWrongCodesPerHour is how many wrong setup codes the station takes an hour from
+// all clients together, however many addresses they come from.
+const MaxWrongCodesPerHour = 30
 
 // done reports whether first-boot setup has completed.
 func (h *handlers) done(r *http.Request) (bool, error) {
@@ -142,16 +147,27 @@ func (h *handlers) run(w http.ResponseWriter, r *http.Request) {
 	// The attempt is counted before the code is read, so parallel guesses
 	// cannot all pass the check first; a right code (or a server fault)
 	// gives it back.
-	key := "setup:" + auth.ClientIP(r)
-	ok, retry, reservation := h.limiter.Reserve(key, 5, 10*time.Minute)
+	// Two buckets: the client's, and one for the whole station, so guessers
+	// spread over many addresses still get only MaxWrongCodesPerHour tries an hour
+	// at the one-time code.
+	key := "setup:" + auth.RateKey(r)
+	ok, retry, mine := h.limiter.Reserve(key, 5, 10*time.Minute)
 	if !ok {
 		w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
 		api.Problem(w, r, http.StatusTooManyRequests, "rate_limited", "too many wrong setup codes", nil)
 		return
 	}
+	ok, retry, all := h.global.Reserve("setup", MaxWrongCodesPerHour, time.Hour)
+	if !ok {
+		h.limiter.Release(mine)
+		w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
+		api.Problem(w, r, http.StatusTooManyRequests, "rate_limited", "too many wrong setup codes", nil)
+		return
+	}
+	release := func() { h.limiter.Release(mine); h.global.Release(all) }
 	code, err := os.ReadFile(h.codePath)
 	if err != nil {
-		h.limiter.Release(reservation)
+		release()
 		if errors.Is(err, os.ErrNotExist) {
 			alreadyDone, derr := h.done(r)
 			if derr != nil {
@@ -172,7 +188,7 @@ func (h *handlers) run(w http.ResponseWriter, r *http.Request) {
 		api.Problem(w, r, http.StatusForbidden, "bad_setup_code", "wrong setup code", nil)
 		return
 	}
-	h.limiter.Release(reservation)
+	release()
 
 	hash, err := passwd.Hash(req.Admin.Password)
 	if err != nil {

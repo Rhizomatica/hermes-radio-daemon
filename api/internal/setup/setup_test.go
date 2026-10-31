@@ -3,6 +3,7 @@ package setup_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http/httptest"
 	"os"
@@ -154,5 +155,36 @@ func TestSetupConcurrent(t *testing.T) {
 	wg.Wait()
 	if codes[201] != 1 || codes[409] != 5 {
 		t.Fatalf("status codes = %v, want one 201 and five 409", codes)
+	}
+}
+
+// Guessers spread over many addresses still share one station-wide budget,
+// and the addresses of one IPv6 /64 share one client bucket.
+func TestSetupGlobalAndIPv6Limits(t *testing.T) {
+	rt := newRouter(t, "abc123")
+	wrong := `{"setup_code":"wrong","station_name":"x","language":"en","timezone":"UTC","admin":{"username":"a","password":"password1"}}`
+	from := func(peer string) int {
+		req := httptest.NewRequest("POST", "/api/v2/setup", strings.NewReader(wrong))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = peer
+		w := httptest.NewRecorder()
+		rt.ServeHTTP(w, req)
+		return w.Code
+	}
+	for i := 0; i < 5; i++ {
+		if c := from(fmt.Sprintf("[2001:db8:1:2::%x]:1000", i+1)); c != 403 {
+			t.Fatalf("wrong code %d from the /64 = %d", i+1, c)
+		}
+	}
+	if c := from("[2001:db8:1:2::ff]:1000"); c != 429 {
+		t.Fatalf("a sixth address of the same /64 = %d, want 429", c)
+	}
+	for i := 5; i < setup.MaxWrongCodesPerHour; i++ {
+		if c := from(fmt.Sprintf("198.51.100.%d:1000", i)); c != 403 {
+			t.Fatalf("wrong code %d station-wide = %d", i+1, c)
+		}
+	}
+	if c := from("203.0.113.9:1000"); c != 429 {
+		t.Fatalf("a fresh address past the station-wide budget = %d, want 429", c)
 	}
 }

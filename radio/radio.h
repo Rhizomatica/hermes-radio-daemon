@@ -385,6 +385,10 @@ typedef struct {
      * Go), on the websocket_url listener.  With sessions they answer any
      * authenticated client; without them loopback only. */
     bool api_v2_enable;
+    /* Origins whose browser pages may call /api/v2 cross-origin (CORS,
+     * Bearer tokens only): "*" (the default) for any, or scheme://host[:port]
+     * entries, space or comma separated; empty: same-origin only. */
+    char api_cors_origins[512];
     char mercury_config[256];
     char mercury_args[256];
     /* Mercury's listen mode (its -m, the MODE command): the BroadcastMode

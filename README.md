@@ -263,6 +263,13 @@ websocket_url = ws://0.0.0.0:8080
 ; listener. Needs a daemon built with Go (otherwise /api/v2 answers 503).
 ; With the session store open it answers any client; without it, loopback only.
 api_v2_enable = 0
+; Origins whose browser pages may call /api/v2 from elsewhere (CORS): * (the
+; default) for any, or a list such as https://app.example.org
+; http://192.168.10.5:3000 (space or comma separated, scheme://host[:port]).
+; Cross-origin pages log in with a Bearer token; the session cookie stays
+; same-origin, so no page can use a user's login without its token. Empty:
+; same-origin only.
+api_cors_origins = *
 
 ; Logging: mercury's hermes_log, so radiod's, the Go API's and mercury's
 ; lines are one stream in one format:
@@ -873,7 +880,9 @@ radiod answers any client that can reach `websocket_url`:
 - a session's role (`readonly`, `user`, `operator`, `admin`) gates each operation, command and topic.
 
 If the session store cannot be opened, radiod falls back to answering loopback only,
-every caller `admin`.
+every caller `admin`. A `hermes.v1` connection lasts only as long as its session: when the
+session ends or its role changes, radiod closes it (1008). Use `wss://` beyond a trusted
+link: over `ws://` passwords and session tokens cross the network in the clear.
 
 A daemon built without Go answers `/api/v2` with 503 (`not_supported`).
 Errors are RFC 9457 `application/problem+json` with a stable `code`, and every

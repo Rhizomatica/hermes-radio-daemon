@@ -103,8 +103,8 @@ int ws_server_start(ws_server_t **out, const ws_server_opts_t *opts);
 void ws_server_stop(ws_server_t *s);
 
 /* Queue a message for every connected WebSocket client of class 0.
- * Thread-safe; this and the two below are the only calls other threads may
- * make.  Copies `data`.  Returns 0 when queued, -1 on error. */
+ * Thread-safe; this, the two below and ws_server_close_conn are the only calls
+ * other threads may make.  Copies `data`.  Returns 0 when queued, -1 on error. */
 int ws_server_broadcast(ws_server_t *s, const void *data, size_t len,
                         bool is_text);
 
@@ -116,6 +116,11 @@ int ws_server_broadcast_class(ws_server_t *s, unsigned cls, const void *data,
  * gone by the time the server thread gets to it. */
 int ws_server_send_to(ws_server_t *s, long conn_id, const void *data,
                       size_t len, bool is_text);
+
+/* Queue a close of one connection (code 1000-4999, reason at most 123 bytes,
+ * may be NULL), after whatever was queued for it before.  Thread-safe, like
+ * the sends; the on_close callback runs as for any other close. */
+int ws_server_close_conn(ws_server_t *s, long conn_id, uint16_t code, const char *reason);
 
 /* Send on one connection.  Server thread only -- use it from a callback. */
 int ws_conn_send(ws_conn_t *c, const void *data, size_t len, bool is_text);
