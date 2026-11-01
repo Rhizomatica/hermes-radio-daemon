@@ -97,6 +97,24 @@ static void test_disconnect_releases_the_claim(void)
     TEST_ASSERT_EQUAL_INT(IN_RX, radio_h.txrx_state);
 }
 
+/* Whose microphone may transmit (radio_webrtc): only the holder's, and only
+ * while the radio is keyed. */
+static void test_holds_only_while_keyed(void)
+{
+    TEST_ASSERT_FALSE(radio_backend_holds_ptt(&radio_h, PTT_SRC_WEBSOCKET, 7));
+    radio_backend_claim_ptt(&radio_h, PTT_SRC_WEBSOCKET, 7);
+    TEST_ASSERT_TRUE(radio_backend_holds_ptt(&radio_h, PTT_SRC_WEBSOCKET, 7));
+    TEST_ASSERT_FALSE(radio_backend_holds_ptt(&radio_h, PTT_SRC_WEBSOCKET, 8));
+    TEST_ASSERT_FALSE(radio_backend_holds_ptt(&radio_h, PTT_SRC_RIGCTLD, 7));
+    /* the daemon unkeyed (an SWR trip): the owner is on record, not keyed */
+    radio_h.txrx_state = IN_RX;
+    TEST_ASSERT_FALSE(radio_backend_holds_ptt(&radio_h, PTT_SRC_WEBSOCKET, 7));
+    radio_h.txrx_state = IN_TX;
+    radio_backend_unkey_ptt(&radio_h, PTT_SRC_WEBSOCKET, 7);
+    TEST_ASSERT_FALSE(radio_backend_holds_ptt(&radio_h, PTT_SRC_WEBSOCKET, 7));
+    TEST_ASSERT_FALSE(radio_backend_holds_ptt(&radio_h, PTT_SRC_NONE, 0));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -104,5 +122,6 @@ int main(void)
     RUN_TEST(test_unkey_only_by_the_holder);
     RUN_TEST(test_keyed_by_someone_else_or_the_daemon);
     RUN_TEST(test_disconnect_releases_the_claim);
+    RUN_TEST(test_holds_only_while_keyed);
     return UNITY_END();
 }

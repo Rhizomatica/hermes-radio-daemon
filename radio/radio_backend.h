@@ -161,6 +161,8 @@ int radio_backend_claim_ptt(radio *radio_h, ptt_source src, long id);
 /* Unkey because (src, id), which holds PTT, asked to: true when it did,
  * false (and nothing changes) when it does not hold it. */
 bool radio_backend_unkey_ptt(radio *radio_h, ptt_source src, long id);
+/* True while (src, id) holds PTT and the radio transmits. */
+bool radio_backend_holds_ptt(radio *radio_h, ptt_source src, long id);
 void radio_backend_set_bfo(radio *radio_h, uint32_t frequency);
 void radio_backend_set_reflected_threshold(radio *radio_h, uint32_t ref_threshold);
 void radio_backend_set_speaker_volume(radio *radio_h, uint32_t speaker_level, uint32_t profile);

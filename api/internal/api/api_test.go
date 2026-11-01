@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/testapi"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/spec"
@@ -181,9 +182,17 @@ func TestHermesV1Basics(t *testing.T) {
 	if r := e.Cmd("radio.nonsense", ""); r["ok"] != false || r["error"].(map[string]any)["code"] != "unknown_cmd" {
 		t.Errorf("unknown command: %v", r)
 	}
-	if r := e.Cmd("rtc.offer", "{}"); r["error"].(map[string]any)["code"] != "unknown_cmd" {
-		t.Errorf("a spec command not implemented yet is unknown_cmd: %v", r)
+	// a router where no domain registered the spec's commands
+	bare := bareEnv(t)
+	if r := bare.Cmd("rtc.offer", "{}"); r["error"].(map[string]any)["code"] != "unknown_cmd" {
+		t.Errorf("a spec command with no handler is unknown_cmd: %v", r)
 	}
+}
+
+// bareEnv is a router over a Stub with nothing registered.
+func bareEnv(t *testing.T) *testapi.Env {
+	stub := rad.NewStub()
+	return &testapi.Env{T: t, Radio: stub, R: api.NewRouter(stub)}
 }
 
 // A refused frame's reply carries its id when the frame has exactly one
@@ -214,7 +223,7 @@ func TestFrameErrorID(t *testing.T) {
 // are values, not a missing member (encoding/json/v2's omitempty would
 // drop them).
 func TestReplyEmptyData(t *testing.T) {
-	e := testapi.New(t)
+	e := bareEnv(t)
 	e.R.Command("rtc.offer", spec.RoleUser, func(context.Context, *api.Conn, jsontext.Value) (any, *api.CmdError) {
 		return struct{}{}, nil
 	})

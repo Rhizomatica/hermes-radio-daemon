@@ -39,6 +39,7 @@
 #include "radio_backend.h"
 #include "radio_controls.h"
 #include "radio_websocket.h"
+#include "webrtc/radio_webrtc.h"
 #include "ui_hub.h"
 #include "radiod_api.h"
 #include "radiod_api_attach.h"
@@ -1184,6 +1185,8 @@ static size_t broadcast_rx_audio_chunk(websocket_ctx *ctx)
     }
     if (n == 0) return 0;
 
+    radio_webrtc_push_rx(samples, n);
+
     uint8_t frame[1 + sizeof(samples)];
     frame[0] = WS_STREAM_AUDIO;
     memcpy(frame + 1, samples, n * sizeof(int16_t));
@@ -1617,6 +1620,7 @@ static void on_ws_close(ws_conn_t *c, void *user_data)
         HermesWSClose(ws_conn_id(c));
 #endif
     spectrum_drop_conn(ws_conn_id(c));
+    radio_webrtc_close(ws_conn_id(c));
 
     /* A push-to-talk client (browser tab, hermes-voice-key) that drops its
      * connection while keyed would otherwise leave the radio in TX. */
@@ -1779,8 +1783,13 @@ bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid)
         return false;
     }
 
+    /* Browser audio is negotiated on hermes.v1 (rtc.offer). */
+    if (radio_h->api_v2_enable)
+        radio_webrtc_init(radio_h);
+
     if (pthread_create(websocket_tid, NULL, websocket_thread, &ws_ctx) != 0)
     {
+        radio_webrtc_shutdown();
         ws_server_stop(ws_ctx.server);
         ws_ctx.server = NULL;
         return false;
@@ -1802,6 +1811,7 @@ void radio_websocket_shutdown(pthread_t *websocket_tid)
     s_hub_sink = -1;
     pthread_join(*websocket_tid, NULL);
     ws_ctx.thread_started = false;
+    radio_webrtc_shutdown();                /* its receive audio came from that thread */
     if (ws_ctx.server) {
         ws_server_stop(ws_ctx.server);
         ws_ctx.server = NULL;
