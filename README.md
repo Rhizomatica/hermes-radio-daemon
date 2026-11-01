@@ -389,6 +389,12 @@ playback_device = default
 ; anything above, e.g. for an interface powered from DTR or a non-default
 ; CI-V address:
 ; hamlib_conf = dtr_state=ON,civaddr=0x94
+; A rig that stops answering CAT for 5 s (its USB reset or was unplugged,
+; or it was switched off) has its port closed and opened again, every 2 s
+; and then up to every 30 s, until it answers; it is unkeyed then. The audio
+; devices are reopened the same way. Name both so that they survive the
+; rig coming back as a new USB device: a usb: path by ids and serial, or
+; /dev/serial/by-id/..., and ALSA cards by name (hw:CARD=...), not number.
 
 ; Per-band TX power calibration (scale = multiplier):
 ; [tx_band0]
