@@ -11,7 +11,9 @@
  *   - PTT-off reaches the rig even when the cache already reads RX;
  *   - a repeated PTT-on is still deduplicated (never re-keys);
  *   - shutdown unkeys whatever the cache says;
- *   - radio_daemon --ptt-off (force_ptt_off) unkeys with nothing running.
+ *   - radio_daemon --ptt-off (force_ptt_off) unkeys with nothing running;
+ *   - a digital-text profile (FT8/CW/RTTY) puts the rig in PKTUSB, so the
+ *     tones from the data port go out whatever mode the rig was left in.
  *
  * Copyright (C) 2026 Rhizomatica
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -64,6 +66,15 @@ static void remote_set_txrx_state(radio *radio_h, bool txrx_state)
     radio_h->txrx_state = txrx_state;
 }
 
+static char remote_mode[16];
+
+static int remote_set_mode_name(radio *radio_h, const char *mode, uint32_t width)
+{
+    (void) radio_h; (void) width;
+    snprintf(remote_mode, sizeof(remote_mode), "%s", mode);
+    return RADIO_CTRL_OK;
+}
+
 static void start_remote(void)
 {
     remote = calloc(1, sizeof(*remote));
@@ -76,6 +87,7 @@ static void start_remote(void)
     remote_ops.name = "remote";
     remote_ops.dump_state = hamlib_backend_ops.dump_state;
     remote_ops.set_txrx_state = remote_set_txrx_state;
+    remote_ops.set_mode_name = remote_set_mode_name;
     remote->backend_kind = RADIO_BACKEND_HAMLIB;
     remote->backend_ops = &remote_ops;
     remote->profiles_count = 1;
@@ -157,6 +169,33 @@ static void test_shutdown_unkeys_whatever_the_cache(void)
     printf("  shutdown unkeys whatever the cache ... ok\n");
 }
 
+static void test_digital_text_profile_sets_pktusb(void)
+{
+    radio local;
+    init_local(&local);
+    local.profiles_count = 4;
+    local.profiles[0].mode = MODE_USB;      /* voice: mic is the TX source */
+    local.profiles[1].mode = MODE_FT8;
+    local.profiles[2].mode = MODE_CW;
+    local.profiles[2].operating_mode = OPERATING_MODE_FULL_LOOPBACK;
+    local.profiles[3].mode = MODE_RTTY;
+    local.profiles[3].operating_mode = OPERATING_MODE_FULL_LOOPBACK;
+    for (int i = 0; i < 4; i++)
+        local.profiles[i].freq = 7074000;
+    TEST_ASSERT_TRUE(radio_hamlib_init(&local));
+
+    const char *want[] = { "USB", "PKTUSB", "PKTUSB", "PKTUSB" };
+    for (uint32_t i = 0; i < 4; i++) {
+        hamlib_apply_profile(&local, 0);
+        remote_mode[0] = 0;
+        hamlib_apply_profile(&local, i);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(want[i], remote_mode, mode_to_string(local.profiles[i].mode));
+    }
+
+    radio_hamlib_shutdown(&local);
+    printf("  digital-text profiles set PKTUSB ..... ok\n");
+}
+
 static void test_force_ptt_off(void)
 {
     radio local;
@@ -179,6 +218,7 @@ int main(void)
     UNITY_BEGIN();
     RUN_TEST(test_init_unkeys_a_keyed_rig);
     RUN_TEST(test_ptt_off_ignores_stale_cache);
+    RUN_TEST(test_digital_text_profile_sets_pktusb);
     RUN_TEST(test_shutdown_unkeys_whatever_the_cache);
     RUN_TEST(test_force_ptt_off);
     int failed = UNITY_END();
