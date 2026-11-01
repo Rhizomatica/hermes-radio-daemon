@@ -70,7 +70,7 @@ hermes-radio-daemon/
 ├── vendor/ft8_lib/          Vendored ft8_lib (MIT)
 ├── vendor/minimodem/        Vendored minimodem FSK core (GPLv3)
 ├── vendor/hermes_shm/       Shared-memory rings, identical to mercury's copy
-├── config/                  Sample core.ini and user.ini
+├── config/                  Sample core.ini and user.ini, a nine-profile example
 └── tests/                   Unit tests: <module>/test_<unit>.c on Unity + fff (tests/tests.mk);
                              integration/: Go tests that drive the real radio_daemon
 ```
@@ -398,6 +398,11 @@ playback_device = default
 ```
 
 ### `/etc/hermes/user.ini` — profiles
+
+The `config/user.ini` radiod installs has a station's two profiles,
+profile0 for data and profile1 for voice.
+`config/user-profiles.example.ini` has those two and seven more, one for
+each kind of operation: FM, AM, DRM, digital voice, FT8, CW and RTTY.
 
 ```ini
 [main]
