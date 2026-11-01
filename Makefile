@@ -114,6 +114,8 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              dsp/radae_vocoder.o \
              dsp/sbitx_drm.o \
              dsp/sbitx_ft8.o \
+             dsp/ft8_js8.o \
+             dsp/ft8_subtract.o \
              dsp/sbitx_cw.o \
              dsp/sbitx_rtty.o \
              dsp/sbitx_dstar.o \

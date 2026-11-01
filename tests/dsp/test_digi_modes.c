@@ -17,6 +17,10 @@
 #include "dsp/sbitx_cw.h"
 #include "dsp/sbitx_rtty.h"
 #include "dsp/sbitx_ft8.h"
+#include "dsp/ft8_js8.h"
+#include "dsp/ft8_subtract.h"
+#include "ft8/encode.h"
+#include "ft8/message.h"
 #include "dsp/digi_log.h"
 #include <unistd.h>
 #include "unity.h"
@@ -312,6 +316,181 @@ static void test_ft8_snr_falls_with_noise(void)
         test_msg("FT8 SNR should fall with noise: %.0f dB quiet, %.0f dB noisy", snr_quiet, snr_noisy));
 }
 
+/* One FT8 reception at 12 kHz: the message at 1500 Hz, starting `lead`
+ * seconds into a 15 s window, in Gaussian noise of its own (seeded). */
+static void ft8_reception(float *w, float noise_rms, float lead, unsigned seed)
+{
+    static float s12[12000 * 16];
+    int n12 = sbitx_ft8_encode("PU2UIT PY2XYZ -12", s12, 12000 * 16, 1500.0f);
+    uint64_t x = 0x9e3779b97f4a7c15ULL * (seed + 1);
+    for (int i = 0; i < 12000 * 15; i++) {
+        /* Box-Muller on a 64-bit LCG: the same noise on every run */
+        x = x * 6364136223846793005ULL + 1442695040888963407ULL;
+        double u1 = ((x >> 11) + 1.0) / 9007199254740993.0;
+        x = x * 6364136223846793005ULL + 1442695040888963407ULL;
+        double u2 = (x >> 11) / 9007199254740992.0;
+        w[i] = noise_rms * (float) (sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2));
+    }
+    int at = (int) (lead * 12000);
+    for (int i = 0; i < n12 && at + i < 12000 * 15; i++)
+        w[at + i] += 0.1f * s12[i];
+}
+
+static int ft8_decodes_at(float *w, double start_s)
+{
+    sbitx_ft8_decode_result r[8];
+    int n = sbitx_ft8_decode_at(w, 12000 * 15, start_s, r, 8);
+    for (int i = 0; i < n; i++)
+        if (!strcmp(r[i].text, "PU2UIT PY2XYZ -12"))
+            return r[i].pass == FT8_JS8_COMBINE ? 2 : 1;
+    return 0;
+}
+
+/* A message too weak to decode from one reception decodes from two, 15 s
+ * apart (a repeat), added together: and at the same level, two windows of
+ * ONE transmission (2 s apart, as the digi pump's overlap) are not added,
+ * which would only count it twice. */
+static void test_ft8_combining(void)
+{
+    static float a[12000 * 15], b[12000 * 15];
+    unsigned saved = ft8_js8_passes;
+    float level = 0.0f;
+
+    for (float noise = 0.3f; noise < 3.0f && level == 0.0f; noise += 0.05f) {
+        ft8_js8_passes = 0;                         /* one reception, ft8_lib alone */
+        ft8_reception(a, noise, 0.5f, 1);
+        if (ft8_decodes_at(a, 1000.0))
+            continue;
+        ft8_js8_passes = FT8_JS8_COMBINE;
+        ft8_js8_reset();
+        ft8_reception(a, noise, 0.5f, 1);
+        ft8_reception(b, noise, 0.5f, 2);
+        int first = ft8_decodes_at(a, 1000.0), second = ft8_decodes_at(b, 1015.0);
+        if (!first && second == 2)
+            level = noise;
+    }
+    printf("FT8  combining: two receptions decode at noise %.2f where one does not\n", level);
+    TEST_ASSERT_TRUE_MESSAGE(level > 0.0f, "no noise level where two receptions decode and one does not");
+
+    /* the same transmission twice: the second window starts 2 s later, so
+     * the signal sits 2 s earlier in it */
+    ft8_js8_passes = FT8_JS8_COMBINE;
+    ft8_js8_reset();
+    ft8_reception(a, level, 2.5f, 1);
+    ft8_reception(b, level, 0.5f, 1);
+    int one = ft8_decodes_at(a, 1000.0), same = ft8_decodes_at(b, 1002.0);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, one + same, "one transmission, seen in two overlapping windows, was combined");
+
+    ft8_js8_passes = saved;
+    ft8_js8_reset();
+}
+
+/* Every pass on: what ft8_lib decodes alone still decodes, as itself. */
+static void test_ft8_passes_keep_clean(void)
+{
+    static float a[12000 * 15];
+    sbitx_ft8_decode_result r[8];
+    ft8_js8_reset();
+    ft8_reception(a, 0.05f, 0.5f, 3);
+    int n = sbitx_ft8_decode_at(a, 12000 * 15, 2000.0, r, 8);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, n, test_msg("%d decodes of a clean signal", n));
+    TEST_ASSERT_EQUAL_STRING("PU2UIT PY2XYZ -12", r[0].text);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, r[0].pass, test_msg("a clean signal decoded by pass %d, not ft8_lib's", r[0].pass));
+}
+
+/* A message as other stations send it (GFSK, from ft8_subtract), added to
+ * w at freq_hz, `lead` seconds into the window. */
+static void ft8_add(float *w, const char *text, float freq_hz, float amp, float lead)
+{
+    static float s[FT8_WAVEFORM_SAMPLES];
+    ftx_message_t msg;
+    uint8_t tones[FT8_NN];
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FTX_MESSAGE_RC_OK, ftx_message_encode(&msg, NULL, text),
+                                  test_msg("cannot encode [%s]", text));
+    ft8_encode(msg.payload, tones);
+    ft8_waveform(tones, freq_hz, s);
+    int at = (int) (lead * 12000);
+    for (int i = 0; i < FT8_WAVEFORM_SAMPLES && at + i < 12000 * 15; i++)
+        w[at + i] += amp * s[i];
+}
+
+static bool ft8_window_has(float *w, const char *text)
+{
+    static float copy[12000 * 15];
+    sbitx_ft8_decode_result r[16];
+    memcpy(copy, w, sizeof copy);       /* the decoder may keep it */
+    int n = sbitx_ft8_decode_at(copy, 12000 * 15, -1.0, r, 16);
+    for (int i = 0; i < n; i++)
+        if (!strcmp(r[i].text, text))
+            return true;
+    return false;
+}
+
+/* A weak station 20 Hz beside a strong one, its tones among the strong
+ * one's: there is a level where it decodes only once the strong one is
+ * subtracted, and the strong one decodes either way. */
+static void test_ft8_subtraction(void)
+{
+    static float w[12000 * 15];
+    int saved = sbitx_ft8_subtract_passes;
+    float level = 0.0f;
+
+    for (float amp = 0.5f; amp > 0.005f && level == 0.0f; amp *= 0.8f) {
+        memset(w, 0, sizeof w);
+        ft8_add(w, "CQ PU2UIT GG66", 1500.0f, 1.0f, 0.5f);
+        ft8_add(w, "CQ PY2XYZ GG67", 1520.0f, amp, 0.62f);
+        sbitx_ft8_subtract_passes = 1;
+        if (ft8_window_has(w, "CQ PY2XYZ GG67"))
+            continue;
+        TEST_ASSERT_TRUE_MESSAGE(ft8_window_has(w, "CQ PU2UIT GG66"), "the strong station did not decode");
+        sbitx_ft8_subtract_passes = 2;
+        if (ft8_window_has(w, "CQ PY2XYZ GG67"))
+            level = amp;
+    }
+    sbitx_ft8_subtract_passes = saved;
+    printf("FT8  subtraction: a station %.0f dB under another, 20 Hz beside it, decodes only after it\n",
+           20.0f * log10f(level));
+    TEST_ASSERT_TRUE_MESSAGE(level > 0.0f, "no level where the weak station decodes only after subtraction");
+}
+
+/* ft8_waveform's signal, subtracted where it is, leaves only noise. */
+static void test_ft8_subtract_clean(void)
+{
+    static float w[12000 * 15];
+    ftx_message_t msg;
+    uint8_t tones[FT8_NN];
+    ftx_message_encode(&msg, NULL, "PU2UIT PY2XYZ -12");
+    ft8_encode(msg.payload, tones);
+    memset(w, 0, sizeof w);
+    ft8_add(w, "PU2UIT PY2XYZ -12", 1234.5f, 0.5f, 0.537f);
+    double before = 0.0, after = 0.0;
+    for (int i = 0; i < 12000 * 15; i++)
+        before += (double) w[i] * w[i];
+    /* the decoder's estimate is a bin and a time step off */
+    TEST_ASSERT_TRUE(ft8_subtract(w, 12000 * 15, tones, 1232.0f, 0.5f));
+    for (int i = 0; i < 12000 * 15; i++)
+        after += (double) w[i] * w[i];
+    printf("FT8  subtract: %.1f dB of the signal left\n", 10.0 * log10(after / before));
+    TEST_ASSERT_TRUE_MESSAGE(after < before * 1e-3, test_msg("%.1f dB of the signal left", 10.0 * log10(after / before)));
+}
+
+/* A hashed callsign (<...>) is named once it has been heard in full. */
+static void test_ft8_hashed_call(void)
+{
+    static float w[12000 * 15];
+    sbitx_ft8_forget_calls();
+    memset(w, 0, sizeof w);
+    ft8_add(w, "PJ2/PY2XYZ PU2UIT GG66", 1500.0f, 0.5f, 0.5f);   /* sent hashed */
+    TEST_ASSERT_TRUE_MESSAGE(ft8_window_has(w, "<...> PU2UIT GG66"), "the hashed call did not decode as <...>");
+    memset(w, 0, sizeof w);
+    ft8_add(w, "CQ PJ2/PY2XYZ", 1000.0f, 0.5f, 0.5f);
+    TEST_ASSERT_TRUE_MESSAGE(ft8_window_has(w, "CQ PJ2/PY2XYZ"), "CQ PJ2/PY2XYZ did not decode");
+    memset(w, 0, sizeof w);
+    ft8_add(w, "PJ2/PY2XYZ PU2UIT GG66", 1500.0f, 0.5f, 0.5f);   /* sent hashed */
+    TEST_ASSERT_TRUE_MESSAGE(ft8_window_has(w, "<PJ2/PY2XYZ> PU2UIT GG66"), "the hashed call was not named once heard");
+    sbitx_ft8_forget_calls();
+}
+
 static void test_ft8_fields_report(void)    { check_ft8_fields("PU2UIT PY2XYZ -12", 0.05f, "PU2UIT", "PY2XYZ", ""); }
 static void test_ft8_fields_rr73(void)      { check_ft8_fields("PU2UIT PY2XYZ RR73", 0.05f, "PU2UIT", "PY2XYZ", ""); }
 
@@ -350,6 +529,11 @@ int main(void)
     RUN_TEST(test_ft8_fields_report);
     RUN_TEST(test_ft8_fields_rr73);
     RUN_TEST(test_ft8_grid_field);
+    RUN_TEST(test_ft8_combining);
+    RUN_TEST(test_ft8_passes_keep_clean);
+    RUN_TEST(test_ft8_subtract_clean);
+    RUN_TEST(test_ft8_subtraction);
+    RUN_TEST(test_ft8_hashed_call);
     RUN_TEST(test_ft8_fields_free_text);
     RUN_TEST(test_ft8_log_once);
     RUN_TEST(test_ft8_same_text_two_stations);

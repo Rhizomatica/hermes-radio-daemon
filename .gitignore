@@ -62,6 +62,8 @@ dkms.conf
 /tests/*/test_*
 !/tests/*/test_*.c
 /tests/.sanitize
+# make ft8-bench
+/tests/dsp/ft8_bench
 
 # Build outputs
 /radio_daemon
