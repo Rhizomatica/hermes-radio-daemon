@@ -1,16 +1,18 @@
 /* ft8_bench - count what the FT8 decoder finds in a recording
  *
- *   ft8_bench [-s] [-o SECONDS] [-p PASSES] [-r ROUNDS] FILE.wav
+ *   ft8_bench [-s] [-o SECONDS] [-p PASSES] [-r ROUNDS] [-x DECODES] FILE.wav
  *
  * Reads a WAV (16-bit PCM, any rate, the first channel), resamples it to
  * 12 kHz as the digi pump does (stream_resampler, int16 / 32768), and runs
  * sbitx_ft8_decode_ex() on it, printing one line per message:
  *
- *   MSG <window> <snr> <offset_hz> <pass> <text>
+ *   MSG <window> <snr> <offset_hz> <pass> <subtracted> <text>
  *
  * and a total per pass.  -p sets which of ft8_js8's passes run (a bit mask
  * of FT8_JS8_*: 0 is ft8_lib alone, 15 all of them; default 15), -r how
- * many rounds LDPC feedback gets (default 2).  The windows are the UTC slots: 15 s each, the first starting
+ * many rounds LDPC feedback gets (default 2), -x how many decoding passes
+ * subtraction gets (sbitx_ft8_subtract_passes: 1 none, default 2); <subtracted>
+ * is 1 for a message found after it.  The windows are the UTC slots: 15 s each, the first starting
  * -o SECONDS into the file (radiod's recordings start on a slot boundary
  * less 1 s, so 1).  With -s they are the digi pump's instead: 15 s, every
  * 2 s, a message kept once per 1.5 s.  Two builds of the decoder compare by
@@ -113,16 +115,17 @@ int main(int argc, char **argv)
     double offset = 1.0;
     static seen_t seen[20000];
 
-    int by_pass[16] = { 0 };
+    int by_pass[16] = { 0 }, by_sub[2] = { 0 };
 
-    while ((opt = getopt(argc, argv, "so:p:r:")) != -1) {
+    while ((opt = getopt(argc, argv, "so:p:r:x:")) != -1) {
         if (opt == 's') sliding = 1;
         else if (opt == 'o') offset = atof(optarg);
         else if (opt == 'p') ft8_js8_passes = (unsigned) strtoul(optarg, NULL, 0);
         else if (opt == 'r') ft8_js8_feedback_rounds = atoi(optarg);
-        else { fprintf(stderr, "usage: ft8_bench [-s] [-o SECONDS] [-p PASSES] [-r ROUNDS] FILE.wav\n"); return 2; }
+        else if (opt == 'x') sbitx_ft8_subtract_passes = atoi(optarg);
+        else { fprintf(stderr, "usage: ft8_bench [-s] [-o SECONDS] [-p PASSES] [-r ROUNDS] [-x DECODES] FILE.wav\n"); return 2; }
     }
-    if (optind >= argc) { fprintf(stderr, "usage: ft8_bench [-s] [-o SECONDS] [-p PASSES] [-r ROUNDS] FILE.wav\n"); return 2; }
+    if (optind >= argc) { fprintf(stderr, "usage: ft8_bench [-s] [-o SECONDS] [-p PASSES] [-r ROUNDS] [-x DECODES] FILE.wav\n"); return 2; }
 
     size_t n;
     float *pcm = read_wav(argv[optind], &n);
@@ -147,17 +150,19 @@ int main(int argc, char **argv)
                 snprintf(seen[nseen].text, sizeof seen[nseen].text, "%s", r[i].text);
                 seen[nseen++].at = at;
             }
-            printf("MSG %d %+.0f %4.0f %d %s\n", sliding ? (int) floor((at - offset) / 15.0) : w,
-                   r[i].has_snr ? r[i].snr_db : -99.0, r[i].freq_hz, r[i].pass, r[i].text);
+            printf("MSG %d %+.0f %4.0f %d %d %s\n", sliding ? (int) floor((at - offset) / 15.0) : w,
+                   r[i].has_snr ? r[i].snr_db : -99.0, r[i].freq_hz, r[i].pass, r[i].subtracted, r[i].text);
             total++;
             by_pass[r[i].pass & 15]++;
+            by_sub[r[i].subtracted > 0]++;
         }
     }
 
     printf("TOTAL %d messages in %.0f s (%s windows, passes 0x%x): ft8_lib %d, feedback %d, "
-           "whitened %d, linear %d, combined %d\n", total, (double) n / RATE,
+           "whitened %d, linear %d, combined %d; after subtraction %d\n", total, (double) n / RATE,
            sliding ? "sliding 2 s" : "UTC 15 s", ft8_js8_passes, by_pass[0], by_pass[FT8_JS8_FEEDBACK],
-           by_pass[FT8_JS8_WHITEN], by_pass[FT8_JS8_LINEAR], by_pass[FT8_JS8_COMBINE]);
+           by_pass[FT8_JS8_WHITEN], by_pass[FT8_JS8_LINEAR], by_pass[FT8_JS8_COMBINE],
+           by_sub[1]);
     free(pcm);
     return 0;
 }

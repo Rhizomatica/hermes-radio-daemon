@@ -21,6 +21,7 @@
 #include "ft8/decode.h"
 #include "ft8/message.h"
 #include "ft8_js8.h"
+#include "ft8_subtract.h"
 #include "ft8/text.h"
 #include "common/wave.h"
 #include "common/monitor.h"
@@ -257,6 +258,55 @@ static void parse_fields(sbitx_ft8_decode_result *r, const ftx_message_offsets_t
     }
 }
 
+/* The callsigns heard: ft8_lib saves each standard callsign it unpacks
+ * here, and looks a hashed one (<...>) up by its 22, 12 or 10 bit hash, as
+ * WSJT-X does, so "<...> PU2UIT GG66" prints as "<PJ2/PY2XYZ> PU2UIT GG66"
+ * once PJ2/PY2XYZ has been heard in full. The newest wins a hash both
+ * match; the oldest is forgotten when the table is full. */
+#define FT8_CALLS         512
+static pthread_mutex_t ft8_calls_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct { char call[12]; uint32_t n22; uint64_t heard; } ft8_calls[FT8_CALLS];
+static uint64_t ft8_calls_heard;        /* counts the saves: 0 is never */
+
+static void call_save(const char *call, uint32_t n22)
+{
+    if (!call[0] || strlen(call) >= sizeof(ft8_calls[0].call))
+        return;
+    int slot = 0;
+    for (int i = 0; i < FT8_CALLS; i++) {
+        if (!strcmp(ft8_calls[i].call, call)) { slot = i; break; }
+        if (ft8_calls[i].heard < ft8_calls[slot].heard)
+            slot = i;                   /* empty, or the oldest */
+    }
+    snprintf(ft8_calls[slot].call, sizeof(ft8_calls[0].call), "%s", call);
+    ft8_calls[slot].n22 = n22;
+    ft8_calls[slot].heard = ++ft8_calls_heard;
+}
+
+static bool call_lookup(ftx_callsign_hash_type_t type, uint32_t hash, char *call)
+{
+    int shift = type == FTX_CALLSIGN_HASH_22_BITS ? 0 : type == FTX_CALLSIGN_HASH_12_BITS ? 10 : 12;
+    int best = -1;
+    for (int i = 0; i < FT8_CALLS; i++)
+        if (ft8_calls[i].call[0] && (ft8_calls[i].n22 >> shift) == hash &&
+            (best < 0 || ft8_calls[i].heard > ft8_calls[best].heard))
+            best = i;
+    if (best < 0)
+        return false;
+    strcpy(call, ft8_calls[best].call);
+    return true;
+}
+
+static ftx_callsign_hash_interface_t ft8_calls_if = { call_lookup, call_save };
+
+void sbitx_ft8_forget_calls(void)
+{
+    pthread_mutex_lock(&ft8_calls_lock);
+    memset(ft8_calls, 0, sizeof(ft8_calls));
+    ft8_calls_heard = 0;
+    pthread_mutex_unlock(&ft8_calls_lock);
+}
+
 /* In-process FT8 decode using the linked ft8_lib (monitor + find_candidates
  * + decode). Input is 12 kHz mono float. One result per distinct message,
  * with its audio offset, start time within the window, an SNR estimate and
@@ -266,6 +316,11 @@ int sbitx_ft8_decode_ex(float *audio_12k, int nsamples,
 {
     return sbitx_ft8_decode_at(audio_12k, nsamples, -1.0, out, max_out);
 }
+
+int sbitx_ft8_subtract_passes = 2;
+
+/* Candidates this near (Hz) a subtracted signal are decoded again. */
+#define FT8_SUBTRACTED_NEAR_HZ 60.0f
 
 int sbitx_ft8_decode_at(float *audio_12k, int nsamples, double start_s,
                         sbitx_ft8_decode_result *out, int max_out)
@@ -290,64 +345,100 @@ int sbitx_ft8_decode_at(float *audio_12k, int nsamples, double start_s,
         .protocol    = FTX_PROTOCOL_FT8,
     };
 
-    monitor_t mon;
-    monitor_init(&mon, &mon_cfg);
-
-    /* Feed the slot audio one symbol-block at a time. */
-    int frame_pos = 0;
-    while (frame_pos + mon.block_size <= nsamples) {
-        monitor_process(&mon, audio_12k + frame_pos);
-        frame_pos += mon.block_size;
-    }
-
-    ftx_candidate_t candidates[kMaxCandidates];
-    int num_candidates = ftx_find_candidates(&mon.wf, kMaxCandidates, candidates, kMinScore);
-    float noise_db = waterfall_noise_db(&mon.wf);
+    /* What each pass decodes is subtracted from this copy of the audio
+     * before the next, which then finds the weaker signals those hid. */
+    float *audio = sbitx_ft8_subtract_passes > 1 ? malloc((size_t) nsamples * sizeof(float)) : NULL;
+    if (audio)
+        memcpy(audio, audio_12k, (size_t) nsamples * sizeof(float));
+    else
+        audio = audio_12k;
+    int passes = audio != audio_12k ? sbitx_ft8_subtract_passes : 1;
 
     uint16_t seen_hash[kMaxDecoded];
     int      num_seen = 0;
     int      count = 0;
 
-    for (int i = 0; i < num_candidates && num_seen < kMaxDecoded && count < max_out; i++) {
-        ftx_message_t       msg;
-        ftx_decode_status_t status;
-        ft8_js8_how         how;
-        /* ft8_lib leaves status.freq and status.time unset; these are its
-         * demo's formulas: bins from min_bin at 1/symbol_period Hz, blocks
-         * of one symbol period, plus the sub-bin and sub-block shifts. */
-        const ftx_candidate_t *cand = &candidates[i];
-        float freq_hz = (mon.min_bin + cand->freq_offset + (float) cand->freq_sub / mon.wf.freq_osr)
-                        / mon.symbol_period;
-        float time_s = (cand->time_offset + (float) cand->time_sub / mon.wf.time_osr) * mon.symbol_period
-                       - FT8_LIB_TIME_BIAS_S;
-        if (!ft8_js8_decode(&mon.wf, cand, kLDPCIters, start_s >= 0.0 ? start_s + time_s : -1.0,
-                            freq_hz, &msg, &status, &how))
-            continue;
+    pthread_mutex_lock(&ft8_calls_lock);
 
-        bool dup = false;
-        for (int j = 0; j < num_seen; j++)
-            if (seen_hash[j] == msg.hash) { dup = true; break; }
-        if (dup)
-            continue;
-        seen_hash[num_seen++] = msg.hash;
+    for (int pass = 0; pass < passes && count < max_out; pass++) {
+        monitor_t mon;
+        monitor_init(&mon, &mon_cfg);
 
-        sbitx_ft8_decode_result *r = &out[count];
-        memset(r, 0, sizeof(*r));
-        ftx_message_offsets_t offsets;   /* ftx_message_decode dereferences
-                                          * this without a NULL check. */
-        memset(&offsets, 0xff, sizeof(offsets.offsets));
-        if (ftx_message_decode(&msg, NULL, r->text, &offsets) != FTX_MESSAGE_RC_OK)
-            continue;
-        r->freq_hz = freq_hz;
-        r->time_s = time_s;
-        r->pass = how.pass;
-        r->receptions = how.receptions;
-        r->has_snr = estimate_snr(&mon.wf, &candidates[i], &msg, noise_db, &r->snr_db);
-        parse_fields(r, &offsets);
-        count++;
+        /* Feed the slot audio one symbol-block at a time. */
+        int frame_pos = 0;
+        while (frame_pos + mon.block_size <= nsamples) {
+            monitor_process(&mon, audio + frame_pos);
+            frame_pos += mon.block_size;
+        }
+
+        ftx_candidate_t candidates[kMaxCandidates];
+        int num_candidates = ftx_find_candidates(&mon.wf, kMaxCandidates, candidates, kMinScore);
+        float noise_db = waterfall_noise_db(&mon.wf);
+        int first_new = count;
+        uint8_t tones[kMaxDecoded][FT8_NN];
+
+        for (int i = 0; i < num_candidates && num_seen < kMaxDecoded && count < max_out; i++) {
+            ftx_message_t       msg;
+            ftx_decode_status_t status;
+            ft8_js8_how         how;
+            /* ft8_lib leaves status.freq and status.time unset; these are its
+             * demo's formulas: bins from min_bin at 1/symbol_period Hz, blocks
+             * of one symbol period, plus the sub-bin and sub-block shifts. */
+            const ftx_candidate_t *cand = &candidates[i];
+            float freq_hz = (mon.min_bin + cand->freq_offset + (float) cand->freq_sub / mon.wf.freq_osr)
+                            / mon.symbol_period;
+            float time_s = (cand->time_offset + (float) cand->time_sub / mon.wf.time_osr) * mon.symbol_period
+                           - FT8_LIB_TIME_BIAS_S;
+            /* Away from what was subtracted the audio is as it was, and
+             * so is the decode: only candidates near it get another. */
+            if (pass > 0) {
+                bool near = false;
+                for (int k = 0; k < first_new && !near; k++)
+                    near = out[k].subtracted == pass - 1 &&
+                           fabsf(out[k].freq_hz - freq_hz) < FT8_SUBTRACTED_NEAR_HZ;
+                if (!near)
+                    continue;
+            }
+            if (!ft8_js8_decode(&mon.wf, cand, kLDPCIters, start_s >= 0.0 ? start_s + time_s : -1.0,
+                                freq_hz, &msg, &status, &how))
+                continue;
+
+            bool dup = false;
+            for (int j = 0; j < num_seen; j++)
+                if (seen_hash[j] == msg.hash) { dup = true; break; }
+            if (dup)
+                continue;
+            seen_hash[num_seen++] = msg.hash;
+
+            sbitx_ft8_decode_result *r = &out[count];
+            memset(r, 0, sizeof(*r));
+            ftx_message_offsets_t offsets;   /* ftx_message_decode dereferences
+                                              * this without a NULL check. */
+            memset(&offsets, 0xff, sizeof(offsets.offsets));
+            if (ftx_message_decode(&msg, &ft8_calls_if, r->text, &offsets) != FTX_MESSAGE_RC_OK)
+                continue;
+            r->freq_hz = freq_hz;
+            r->time_s = time_s;
+            r->pass = how.pass;
+            r->receptions = how.receptions;
+            r->subtracted = pass;
+            r->has_snr = estimate_snr(&mon.wf, &candidates[i], &msg, noise_db, &r->snr_db);
+            parse_fields(r, &offsets);
+            ft8_encode(msg.payload, tones[count - first_new]);
+            count++;
+        }
+        monitor_free(&mon);
+
+        if (count == first_new || pass + 1 == passes)
+            break;
+        for (int k = first_new; k < count; k++)
+            ft8_subtract(audio, nsamples, tones[k - first_new], out[k].freq_hz, out[k].time_s);
     }
 
-    monitor_free(&mon);
+    pthread_mutex_unlock(&ft8_calls_lock);
+
+    if (audio != audio_12k)
+        free(audio);
     return count;
 }
 

@@ -38,6 +38,7 @@ typedef struct {
     bool  has_snr;
     int   pass;       /* which pass decoded it: 0 ft8_lib's, else an FT8_JS8_* (ft8_js8.h) */
     int   receptions; /* receptions combined to decode it (1 unless FT8_JS8_COMBINE) */
+    int   subtracted; /* decoded after subtracting this many passes' signals (0: first pass) */
 } sbitx_ft8_decode_result;
 
 int  sbitx_ft8_decode_ex(float *audio_12k, int nsamples, sbitx_ft8_decode_result *out, int max_out);
@@ -54,6 +55,14 @@ void sbitx_ft8_grid(const char *field, char *out, size_t out_size);
  * passes -1, no combining. */
 int  sbitx_ft8_decode_at(float *audio_12k, int nsamples, double start_s,
                          sbitx_ft8_decode_result *out, int max_out);
+
+/* Decoding passes over a window (2): after each, the signals it decoded
+ * are subtracted from the audio and the next runs on what is left. 1: no
+ * subtraction. */
+extern int sbitx_ft8_subtract_passes;
+
+/* Forget the callsigns heard, which resolve hashed callsigns (<...>). */
+void sbitx_ft8_forget_calls(void);
 
 /* Log a window's decodes to the digi log: one entry per message, timed
  * from `window_start` (unix seconds of the window's first sample), dt

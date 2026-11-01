@@ -623,8 +623,15 @@ Uses the vendored `ft8_lib` (`vendor/ft8_lib/`, MIT) in process:
   with JS8Call's weak-signal techniques: LDPC feedback, noise-whitened and
   linear bit metrics, and adding up a station's repeated receptions. On
   real 40 m audio this decodes about 12 % more messages for about 3.5x the
-  decode time. `make ft8-bench` builds `tests/dsp/ft8_bench`, which
-  measures it on a recording.
+  decode time.
+- Then, as WSJT-X does, `dsp/ft8_subtract.c` subtracts every signal
+  decoded from the window's audio and decodes what is left again, near
+  where they were: the stations under and beside the strong ones. On a
+  busy 40 m band this finds 6 % more messages, for about 25 % more CPU.
+- A callsign sent hashed (`<...>`) is named once it has been heard in
+  full, from the callsigns heard so far.
+- `make ft8-bench` builds `tests/dsp/ft8_bench`, which measures all of
+  this on a recording.
 
 ### RTTY (Radio Teletype — 45.45 baud FSK)
 
