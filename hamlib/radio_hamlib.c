@@ -434,20 +434,17 @@ static void hamlib_apply_profile(radio *radio_h, uint32_t profile)
     /* Mode BEFORE frequency: on the FT-710 a mode change shifts the displayed
      * carrier (~1.4 kHz offset), so the frequency must be asserted last or the
      * dial lands off by that offset.
-     * Digital-text modes (CW/RTTY/FT8) are keyed in software as audio tones
-     * into the data port; the operator keeps the rig in a DATA/SSB mode, so we
-     * must NOT drive the rig into CW/RTTY here (that suppresses the tone). Set
-     * frequency only and leave the rig's mode alone. */
+     * Digital-text modes (CW/RTTY/FT8) are set too: mode_to_hamlib puts them
+     * in PKTUSB on the data path, so the rig passes the tones from the data
+     * port, where leaving the previous profile's mode (voice USB, mic as the
+     * TX source) would send nothing. */
     uint16_t pm = radio_h->profiles[profile].mode;
-    if (pm != MODE_CW && pm != MODE_RTTY && pm != MODE_FT8)
-    {
-        rmode_t hm = mode_to_hamlib(pm, profile_data_path(&radio_h->profiles[profile]));
-        ret = rig_set_mode(rig, RIG_VFO_CURR, hm,
-                           mode_passband(hm, &radio_h->profiles[profile]));
-        if (ret != RIG_OK)
-            HLOGE(LOG_C, "hamlib_apply_profile: rig_set_mode failed: %s",
-                    rigerror(ret));
-    }
+    rmode_t hm = mode_to_hamlib(pm, profile_data_path(&radio_h->profiles[profile]));
+    ret = rig_set_mode(rig, RIG_VFO_CURR, hm,
+                       mode_passband(hm, &radio_h->profiles[profile]));
+    if (ret != RIG_OK)
+        HLOGE(LOG_C, "hamlib_apply_profile: rig_set_mode failed: %s",
+                rigerror(ret));
 
     ret = rig_set_freq(rig, RIG_VFO_CURR, (freq_t) radio_h->profiles[profile].freq);
     if (ret != RIG_OK)
