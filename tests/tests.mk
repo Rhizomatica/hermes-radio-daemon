@@ -47,6 +47,7 @@ TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
             tests/hamlib/test_hamlib_ptt tests/hamlib/test_hamlib_conf \
             tests/control_interfaces/test_rig_server \
             tests/gui_interface/test_ui_hub tests/gui_interface/test_ws_server \
+            tests/gui_interface/test_webrtc_sdp \
             tests/modem/test_rtp_audio tests/modem/test_modem_audio \
             tests/audioio/test_audio_bridge \
             tests/dsp/test_upsample2 tests/dsp/test_stream_resampler tests/dsp/test_mic_filter \
@@ -135,6 +136,10 @@ tests/control_interfaces/test_rig_server: tests/control_interfaces/test_rig_serv
 # ── gui_interface/ ──────────────────────────────────────────────
 tests/gui_interface/test_ui_hub: tests/gui_interface/test_ui_hub.c gui_interface/ui_hub.c gui_interface/ui_hub.h
 	$(CC) $(TEST_CFLAGS) $< gui_interface/ui_hub.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread
+
+tests/gui_interface/test_webrtc_sdp: tests/gui_interface/test_webrtc_sdp.c gui_interface/webrtc/webrtc_sdp.c \
+                                    gui_interface/webrtc/webrtc_sdp.h
+	$(CC) $(TEST_CFLAGS) $< gui_interface/webrtc/webrtc_sdp.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@
 
 WS_SERVER_SRCS = gui_interface/websocket/ws_server.c gui_interface/websocket/ws_frame.c \
                  gui_interface/websocket/ws_crypto.c gui_interface/websocket/ws_tls.c

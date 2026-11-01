@@ -560,9 +560,30 @@ An error reply has `"ok":false` and an `error` with a stable `code`:
 The station sends a `heartbeat` (with its clock) every 5 s and drops a client that is silent for 60 s, so
 send a ping or any frame at least that often.
 
-Implemented topics: `radio.state`, `radio.rig`, `gps`, `modem.status`, `modem.config`, `modem.chat`.
-Implemented commands: `radio.set`, `radio.select_profile`, `radio.reset_protection`, `rig.get`, `rig.set`,
-`rig.watch`, `modem.chat.send`. Details and argument tables: [API-WS-REFERENCE.md](API-WS-REFERENCE.md).
+**4. Audio** travels over WebRTC, with this socket carrying the signaling: send your offer with
+`rtc.offer` once ICE gathering has finished, and set the reply's `sdp` as the answer. `rx` (the default)
+receives the station's audio; `tx: true` adds your microphone, which needs `operator` and goes on the air
+only while this socket holds PTT (`radio.ptt`). The session ends with `rtc.close` or with the socket.
+
+```js
+// in a page served by the station (getUserMedia needs HTTPS)
+const pc = new RTCPeerConnection();          // no STUN: the station is on the local network
+const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+mic.getTracks().forEach((t) => pc.addTrack(t, mic));
+pc.ontrack = (e) => { audio.srcObject = e.streams[0] ?? new MediaStream([e.track]); };
+await pc.setLocalDescription(await pc.createOffer());
+await new Promise((ok) => pc.iceGatheringState === "complete" ? ok() :
+  pc.addEventListener("icegatheringstatechange", () => pc.iceGatheringState === "complete" && ok()));
+ws.send(JSON.stringify({ type: "cmd", id: "rtc1", cmd: "rtc.offer",
+                         args: { sdp: pc.localDescription.sdp, rx: true, tx: true } }));
+// on the reply with id "rtc1": await pc.setRemoteDescription({ type: "answer", sdp: reply.data.sdp });
+```
+
+Implemented topics: `radio.state`, `radio.rig`, `radio.spectrum.rx`, `radio.spectrum.tx`, `digi`, `gps`,
+`modem.status`, `modem.config`, `modem.chat`, `modem.spectrum.rx`. Implemented commands: all 13 of the
+spec (`radio.set`, `radio.select_profile`, `radio.ptt`, `radio.reset_protection`, `rig.get`, `rig.set`,
+`rig.watch`, `digi.send`, `recording.start`, `recording.stop`, `rtc.offer`, `rtc.close`,
+`modem.chat.send`). Details and argument tables: [API-WS-REFERENCE.md](API-WS-REFERENCE.md).
 
 ---
 

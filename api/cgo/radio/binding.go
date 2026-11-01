@@ -72,6 +72,19 @@ func (binding) SpectrumSubscribe(conn int64, s Spectrum, on bool) error {
 	return codeErr(int(C.radiod_api_spectrum_subscribe(C.long(conn), C.int(s), C.bool(on))))
 }
 
+func (binding) RTCOffer(conn int64, sdp string, rx, tx bool) (string, error) {
+	cs := C.CString(sdp)
+	defer C.free(unsafe.Pointer(cs))
+	answer := make([]C.char, C.RADIOD_API_SDP_MAX)
+	if err := codeErr(int(C.radiod_api_rtc_offer(C.long(conn), cs, C.bool(rx), C.bool(tx),
+		&answer[0], C.size_t(len(answer))))); err != nil {
+		return "", err
+	}
+	return cstr(answer), nil
+}
+
+func (binding) RTCClose(conn int64) { C.radiod_api_rtc_close(C.long(conn)) }
+
 func (binding) Recording(start bool, stream string) (bool, bool, error) {
 	cs := C.CString(stream)
 	defer C.free(unsafe.Pointer(cs))

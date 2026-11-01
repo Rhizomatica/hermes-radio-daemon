@@ -104,6 +104,8 @@ info:
       needs HTTPS, which the station serves.
     - **Limits.** At most `settings.webrtc.max_sessions` sessions at once (default 4, for
       the 1 GB Pi); one more gets `busy`.
+    - **Errors.** An offer without an Opus audio section is `bad_request`; `tx` without
+      `operator` is `forbidden`; a station without WebRTC audio answers `not_supported`.
     - **Recording** (`recording.start`, `recording.stop`) is unchanged; it records on the
       station, not in the browser.
 
