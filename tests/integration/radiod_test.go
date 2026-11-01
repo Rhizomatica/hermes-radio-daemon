@@ -234,3 +234,32 @@ func TestShippedUserINI(t *testing.T) {
 		t.Error("the shipped user.ini falls back to the default profile; the fallback is off (-1)")
 	}
 }
+
+// The nine-profile example: radiod starts on it and every profile selects
+// with its frequency and mode.
+func TestExampleUserINI(t *testing.T) {
+	b, err := os.ReadFile("../../config/user-profiles.example.ini")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := startDaemon(t, daemonOpts{userINI: string(b)})
+	ws := dialRadiod(t, d)
+	re := regexp.MustCompile(`(?ms)^\[profile(\d)\]\nfreq = (\d+)\nmode = (\w+)$`)
+	profiles := re.FindAllSubmatch(b, -1)
+	if len(profiles) != 9 {
+		t.Fatalf("%d profiles in the example, want 9", len(profiles))
+	}
+	for _, m := range profiles {
+		n, _ := strconv.Atoi(string(m[1]))
+		freq, _ := strconv.ParseInt(string(m[2]), 10, 64)
+		if r := ws.call("set_profile", map[string]any{"profile": n}); !r.OK {
+			t.Fatalf("set_profile %d: %+v", n, r)
+		}
+		if got := ws.call("get_frequency", nil).Number(t); got != freq {
+			t.Errorf("profile %d frequency = %d, want %d", n, got, freq)
+		}
+		if got := ws.call("get_mode", nil).String(t); got != string(m[3]) {
+			t.Errorf("profile %d mode = %q, want %s", n, got, m[3])
+		}
+	}
+}
