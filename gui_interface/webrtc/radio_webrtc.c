@@ -280,7 +280,8 @@ int radio_webrtc_offer(long conn, const char *sdp, bool rx, bool tx,
     if (!s_ready)
         return RADIOD_API_ENOTSUP;
     if (conn <= 0 || (!rx && !tx) || !answer || answer_len < 2 ||
-        !webrtc_sdp_opus(sdp, mid, sizeof(mid), &pt))
+        !webrtc_sdp_opus(sdp, mid, sizeof(mid), &pt) ||
+        webrtc_sdp_has_application(sdp))
         return RADIOD_API_EINVAL;
 
     pthread_mutex_lock(&s_neg);

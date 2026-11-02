@@ -59,6 +59,16 @@ bool webrtc_sdp_opus(const char *sdp, char *mid, size_t mid_len, int *pt)
     return true;
 }
 
+bool webrtc_sdp_has_application(const char *sdp)
+{
+    char line[256];
+
+    for (const char *p = sdp; (p = next_line(p, line, sizeof(line))); )
+        if (!strncmp(line, "m=application ", 14))
+            return true;
+    return false;
+}
+
 bool webrtc_rtp_payload(const uint8_t *pkt, size_t len, uint8_t *pt, uint16_t *seq,
                         const uint8_t **payload, size_t *payload_len)
 {

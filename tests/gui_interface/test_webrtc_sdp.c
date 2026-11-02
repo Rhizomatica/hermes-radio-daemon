@@ -45,6 +45,18 @@ static void test_offer_lf_and_case(void)
     TEST_ASSERT_EQUAL_INT(109, pt);
 }
 
+/* A data channel section is refused: answering it would start SCTP */
+static void test_offer_data_channel(void)
+{
+    TEST_ASSERT_TRUE(webrtc_sdp_has_application(
+        "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\n"
+        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:1\r\n"));
+    TEST_ASSERT_FALSE(webrtc_sdp_has_application(
+        "v=0\nm=audio 9 UDP/TLS/RTP/SAVPF 109\na=rtpmap:109 opus/48000/2\na=mid:0"));
+    TEST_ASSERT_FALSE(webrtc_sdp_has_application("v=0\r\na=x:m=application 9\r\n"));
+    TEST_ASSERT_FALSE(webrtc_sdp_has_application(NULL));
+}
+
 static void test_offer_refused(void)
 {
     char mid[4];
@@ -112,6 +124,7 @@ int main(void)
     UNITY_BEGIN();
     RUN_TEST(test_offer_audio_section);
     RUN_TEST(test_offer_lf_and_case);
+    RUN_TEST(test_offer_data_channel);
     RUN_TEST(test_offer_refused);
     RUN_TEST(test_rtp_payload);
     RUN_TEST(test_rtp_refused);

@@ -21,6 +21,11 @@
  * no mid in it, or no Opus. */
 bool webrtc_sdp_opus(const char *sdp, char *mid, size_t mid_len, int *pt);
 
+/* Whether an SDP offer has a data channel section (m=application). radiod
+ * refuses those: answering one would start SCTP, which the audio does not
+ * use. */
+bool webrtc_sdp_has_application(const char *sdp);
+
 /* An RTP packet's payload. False for RTCP, for a packet shorter than its
  * header says, and for anything but RTP version 2. */
 bool webrtc_rtp_payload(const uint8_t *pkt, size_t len, uint8_t *pt, uint16_t *seq,

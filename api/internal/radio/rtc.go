@@ -77,7 +77,7 @@ func (h *rtc) close(_ context.Context, c *api.Conn, args jsontext.Value) (any, *
 func rtcErr(err error) *api.CmdError {
 	switch {
 	case errors.Is(err, rad.ErrInvalid):
-		return api.Errf(api.CodeBadRequest, "sdp: the offer has no Opus audio section")
+		return api.Errf(api.CodeBadRequest, "sdp: the offer needs an Opus audio section and no data channel")
 	case errors.Is(err, rad.ErrBusy):
 		return api.Errf(api.CodeBusy, "every audio session is taken")
 	case errors.Is(err, rad.ErrIO):
