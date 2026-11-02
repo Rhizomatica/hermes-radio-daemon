@@ -31,7 +31,8 @@ lists every package.
 | File | |
 |---|---|
 | `specs/hermes-radio-daemon.spec` | radiod, with mercury linked in; no Go API layer (`/api/v2` answers 503) |
-| `specs/*.spec` | the libraries radiod needs that the Sailfish repositories do not carry: fftw, iniparser, hamlib, i2c-tools, csdr, libspecbleach, mbelib-neo, unixcw |
+| `specs/mercury.spec` | the standalone mercury modem (its own audio and Hamlib, no GUI), for running mercury without radiod |
+| `specs/*.spec` | the libraries radiod needs that the Sailfish repositories do not carry: fftw, iniparser, hamlib, i2c-tools, csdr, libspecbleach, mbelib-neo, unixcw, and libjuice and libdatachannel for browser audio |
 | `radiod.service` | the systemd unit, with a wakelock (see below) |
 | `rpmmacros` | an `~/.rpmmacros` for building with busybox |
 | `fetch-sources.sh` | fetches the sources into `~/rpmbuild/SOURCES`, on the device |
@@ -49,7 +50,8 @@ On the device, with developer mode on:
    (`devel-su`):
 
    ```sh
-   pkcon install rpm-build gcc-c++ openssl-devel alsa-lib-devel libusb1-devel
+   pkcon install rpm-build gcc-c++ openssl-devel alsa-lib-devel libusb1-devel \
+                 pulseaudio-devel
    ```
 
 2. On a machine with autotools, make the Hamlib tarball:
