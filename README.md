@@ -94,6 +94,11 @@ package repository.
 
 **libspecbleach** provides adaptive spectral noise reduction on RX.
 
+**libdatachannel** and **libopus** (optional: `libdatachannel-dev` from the
+HERMES package repository, with its `libjuice-dev`, and `libopus-dev`) carry
+the radio's audio to browsers over WebRTC. radiod builds with them when both
+are installed; without them `rtc.offer` answers `not_supported`.
+
 **libcsdr** provides FM/AM modulation/demodulation, AGC, DC blocking, resampling, and filter design.
 
 **mbelib-neo** (`-lmbe-neo`) provides the D-STAR AMBE 3600x2400 codec, encoder included. Build it
@@ -320,6 +325,17 @@ api_v2_enable = 0
 ; same-origin, so no page can use a user's login without its token. Empty:
 ; same-origin only.
 api_cors_origins = *
+; Browser audio over WebRTC (hermes.v1 rtc.offer; builds with libdatachannel
+; and libopus): at most webrtc_max_sessions at once, media on UDP ports
+; webrtc_udp_min..webrtc_udp_max, bound to webrtc_bind_address (empty: any;
+; set the Wi-Fi interface's address to keep media off other networks).
+; Browsers offer mDNS (.local) addresses until a page has microphone
+; permission; radiod resolves them through the system resolver, so install
+; libnss-mdns (and avahi-daemon).
+webrtc_max_sessions = 4
+webrtc_udp_min = 50000
+webrtc_udp_max = 50099
+webrtc_bind_address =
 
 ; Logging: mercury's hermes_log, so radiod's, the Go API's and mercury's
 ; lines are one stream in one format:
