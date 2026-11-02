@@ -502,6 +502,9 @@ static void *capture_thread(void *ctx_v)
                 continue;
             }
             radio_h->media_capture_holds_codec = true;
+            if (hard_errors)
+                HLOGI(LOG_C, "capture %s open again (attempt %d)",
+                        radio_h->capture_device, hard_errors + 1);
             hard_errors = 0;
             continue;
         }
@@ -631,6 +634,9 @@ static void *playback_thread(void *ctx_v)
                 continue;
             }
             radio_h->media_playback_holds_codec = true;
+            if (hard_errors)
+                HLOGI(LOG_C, "playback %s open again (attempt %d)",
+                        radio_h->playback_device, hard_errors + 1);
             hard_errors = 0;
             continue;
         }

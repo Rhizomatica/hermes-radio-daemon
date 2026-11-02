@@ -11,7 +11,9 @@
  *   - PTT-off reaches the rig even when the cache already reads RX;
  *   - a repeated PTT-on is still deduplicated (never re-keys);
  *   - shutdown unkeys whatever the cache says;
- *   - radio_daemon --ptt-off (force_ptt_off) unkeys with nothing running.
+ *   - radio_daemon --ptt-off (force_ptt_off) unkeys with nothing running;
+ *   - a CAT link that stops answering (the radio's USB went away and came
+ *     back) is reopened, and the rig unkeyed, once it answers again.
  *
  * Copyright (C) 2026 Rhizomatica
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -49,6 +51,8 @@ void radio_pipeline_refresh(radio *radio_h) { (void) radio_h; }
 #include "common/cfg_utils.c"
 #include "radio/radio_backend.c"
 #include "radio/radio_controls.c"
+#define CAT_LOST_MS       300           /* not 5 s and 2 s: a quick test */
+#define CAT_REOPEN_MIN_MS 100
 #include "hamlib/radio_hamlib.c"
 
 #define TEST_PORT 45331
@@ -168,6 +172,52 @@ static void test_force_ptt_off(void)
     printf("  --ptt-off unkeys with nothing running  ok\n");
 }
 
+/* The io thread's CAT work for ms milliseconds: the PTT poll and the
+ * watch, every 20 ms. */
+static void run_io(radio *r, int ms)
+{
+    for (int t = 0; t < ms; t += 20)
+    {
+        hamlib_sync_txrx_state(r, r->txrx_state);
+        hamlib_cat_watch(r);
+        usleep(20000);
+    }
+}
+
+static void test_reopens_a_dead_cat_link(void)
+{
+    radio local;
+    init_local(&local);
+    TEST_ASSERT_TRUE(radio_hamlib_init(&local));
+    /* Hamlib answers from its cache for a while after the link dies. */
+    rig_set_cache_timeout_ms((RIG *) local.rig, HAMLIB_CACHE_ALL, 0);
+
+    tr_switch(&local, IN_TX);
+    TEST_ASSERT_EQUAL_INT64(IN_TX, remote->txrx_state);
+    radio_backend_set_ptt(remote, IN_TX, PTT_SRC_INTERNAL, 0);   /* as above */
+
+    /* The link dies: what the rig answered on is gone. */
+    rig_server_stop();
+    run_io(&local, CAT_LOST_MS + 4 * CAT_REOPEN_MIN_MS);
+    TEST_ASSERT_NOT_EQUAL_INT64(0, cat_ptt_failing);
+    TEST_ASSERT_EQUAL_INT64(IN_TX, remote->txrx_state);
+
+    /* It comes back, as the re-enumerated adapter does. */
+    TEST_REQUIRE(rig_server_start(remote));
+    run_io(&local, 20 * CAT_REOPEN_MIN_MS);
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(0, cat_ptt_failing, "CAT not reopened");
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(IN_RX, remote->txrx_state, "reopen left the rig keyed");
+    TEST_ASSERT_EQUAL_INT64(IN_RX, local.txrx_state);
+
+    tr_switch(&local, IN_TX);
+    TEST_ASSERT_EQUAL_INT64(IN_TX, remote->txrx_state);
+    tr_switch(&local, IN_RX);
+    TEST_ASSERT_EQUAL_INT64(IN_RX, remote->txrx_state);
+
+    radio_hamlib_shutdown(&local);
+    printf("  a dead CAT link is reopened .......... ok\n");
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -181,6 +231,7 @@ int main(void)
     RUN_TEST(test_ptt_off_ignores_stale_cache);
     RUN_TEST(test_shutdown_unkeys_whatever_the_cache);
     RUN_TEST(test_force_ptt_off);
+    RUN_TEST(test_reopens_a_dead_cat_link);
     int failed = UNITY_END();
 
     rig_server_stop();
