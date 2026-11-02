@@ -942,6 +942,14 @@ link: over `ws://` passwords and session tokens cross the network in the clear.
 to `radio.state` and `radio.spectrum.rx`/`.tx`; a click centres a signal, the wheel tunes.
 Served from elsewhere, it logs in to the station named in its login form (CORS).
 
+`https://<station>:8080/map.html` is who the station hears on FT8, on a world map
+(`gui_interface/web/map.html`): it subscribes to `digi`, `radio.state` and `gps`, reads the
+last six hours from `GET /digi/log`, and places each sender by the locator it sends,
+coloured by SNR and fading with age. With the station's GPS fix, or a locator typed in,
+it draws the paths and gives distance and bearing. **Listen** plays the receiver over
+WebRTC (`rtc.offer`, receive only). It works offline: the coastlines are Natural Earth's
+1:110m, in `map-world.js` (`utils/map_world.py` makes it). The main page links both.
+
 A daemon built without Go answers `/api/v2` with 503 (`not_supported`).
 Errors are RFC 9457 `application/problem+json` with a stable `code`, and every
 reply carries an `X-Request-Id`.
