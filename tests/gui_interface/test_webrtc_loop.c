@@ -1,8 +1,9 @@
 /* Browser audio end to end (webrtc/radio_webrtc.h): a libdatachannel peer
  * in this process plays the browser. It offers one Opus track; radiod
- * answers, the two connect over DTLS-SRTP, receive audio reaches the peer
- * and the peer's microphone reaches the transmitter only while its
- * connection holds PTT. Built only with libdatachannel (HAVE_WEBRTC).
+ * answers for receive audio, the two connect over DTLS-SRTP and receive
+ * audio reaches the peer. A renegotiation adds the microphone, which reaches
+ * the transmitter only while the connection holds PTT. Closing leaves no
+ * track behind. Built only with libdatachannel (HAVE_WEBRTC).
  *
  * Copyright (C) 2026 Rhizomatica
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -44,7 +45,7 @@ void radio_media_push_tx_audio(radio *radio_h, const int16_t *samples, size_t ns
 
 /* the browser */
 static radio station;
-static int pc, tr;
+static int pc = -1, tr = -1;
 static atomic_int state = -1;
 static atomic_bool gathered;
 static atomic_long rx_packets;
@@ -128,8 +129,49 @@ static void offer(char *sdp, size_t len)
     TEST_ASSERT_GREATER_THAN(0, rtcGetLocalDescription(pc, sdp, (int) len));
 }
 
+/* The session and the peer, whatever an assertion skipped: rtcCleanup
+ * hangs on a peer connection still open. */
+static void hang_up(void)
+{
+    radio_webrtc_close(CONN);
+    if (tr >= 0)
+        rtcDeleteTrack(tr);
+    if (pc >= 0)
+        rtcDeletePeerConnection(pc);
+    pc = tr = -1;
+}
+
 void setUp(void) {}
-void tearDown(void) {}
+void tearDown(void) { hang_up(); }
+
+/* 0.5 s of the browser's microphone; what reached the transmitter */
+static long speak(OpusEncoder *enc, uint32_t *ts)
+{
+    long before = tx_samples;
+    for (int f = 0; f < 25; f++) {
+        int16_t pcm[960];
+        unsigned char pkt[1276];
+        for (int i = 0; i < 960; i++)
+            pcm[i] = (int16_t) (8000 * sin(2 * M_PI * 700 * (f * 960 + i) / 48000.0));
+        int len = opus_encode(enc, pcm, 960, pkt, sizeof(pkt));
+        rtcSetTrackRtpTimestamp(tr, *ts);
+        *ts += 960;
+        rtcSendMessage(tr, (const char *) pkt, len);
+        usleep(20000);
+    }
+    usleep(300000);
+    return tx_samples - before;
+}
+
+/* Track ids libdatachannel still holds, the peer's own included */
+static int tracks_left(void)
+{
+    char mid[64];
+    int n = 0;
+    for (int id = 1; id < 1000; id++)
+        n += rtcGetTrackMid(id, mid, sizeof(mid)) >= 0;
+    return n;
+}
 
 static void test_audio_both_ways(void)
 {
@@ -141,8 +183,9 @@ static void test_audio_both_ways(void)
     snprintf(with_dc, sizeof(with_dc), "%sm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:1\r\n", sdp);
     TEST_ASSERT_EQUAL_INT(RADIOD_API_EINVAL, radio_webrtc_offer(CONN, with_dc, true, true, answer, sizeof(answer)));
 
-    TEST_ASSERT_EQUAL_INT(RADIOD_API_OK, radio_webrtc_offer(CONN, sdp, true, true, answer, sizeof(answer)));
-    TEST_ASSERT_NOT_NULL(strstr(answer, "a=sendrecv"));
+    /* receive audio first, as a page does before it asks for the microphone */
+    TEST_ASSERT_EQUAL_INT(RADIOD_API_OK, radio_webrtc_offer(CONN, sdp, true, false, answer, sizeof(answer)));
+    TEST_ASSERT_NOT_NULL(strstr(answer, "a=sendonly"));
     TEST_ASSERT_NOT_NULL(strstr(answer, "a=rtpmap:111 opus/48000"));
     TEST_ASSERT_NOT_NULL(strstr(answer, "typ host"));
     TEST_ASSERT_EQUAL_INT(0, rtcSetRemoteDescription(pc, answer, "answer"));
@@ -150,7 +193,7 @@ static void test_audio_both_ways(void)
         usleep(10000);
     TEST_ASSERT_TRUE_MESSAGE(state == RTC_CONNECTED && rtcIsOpen(tr), "connected");
 
-    /* receive audio: 1 s of 440 Hz at the ring rate, in 20 ms chunks */
+    /* 1 s of 440 Hz at the ring rate, in 20 ms chunks */
     int16_t chunk[RING_RATE / 50];
     for (int f = 0; f < 50; f++) {
         for (int i = 0; i < RING_RATE / 50; i++)
@@ -163,36 +206,30 @@ static void test_audio_both_ways(void)
     double rms = sqrt(rx_energy / (double) rx_decoded);
     TEST_ASSERT_DOUBLE_WITHIN_MESSAGE(1500, 8000 / sqrt(2), rms, "receive level");
 
-    /* the microphone: 0.5 s without PTT, then 0.5 s with it */
     int err;
     OpusEncoder *enc = opus_encoder_create(48000, 1, OPUS_APPLICATION_VOIP, &err);
     TEST_ASSERT_NOT_NULL(enc);
     uint32_t ts = 0;
-    for (int keyed = 0; keyed < 2; keyed++) {
-        holds_ptt = keyed;
-        long before = tx_samples;
-        for (int f = 0; f < 25; f++) {
-            int16_t pcm[960];
-            unsigned char pkt[1276];
-            for (int i = 0; i < 960; i++)
-                pcm[i] = (int16_t) (8000 * sin(2 * M_PI * 700 * (f * 960 + i) / 48000.0));
-            int len = opus_encode(enc, pcm, 960, pkt, sizeof(pkt));
-            rtcSetTrackRtpTimestamp(tr, ts);
-            ts += 960;
-            rtcSendMessage(tr, (const char *) pkt, len);
-            usleep(20000);
-        }
-        usleep(300000);
-        if (keyed)
-            TEST_ASSERT_GREATER_OR_EQUAL_MESSAGE(24 * RING_RATE / 50, tx_samples - before, "microphone with PTT");
-        else
-            TEST_ASSERT_EQUAL_INT_MESSAGE(0, tx_samples - before, "microphone without PTT");
-    }
+    holds_ptt = true;
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, speak(enc, &ts), "microphone not offered");
+
+    /* the microphone, by renegotiation: discarded without PTT, sent with it */
+    TEST_ASSERT_EQUAL_INT(0, rtcSetLocalDescription(pc, "offer"));
+    TEST_ASSERT_GREATER_THAN(0, rtcGetLocalDescription(pc, sdp, (int) sizeof(sdp)));
+    TEST_ASSERT_EQUAL_INT(RADIOD_API_OK, radio_webrtc_offer(CONN, sdp, true, true, answer, sizeof(answer)));
+    TEST_ASSERT_NOT_NULL(strstr(answer, "a=sendrecv"));
+    TEST_ASSERT_EQUAL_INT(0, rtcSetRemoteDescription(pc, answer, "answer"));
+    holds_ptt = false;
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, speak(enc, &ts), "microphone without PTT");
+    holds_ptt = true;
+    TEST_ASSERT_GREATER_OR_EQUAL_MESSAGE(24 * RING_RATE / 50, speak(enc, &ts), "microphone with PTT");
+    holds_ptt = false;
     opus_encoder_destroy(enc);
 
     TEST_ASSERT_TRUE(radio_webrtc_close(CONN));
     TEST_ASSERT_FALSE(radio_webrtc_close(CONN));
-    rtcDeletePeerConnection(pc);
+    hang_up();
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, tracks_left(), "tracks left after the session");
 }
 
 int main(void)

@@ -48,10 +48,13 @@ void radio_webrtc_push_rx(const int16_t *samples, size_t n) { (void) samples; (v
 #define PCM_MAX           5760                  /* 120 ms at 48 kHz, Opus's longest */
 #define GATHER_TIMEOUT_MS 3000
 #define NACK_PACKETS      64                    /* 1.3 s of 20 ms packets */
+#define RENEGOTIATIONS_MAX 16
 
 typedef struct {
     long conn;              /* the hermes.v1 connection; 0: a free slot */
-    int pc, tr;             /* libdatachannel's ids */
+    int pc, tr;             /* libdatachannel's ids; tr is the one the callbacks carry */
+    int tr_again[RENEGOTIATIONS_MAX];   /* the same track, as each renegotiation named it */
+    int renegotiations;
     bool rx, tx;
     int pt;                 /* the payload type the offer gave Opus */
     uint32_t ts;            /* RTP timestamp of the next receive frame */
@@ -176,11 +179,17 @@ static void on_track_message(int tr, const char *message, int size, void *ptr)
         radio_media_push_tx_audio(s_radio, pcm, (size_t) n);
 }
 
-/* Delete what the table no longer holds a live session for. With s_neg. */
+/* Delete what the table no longer holds a live session for. With s_neg.
+ * libdatachannel keeps a track until it is deleted itself, under every id
+ * it was given, peer connection or not. */
 static void delete_session(session *gone)
 {
     if (gone->pc >= 0)
         rtcDeletePeerConnection(gone->pc);  /* waits for its callbacks */
+    if (gone->tr >= 0)
+        rtcDeleteTrack(gone->tr);
+    for (int i = 0; i < gone->renegotiations; i++)
+        rtcDeleteTrack(gone->tr_again[i]);
     if (gone->dec)
         opus_decoder_destroy(gone->dec);
 }
@@ -251,7 +260,9 @@ static int add_track(int pc, long conn, const char *mid, int pt, bool rx, bool t
     ti.msid = "radiod";
     ti.trackId = "radio";
 
-    int tr = rtcAddTrackEx(pc, &ti);        /* the same mid: replaces its description */
+    /* The same mid again replaces the track's description, and names the
+     * track with a new id. */
+    int tr = rtcAddTrackEx(pc, &ti);
     if (tr < 0 || !fresh)
         return tr;
 
@@ -264,8 +275,10 @@ static int add_track(int pc, long conn, const char *mid, int pt, bool rx, bool t
     pi.sequenceNumber = (uint16_t) random32();
     pi.timestamp = random32();
     if (rtcSetOpusPacketizer(tr, &pi) < 0 || rtcChainRtcpSrReporter(tr) < 0 ||
-        rtcChainRtcpNackResponder(tr, NACK_PACKETS) < 0 || rtcChainRtcpReceivingSession(tr) < 0)
+        rtcChainRtcpNackResponder(tr, NACK_PACKETS) < 0 || rtcChainRtcpReceivingSession(tr) < 0) {
+        rtcDeleteTrack(tr);
         return RTC_ERR_FAILURE;
+    }
     rtcSetUserPointer(tr, (void *) (intptr_t) conn);
     rtcSetMessageCallback(tr, on_track_message);
     return tr;
@@ -302,9 +315,11 @@ int radio_webrtc_offer(long conn, const char *sdp, bool rx, bool tx,
             s->conn = conn;
             s->pc = s->tr = -1;
         }
-    } else {
+    } else if (s->renegotiations < RENEGOTIATIONS_MAX) {
         pc = s->pc;
         tr = s->tr;
+    } else {
+        s = NULL;
     }
     pthread_mutex_unlock(&s_lock);
     if (!s) {
@@ -334,7 +349,10 @@ int radio_webrtc_offer(long conn, const char *sdp, bool rx, bool tx,
     if (t < 0)
         goto out;
     pthread_mutex_lock(&s_lock);
-    s->tr = t;
+    if (tr < 0)
+        s->tr = t;
+    else
+        s->tr_again[s->renegotiations++] = t;
     s->pt = pt;
     s->rx = rx;
     s->tx = tx;

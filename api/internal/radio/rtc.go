@@ -79,7 +79,7 @@ func rtcErr(err error) *api.CmdError {
 	case errors.Is(err, rad.ErrInvalid):
 		return api.Errf(api.CodeBadRequest, "sdp: the offer needs an Opus audio section and no data channel")
 	case errors.Is(err, rad.ErrBusy):
-		return api.Errf(api.CodeBusy, "every audio session is taken")
+		return api.Errf(api.CodeBusy, "every audio session is taken, or this one was renegotiated 16 times")
 	case errors.Is(err, rad.ErrIO):
 		return api.Errf(api.CodeInternal, "the audio session could not be negotiated")
 	case errors.Is(err, rad.ErrNotSupported):

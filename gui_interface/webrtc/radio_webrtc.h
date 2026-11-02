@@ -34,8 +34,8 @@ void radio_webrtc_shutdown(void);
 /* Start, or renegotiate, hermes.v1 connection conn_id's session: rx for the
  * station's receive audio, tx for the browser's microphone. The answer SDP
  * goes into answer. RADIOD_API_OK; EINVAL for an offer with no Opus audio
- * section or with a data channel, or neither rx nor tx; EBUSY with every session taken; EIO when
- * negotiation fails; ENOTSUP without WebRTC. */
+ * section or with a data channel, or neither rx nor tx; EBUSY with every session taken, or
+ * after 16 renegotiations of this one; EIO when negotiation fails; ENOTSUP without WebRTC. */
 int radio_webrtc_offer(long conn_id, const char *sdp, bool rx, bool tx,
                        char *answer, size_t answer_len);
 
