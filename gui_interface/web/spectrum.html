@@ -167,18 +167,19 @@ function cmd(name, args) {
 }
 
 function connect() {
-  if (!token) { showLogin(); return; }
   helloSeen = false;
   setConn('connecting', false);
-  try { ws = new WebSocket(wsURL(), ['hermes.v1', 'hermes.token.' + token]); }
+  // Without a token too: a station without sessions answers on loopback.
+  var protocols = token ? ['hermes.v1', 'hermes.token.' + token] : ['hermes.v1'];
+  try { ws = new WebSocket(wsURL(), protocols); }
   catch (e) { setConn('bad URL', false); showLogin('cannot open ' + wsURL()); return; }
   ws.binaryType = 'arraybuffer';
   ws.onmessage = function (ev) {
     if (typeof ev.data !== 'string') { onFrame(ev.data); return; }
     var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
     if (m.type === 'hello') {
-      helloSeen = true;
-      $('logout').hidden = false;
+      helloSeen = everLive = true;
+      $('logout').hidden = !token;
       setConn('live · ' + m.role, true);
       ws.send(JSON.stringify({type: 'subscribe', id: 'sub', topics: ['radio.state', 'radio.spectrum.rx', 'radio.spectrum.tx']}));
     } else if (m.type === 'event' && m.topic === 'radio.state') {
@@ -195,13 +196,35 @@ function connect() {
     setConn('offline', false);
     for (var id in pending) pending[id].fail({code: 'closed', message: 'the connection closed'});
     pending = {};
-    if (ev.code === 1008 || !helloSeen) {    // session ended, or the upgrade was refused (401)
+    if (ev.code === 1008) {                   // the session ended
       token = null; store('hermes.token', null);
-      showLogin(ev.code === 1008 ? 'the session ended: log in again' : 'log in to the station');
+      showLogin('the session ended: log in again');
       return;
     }
-    setTimeout(connect, 2000);
+    if (!helloSeen && !everLive) {            // refused from the start: a login is needed
+      token = null; store('hermes.token', null);
+      showLogin('log in to the station');
+      return;
+    }
+    reconnect(helloSeen);
   };
+}
+
+// Once live, a reconnect that fails is the station restarting or the
+// network: try again. Only a station that answers and still refuses the
+// socket, three times, wants a login.
+var everLive = false, refused = 0;
+function reconnect(wasLive) {
+  if (wasLive) { refused = 0; setTimeout(connect, 2000); return; }
+  fetch(apiBase() + '/health').then(function (r) {
+    if (r.ok && ++refused >= 3) {
+      refused = 0;
+      token = null; store('hermes.token', null);
+      showLogin('the station refused the connection: log in again');
+    } else {
+      setTimeout(connect, 2000);
+    }
+  }, function () { setTimeout(connect, 2000); });
 }
 
 function setConn(text, ok) { var c = $('conn'); c.textContent = text; c.className = ok ? 'ok' : 'bad'; }
