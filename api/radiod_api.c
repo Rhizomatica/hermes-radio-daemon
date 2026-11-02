@@ -24,6 +24,7 @@
 #include "dsp/digi_log.h"
 #include "gps/gps.h"
 #include "websocket/ws_server.h"
+#include "webrtc/radio_webrtc.h"
 #ifdef HAVE_MERCURY
 #include "mercury_link.h"
 #include "mercury_host.h"
@@ -372,6 +373,21 @@ void radiod_api_reset_protection(void)
 {
     if (s_radio)
         s_radio->swr_protection_enabled = false;
+}
+
+/* ── browser audio ── */
+
+int radiod_api_rtc_offer(long conn_id, const char *sdp, bool rx, bool tx,
+                         char *answer, size_t answer_len)
+{
+    if (!s_radio)
+        return RADIOD_API_ENOTSUP;
+    return radio_webrtc_offer(conn_id, sdp, rx, tx, answer, answer_len);
+}
+
+void radiod_api_rtc_close(long conn_id)
+{
+    radio_webrtc_close(conn_id);
 }
 
 /* ── rig controls ── */

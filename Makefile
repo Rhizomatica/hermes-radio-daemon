@@ -93,7 +93,9 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   gui_interface/websocket/ws_server.o \
                   gui_interface/websocket/ws_frame.o \
                   gui_interface/websocket/ws_crypto.o \
-                  gui_interface/websocket/ws_tls.o
+                  gui_interface/websocket/ws_tls.o \
+                  gui_interface/webrtc/radio_webrtc.o \
+                  gui_interface/webrtc/webrtc_sdp.o
 
 # ── embedded sBitx HW/DSP/ALSA objects (now plain .o, no objcopy) ──
 SBITX_GPIOLIB_OBJS = sbitx/gpiolib/gpiolib.o \
@@ -174,6 +176,21 @@ $(GO_API_LIB) $(GO_API_DIR)/libhermes_api.h &: $(GO_API_SRCS) api/radiod_api.h v
 	cd $(GO_API_DIR) && CGO_ENABLED=1 CC="$(CC)" $(GO) build -tags radiod -buildmode=c-archive \
 	    -o libhermes_api.a ./cmd/hermesapi
 gui_interface/radio_websocket.o: $(GO_API_DIR)/libhermes_api.h
+endif
+
+# ── browser audio over WebRTC (gui_interface/webrtc) ───────────
+# hermes.v1's rtc.offer: libdatachannel carries ICE and DTLS-SRTP, libopus
+# codes the audio.  Built when both are installed (WEBRTC_CFLAGS and
+# WEBRTC_LIBS for another prefix); without them rtc.offer answers
+# not_supported.  libopus exports only its API, so it does not meet the
+# Opus internals vendor/opus_dnn compiles in.
+WEBRTC_CFLAGS ?=
+WEBRTC_LIBS   ?= -ldatachannel -lopus
+HAVE_WEBRTC   ?= $(shell printf '\043include <rtc/rtc.h>\n\043include <opus/opus.h>\n' | \
+                   $(CC) $(WEBRTC_CFLAGS) -E -x c - >/dev/null 2>&1 && echo 1 || echo 0)
+ifeq ($(HAVE_WEBRTC),1)
+gui_interface/webrtc/radio_webrtc.o: EXTRA_CPPFLAGS += -DHAVE_WEBRTC=1 $(WEBRTC_CFLAGS)
+LDFLAGS += $(WEBRTC_LIBS)
 endif
 
 # The C API reports the commit it was built from; the stamp changes only

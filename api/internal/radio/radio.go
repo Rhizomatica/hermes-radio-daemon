@@ -34,6 +34,7 @@ func Register(rt *api.Router) {
 	rt.Command("radio.select_profile", spec.RoleOperator, h.cmdSelect)
 	rt.Command("radio.reset_protection", spec.RoleOperator, h.cmdResetProtection)
 	registerPTT(rt)
+	registerRTC(rt)
 	registerRecording(rt)
 
 	// The radio's spectrum: binary frames (kinds 3 and 4) that C sends to
