@@ -246,6 +246,15 @@ bool radio_backend_unkey_ptt(radio *radio_h, ptt_source src, long id)
     return unkeyed;
 }
 
+bool radio_backend_holds_ptt(radio *radio_h, ptt_source src, long id)
+{
+    pthread_mutex_lock(&ptt_lock);
+    bool holds = src != PTT_SRC_NONE && ptt_owner_src == src && ptt_owner_id == id &&
+                 radio_h->txrx_state == IN_TX;
+    pthread_mutex_unlock(&ptt_lock);
+    return holds;
+}
+
 bool radio_backend_release_ptt(radio *radio_h, ptt_source src, long id,
                                const char *why)
 {

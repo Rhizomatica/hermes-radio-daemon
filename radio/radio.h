@@ -389,6 +389,12 @@ typedef struct {
      * Bearer tokens only): "*" (the default) for any, or scheme://host[:port]
      * entries, space or comma separated; empty: same-origin only. */
     char api_cors_origins[512];
+    /* WebRTC audio (hermes.v1 rtc.offer): at most webrtc_max_sessions
+     * sessions, media on UDP ports webrtc_udp_min..webrtc_udp_max, bound to
+     * webrtc_bind_address ("" for any; the station's Wi-Fi address). */
+    int webrtc_max_sessions;
+    uint16_t webrtc_udp_min, webrtc_udp_max;
+    char webrtc_bind_address[64];
     char mercury_config[256];
     char mercury_args[256];
     /* Mercury's listen mode (its -m, the MODE command): the BroadcastMode

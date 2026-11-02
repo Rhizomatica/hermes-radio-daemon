@@ -1,0 +1,739 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HERMES FT8 map</title>
+<!--
+  Who the station hears: every FT8 decode on the station API (hermes.v1),
+  the senders placed on a world map by the locator they send. Log in,
+  subscribe to digi, radio.state and gps, and read the last hours from
+  GET /digi/log. With rtc.offer, Listen plays the receiver (receive only).
+  Self-contained: stations are often offline, so no library, no web font
+  and no map tiles; the coastlines are Natural Earth's (map-world.js).
+-->
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #121821; --line: #1f2a37; --fg: #d7e0ea; --dim: #7d8b9a;
+    --accent: #3ad1a0; --tx: #ff5d5d; --warn: #ffb84d;
+    --sea: #08111b; --land: #1a2633; --border: #2b3a4a; --grid: rgba(58, 209, 160, .10);
+    --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 22px;
+    padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .dial { font: 600 30px/1 var(--mono); letter-spacing: .02em; }
+  .dial small { font-size: 16px; color: var(--dim); }
+  .tag { font: 600 12px/1 var(--mono); padding: 4px 7px; border-radius: 4px;
+    background: var(--line); color: var(--fg); letter-spacing: .06em; }
+  .tag.tx { background: var(--tx); color: #fff; }
+  .stat { font: 13px var(--mono); color: var(--dim); }
+  .stat b { color: var(--fg); font-weight: 600; }
+  .grow { flex: 1; }
+  #conn { font-size: 12px; }
+  #conn.ok { color: var(--accent); } #conn.bad { color: var(--tx); }
+  main { flex: 1; display: flex; min-height: 0; }
+  #view { position: relative; flex: 1; min-width: 0; cursor: grab; background: var(--sea); }
+  #view.drag { cursor: grabbing; }
+  #map { display: block; width: 100%; height: 100%; }
+  #zoom { position: absolute; left: 10px; top: 10px; display: grid; gap: 4px; }
+  #zoom button { width: 32px; height: 32px; padding: 0; font-size: 18px; line-height: 1; }
+  #tip { position: absolute; pointer-events: none; font: 12px var(--mono); color: var(--fg);
+    background: rgba(5, 8, 12, .9); border: 1px solid var(--line); padding: 5px 8px;
+    border-radius: 4px; white-space: pre; }
+  #msg { position: absolute; left: 52px; top: 12px; font: 12px var(--mono); color: var(--warn); }
+  aside { width: 30em; max-width: 45%; display: flex; flex-direction: column; min-height: 0;
+    border-left: 1px solid var(--line); background: var(--panel); }
+  aside h2 { margin: 0; padding: 8px 12px; font-size: 13px; font-weight: 600; color: var(--dim);
+    border-bottom: 1px solid var(--line); }
+  #list { flex: 1; overflow: auto; }
+  table { border-collapse: collapse; width: 100%; font: 12px var(--mono); }
+  th { position: sticky; top: 0; background: var(--panel); color: var(--dim); font-weight: 400; text-align: left; }
+  td, th { padding: 2px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td.num, th.num { text-align: right; }
+  td.text { white-space: normal; word-break: break-word; }
+  tr.tx td { color: var(--warn); }
+  tr.sel td { background: #1d2b3a; }
+  tbody tr { cursor: default; }
+  footer { display: flex; flex-wrap: wrap; gap: 8px 22px; align-items: center; padding: 10px 16px;
+    border-top: 1px solid var(--line); background: var(--panel); font-size: 13px; }
+  footer label { display: flex; align-items: center; gap: 8px; color: var(--dim); }
+  .legend { display: inline-block; width: 120px; height: 10px; border-radius: 2px; vertical-align: middle;
+    background: linear-gradient(90deg, hsl(0, 80%, 52%), hsl(60, 80%, 52%), hsl(120, 80%, 52%)); }
+  select, input, button { font: inherit; color: var(--fg); background: #0d131b;
+    border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; }
+  button { cursor: pointer; } button:hover { border-color: var(--accent); }
+  button.on { border-color: var(--accent); color: var(--accent); }
+  #mygrid { width: 7em; text-transform: uppercase; }
+  #login { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(5, 8, 12, .88); }
+  #login form { display: grid; gap: 10px; width: min(320px, 90vw); padding: 22px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  #login h1 { margin: 0 0 6px; font-size: 18px; }
+  #login .err { color: var(--tx); font-size: 13px; min-height: 1.2em; }
+  [hidden] { display: none !important; }
+  @media (max-width: 760px) {
+    main { flex-direction: column; }
+    #view { min-height: 55vh; }
+    aside { width: auto; max-width: none; height: 40vh; border-left: 0; border-top: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="dial" id="dial">–<small> MHz</small></div>
+  <span class="tag" id="mode">–</span>
+  <span class="tag" id="txrx">RX</span>
+  <span class="stat"><b id="ndecodes">0</b> decodes</span>
+  <span class="stat"><b id="nstations">0</b> on the map</span>
+  <span class="grow"></span>
+  <button id="listen" type="button" hidden title="Play the receiver here (receive only)">Listen</button>
+  <span class="stat" id="audio"></span>
+  <span id="conn" class="bad">offline</span>
+  <button id="logout" type="button" hidden>Log out</button>
+</header>
+
+<main>
+  <div id="view">
+    <canvas id="map"></canvas>
+    <div id="zoom">
+      <button id="zin" type="button" title="Zoom in">+</button>
+      <button id="zout" type="button" title="Zoom out">−</button>
+      <button id="zhome" type="button" title="The whole world">⌂</button>
+    </div>
+    <div id="msg"></div>
+    <div id="tip" hidden></div>
+  </div>
+  <aside>
+    <h2>FT8 received, newest first</h2>
+    <div id="list">
+      <table>
+        <thead><tr><th>UTC</th><th class="num">dB</th><th class="num">DT</th><th class="num">Hz</th><th>message</th><th class="num">km</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </aside>
+</main>
+
+<footer>
+  <label>Show
+    <select id="age">
+      <option value="900">last 15 min</option>
+      <option value="3600" selected>last hour</option>
+      <option value="21600">last 6 hours</option>
+      <option value="0">everything loaded</option>
+    </select>
+  </label>
+  <label>Paths <input id="paths" type="checkbox" checked></label>
+  <label>Station <input id="mygrid" placeholder="locator" maxlength="6" autocomplete="off"></label>
+  <span class="stat" id="home">–</span>
+  <span class="stat">SNR −24 <span class="legend"></span> +10 dB</span>
+  <span class="stat">drag: move · wheel: zoom</span>
+</footer>
+
+<div id="login" hidden>
+  <form id="loginform">
+    <h1>Log in to the station</h1>
+    <input id="station" placeholder="station (host:port)" autocomplete="off">
+    <input id="user" placeholder="username" autocomplete="username" required>
+    <input id="pass" type="password" placeholder="password" autocomplete="current-password" required>
+    <button type="submit">Log in</button>
+    <div class="err" id="loginerr"></div>
+  </form>
+</div>
+
+<audio id="rx"></audio>
+<script src="map-world.js"></script>
+<script>
+'use strict';
+var $ = function (id) { return document.getElementById(id); };
+
+// ── session ──────────────────────────────────────────────────────────────
+// As spectrum.html: the token is kept for this tab only. Without one the
+// page tries the socket anyway, for radiod's loopback-only mode (no session
+// store), and asks for a login if the station refuses.
+function store(k, v) { try { if (v == null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch (e) {} }
+function load(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
+function keep(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} }
+function recall(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+
+var station = load('hermes.station') || location.host || '';
+var token = load('hermes.token');
+var secure = location.protocol === 'https:';
+
+function apiBase() { return (secure ? 'https://' : 'http://') + station + '/api/v2'; }
+function wsURL() { return (secure ? 'wss://' : 'ws://') + station + '/api/v2/ws'; }
+function authHeaders() { return token ? {Authorization: 'Bearer ' + token} : {}; }
+
+function showLogin(why) {
+  $('station').value = station;
+  $('loginerr').textContent = why || '';
+  $('login').hidden = false;
+  $('logout').hidden = true;
+  $('user').focus();
+}
+
+$('loginform').addEventListener('submit', function (ev) {
+  ev.preventDefault();
+  station = $('station').value.trim() || location.host;
+  fetch(apiBase() + '/session', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({username: $('user').value, password: $('pass').value})
+  }).then(function (r) {
+    return r.json().then(function (j) { return {status: r.status, body: j}; });
+  }).then(function (r) {
+    if (r.status !== 201 || !r.body.token) { $('loginerr').textContent = r.body.detail || ('login failed (' + r.status + ')'); return; }
+    token = r.body.token;
+    store('hermes.token', token); store('hermes.station', station);
+    $('pass').value = '';
+    $('loginerr').textContent = '';
+    $('login').hidden = true;
+    connect();
+  }).catch(function () { $('loginerr').textContent = 'cannot reach ' + station; });
+});
+
+$('logout').addEventListener('click', function () {
+  fetch(apiBase() + '/session', {method: 'DELETE', headers: authHeaders()}).catch(function () {});
+  token = null; store('hermes.token', null);
+  if (ws) ws.close();
+  showLogin();
+});
+
+// ── hermes.v1 ────────────────────────────────────────────────────────────
+var ws = null, helloSeen = false, nextId = 1, pending = {}, commands = [];
+var state = {};
+
+function cmd(name, args) {
+  if (!ws || ws.readyState !== 1) return Promise.reject(new Error('not connected'));
+  var id = String(nextId++);
+  ws.send(JSON.stringify({type: 'cmd', id: id, cmd: name, args: args || {}}));
+  return new Promise(function (ok, fail) { pending[id] = {ok: ok, fail: fail}; });
+}
+
+function connect() {
+  helloSeen = false;
+  setConn('connecting', false);
+  var protocols = token ? ['hermes.v1', 'hermes.token.' + token] : ['hermes.v1'];
+  try { ws = new WebSocket(wsURL(), protocols); }
+  catch (e) { setConn('bad URL', false); showLogin('cannot open ' + wsURL()); return; }
+  ws.binaryType = 'arraybuffer';
+  ws.onmessage = function (ev) {
+    if (typeof ev.data !== 'string') return;
+    var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (m.type === 'hello') {
+      helloSeen = everLive = true;
+      commands = m.commands || [];
+      $('logout').hidden = !token;
+      $('listen').hidden = commands.indexOf('rtc.offer') < 0;
+      setConn('live · ' + m.role, true);
+      ws.send(JSON.stringify({type: 'subscribe', id: 'sub', topics: ['radio.state', 'digi', 'gps']}));
+      loadHistory();
+    } else if (m.type === 'event' && m.topic === 'radio.state') {
+      if (m.snapshot) state = {};
+      for (var k in m.data) state[k] = m.data[k];
+      showState();
+    } else if (m.type === 'event' && m.topic === 'digi') {
+      add(m.data);
+    } else if (m.type === 'event' && m.topic === 'gps') {
+      if (m.data && m.data.change === 'self') ownFix(m.data.gps);
+    } else if (m.type === 'reply') {
+      var p = pending[m.id];
+      if (p) { delete pending[m.id]; if (m.ok) p.ok(m.data); else p.fail(m.error); }
+      else if (m.id === 'sub' && !m.ok) say(m.error ? m.error.message : 'subscribe failed');
+    }
+  };
+  ws.onclose = function (ev) {
+    setConn('offline', false);
+    stopListening();                 // browsers keep the peer connection "connected"
+    for (var id in pending) pending[id].fail({code: 'closed', message: 'the connection closed'});
+    pending = {};
+    if (ev.code === 1008) {                   // the session ended
+      token = null; store('hermes.token', null);
+      showLogin('the session ended: log in again');
+      return;
+    }
+    if (!helloSeen && !everLive) {            // refused from the start: a login is needed
+      token = null; store('hermes.token', null);
+      showLogin('log in to the station');
+      return;
+    }
+    reconnect(helloSeen);
+  };
+}
+
+// Once live, a reconnect that fails is the station restarting or the
+// network: try again. Only a station that answers and still refuses the
+// socket, three times, wants a login.
+var everLive = false, refused = 0;
+function reconnect(wasLive) {
+  if (wasLive) { refused = 0; setTimeout(connect, 2000); return; }
+  fetch(apiBase() + '/health').then(function (r) {
+    if (r.ok && ++refused >= 3) {
+      refused = 0;
+      token = null; store('hermes.token', null);
+      showLogin('the station refused the connection: log in again');
+    } else {
+      setTimeout(connect, 2000);
+    }
+  }, function () { setTimeout(connect, 2000); });
+}
+
+function setConn(text, ok) { var c = $('conn'); c.textContent = text; c.className = ok ? 'ok' : 'bad'; }
+var msgTimer = 0;
+function say(text) { $('msg').textContent = text; clearTimeout(msgTimer); msgTimer = setTimeout(function () { $('msg').textContent = ''; }, 4000); }
+
+function showState() {
+  if (state.frequency_hz) {
+    var f = state.frequency_hz / 1e6;
+    $('dial').innerHTML = f.toFixed(6).replace(/(\d{3})$/, ' $1') + '<small> MHz</small>';
+  }
+  if (state.mode) $('mode').textContent = state.mode;
+  $('txrx').textContent = state.tx ? 'TX' : 'RX';
+  $('txrx').className = 'tag' + (state.tx ? ' tx' : '');
+}
+
+// The last hours from the log (the topic's snapshot is only what radiod
+// keeps in memory), newest first, a few pages of 200.
+function loadHistory() {
+  var since = new Date(Date.now() - 6 * 3600 * 1000).toISOString();
+  var url = apiBase() + '/digi/log?mode=FT8&dir=rx&limit=200&since=' + encodeURIComponent(since);
+  (function page(u, left) {
+    fetch(u, {headers: authHeaders()}).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
+      if (!j || !j.data) return;
+      j.data.forEach(add);
+      if (j.next_cursor && left > 1) page(url + '&cursor=' + encodeURIComponent(j.next_cursor), left - 1);
+    }).catch(function () {});
+  })(url, 5);
+}
+
+// ── decodes and stations ─────────────────────────────────────────────────
+// Decoded text and callsigns come off the air: untrusted, only ever text.
+var seen = {}, decodes = [], stations = {};   // stations: call -> {grid, lat, lon, last}
+var GRID = /^[A-R]{2}[0-9]{2}([a-x]{2})?$/i;
+
+function gridToLatLon(g) {                     // the centre of the square
+  g = g.toUpperCase();
+  var lon = (g.charCodeAt(0) - 65) * 20 - 180 + (+g[2]) * 2;
+  var lat = (g.charCodeAt(1) - 65) * 10 - 90 + (+g[3]);
+  if (g.length === 6) {
+    lon += (g.charCodeAt(4) - 65) * 5 / 60 + 2.5 / 60;
+    lat += (g.charCodeAt(5) - 65) * 2.5 / 60 + 1.25 / 60;
+  } else { lon += 1; lat += 0.5; }
+  return [lat, lon];
+}
+
+function add(d) {
+  if (!d || d.mode !== 'FT8' || seen[d.id]) return;
+  seen[d.id] = true;
+  d.t = Date.parse(d.at) || Date.now();
+  var call = d.dir === 'rx' && d.from ? String(d.from).toUpperCase() : null;
+  if (call) {
+    var s = stations[call] || (stations[call] = {call: call});
+    if (d.grid && GRID.test(d.grid)) {
+      var ll = gridToLatLon(d.grid);
+      s.grid = d.grid; s.lat = ll[0]; s.lon = ll[1];
+    }
+    if (!s.last || d.t >= s.last.t) s.last = d;
+    d.station = s;
+  }
+  decodes.push(d);
+  if (decodes.length > 5000) decodes.splice(0, decodes.length - 5000);
+  listDirty = true;
+  draw();
+}
+
+function visible(d, now) {
+  var max = +$('age').value;
+  return !max || now - d.t <= max * 1000;
+}
+
+var listDirty = false, selected = null;
+function renderList() {
+  if (!listDirty) return;
+  listDirty = false;
+  var now = Date.now(), body = $('rows'), frag = document.createDocumentFragment(), n = 0, shown = 0;
+  var sorted = decodes.slice().sort(function (a, b) { return b.t - a.t; });
+  sorted.forEach(function (d) {
+    if (!visible(d, now)) return;
+    n++;
+    if (shown >= 400) return;
+    shown++;
+    var tr = document.createElement('tr');
+    if (d.dir === 'tx') tr.className = 'tx';
+    if (selected && d.station === selected) tr.className += ' sel';
+    var km = d.station && d.station.grid && home ? Math.round(distance(home, d.station)) : '';
+    [new Date(d.t).toISOString().slice(11, 19), d.snr_db, d.dt_s == null ? '' : d.dt_s.toFixed(1),
+     d.offset_hz, (d.dir === 'tx' ? 'TX ' : '') + (d.text || ''), km].forEach(function (v, i) {
+      var td = document.createElement('td');
+      td.textContent = v == null ? '' : v;
+      if (i !== 0 && i !== 4) td.className = 'num';
+      if (i === 4) td.className = 'text';
+      tr.appendChild(td);
+    });
+    if (d.station) tr.addEventListener('click', function () { select(d.station, true); });
+    frag.appendChild(tr);
+  });
+  body.textContent = '';
+  body.appendChild(frag);
+  $('ndecodes').textContent = n;
+}
+
+// ── the station itself: the GPS fix, or the locator typed in ─────────────
+var home = null, homeFromGps = false;
+function ownFix(g) {
+  if (g && g.fix !== 'none' && g.latitude != null && g.longitude != null) {
+    home = {lat: g.latitude, lon: g.longitude};
+    homeFromGps = true;
+    $('mygrid').value = latLonToGrid(home.lat, home.lon);
+    $('mygrid').disabled = true;
+    $('home').textContent = 'GPS fix';
+  } else {
+    homeFromGps = false;
+    $('mygrid').disabled = false;
+    setHomeGrid(recall('hermes.mygrid') || '');
+  }
+  listDirty = true; draw();
+}
+function setHomeGrid(g) {
+  $('mygrid').value = g;
+  if (GRID.test(g)) {
+    var ll = gridToLatLon(g);
+    home = {lat: ll[0], lon: ll[1]};
+    $('home').textContent = 'from locator';
+  } else {
+    home = null;
+    $('home').textContent = 'no position';
+  }
+}
+function latLonToGrid(lat, lon) {
+  var x = lon + 180, y = lat + 90;
+  return String.fromCharCode(65 + Math.floor(x / 20), 65 + Math.floor(y / 10)) +
+    Math.floor(x % 20 / 2) + Math.floor(y % 10) +
+    String.fromCharCode(97 + Math.floor(x % 2 * 12), 97 + Math.floor(y % 1 * 24));
+}
+$('mygrid').addEventListener('change', function () {
+  if (homeFromGps) return;
+  var g = this.value.trim();
+  keep('hermes.mygrid', GRID.test(g) ? g : null);
+  setHomeGrid(g);
+  listDirty = true; draw();
+});
+setHomeGrid(recall('hermes.mygrid') || '');
+
+function distance(a, b) {                       // great circle, km
+  var r = Math.PI / 180, dlat = (b.lat - a.lat) * r, dlon = (b.lon - a.lon) * r;
+  var h = Math.sin(dlat / 2) * Math.sin(dlat / 2) +
+    Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dlon / 2) * Math.sin(dlon / 2);
+  return 6371 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+function bearing(a, b) {
+  var r = Math.PI / 180, dlon = (b.lon - a.lon) * r;
+  var y = Math.sin(dlon) * Math.cos(b.lat * r);
+  var x = Math.cos(a.lat * r) * Math.sin(b.lat * r) - Math.sin(a.lat * r) * Math.cos(b.lat * r) * Math.cos(dlon);
+  return (Math.atan2(y, x) / r + 360) % 360;
+}
+
+// ── the map: equirectangular, wrapping east-west ─────────────────────────
+var canvas = $('map'), ctx = canvas.getContext('2d');
+var view = {lon: 0, lat: 20, scale: 0};        // scale: CSS pixels a degree; 0 until fitted
+var W = 0, H = 0, dpr = 1;
+
+function decode(s) {
+  return s.split(';').map(function (ring) {
+    var v = ring.split(',').map(Number), pts = new Float32Array(v.length);
+    var x = 0, y = 0;
+    for (var i = 0; i < v.length; i += 2) {
+      x += v[i]; y += v[i + 1];
+      pts[i] = x / 10; pts[i + 1] = y / 10;
+    }
+    return pts;
+  });
+}
+var LAND = decode(MAP_WORLD.land), BORDERS = decode(MAP_WORLD.borders);
+
+function minScale() { return Math.max(W / 360, H / 180); }
+function fit() {
+  var r = canvas.getBoundingClientRect();
+  dpr = window.devicePixelRatio || 1;
+  W = r.width; H = r.height;
+  canvas.width = Math.max(1, Math.round(W * dpr)); canvas.height = Math.max(1, Math.round(H * dpr));
+  if (!view.scale) view.scale = minScale();
+  clampView();
+  draw();
+}
+window.addEventListener('resize', fit);
+
+function clampView() {
+  view.scale = Math.max(minScale(), Math.min(400, view.scale));
+  var half = H / 2 / view.scale;
+  view.lat = Math.max(-90 + half, Math.min(90 - half, view.lat));
+  view.lon = ((view.lon + 180) % 360 + 360) % 360 - 180;
+}
+function px(lon, lat) { return [W / 2 + (lon - view.lon) * view.scale, H / 2 - (lat - view.lat) * view.scale]; }
+function toLonLat(x, y) { return [view.lon + (x - W / 2) / view.scale, view.lat - (y - H / 2) / view.scale]; }
+
+// the copies of the world, 360° apart, that reach the canvas
+function copies() {
+  var left = toLonLat(0, 0)[0], right = toLonLat(W, 0)[0], out = [];
+  for (var k = Math.floor((left + 180) / 360); k * 360 - 180 <= right; k++) out.push(k * 360);
+  return out;
+}
+
+function snrColour(snr, alpha) {
+  var t = snr == null ? 0.5 : Math.max(0, Math.min(1, (snr + 24) / 34));
+  return 'hsla(' + Math.round(t * 120) + ', 80%, 52%, ' + alpha + ')';
+}
+
+var drawQueued = false;
+function draw() {
+  if (drawQueued) return;
+  drawQueued = true;
+  requestAnimationFrame(function () { drawQueued = false; render(); renderList(); });
+}
+
+function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+var colours = {sea: css('--sea'), land: css('--land'), border: css('--border'), grid: css('--grid'),
+               dim: css('--dim'), fg: css('--fg'), accent: css('--accent')};
+
+function render() {
+  if (!W) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = colours.sea;
+  ctx.fillRect(0, 0, W, H);
+  var offs = copies(), i, j, p;
+
+  function path(rings, fill) {
+    ctx.beginPath();
+    offs.forEach(function (o) {
+      rings.forEach(function (r) {
+        for (j = 0; j < r.length; j += 2) {
+          p = px(r[j] + o, r[j + 1]);
+          if (j === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
+        }
+        if (fill) ctx.closePath();
+      });
+    });
+  }
+  path(LAND, true);
+  ctx.fillStyle = colours.land; ctx.fill('evenodd');
+  ctx.strokeStyle = colours.border; ctx.lineWidth = 1; ctx.stroke();
+  path(BORDERS, false);
+  ctx.strokeStyle = colours.border; ctx.lineWidth = 0.7; ctx.stroke();
+
+  // Maidenhead fields (20° × 10°), and their squares (2° × 1°) up close
+  var squares = view.scale >= 18;
+  ctx.beginPath();
+  var tl = toLonLat(0, 0), br = toLonLat(W, H);
+  var stepX = squares ? 2 : 20, stepY = squares ? 1 : 10;
+  for (var lon = Math.floor(tl[0] / stepX) * stepX; lon <= br[0]; lon += stepX) {
+    p = px(lon, 0); ctx.moveTo(p[0], 0); ctx.lineTo(p[0], H);
+  }
+  for (var lat = Math.floor(br[1] / stepY) * stepY; lat <= tl[1]; lat += stepY) {
+    p = px(0, lat); ctx.moveTo(0, p[1]); ctx.lineTo(W, p[1]);
+  }
+  ctx.strokeStyle = colours.grid; ctx.lineWidth = 1; ctx.stroke();
+  ctx.font = '11px ' + css('--mono');
+  ctx.fillStyle = colours.dim;
+  ctx.textBaseline = 'top';
+  for (lon = Math.floor(tl[0] / stepX) * stepX; lon <= br[0]; lon += stepX) {
+    for (lat = Math.floor(br[1] / stepY) * stepY; lat <= tl[1]; lat += stepY) {
+      if (lat < -90 || lat >= 90) continue;
+      var name = latLonToGrid(lat + stepY / 2, ((lon + stepX / 2 + 180) % 360 + 360) % 360 - 180);
+      p = px(lon, lat + stepY);
+      ctx.fillText(squares ? name.slice(0, 4) : name.slice(0, 2), p[0] + 3, p[1] + 2);
+    }
+  }
+
+  // the stations, oldest underneath; fading with age
+  var now = Date.now(), list = [], n = 0;
+  for (var c in stations) {
+    var s = stations[c];
+    if (s.grid && s.last && visible(s.last, now)) list.push(s);
+  }
+  list.sort(function (a, b) { return a.last.t - b.last.t; });
+  var max = (+$('age').value || 6 * 3600) * 1000;
+
+  if (home && $('paths').checked) {
+    ctx.beginPath();
+    list.forEach(function (s) {
+      offs.forEach(function (o) {
+        var dl = s.lon - home.lon;                       // the short way round
+        if (dl > 180) dl -= 360; else if (dl < -180) dl += 360;
+        var a = px(home.lon + o, home.lat), b = px(home.lon + dl + o, s.lat);
+        ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]);
+      });
+    });
+    ctx.strokeStyle = 'rgba(58, 209, 160, .18)'; ctx.lineWidth = 1; ctx.stroke();
+  }
+
+  drawn = [];
+  ctx.textBaseline = 'middle';
+  list.forEach(function (s) {
+    var age = Math.min(1, (now - s.last.t) / max), alpha = 1 - 0.65 * age;
+    n++;
+    offs.forEach(function (o) {
+      p = px(s.lon + o, s.lat);
+      if (p[0] < -20 || p[0] > W + 20 || p[1] < -20 || p[1] > H + 20) return;
+      var r = s === selected ? 7 : 5;
+      ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, 2 * Math.PI);
+      ctx.fillStyle = snrColour(s.last.snr_db, alpha); ctx.fill();
+      ctx.lineWidth = s === selected ? 2 : 1;
+      ctx.strokeStyle = s === selected ? colours.fg : 'rgba(0, 0, 0, .6)'; ctx.stroke();
+      if (view.scale >= 6 || s === selected) {
+        ctx.fillStyle = s === selected ? colours.fg : 'rgba(215, 224, 234, ' + (0.85 * alpha) + ')';
+        ctx.fillText(s.call, p[0] + r + 3, p[1]);
+      }
+      drawn.push({x: p[0], y: p[1], s: s});
+    });
+  });
+  $('nstations').textContent = n;
+
+  if (home) {
+    offs.forEach(function (o) {
+      p = px(home.lon + o, home.lat);
+      ctx.beginPath();
+      ctx.moveTo(p[0], p[1] - 7); ctx.lineTo(p[0] + 7, p[1]); ctx.lineTo(p[0], p[1] + 7); ctx.lineTo(p[0] - 7, p[1]);
+      ctx.closePath();
+      ctx.fillStyle = colours.accent; ctx.fill();
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 1; ctx.stroke();
+    });
+  }
+}
+var drawn = [];
+
+function nearest(x, y) {
+  var best = null, bd = 100;
+  drawn.forEach(function (m) {
+    var d = (m.x - x) * (m.x - x) + (m.y - y) * (m.y - y);
+    if (d < bd) { bd = d; best = m; }
+  });
+  return best;
+}
+
+function tipText(s) {
+  var d = s.last, lines = [s.call + '  ' + s.grid];
+  lines.push((d.snr_db == null ? '' : d.snr_db + ' dB  ') + new Date(d.t).toISOString().slice(11, 19) + ' UTC');
+  if (home) lines.push(Math.round(distance(home, s)) + ' km  ' + Math.round(bearing(home, s)) + '°');
+  lines.push(d.text || '');
+  return lines.join('\n');
+}
+
+function select(s, centre) {
+  selected = selected === s ? null : s;
+  if (selected && centre && s.grid) { view.lon = s.lon; view.lat = s.lat; clampView(); }
+  listDirty = true; draw();
+}
+
+// ── moving around ────────────────────────────────────────────────────────
+var dragging = null;
+canvas.addEventListener('pointerdown', function (ev) {
+  dragging = {x: ev.clientX, y: ev.clientY, lon: view.lon, lat: view.lat, moved: false};
+  canvas.setPointerCapture(ev.pointerId);
+});
+canvas.addEventListener('pointermove', function (ev) {
+  var r = canvas.getBoundingClientRect(), x = ev.clientX - r.left, y = ev.clientY - r.top;
+  if (dragging) {
+    var dx = ev.clientX - dragging.x, dy = ev.clientY - dragging.y;
+    if (Math.abs(dx) + Math.abs(dy) > 3) { dragging.moved = true; $('view').className = 'drag'; }
+    view.lon = dragging.lon - dx / view.scale;
+    view.lat = dragging.lat + dy / view.scale;
+    clampView(); draw();
+    $('tip').hidden = true;
+    return;
+  }
+  var m = nearest(x, y), tip = $('tip');
+  if (!m) { tip.hidden = true; return; }
+  tip.textContent = tipText(m.s);
+  tip.hidden = false;
+  tip.style.left = Math.min(x + 14, W - tip.offsetWidth - 4) + 'px';
+  tip.style.top = Math.min(y + 14, H - tip.offsetHeight - 4) + 'px';
+});
+canvas.addEventListener('pointerup', function (ev) {
+  var r = canvas.getBoundingClientRect();
+  if (dragging && !dragging.moved) {
+    var m = nearest(ev.clientX - r.left, ev.clientY - r.top);
+    if (m) select(m.s, false);
+  }
+  dragging = null;
+  $('view').className = '';
+});
+canvas.addEventListener('pointerleave', function () { $('tip').hidden = true; });
+
+function zoomAt(x, y, f) {
+  var before = toLonLat(x, y);
+  view.scale *= f;
+  clampView();
+  var after = toLonLat(x, y);
+  view.lon += before[0] - after[0]; view.lat += before[1] - after[1];
+  clampView(); draw();
+}
+canvas.addEventListener('wheel', function (ev) {
+  ev.preventDefault();
+  var r = canvas.getBoundingClientRect();
+  var dy = ev.deltaMode === 1 ? ev.deltaY * 33 : ev.deltaY;        // lines or pixels
+  zoomAt(ev.clientX - r.left, ev.clientY - r.top, Math.exp(-Math.max(-300, Math.min(300, dy)) * 0.004));
+}, {passive: false});
+canvas.addEventListener('dblclick', function (ev) {
+  var r = canvas.getBoundingClientRect();
+  zoomAt(ev.clientX - r.left, ev.clientY - r.top, 2);
+});
+$('zin').addEventListener('click', function () { zoomAt(W / 2, H / 2, 1.6); });
+$('zout').addEventListener('click', function () { zoomAt(W / 2, H / 2, 1 / 1.6); });
+$('zhome').addEventListener('click', function () { view.lon = 0; view.lat = 20; view.scale = minScale(); clampView(); draw(); });
+$('age').addEventListener('change', function () { keep('hermes.mapage', this.value); listDirty = true; draw(); });
+$('paths').addEventListener('change', function () { keep('hermes.mappaths', this.checked ? '1' : '0'); draw(); });
+if (recall('hermes.mapage')) $('age').value = recall('hermes.mapage');
+if (recall('hermes.mappaths')) $('paths').checked = recall('hermes.mappaths') === '1';
+setInterval(function () { listDirty = true; draw(); }, 15000);     // ageing
+
+// ── Listen: the receiver over WebRTC, receive only ───────────────────────
+var pc = null, statsTimer = 0;
+$('listen').addEventListener('click', function () {
+  if (pc) { cmd('rtc.close', {}).catch(function () {}); stopListening(); return; }
+  startListening().catch(function (e) { say('listen: ' + (e && e.message ? e.message : e)); stopListening(); });
+});
+function startListening() {
+  $('listen').className = 'on'; $('listen').textContent = 'Stop';
+  pc = new RTCPeerConnection();
+  var mine = pc;
+  pc.ontrack = function (ev) { $('rx').srcObject = ev.streams[0] || new MediaStream([ev.track]); $('rx').play().catch(function () {}); };
+  pc.onconnectionstatechange = function () { if (pc === mine) $('audio').textContent = pc.connectionState; };
+  pc.addTransceiver('audio', {direction: 'recvonly'});
+  return pc.createOffer().then(function (o) { return mine.setLocalDescription(o); }).then(function () {
+    if (mine.iceGatheringState === 'complete') return;
+    return new Promise(function (ok) {
+      mine.addEventListener('icegatheringstatechange', function () { if (mine.iceGatheringState === 'complete') ok(); });
+    });
+  }).then(function () {
+    return cmd('rtc.offer', {sdp: mine.localDescription.sdp, rx: true});
+  }).then(function (r) {
+    return mine.setRemoteDescription({type: 'answer', sdp: r.sdp});
+  }).then(function () {
+    statsTimer = setInterval(function () {
+      if (!pc) return;
+      pc.getStats().then(function (st) {
+        st.forEach(function (v) {
+          if (v.type === 'inbound-rtp' && v.kind === 'audio')
+            $('audio').textContent = 'audio ' + (v.packetsLost && v.packetsReceived ? (100 * v.packetsLost / (v.packetsReceived + v.packetsLost)).toFixed(1) + ' % lost' : 'ok');
+        });
+      });
+    }, 2000);
+  }, function (e) { throw new Error(e && e.message ? e.message : 'rtc.offer failed'); });
+}
+function stopListening() {
+  clearInterval(statsTimer);
+  if (pc) pc.close();
+  pc = null;
+  $('rx').srcObject = null;
+  $('listen').className = ''; $('listen').textContent = 'Listen';
+  $('audio').textContent = '';
+}
+
+fit();
+connect();
+</script>
+</body>
+</html>
