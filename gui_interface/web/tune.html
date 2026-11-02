@@ -50,6 +50,11 @@
   #freqin { width: 9em; font-family: var(--mono); }
   #found { font: 12px var(--mono); color: var(--dim); }
   #found li { cursor: pointer; } #found li:hover { color: var(--fg); }
+  #decodes { font: 13px var(--mono); max-height: 22em; overflow: auto; border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 8px; background: #070a0e; }
+  #decodes div { white-space: pre-wrap; word-break: break-word; }
+  #decodes .tx { color: var(--warn); }
+  #decodes .meta { color: var(--dim); }
   #login { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
     background: rgba(5, 8, 12, .88); }
   #login form { display: grid; gap: 10px; width: min(320px, 90vw); padding: 22px;
@@ -95,7 +100,9 @@
       <option value="1000">1 kHz</option><option value="5000" selected>5 kHz</option>
       <option value="9000">9 kHz</option><option value="10000">10 kHz</option></select></label>
     <label>Mode <select id="modesel">
-      <option>AM</option><option>USB</option><option>LSB</option><option>CW</option><option>FM</option></select></label>
+      <option>AM</option><option>USB</option><option>LSB</option><option>CW</option><option>FM</option>
+      <option>RTTY</option><option>FT8</option></select></label>
+    <label>Profile <select id="profile"></select></label>
     <label title="On the received audio you listen to">Noise reduction <input id="nr" type="checkbox"></label>
   </div>
 
@@ -116,6 +123,11 @@
     <input id="freqin" inputmode="decimal" placeholder="kHz" autocomplete="off">
     <button type="submit">Tune</button>
   </form>
+
+  <div>
+    <div class="stat">Decoded (CW, RTTY and FT8 in those modes; newest first):</div>
+    <div id="decodes"></div>
+  </div>
 
   <div>
     <div class="stat">Stations found this session (click to go back):</div>
@@ -201,11 +213,14 @@ function connect() {
       $('logout').hidden = !token;
       $('listen').hidden = (m.commands || []).indexOf('rtc.offer') < 0;
       setConn('live · ' + m.role, true);
-      ws.send(JSON.stringify({type: 'subscribe', id: 'sub', topics: ['radio.state']}));
+      ws.send(JSON.stringify({type: 'subscribe', id: 'sub', topics: ['radio.state', 'digi']}));
+      loadProfiles();
     } else if (m.type === 'event' && m.topic === 'radio.state') {
       if (m.snapshot) state = {};
       for (var k in m.data) state[k] = m.data[k];
       showState();
+    } else if (m.type === 'event' && m.topic === 'digi') {
+      addDecode(m.data);
     } else if (m.type === 'reply') {
       var p = pending[m.id];
       if (p) { delete pending[m.id]; if (m.ok) p.ok(m.data); else p.fail(m.error); }
@@ -260,6 +275,8 @@ function showState() {
     var b = bandOf(state.frequency_hz, BANDS.bc) || bandOf(state.frequency_hz, BANDS.ham);
     $('band').textContent = b ? b.name : '';
   }
+  if (state.active_profile != null && document.activeElement !== $('profile'))
+    $('profile').value = String(state.active_profile);
   if (state.mode) {
     $('mode').textContent = state.mode;
     if (document.activeElement !== $('modesel')) $('modesel').value = state.mode;
@@ -395,6 +412,45 @@ document.addEventListener('keydown', function (ev) {
   else return;
   ev.preventDefault();
 });
+
+// ── profiles, and what the digital modes decode ──────────────────────────
+function loadProfiles() {
+  fetch(apiBase() + '/radio/profiles', {headers: token ? {Authorization: 'Bearer ' + token} : {}})
+    .then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
+      if (!j || !j.data) return;
+      var sel = $('profile');
+      sel.textContent = '';
+      j.data.forEach(function (p) {
+        var o = document.createElement('option');
+        o.value = String(p.profile);
+        o.textContent = p.profile + ': ' + p.mode + ' ' + (p.frequency_hz / 1000) + ' kHz';
+        sel.appendChild(o);
+      });
+      if (state.active_profile != null) sel.value = String(state.active_profile);
+    }).catch(function () {});
+}
+$('profile').addEventListener('change', function () {
+  stopSeek('');
+  cmd('radio.select_profile', {profile: +this.value}).then(loadProfiles,
+    function (e) { $('seekstate').textContent = 'profile: ' + (e.message || e.code); });
+});
+
+// Decoded text comes off the air: untrusted, only ever set as text.
+var seenDecodes = {};
+function addDecode(d) {
+  if (!d || seenDecodes[d.id] || d.mode === 'DSTAR') return;
+  seenDecodes[d.id] = true;
+  var box = $('decodes'), row = document.createElement('div'), meta = document.createElement('span');
+  row.className = d.dir === 'tx' ? 'tx' : '';
+  meta.className = 'meta';
+  meta.textContent = (d.at || '').slice(11, 19) + ' ' + d.mode + ' ' +
+    (d.offset_hz != null ? d.offset_hz + ' Hz ' : '') + (d.snr_db != null ? d.snr_db + ' dB ' : '') +
+    (d.dir === 'tx' ? 'TX ' : '') + ' ';
+  row.appendChild(meta);
+  row.appendChild(document.createTextNode(d.text || ''));
+  box.insertBefore(row, box.firstChild);
+  while (box.children.length > 300) box.removeChild(box.lastChild);
+}
 
 var found = [];
 function remember(hz, db) {
