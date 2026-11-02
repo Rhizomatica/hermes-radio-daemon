@@ -94,6 +94,11 @@ package repository.
 
 **libspecbleach** provides adaptive spectral noise reduction on RX.
 
+**libdatachannel** and **libopus** (optional: `libdatachannel-dev` from the
+HERMES package repository, with its `libjuice-dev`, and `libopus-dev`) carry
+the radio's audio to browsers over WebRTC. radiod builds with them when both
+are installed; without them `rtc.offer` answers `not_supported`.
+
 **libcsdr** provides FM/AM modulation/demodulation, AGC, DC blocking, resampling, and filter design.
 
 **libunixcw** (`-lcw`) provides the CW receiver state machine (mark/space → characters).

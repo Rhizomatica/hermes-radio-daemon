@@ -55,6 +55,11 @@ TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
             tests/dsp/test_rade_voice tests/dsp/test_radae_vocoder \
             tests/sbitx/test_sbitx_buffer \
             tests/common/test_radiod_log
+# Browser audio end to end, against a real libdatachannel peer: only where
+# radiod itself builds with WebRTC.
+ifeq ($(HAVE_WEBRTC),1)
+TEST_BINS += tests/gui_interface/test_webrtc_loop
+endif
 
 $(TEST_BINS): $(UNITY_SRC) $(HERMES_LOG_SRC) tests/unity/unity.h tests/test_util.h $(TEST_STAMP)
 
@@ -140,6 +145,11 @@ tests/gui_interface/test_ui_hub: tests/gui_interface/test_ui_hub.c gui_interface
 tests/gui_interface/test_webrtc_sdp: tests/gui_interface/test_webrtc_sdp.c gui_interface/webrtc/webrtc_sdp.c \
                                     gui_interface/webrtc/webrtc_sdp.h
 	$(CC) $(TEST_CFLAGS) $< gui_interface/webrtc/webrtc_sdp.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@
+
+tests/gui_interface/test_webrtc_loop: tests/gui_interface/test_webrtc_loop.c gui_interface/webrtc/radio_webrtc.c \
+                                     gui_interface/webrtc/radio_webrtc.h gui_interface/webrtc/webrtc_sdp.c
+	$(CC) $(TEST_CFLAGS) -DHAVE_WEBRTC=1 $(WEBRTC_CFLAGS) $< gui_interface/webrtc/radio_webrtc.c \
+	    gui_interface/webrtc/webrtc_sdp.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ $(WEBRTC_LIBS) -lm
 
 WS_SERVER_SRCS = gui_interface/websocket/ws_server.c gui_interface/websocket/ws_frame.c \
                  gui_interface/websocket/ws_crypto.c gui_interface/websocket/ws_tls.c
