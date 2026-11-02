@@ -217,6 +217,16 @@ type Radio interface {
 	// ErrNotSupported when the radio has no such spectrum or mercury is not
 	// running, ErrBusy when every slot is taken.
 	SpectrumSubscribe(conn int64, s Spectrum, on bool) error
+	// RTCOffer starts, or renegotiates, hermes.v1 connection conn's WebRTC
+	// audio from the browser's SDP offer (rx: the station's receive audio;
+	// tx: the browser's microphone, transmitted only while conn holds PTT)
+	// and returns the station's answer. ErrInvalid for an offer with no Opus
+	// audio section, ErrBusy with every session taken, ErrIO when
+	// negotiation fails, ErrNotSupported without WebRTC. The session ends
+	// with the connection.
+	RTCOffer(conn int64, sdp string, rx, tx bool) (string, error)
+	// RTCClose ends conn's WebRTC session, if it has one.
+	RTCClose(conn int64)
 
 	// Gps is the station's own position and fix, and its GPS settings.
 	Gps() Gps

@@ -102,8 +102,21 @@ int main(int argc, char *argv[])
             argument_set = true;
             break;
         case 'p':
-            profile = (uint8_t) atoi(optarg);
+        {
+            /* The profile rides in cmd[4]'s top 2 bits (radio_cmds.h), as
+             * sbitx_controller's 4-profile protocol had it: 4 and up would
+             * wrap onto 0-3 and change another profile. */
+            char *end;
+            long p = strtol(optarg, &end, 10);
+            if (*optarg == '\0' || *end != '\0' || p < 0 || p > 3)
+            {
+                fprintf(stderr, "-p %s: this interface reaches profiles 0 to 3 only "
+                        "(set_profile selects any)\n", optarg);
+                return EXIT_FAILURE;
+            }
+            profile = (uint8_t) p;
             break;
+        }
 
         default:
             goto manual;

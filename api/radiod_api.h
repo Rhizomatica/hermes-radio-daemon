@@ -164,6 +164,24 @@ enum radiod_api_spectrum
  * (radiod_api_modem_set_waterfall). */
 int radiod_api_spectrum_subscribe(long conn_id, int spectrum, bool on);
 
+/* ── browser audio (hermes.v1 rtc.offer / rtc.close) ── */
+
+/* The longest answer SDP radiod writes. */
+#define RADIOD_API_SDP_MAX 16384
+
+/* Start, or renegotiate, hermes.v1 connection conn_id's WebRTC audio from
+ * the browser's SDP offer: rx for the station's receive audio, tx for the
+ * browser's microphone (transmitted only while conn_id holds PTT). The
+ * answer SDP, with the station's host candidates, goes into answer. 0;
+ * EINVAL for an offer with no Opus audio section, or neither rx nor tx;
+ * EBUSY with main:webrtc_max_sessions sessions up; EIO when negotiation
+ * fails; ENOTSUP when radiod was built without WebRTC or its audio rate is
+ * not one Opus takes. The session ends with the connection. */
+int radiod_api_rtc_offer(long conn_id, const char *sdp, bool rx, bool tx,
+                         char *answer, size_t answer_len);
+/* End conn_id's session, if it has one. */
+void radiod_api_rtc_close(long conn_id);
+
 /* ── recording ── */
 
 /* Start (start true) or stop recording stream "rx", "tx" or "both" to WAV

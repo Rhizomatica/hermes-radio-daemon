@@ -464,6 +464,15 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     radio_h->api_v2_enable = (bool) b;
     s = iniparser_getstring(ini, "main:api_cors_origins", "*");
     snprintf(radio_h->api_cors_origins, sizeof(radio_h->api_cors_origins), "%s", s);
+    i = iniparser_getint(ini, "main:webrtc_max_sessions", 4);
+    radio_h->webrtc_max_sessions = i < 1 ? 1 : i;
+    i = iniparser_getint(ini, "main:webrtc_udp_min", 50000);
+    radio_h->webrtc_udp_min = (uint16_t) (i >= 1024 && i <= 65535 ? i : 50000);
+    i = iniparser_getint(ini, "main:webrtc_udp_max", 50099);
+    radio_h->webrtc_udp_max = (uint16_t) (i >= radio_h->webrtc_udp_min && i <= 65535 ?
+                                          i : radio_h->webrtc_udp_min + 99);
+    s = iniparser_getstring(ini, "main:webrtc_bind_address", "");
+    snprintf(radio_h->webrtc_bind_address, sizeof(radio_h->webrtc_bind_address), "%s", s);
 
     b = iniparser_getboolean(ini, "main:enable_mercury", 0);
     radio_h->enable_mercury = (bool) b;

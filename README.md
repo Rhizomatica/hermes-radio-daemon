@@ -70,7 +70,7 @@ hermes-radio-daemon/
 ├── vendor/ft8_lib/          Vendored ft8_lib (MIT)
 ├── vendor/minimodem/        Vendored minimodem FSK core (GPLv3)
 ├── vendor/hermes_shm/       Shared-memory rings, identical to mercury's copy
-├── config/                  Sample core.ini and user.ini
+├── config/                  Sample core.ini and user.ini, a nine-profile example
 └── tests/                   Unit tests: <module>/test_<unit>.c on Unity + fff (tests/tests.mk);
                              integration/: Go tests that drive the real radio_daemon
 ```
@@ -93,6 +93,11 @@ library and its headers in `/usr/include/csdr/`) comes from the HERMES
 package repository.
 
 **libspecbleach** provides adaptive spectral noise reduction on RX.
+
+**libdatachannel** and **libopus** (optional: `libdatachannel-dev` from the
+HERMES package repository, with its `libjuice-dev`, and `libopus-dev`) carry
+the radio's audio to browsers over WebRTC. radiod builds with them when both
+are installed; without them `rtc.offer` answers `not_supported`.
 
 **libcsdr** provides FM/AM modulation/demodulation, AGC, DC blocking, resampling, and filter design.
 
@@ -323,6 +328,17 @@ api_v2_enable = 0
 ; same-origin, so no page can use a user's login without its token. Empty:
 ; same-origin only.
 api_cors_origins = *
+; Browser audio over WebRTC (hermes.v1 rtc.offer; builds with libdatachannel
+; and libopus): at most webrtc_max_sessions at once, media on UDP ports
+; webrtc_udp_min..webrtc_udp_max, bound to webrtc_bind_address (empty: any;
+; set the Wi-Fi interface's address to keep media off other networks).
+; Browsers offer mDNS (.local) addresses until a page has microphone
+; permission; radiod resolves them through the system resolver, so install
+; libnss-mdns (and avahi-daemon).
+webrtc_max_sessions = 4
+webrtc_udp_min = 50000
+webrtc_udp_max = 50099
+webrtc_bind_address =
 
 ; Logging: mercury's hermes_log, so radiod's, the Go API's and mercury's
 ; lines are one stream in one format:
@@ -389,6 +405,12 @@ playback_device = default
 ; anything above, e.g. for an interface powered from DTR or a non-default
 ; CI-V address:
 ; hamlib_conf = dtr_state=ON,civaddr=0x94
+; A rig that stops answering CAT for 5 s (its USB reset or was unplugged,
+; or it was switched off) has its port closed and opened again, every 2 s
+; and then up to every 30 s, until it answers; it is unkeyed then. The audio
+; devices are reopened the same way. Name both so that they survive the
+; rig coming back as a new USB device: a usb: path by ids and serial, or
+; /dev/serial/by-id/..., and ALSA cards by name (hw:CARD=...), not number.
 
 ; Per-band TX power calibration (scale = multiplier):
 ; [tx_band0]
@@ -398,6 +420,11 @@ playback_device = default
 ```
 
 ### `/etc/hermes/user.ini` — profiles
+
+The `config/user.ini` radiod installs has a station's two profiles,
+profile0 for data and profile1 for voice.
+`config/user-profiles.example.ini` has those two and seven more, one for
+each kind of operation: FM, AM, DRM, digital voice, FT8, CW and RTTY.
 
 ```ini
 [main]
@@ -941,6 +968,22 @@ link: over `ws://` passwords and session tokens cross the network in the clear.
 (`gui_interface/web/spectrum.html`, installed with the web page): log in, and it subscribes
 to `radio.state` and `radio.spectrum.rx`/`.tx`; a click centres a signal, the wheel tunes.
 Served from elsewhere, it logs in to the station named in its login form (CORS).
+
+`https://<station>:8080/map.html` is who the station hears on FT8, on a world map
+(`gui_interface/web/map.html`): it subscribes to `digi`, `radio.state` and `gps`, reads the
+last six hours from `GET /digi/log`, and places each sender by the locator it sends,
+coloured by SNR and fading with age. With the station's GPS fix, or a locator typed in,
+it draws the paths and gives distance and bearing. **Listen** plays the receiver over
+WebRTC (`rtc.offer`, receive only). It works offline: the coastlines are Natural Earth's
+1:110m, in `map-world.js` (`utils/map_world.py` makes it).
+
+`https://<station>:8080/tune.html` tunes the receiver and plays it (`gui_interface/web/tune.html`):
+step or type a frequency, or **Next / Prev station** to seek: it steps through the broadcast bands
+(medium wave on its 9 kHz raster, short wave on 5 kHz), the amateur bands or 0.5-30 MHz with
+`radio.set`, and stops where `radio.state`'s S-meter rises a set margin above the noise it has
+seen. Stations found are listed to go back to. With `rtc.offer`, **Listen** plays the receiver
+(receive only); with `noise_reduction` in the state, a switch turns the profile's on and off.
+The main page links the three pages.
 
 A daemon built without Go answers `/api/v2` with 503 (`not_supported`).
 Errors are RFC 9457 `application/problem+json` with a stable `code`, and every
