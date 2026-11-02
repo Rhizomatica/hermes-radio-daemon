@@ -948,7 +948,15 @@ last six hours from `GET /digi/log`, and places each sender by the locator it se
 coloured by SNR and fading with age. With the station's GPS fix, or a locator typed in,
 it draws the paths and gives distance and bearing. **Listen** plays the receiver over
 WebRTC (`rtc.offer`, receive only). It works offline: the coastlines are Natural Earth's
-1:110m, in `map-world.js` (`utils/map_world.py` makes it). The main page links both.
+1:110m, in `map-world.js` (`utils/map_world.py` makes it).
+
+`https://<station>:8080/tune.html` tunes the receiver and plays it (`gui_interface/web/tune.html`):
+step or type a frequency, or **Next / Prev station** to seek: it steps through the broadcast bands
+(medium wave on its 9 kHz raster, short wave on 5 kHz), the amateur bands or 0.5-30 MHz with
+`radio.set`, and stops where `radio.state`'s S-meter rises a set margin above the noise it has
+seen. Stations found are listed to go back to. With `rtc.offer`, **Listen** plays the receiver
+(receive only); with `noise_reduction` in the state, a switch turns the profile's on and off.
+The main page links the three pages.
 
 A daemon built without Go answers `/api/v2` with 503 (`not_supported`).
 Errors are RFC 9457 `application/problem+json` with a stable `code`, and every
