@@ -19,6 +19,9 @@ BuildRequires:  csdr-devel
 BuildRequires:  libspecbleach-devel
 BuildRequires:  unixcw-devel
 BuildRequires:  mbelib-neo-devel
+# WebRTC browser audio (rtc.offer); hermes.v1 itself needs the Go layer, not built here
+BuildRequires:  libdatachannel-devel
+BuildRequires:  opus-devel
 
 %description
 radiod controls a HERMES station's radio (Hamlib rigs and the sBitx),
