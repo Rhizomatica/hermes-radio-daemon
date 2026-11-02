@@ -30,7 +30,7 @@ lists every package.
 
 | File | |
 |---|---|
-| `specs/hermes-radio-daemon.spec` | radiod, with mercury linked in; no Go API layer (`/api/v2` answers 503) |
+| `specs/hermes-radio-daemon.spec` | radiod, with mercury linked in and WebRTC audio built in; no Go API layer (`/api/v2` answers 503), so browsers cannot reach the WebRTC audio until radiod is built with Go 1.27 |
 | `specs/mercury.spec` | the standalone mercury modem (its own audio and Hamlib, no GUI), for running mercury without radiod |
 | `specs/*.spec` | the libraries radiod needs that the Sailfish repositories do not carry: fftw, iniparser, hamlib, i2c-tools, csdr, libspecbleach, mbelib-neo, unixcw, and libjuice and libdatachannel for browser audio |
 | `radiod.service` | the systemd unit, with a wakelock (see below) |
@@ -51,7 +51,7 @@ On the device, with developer mode on:
 
    ```sh
    pkcon install rpm-build gcc-c++ openssl-devel alsa-lib-devel libusb1-devel \
-                 pulseaudio-devel
+                 pulseaudio-devel opus-devel
    ```
 
 2. On a machine with autotools, make the Hamlib tarball:
