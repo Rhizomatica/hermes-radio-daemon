@@ -68,6 +68,7 @@ Any of these, in one call; all are validated before any is applied. Without
 | `volume` | integer |  | min 0; max 100 |
 | `filter_width_hz` | integer |  |  |
 | `digital_voice` | boolean |  |  |
+| `noise_reduction` | boolean |  |  |
 
 <a id="args-selectprofileargs"></a>
 ### radio.select_profile (operator)

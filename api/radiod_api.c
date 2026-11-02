@@ -21,6 +21,9 @@
 #include "radio_pipeline.h"
 #include "radio_websocket.h"
 #include "cfg_utils.h"
+#include "radiod_log.h"
+
+#define LOG_C "api"
 #include "dsp/digi_log.h"
 #include "gps/gps.h"
 #include "websocket/ws_server.h"
@@ -189,6 +192,7 @@ void radiod_api_state_get(radiod_api_state *out)
     out->s_meter_db = s;
     out->protection = r->swr_protection_enabled;
     out->digital_voice = radio_backend_get_digital_voice(r, a);
+    out->noise_reduction = r->profiles[a].noise_reduction == NOISE_REDUCTION_ON;
     snprintf(out->backend, sizeof(out->backend), "%s",
              r->backend_kind == RADIO_BACKEND_HFSIGNALS ? "sbitx" : "hamlib");
 }
@@ -211,6 +215,7 @@ int radiod_api_profile_get(uint32_t p, radiod_api_profile *out)
     out->volume = (int) r->profiles[p].speaker_level;
     out->filter_width_hz = r->profiles[p].filter_width;
     out->digital_voice = radio_backend_get_digital_voice(r, p);
+    out->noise_reduction = r->profiles[p].noise_reduction == NOISE_REDUCTION_ON;
     return RADIOD_API_OK;
 }
 
@@ -285,6 +290,20 @@ int radiod_api_set_digital_voice(uint32_t p, bool on)
     if (!valid_profile(p))
         return RADIOD_API_ENOENT;
     return radio_backend_set_digital_voice(s_radio, on, p) ? RADIOD_API_OK : RADIOD_API_EBUSY;
+}
+
+/* Every backend reads the profile's setting as it goes (rx_denoise.h). */
+int radiod_api_set_noise_reduction(uint32_t p, bool on)
+{
+    if (!valid_profile(p))
+        return RADIOD_API_ENOENT;
+    char key[48];
+    snprintf(key, sizeof key, "profile%u:noise_reduction", p);
+    s_radio->profiles[p].noise_reduction = on ? NOISE_REDUCTION_ON : NOISE_REDUCTION_OFF;
+    if (cfg_set(s_radio, s_radio->cfg_user, key, on ? "ON" : "OFF") != 0)
+        HLOGE(LOG_C, "noise_reduction: cannot save it to the configuration");
+    s_radio->cfg_user_dirty = true;
+    return RADIOD_API_OK;
 }
 
 void radiod_api_settings_get(radiod_api_settings *out)

@@ -31,6 +31,7 @@
 #include "cfg_utils.h"
 #include "cat_server.h"
 #include "radio.h"
+#include "dsp/rx_denoise.h"
 
 #include "radiod_log.h"
 
@@ -551,6 +552,12 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     radio_h->dstar_verbose = (uint16_t) i;
     i = iniparser_getint(ini, "main:dstar_denoise", 1);
     radio_h->dstar_denoise = (uint16_t) i;
+    {
+        double v = iniparser_getdouble(ini, "main:rx_noise_reduction_db", RX_DENOISE_REDUCTION_DB);
+        radio_h->rx_nr_reduction_db = (float) (v < 0.0 ? 0.0 : v > 40.0 ? 40.0 : v);
+        v = iniparser_getdouble(ini, "main:rx_noise_reduction_strength", RX_DENOISE_STRENGTH);
+        radio_h->rx_nr_strength = (float) (v < 0.0 ? 0.0 : v > 1.0 ? 1.0 : v);
+    }
     i = iniparser_getint(ini, "main:dstar_encrypt", 0);
     radio_h->dstar_encrypt = (uint16_t) i;
     i = iniparser_getint(ini, "main:rade_encrypt", 0);

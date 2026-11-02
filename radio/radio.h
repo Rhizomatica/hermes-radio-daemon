@@ -466,6 +466,11 @@ typedef struct {
     /* Run-time tunable: enable the specbleach denoise front-end on the
      * D-STAR TX mic path (1 on, 0 off). */
     _Atomic uint16_t dstar_denoise;
+    /* A Hamlib rig's listening audio, on a profile with noise_reduction ON
+     * (dsp/rx_denoise.h): how far the noise comes down (dB) and how hard
+     * noise is told from signal (0-1). */
+    float rx_nr_reduction_db;
+    float rx_nr_strength;
     /* Opt-in D-STAR voice encryption (dsp/dstar_voice.h): 1 encrypts every
      * over this station sends, with the key from voice_key_file. Receiving
      * decrypts whenever a key is loaded, whatever this is set to. */

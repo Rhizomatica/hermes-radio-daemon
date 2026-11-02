@@ -58,38 +58,40 @@ func (h handlers) spectrum(s rad.Spectrum) api.BinaryFunc {
 
 // State is RadioState.
 type State struct {
-	ActiveProfile int      `json:"active_profile"`
-	TX            bool     `json:"tx"`
-	FrequencyHz   uint32   `json:"frequency_hz"`
-	Mode          string   `json:"mode"`
-	Power         int      `json:"power"`
-	SWR           *float64 `json:"swr"`
-	FwdW          *float64 `json:"fwd_w"`
-	RefW          *float64 `json:"ref_w"`
-	SMeterDB      *float64 `json:"s_meter_db"`
-	Protection    bool     `json:"protection"`
-	DigitalVoice  bool     `json:"digital_voice"`
-	Backend       string   `json:"backend"`
-	RigModel      *string  `json:"rig_model"`
+	ActiveProfile  int      `json:"active_profile"`
+	TX             bool     `json:"tx"`
+	FrequencyHz    uint32   `json:"frequency_hz"`
+	Mode           string   `json:"mode"`
+	Power          int      `json:"power"`
+	SWR            *float64 `json:"swr"`
+	FwdW           *float64 `json:"fwd_w"`
+	RefW           *float64 `json:"ref_w"`
+	SMeterDB       *float64 `json:"s_meter_db"`
+	Protection     bool     `json:"protection"`
+	DigitalVoice   bool     `json:"digital_voice"`
+	NoiseReduction bool     `json:"noise_reduction"`
+	Backend        string   `json:"backend"`
+	RigModel       *string  `json:"rig_model"`
 }
 
 // Profile is RadioProfile. Station-wide values (step, SWR limit, BFO, the
 // default profile) are RadioSettings (settings.go).
 type Profile struct {
-	Profile       int     `json:"profile"`
-	FrequencyHz   uint32  `json:"frequency_hz"`
-	Mode          string  `json:"mode"`
-	Power         int     `json:"power"`
-	Volume        int     `json:"volume"`
-	FilterWidthHz *uint32 `json:"filter_width_hz"`
-	DigitalVoice  bool    `json:"digital_voice"`
+	Profile        int     `json:"profile"`
+	FrequencyHz    uint32  `json:"frequency_hz"`
+	Mode           string  `json:"mode"`
+	Power          int     `json:"power"`
+	Volume         int     `json:"volume"`
+	FilterWidthHz  *uint32 `json:"filter_width_hz"`
+	DigitalVoice   bool    `json:"digital_voice"`
+	NoiseReduction bool    `json:"noise_reduction"`
 }
 
 func stateOf(s rad.State) State {
 	out := State{
 		ActiveProfile: s.ActiveProfile, TX: s.TX, FrequencyHz: s.FrequencyHz, Mode: s.Mode,
 		Power: s.Power, Protection: s.Protection,
-		DigitalVoice: s.DigitalVoice, Backend: s.Backend,
+		DigitalVoice: s.DigitalVoice, NoiseReduction: s.NoiseReduction, Backend: s.Backend,
 	}
 	if s.TX { // the bridge readings mean something only while transmitting
 		out.SWR, out.FwdW, out.RefW = &s.SWR, &s.FwdW, &s.RefW
@@ -103,7 +105,7 @@ func stateOf(s rad.State) State {
 func profileOf(p rad.Profile) Profile {
 	out := Profile{
 		Profile: p.Profile, FrequencyHz: p.FrequencyHz, Mode: p.Mode, Power: p.Power,
-		Volume: p.Volume, DigitalVoice: p.DigitalVoice,
+		Volume: p.Volume, DigitalVoice: p.DigitalVoice, NoiseReduction: p.NoiseReduction,
 	}
 	if p.FilterWidthHz != 0 {
 		w := p.FilterWidthHz
@@ -212,12 +214,13 @@ func (h handlers) problemFor(w http.ResponseWriter, r *http.Request, err error) 
 // ── one validator for PATCH and radio.set ──
 
 type patch struct {
-	profile       *int
-	frequency     *uint32
-	mode          *string
-	power, volume *int
-	filterWidth   *uint32
-	digitalVoice  *bool
+	profile        *int
+	frequency      *uint32
+	mode           *string
+	power, volume  *int
+	filterWidth    *uint32
+	digitalVoice   *bool
+	noiseReduction *bool
 }
 
 var modes = map[string]bool{"LSB": true, "USB": true, "CW": true, "FM": true, "AM": true,
@@ -291,6 +294,13 @@ func parsePatch(raw map[string]jsontext.Value, withProfile bool) (patch, api.Fie
 			} else {
 				p.digitalVoice = &b
 			}
+		case "noise_reduction":
+			var b bool
+			if json.Unmarshal(raw[key], &b) != nil {
+				f.Add(key, "true or false")
+			} else {
+				p.noiseReduction = &b
+			}
 		default:
 			f.Add(key, "unknown field")
 		}
@@ -322,6 +332,9 @@ func (h handlers) apply(n int, p patch) error {
 	}
 	if p.digitalVoice != nil {
 		steps = append(steps, func() error { return h.r.SetDigitalVoice(n, *p.digitalVoice) })
+	}
+	if p.noiseReduction != nil {
+		steps = append(steps, func() error { return h.r.SetNoiseReduction(n, *p.noiseReduction) })
 	}
 	for _, s := range steps {
 		if err := s(); err != nil {

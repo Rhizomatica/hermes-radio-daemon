@@ -2023,6 +2023,7 @@ All fields are validated before any is applied.
 | `volume` | integer |  | min 0; max 100 |
 | `filter_width_hz` | integer or null |  |  |
 | `digital_voice` | boolean |  |  |
+| `noise_reduction` | boolean |  |  |
 
 **Responses**
 
@@ -3370,6 +3371,7 @@ Same fields as `ModemConfig`.
 | `volume` | integer |  | min 0; max 100 |
 | `filter_width_hz` | integer or null |  |  |
 | `digital_voice` | boolean |  |  |
+| `noise_reduction` | boolean |  | Noise reduction on the received audio people listen to (USB, LSB, AM, FM, CW), on every backend. The modem and the digital-mode decoders get the audio as it is |
 
 <a id="schema-radioprofilepatch"></a>
 ### RadioProfilePatch
@@ -3382,6 +3384,7 @@ Same fields as `ModemConfig`.
 | `volume` | integer |  | min 0; max 100 |
 | `filter_width_hz` | integer or null |  |  |
 | `digital_voice` | boolean |  |  |
+| `noise_reduction` | boolean |  |  |
 
 <a id="schema-radiosettings"></a>
 ### RadioSettings
@@ -3425,6 +3428,7 @@ Settings radiod keeps once for the station, not per profile.
 | `s_meter_db` | number or null |  | dB relative to S9; null when the rig gives no reading |
 | `protection` | boolean |  | High-SWR protection tripped |
 | `digital_voice` | boolean |  |  |
+| `noise_reduction` | boolean |  | The active profile's noise_reduction |
 | `backend` | one of `sbitx`, `hamlib`, `none` | yes |  |
 | `rig_model` | string or null |  | Hamlib model name, e.g. IC-7100 |
 

@@ -60,6 +60,7 @@
 #include "sbitx_dstar.h"
 #include "dstar_voice.h"
 #include "digi_log.h"
+#include "rx_denoise.h"
 #include "radiod_log.h"
 
 #define LOG_C "dsp"
@@ -184,10 +185,8 @@ static bool radae_rs_init(void)
 static dcblock_preserve_t rx_dc_state = {0.0f, 0.0f};
 static dcblock_preserve_t tx_dc_state = {0.0f, 0.0f};
 
-static specbleach_denoiser *nr_handle = NULL;
-static uint32_t nr_latency = 0;
-static uint64_t nr_total_samples = 0;
-static bool nr_initialized = false;
+/* The receiver's noise reduction, as on the Hamlib rigs (rx_denoise.h). */
+static rx_denoise nr_rx;
 
 static void tx_process_chain(float *audio_buf, int n);
 
@@ -2015,44 +2014,19 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     // 9a: DC block
     rx_dc_state = dcblock_ff(rx_float_buf, rx_float_out, MAX_BINS / 2, 0.999f, rx_dc_state);
 
-    // 9b: Noise reduction (libspecbleach adaptive denoiser)
-    bool nr_enabled = (radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].noise_reduction == NOISE_REDUCTION_ON);
-    if (nr_enabled)
+    // 9b: Noise reduction (libspecbleach adaptive denoiser, rx_denoise.h),
+    // back into rx_float_buf. Without it the DC-blocked audio goes on: it
+    // went on without the DC block, which only the denoiser's path used.
+    if (radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].noise_reduction == NOISE_REDUCTION_ON)
     {
-        if (!nr_initialized)
-        {
-            nr_handle = specbleach_denoiser_initialize(96000, 20.0f, 0u);
-            if (nr_handle)
-            {
-                SpecbleachDenoiserParameters nr_params = specbleach_denoiser_get_default_parameters();
-                nr_params.learn_noise = SPECBLEACH_LEARN_OFF;
-                nr_params.residual_listen = false;
-                nr_params.reduction_gain = 0.25f;
-                nr_params.smoothing_factor = 0.0f;
-                nr_params.whitening_factor = 0.0f;
-                nr_params.adaptive_noise = true;
-                nr_params.noise_estimation_method = SPECBLEACH_NOISE_ESTIMATION_SPP_MMSE;
-                nr_params.masking_depth = 0.5f;
-                nr_params.suppression_strength = 0.5f;
-                nr_params.aggressiveness = 0.0f;
-                nr_params.tonal_reduction_gain = 0.0f;
-                specbleach_denoiser_load_parameters(nr_handle, &nr_params, sizeof(nr_params));
-                nr_latency = specbleach_denoiser_get_latency(nr_handle);
-            }
-            nr_initialized = true;
-        }
-
-        if (nr_handle)
-        {
-            specbleach_denoiser_process(nr_handle, MAX_BINS / 2, rx_float_out, rx_float_buf);
-            nr_total_samples += MAX_BINS / 2;
-
-            if (nr_total_samples < nr_latency + MAX_BINS / 2)
-            {
-                for (int i = 0; i < MAX_BINS / 2; i++)
-                    rx_float_buf[i] = rx_float_out[i];
-            }
-        }
+        rx_denoise_run_f(&nr_rx, 96000, radio_h_dsp->rx_nr_reduction_db,
+                         radio_h_dsp->rx_nr_strength, rx_float_out, rx_float_buf, MAX_BINS / 2);
+    }
+    else
+    {
+        if (nr_rx.sb)
+            rx_denoise_reset(&nr_rx);   /* back on, it learns the noise afresh */
+        memcpy(rx_float_buf, rx_float_out, (MAX_BINS / 2) * sizeof(float));
     }
 
     // 9c: AGC
@@ -2848,12 +2822,7 @@ void dsp_free(radio *radio_h)
     free(rx_filter);
     free(tx_filter);
 
-    if (nr_handle)
-    {
-        specbleach_denoiser_free(nr_handle);
-        nr_handle = NULL;
-        nr_initialized = false;
-    }
+    rx_denoise_free(&nr_rx);
 
     if (loop_up_ready)
     {
