@@ -183,6 +183,9 @@ static void test_digital_text_profile_sets_pktusb(void)
     for (int i = 0; i < 4; i++)
         local.profiles[i].freq = 7074000;
     TEST_ASSERT_TRUE(radio_hamlib_init(&local));
+    /* Hamlib skips a set_mode its cache says is done already: each apply
+     * must reach the rig. */
+    rig_set_cache_timeout_ms((RIG *) local.rig, HAMLIB_CACHE_ALL, 0);
 
     const char *want[] = { "USB", "PKTUSB", "PKTUSB", "PKTUSB" };
     for (uint32_t i = 0; i < 4; i++) {
