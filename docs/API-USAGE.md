@@ -564,6 +564,9 @@ send a ping or any frame at least that often.
 `rtc.offer` once ICE gathering has finished, and set the reply's `sdp` as the answer. `rx` (the default)
 receives the station's audio; `tx: true` adds your microphone, which needs `operator` and goes on the air
 only while this socket holds PTT (`radio.ptt`). The session ends with `rtc.close` or with the socket.
+Close the peer connection yourself then: browsers go on reporting it `connected` for a while after the
+station has ended it. To add the microphone later, attach it to the same transceiver and send the new
+offer as another `rtc.offer` with `tx: true`.
 
 ```js
 // in a page served by the station (getUserMedia needs HTTPS)
@@ -577,6 +580,7 @@ await new Promise((ok) => pc.iceGatheringState === "complete" ? ok() :
 ws.send(JSON.stringify({ type: "cmd", id: "rtc1", cmd: "rtc.offer",
                          args: { sdp: pc.localDescription.sdp, rx: true, tx: true } }));
 // on the reply with id "rtc1": await pc.setRemoteDescription({ type: "answer", sdp: reply.data.sdp });
+ws.addEventListener("close", () => pc.close());
 ```
 
 Implemented topics: `radio.state`, `radio.rig`, `radio.spectrum.rx`, `radio.spectrum.tx`, `digi`, `gps`,
