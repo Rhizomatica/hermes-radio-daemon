@@ -66,15 +66,6 @@ static void remote_set_txrx_state(radio *radio_h, bool txrx_state)
     radio_h->txrx_state = txrx_state;
 }
 
-static char remote_mode[16];
-
-static int remote_set_mode_name(radio *radio_h, const char *mode, uint32_t width)
-{
-    (void) radio_h; (void) width;
-    snprintf(remote_mode, sizeof(remote_mode), "%s", mode);
-    return RADIO_CTRL_OK;
-}
-
 static void start_remote(void)
 {
     remote = calloc(1, sizeof(*remote));
@@ -87,7 +78,6 @@ static void start_remote(void)
     remote_ops.name = "remote";
     remote_ops.dump_state = hamlib_backend_ops.dump_state;
     remote_ops.set_txrx_state = remote_set_txrx_state;
-    remote_ops.set_mode_name = remote_set_mode_name;
     remote->backend_kind = RADIO_BACKEND_HAMLIB;
     remote->backend_ops = &remote_ops;
     remote->profiles_count = 1;
@@ -169,30 +159,37 @@ static void test_shutdown_unkeys_whatever_the_cache(void)
     printf("  shutdown unkeys whatever the cache ... ok\n");
 }
 
+/* What the rig is put in: Hamlib's dummy rig keeps the mode it is set
+ * to, with no link and no thread in between to wait for. */
 static void test_digital_text_profile_sets_pktusb(void)
 {
     radio local;
     init_local(&local);
-    local.profiles_count = 4;
+    local.hamlib_model = RIG_MODEL_DUMMY;
+    local.rig_pathname[0] = '\0';
+    local.profiles_count = 5;
     local.profiles[0].mode = MODE_USB;      /* voice: mic is the TX source */
     local.profiles[1].mode = MODE_FT8;
     local.profiles[2].mode = MODE_CW;
     local.profiles[2].operating_mode = OPERATING_MODE_FULL_LOOPBACK;
     local.profiles[3].mode = MODE_RTTY;
     local.profiles[3].operating_mode = OPERATING_MODE_FULL_LOOPBACK;
-    for (int i = 0; i < 4; i++)
+    local.profiles[4].mode = MODE_AM;       /* in between: none of the above */
+    for (int i = 0; i < 5; i++)
         local.profiles[i].freq = 7074000;
     TEST_ASSERT_TRUE(radio_hamlib_init(&local));
-    /* Hamlib skips a set_mode its cache says is done already: each apply
-     * must reach the rig. */
-    rig_set_cache_timeout_ms((RIG *) local.rig, HAMLIB_CACHE_ALL, 0);
+    RIG *rig = (RIG *) local.rig;
 
     const char *want[] = { "USB", "PKTUSB", "PKTUSB", "PKTUSB" };
     for (uint32_t i = 0; i < 4; i++) {
-        hamlib_apply_profile(&local, 0);
-        remote_mode[0] = 0;
+        rmode_t m;
+        pbwidth_t w;
+        hamlib_apply_profile(&local, 4);
+        TEST_ASSERT_EQUAL_INT(RIG_OK, rig_get_mode(rig, RIG_VFO_CURR, &m, &w));
+        TEST_ASSERT_EQUAL_STRING("AM", rig_strrmode(m));
         hamlib_apply_profile(&local, i);
-        TEST_ASSERT_EQUAL_STRING_MESSAGE(want[i], remote_mode, mode_to_string(local.profiles[i].mode));
+        TEST_ASSERT_EQUAL_INT(RIG_OK, rig_get_mode(rig, RIG_VFO_CURR, &m, &w));
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(want[i], rig_strrmode(m), mode_to_string(local.profiles[i].mode));
     }
 
     radio_hamlib_shutdown(&local);
