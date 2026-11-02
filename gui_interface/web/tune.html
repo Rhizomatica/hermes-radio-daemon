@@ -197,7 +197,7 @@ function connect() {
     if (typeof ev.data !== 'string') return;
     var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
     if (m.type === 'hello') {
-      helloSeen = true;
+      helloSeen = everLive = true;
       $('logout').hidden = !token;
       $('listen').hidden = (m.commands || []).indexOf('rtc.offer') < 0;
       setConn('live · ' + m.role, true);
@@ -217,13 +217,35 @@ function connect() {
     stopListening();
     for (var id in pending) pending[id].fail({code: 'closed', message: 'the connection closed'});
     pending = {};
-    if (ev.code === 1008 || !helloSeen) {
+    if (ev.code === 1008) {                   // the session ended
       token = null; store('hermes.token', null);
-      showLogin(ev.code === 1008 ? 'the session ended: log in again' : 'log in to the station');
+      showLogin('the session ended: log in again');
       return;
     }
-    setTimeout(connect, 2000);
+    if (!helloSeen && !everLive) {            // refused from the start: a login is needed
+      token = null; store('hermes.token', null);
+      showLogin('log in to the station');
+      return;
+    }
+    reconnect(helloSeen);
   };
+}
+
+// Once live, a reconnect that fails is the station restarting or the
+// network: try again. Only a station that answers and still refuses the
+// socket, three times, wants a login.
+var everLive = false, refused = 0;
+function reconnect(wasLive) {
+  if (wasLive) { refused = 0; setTimeout(connect, 2000); return; }
+  fetch(apiBase() + '/health').then(function (r) {
+    if (r.ok && ++refused >= 3) {
+      refused = 0;
+      token = null; store('hermes.token', null);
+      showLogin('the station refused the connection: log in again');
+    } else {
+      setTimeout(connect, 2000);
+    }
+  }, function () { setTimeout(connect, 2000); });
 }
 function setConn(text, ok) { var c = $('conn'); c.textContent = text; c.className = ok ? 'ok' : 'bad'; }
 
