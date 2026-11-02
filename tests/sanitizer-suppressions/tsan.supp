@@ -7,3 +7,10 @@
 # hamlib 4.6 writes its debug-message buffer (debugmsgsave2) from rig_open and
 # its own threads without a lock; library-internal, not radiod's.
 race:libhamlib.so
+
+# libdatachannel is not built with -fsanitize=thread, so TSan does not see the
+# std::future and atomics its threads synchronise with; every report has both
+# accesses inside it (Certificate, Track, Transport), none in radiod's data.
+# This also hides a race in radio_webrtc.c's callbacks, which run on its
+# threads: their state is under radio_webrtc's own mutex.
+race:libdatachannel.so
