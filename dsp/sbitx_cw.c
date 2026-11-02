@@ -323,6 +323,8 @@ static void chan_flush(cw_chan *c, sbitx_cw_rx_cb cb, void *user)
     int nel = 0;
 
     c->nel = 0;
+    float snr_sum = c->snr_sum;
+    c->snr_sum = 0.0f;                /* the next line's, whatever this one is */
     if (n == 0)
         return;
     if (!c->locked)
@@ -385,11 +387,10 @@ static void chan_flush(cw_chan *c, sbitx_cw_rx_cb cb, void *user)
             .text = c->text,
             .pitch_hz = c->pitch,
             .wpm = wpm,
-            .snr_db = c->snr_sum / (float) n,
+            .snr_db = snr_sum / (float) n,
         };
         cb(&line, user);
     }
-    c->snr_sum = 0.0f;
 }
 
 static void chan_mark_end(cw_chan *c, uint32_t len, sbitx_cw_rx_cb cb, void *user)
@@ -523,12 +524,14 @@ static bool rtty_pair(int b)
 
 /* New channels on the narrow peaks well above the floor that no channel
  * has yet. Narrow: over a second, voice smears across the band, a keyed
- * carrier does not. No channel opens on one of an RTTY pair; a CW
- * station 170 Hz from another, both sending, is taken for one too, and
- * waits until the other pauses. */
+ * carrier does not. Keyed: a steady carrier (a birdie, a station tuning
+ * up) has its mean at its peak, and would hold a channel it never gives
+ * back. No channel opens on one of an RTTY pair; a CW station 170 Hz
+ * from another, both sending, is taken for one too, and waits until the
+ * other pauses. */
 static void cw_find(void)
 {
-    const float *m = tone_scan_mean(cw_scan);
+    const float *m = tone_scan_mean(cw_scan), *pk = tone_scan_peak(cw_scan);
     const float fl = tone_scan_floor(cw_scan);
     const int lo = tone_scan_lo_bin(cw_scan) + 10, hi = tone_scan_hi_bin(cw_scan) - 10;
 
@@ -542,6 +545,8 @@ static void cw_find(void)
                 top = false;
         if (!top || m[b] < 4.0f * m[b - 10] || m[b] < 4.0f * m[b + 10])
             continue;
+        if (m[b] > 0.9f * pk[b])
+            continue;                 /* not keyed in the last second */
         if (rtty_pair(b))
             continue;
         float hz = tone_scan_peak_hz(m, b);
@@ -584,7 +589,8 @@ void sbitx_cw_rx_feed(const float *audio_12k, int n, sbitx_cw_rx_cb cb, void *us
                 continue;
             for (int j = 0; j < k; j++)
                 chan_sample(c, audio_12k[j], cb, user);
-            if (!c->on && (float) (c->t - c->last_mark_t) * CW_TICK_S > CW_IDLE_S) {
+            /* no mark for a while: gone quiet, or a carrier since */
+            if ((!c->on || c->carrier) && (float) (c->t - c->last_mark_t) * CW_TICK_S > CW_IDLE_S) {
                 chan_flush(c, cb, user);
                 c->used = false;
             }

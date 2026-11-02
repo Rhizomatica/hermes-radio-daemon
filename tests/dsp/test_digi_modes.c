@@ -183,6 +183,31 @@ static void test_cw_two_stations(void)
     TEST_ASSERT_FLOAT_WITHIN(5.0f, 1430.0f, hz_b);
 }
 
+/* A comb of birdies, more of them than there are CW channels, and then a
+ * station between two of them: steady carriers take no channel, so the
+ * station still gets one. */
+static void test_cw_among_birdies(void)
+{
+    static float x[96000 * 16], y[12000 * 16], a[96000 * 10];
+    memset(x, 0, sizeof x);
+    for (int k = 0; k < 18; k++) {             /* 300, 450 ... 2850 Hz */
+        float w = 2.0f * (float) M_PI * (300.0f + 150.0f * k) / 96000.0f;
+        for (int i = 0; i < 96000 * 16; i++)
+            x[i] += 0.05f * sinf(w * (float) i + (float) k);
+    }
+    int na = sbitx_cw_encode("CQ DE PY2ABC K", a, 96000 * 10, 20, 1125);
+    for (int i = 0; i < na && 96000 * 5 + i < 96000 * 16; i++)
+        x[96000 * 5 + i] += a[i];
+    int m = to12k(x, 96000 * 16, 0.05f, y);
+    cw_decode(y, m);
+    float hz = 0;
+    char line[128];
+    snprintf(line, sizeof line, "%s", rx_line_at(1125, &hz));
+    printf("CW   among 18 birdies: %.0f Hz [%s], %d lines\n", hz, line, rx_nlines);
+    TEST_ASSERT_EQUAL_STRING("CQ DE PY2ABC K", line);
+    TEST_ASSERT_FLOAT_WITHIN(5.0f, 1125.0f, hz);
+}
+
 /* Two RTTY stations at once, away from rtty_mark, one of them reversed
  * (mark the lower tone): both decode, each in its own polarity. */
 static void test_rtty_two_stations(void)
@@ -451,6 +476,7 @@ int main(void)
     RUN_TEST(test_rtty_noisy);
     RUN_TEST(test_cw_two_stations);
     RUN_TEST(test_rtty_two_stations);
+    RUN_TEST(test_cw_among_birdies);
     RUN_TEST(test_ft8_clean);
     RUN_TEST(test_ft8_noisy);
     RUN_TEST(test_noise_only);
