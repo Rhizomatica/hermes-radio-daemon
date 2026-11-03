@@ -1,6 +1,6 @@
-%global commit edca701b
+%global commit b4e24bc2
 Name:           mercury
-Version:        1.9.21
+Version:        1.9.22
 Release:        1
 Summary:        HF modem for store-and-forward communication
 License:        GPL-3.0-or-later
