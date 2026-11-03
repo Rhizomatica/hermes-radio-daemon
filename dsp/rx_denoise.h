@@ -1,11 +1,12 @@
 /* rx_denoise - noise reduction on the receiver's listening audio
  *
- * libspecbleach's spectral denoiser, on a profile with noise_reduction =
- * ON, with core.ini's rx_noise_reduction_db and _strength, the same on
- * every backend: the sBitx runs it in its DSP chain after the demodulator,
- * a Hamlib rig on the audio people listen to (rx_audio_ring: the browser,
- * the websocket stream, a headset). The modem, the digital-mode decoders,
- * recordings and the spectrum keep the audio as it is.
+ * libspecbleach's spectral denoiser, on the profiles radio_profile_denoised
+ * (radio.h) says (noise_reduction = ON, a voice profile, a listening mode),
+ * with core.ini's rx_noise_reduction_db and _strength, the same on every
+ * backend: the sBitx runs it in its DSP chain after the demodulator and the
+ * digital-mode decoders' tap, a Hamlib rig on the audio people listen to
+ * (rx_audio_ring: the browser, the websocket stream, a headset), where the
+ * modem, recordings and the spectrum keep the audio as it is.
  *
  * One instance per stream, used from its thread only.
  *

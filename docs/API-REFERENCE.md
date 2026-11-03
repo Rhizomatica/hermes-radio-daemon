@@ -3371,7 +3371,7 @@ Same fields as `ModemConfig`.
 | `volume` | integer |  | min 0; max 100 |
 | `filter_width_hz` | integer or null |  |  |
 | `digital_voice` | boolean |  |  |
-| `noise_reduction` | boolean |  | Noise reduction on the received audio people listen to (USB, LSB, AM, FM, CW), on every backend. The modem and the digital-mode decoders get the audio as it is |
+| `noise_reduction` | boolean |  | Noise reduction on the received audio people listen to, on every backend: on a voice profile (operating_mode 0) in USB, LSB, AM, FM or CW. The modem's profile is never denoised, and the digital-mode decoders get the audio as it is |
 
 <a id="schema-radioprofilepatch"></a>
 ### RadioProfilePatch

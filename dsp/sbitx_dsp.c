@@ -2015,9 +2015,11 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     rx_dc_state = dcblock_ff(rx_float_buf, rx_float_out, MAX_BINS / 2, 0.999f, rx_dc_state);
 
     // 9b: Noise reduction (libspecbleach adaptive denoiser, rx_denoise.h),
-    // back into rx_float_buf. Without it the DC-blocked audio goes on: it
-    // went on without the DC block, which only the denoiser's path used.
-    if (radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].noise_reduction == NOISE_REDUCTION_ON)
+    // back into rx_float_buf, on the profiles radio_profile_denoised says:
+    // this audio is the loopback's too, so never on the modem's profile.
+    // Without it the DC-blocked audio goes on: it went on without the DC
+    // block, which only the denoiser's path used.
+    if (radio_profile_denoised(&radio_h_dsp->profiles[radio_h_dsp->profile_active_idx]))
     {
         rx_denoise_run_f(&nr_rx, 96000, radio_h_dsp->rx_nr_reduction_db,
                          radio_h_dsp->rx_nr_strength, rx_float_out, rx_float_buf, MAX_BINS / 2);

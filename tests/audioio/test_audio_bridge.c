@@ -9,8 +9,8 @@
  *
  * Noise reduction: on a Hamlib profile with noise_reduction ON, the
  * listening ring gets less noise and keeps the tone, the decoders' ring
- * gets the audio as it was; off, or in a digital mode, both get it as it
- * was. */
+ * gets the audio as it was; off, in a digital mode, or on a data profile
+ * (the modem's), both get it as it was. */
 
 #include <math.h>
 #include <stdio.h>
@@ -156,6 +156,7 @@ static void hamlib_profile(uint16_t mode, uint16_t nr)
     r.profile_active_idx = 0;
     r.profiles[0].mode = mode;
     r.profiles[0].noise_reduction = nr;
+    r.profiles[0].operating_mode = OPERATING_MODE_FULL_VOICE;
     r.rx_nr_reduction_db = RX_DENOISE_REDUCTION_DB;
     r.rx_nr_strength = RX_DENOISE_STRENGTH;
 }
@@ -202,6 +203,13 @@ static void test_no_noise_reduction_off_or_digital(void)
     hamlib_profile(MODE_FT8, NOISE_REDUCTION_ON);
     feed_noise_then_tone();
     TEST_ASSERT_EQUAL_INT16_ARRAY_MESSAGE(digi, sink, nsink, "FT8 is not denoised");
+
+    /* the modem's profile, USB on the loopback */
+    setUp();
+    hamlib_profile(MODE_USB, NOISE_REDUCTION_ON);
+    r.profiles[0].operating_mode = OPERATING_MODE_FULL_LOOPBACK;
+    feed_noise_then_tone();
+    TEST_ASSERT_EQUAL_INT16_ARRAY_MESSAGE(digi, sink, nsink, "a data profile is not denoised");
 }
 
 int main(void)

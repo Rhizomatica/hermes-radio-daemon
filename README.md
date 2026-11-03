@@ -566,7 +566,7 @@ enable_ptt = 1
 | `agc` | `OFF`, `SLOW`, `MEDIUM`, `FAST` | RX automatic gain control |
 | `compressor` | `OFF`, `ON` | TX wideband speech compressor |
 | `tx_preemphasis` | `OFF`, `ON` | +6 dB/octave treble boost above 2 kHz |
-| `noise_reduction` | `OFF`, `ON` | libspecbleach adaptive spectral denoiser on the received audio, on every backend: what the browser, the websocket stream and the speaker play, in USB, LSB, AM, FM and CW (the modem and the digital-mode decoders get the audio as it is); `core.ini`'s `rx_noise_reduction_db` and `rx_noise_reduction_strength` set how much |
+| `noise_reduction` | `OFF`, `ON` | libspecbleach adaptive spectral denoiser on the received audio, on every backend: what the browser, the websocket stream and the speaker play, on a voice profile (`operating_mode = 0`) in USB, LSB, AM, FM and CW (the modem's profile is never denoised, and the digital-mode decoders get the audio as it is); `core.ini`'s `rx_noise_reduction_db` and `rx_noise_reduction_strength` set how much |
 | `digital_voice` | `0`, `1` | Digital voice, in the codec `main:digital_voice_codec` selects |
 | `dv_restore_mode` | a `mode` | Mode D-STAR digital voice returns to when switched off (kept by the daemon) |
 | `power_level_percentage` | 0–100 | TX RF power level |

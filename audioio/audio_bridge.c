@@ -205,19 +205,14 @@ static size_t resample_down(audio_bridge *b, const int16_t *samples, size_t n_in
                          &b->pend_down, &b->pend_down_len, &b->pend_down_cap);
 }
 
-/* Whether the listening audio is noise-reduced: a Hamlib rig's, on a
- * profile with noise_reduction ON, in a mode people listen to. FT8, RTTY,
- * DRM and digital voice are tones and data, which it would only smear. */
+/* Whether the listening audio is noise-reduced: a Hamlib rig's, when the
+ * active profile is (radio_profile_denoised). */
 static bool rx_denoise_wanted(radio *radio_h)
 {
     if (radio_h->backend_kind != RADIO_BACKEND_HAMLIB)
         return false;               /* the sBitx denoises in its own DSP */
     uint32_t p = radio_h->profile_active_idx;
-    if (p >= MAX_RADIO_PROFILES || radio_h->profiles[p].noise_reduction != NOISE_REDUCTION_ON ||
-        radio_h->profiles[p].digital_voice)
-        return false;
-    uint16_t m = radio_h->profiles[p].mode;
-    return m == MODE_USB || m == MODE_LSB || m == MODE_AM || m == MODE_FM || m == MODE_CW;
+    return p < MAX_RADIO_PROFILES && radio_profile_denoised(&radio_h->profiles[p]);
 }
 
 static void push_rx(audio_bridge *b, radio *radio_h, const int16_t *samples, size_t n)
