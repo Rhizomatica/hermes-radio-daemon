@@ -444,7 +444,9 @@ function addDecode(d) {
   row.className = d.dir === 'tx' ? 'tx' : '';
   meta.className = 'meta';
   meta.textContent = (d.at || '').slice(11, 19) + ' ' + d.mode + ' ' +
-    (d.offset_hz != null ? d.offset_hz + ' Hz ' : '') + (d.snr_db != null ? d.snr_db + ' dB ' : '') +
+    (d.frequency_hz != null ? Math.round(d.frequency_hz / 100) / 10 + ' kHz ' : '') +
+    (d.offset_hz != null ? d.offset_hz + ' Hz ' : '') +
+    (d.snr_db != null ? d.snr_db + ' dB ' : '') +
     (d.dir === 'tx' ? 'TX ' : '') + ' ';
   row.appendChild(meta);
   row.appendChild(document.createTextNode(d.text || ''));

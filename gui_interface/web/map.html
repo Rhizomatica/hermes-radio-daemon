@@ -113,7 +113,7 @@
     <h2>FT8 received, newest first</h2>
     <div id="list">
       <table>
-        <thead><tr><th>UTC</th><th class="num">dB</th><th class="num">DT</th><th class="num">Hz</th><th>message</th><th class="num">km</th></tr></thead>
+        <thead><tr><th>UTC</th><th class="num">dB</th><th class="num">DT</th><th class="num" title="The USB dial frequency it was received on">kHz</th><th>message</th><th class="num">km</th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
     </div>
@@ -375,6 +375,12 @@ function add(d) {
   draw();
 }
 
+// The USB dial frequency it was received on, in kHz (as FT8 frequencies
+// are given: 14074).
+function dialKHz(d) {
+  return d.frequency_hz == null ? '' : String(Math.round(d.frequency_hz / 100) / 10);
+}
+
 function visible(d, now) {
   var max = +$('age').value;
   return !max || now - d.t <= max * 1000;
@@ -397,7 +403,7 @@ function renderList() {
     var km = d.station && d.station.lat != null && home ?
       (d.station.grid ? '' : '~') + Math.round(distance(home, d.station)) : '';
     [new Date(d.t).toISOString().slice(11, 19), d.snr_db, d.dt_s == null ? '' : d.dt_s.toFixed(1),
-     d.offset_hz, (d.dir === 'tx' ? 'TX ' : '') + (d.text || ''), km].forEach(function (v, i) {
+     dialKHz(d), (d.dir === 'tx' ? 'TX ' : '') + (d.text || ''), km].forEach(function (v, i) {
       var td = document.createElement('td');
       td.textContent = v == null ? '' : v;
       if (i !== 0 && i !== 4) td.className = 'num';
@@ -656,6 +662,8 @@ function nearest(x, y) {
 function tipText(s) {
   var d = s.last, lines = [s.call + '  ' + (s.grid || '~' + s.country + ' (from the callsign)')];
   lines.push((d.snr_db == null ? '' : d.snr_db + ' dB  ') + new Date(d.t).toISOString().slice(11, 19) + ' UTC');
+  if (d.frequency_hz != null)
+    lines.push(dialKHz(d) + ' kHz USB' + (d.offset_hz != null ? ', ' + d.offset_hz + ' Hz in the audio' : ''));
   if (home) lines.push((s.grid ? '' : '~') + Math.round(distance(home, s)) + ' km  ' + Math.round(bearing(home, s)) + '°');
   lines.push(d.text || '');
   return lines.join('\n');
