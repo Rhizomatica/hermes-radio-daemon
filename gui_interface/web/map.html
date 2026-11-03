@@ -46,7 +46,7 @@
     background: rgba(5, 8, 12, .9); border: 1px solid var(--line); padding: 5px 8px;
     border-radius: 4px; white-space: pre; }
   #msg { position: absolute; left: 52px; top: 12px; font: 12px var(--mono); color: var(--warn); }
-  aside { width: 30em; max-width: 45%; display: flex; flex-direction: column; min-height: 0;
+  aside { width: 36em; max-width: 50%; display: flex; flex-direction: column; min-height: 0;
     border-left: 1px solid var(--line); background: var(--panel); }
   aside h2 { margin: 0; padding: 8px 12px; font-size: 13px; font-weight: 600; color: var(--dim);
     border-bottom: 1px solid var(--line); }
@@ -113,7 +113,7 @@
     <h2>FT8 received, newest first</h2>
     <div id="list">
       <table>
-        <thead><tr><th>UTC</th><th class="num">dB</th><th class="num">DT</th><th class="num" title="The USB dial frequency it was received on">kHz</th><th>message</th><th class="num">km</th></tr></thead>
+        <thead><tr><th>UTC</th><th class="num">dB</th><th class="num">DT</th><th class="num" title="The USB dial frequency it was received on, kHz">dial</th><th class="num" title="The signal's centre on the air: the dial plus its audio offset, kHz">center</th><th>message</th><th class="num">km</th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
     </div>
@@ -376,9 +376,13 @@ function add(d) {
 }
 
 // The USB dial frequency it was received on, in kHz (as FT8 frequencies
-// are given: 14074).
+// are given: 14074), and the signal's centre on the air, the dial plus its
+// audio offset, to the hertz.
 function dialKHz(d) {
   return d.frequency_hz == null ? '' : String(Math.round(d.frequency_hz / 100) / 10);
+}
+function centerKHz(d) {
+  return d.frequency_hz == null || d.offset_hz == null ? '' : ((d.frequency_hz + d.offset_hz) / 1000).toFixed(3);
 }
 
 function visible(d, now) {
@@ -403,11 +407,11 @@ function renderList() {
     var km = d.station && d.station.lat != null && home ?
       (d.station.grid ? '' : '~') + Math.round(distance(home, d.station)) : '';
     [new Date(d.t).toISOString().slice(11, 19), d.snr_db, d.dt_s == null ? '' : d.dt_s.toFixed(1),
-     dialKHz(d), (d.dir === 'tx' ? 'TX ' : '') + (d.text || ''), km].forEach(function (v, i) {
+     dialKHz(d), centerKHz(d), (d.dir === 'tx' ? 'TX ' : '') + (d.text || ''), km].forEach(function (v, i) {
       var td = document.createElement('td');
       td.textContent = v == null ? '' : v;
-      if (i !== 0 && i !== 4) td.className = 'num';
-      if (i === 4) td.className = 'text';
+      if (i !== 0 && i !== 5) td.className = 'num';
+      if (i === 5) td.className = 'text';
       tr.appendChild(td);
     });
     if (d.station) tr.addEventListener('click', function () { select(d.station, true); });
@@ -663,7 +667,7 @@ function tipText(s) {
   var d = s.last, lines = [s.call + '  ' + (s.grid || '~' + s.country + ' (from the callsign)')];
   lines.push((d.snr_db == null ? '' : d.snr_db + ' dB  ') + new Date(d.t).toISOString().slice(11, 19) + ' UTC');
   if (d.frequency_hz != null)
-    lines.push(dialKHz(d) + ' kHz USB' + (d.offset_hz != null ? ', ' + d.offset_hz + ' Hz in the audio' : ''));
+    lines.push('dial ' + dialKHz(d) + ' kHz USB' + (d.offset_hz != null ? ', center ' + centerKHz(d) + ' kHz' : ''));
   if (home) lines.push((s.grid ? '' : '~') + Math.round(distance(home, s)) + ' km  ' + Math.round(bearing(home, s)) + '°');
   lines.push(d.text || '');
   return lines.join('\n');
