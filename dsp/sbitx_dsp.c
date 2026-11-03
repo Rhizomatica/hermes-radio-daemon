@@ -486,14 +486,6 @@ static void dsp_process_digital_voice_rx(double *rx_baseband_i, double *rx_baseb
  * here (csdr polyphase) and feed the active mode's decoder, logging
  * decodes to the digi spool the same way the TX path does. Decoders
  * live in dsp/sbitx_{ft8,cw,rtty}.c. */
-static void digi_rx_spool(const char *mode, int freq_khz, const char *text)
-{
-    digi_log_entry e = { .mode = mode, .dir = "rx", .freq_hz = (uint64_t) freq_khz * 1000, .text = text };
-    if (!strcmp(mode, "RTTY")) { e.has_offset = true; e.offset_hz = radio_h_dsp->rtty_mark; }
-    else if (!strcmp(mode, "CW")) { e.has_offset = true; e.offset_hz = radio_h_dsp->cw_pitch; }
-    digi_log_add(&e);
-}
-
 /* A transmitted digital-mode message, at the active profile's frequency. */
 static void digi_tx_log(const char *mode, const char *text, int offset_hz)
 {
@@ -505,38 +497,25 @@ static void digi_tx_log(const char *mode, const char *text, int offset_hz)
     digi_log_add(&e);
 }
 
-static char     g_rtty_rx_line[256];
-static int      g_rtty_rx_pos;
-static int      g_rtty_rx_freq_khz;
-static void     digi_rtty_char_cb(char c)
+/* A line from the RTTY skimmer, at the station's own mark tone. */
+static void digi_rtty_line_cb(const sbitx_rtty_rx_line *l, void *user)
 {
-    if (c == '\r' || c == '\n') {
-        if (g_rtty_rx_pos > 0) {
-            g_rtty_rx_line[g_rtty_rx_pos] = '\0';
-            digi_rx_spool("RTTY", g_rtty_rx_freq_khz, g_rtty_rx_line);
-            g_rtty_rx_pos = 0;
-        }
-        return;
-    }
-    if (g_rtty_rx_pos < (int) sizeof(g_rtty_rx_line) - 1)
-        g_rtty_rx_line[g_rtty_rx_pos++] = c;
+    digi_log_entry e = {
+        .mode = "RTTY", .dir = "rx", .freq_hz = (uint64_t) *(const int *) user * 1000, .text = l->text,
+        .has_offset = true, .offset_hz = (int) lrintf(l->mark_hz),
+    };
+    digi_log_add(&e);
 }
 
-static char g_cw_rx_line[256];
-static int  g_cw_rx_pos;
-static int  g_cw_rx_freq_khz;
-static void digi_cw_char_cb(char c)
+/* A line from the CW skimmer, at the station's own pitch. */
+static void digi_cw_line_cb(const sbitx_cw_rx_line *l, void *user)
 {
-    if (c == ' ' || c == '\n') {
-        if (g_cw_rx_pos > 0) {
-            g_cw_rx_line[g_cw_rx_pos] = '\0';
-            digi_rx_spool("CW", g_cw_rx_freq_khz, g_cw_rx_line);
-            g_cw_rx_pos = 0;
-        }
-        return;
-    }
-    if (g_cw_rx_pos < (int) sizeof(g_cw_rx_line) - 1)
-        g_cw_rx_line[g_cw_rx_pos++] = c;
+    digi_log_entry e = {
+        .mode = "CW", .dir = "rx", .freq_hz = (uint64_t) *(const int *) user * 1000, .text = l->text,
+        .has_offset = true, .offset_hz = (int) lrintf(l->pitch_hz),
+        .has_snr = true, .snr_db = l->snr_db,
+    };
+    digi_log_add(&e);
 }
 
 #define DIGI_RX_DECIM   8           /* 96 kHz -> 12 kHz */
@@ -1180,49 +1159,11 @@ static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, in
     if (mode == MODE_CW) {
         static bool inited = false;
         if (!inited) { sbitx_cw_init(radio_h_dsp->cw_wpm, radio_h_dsp->cw_pitch); inited = true; }
-        int block = sbitx_cw_rx_samples_per_block();
-        static float acc[8192]; static int accn = 0;
-        for (int i = 0; i < n12 && accn < (int) (sizeof(acc)/sizeof(acc[0])); i++)
-            acc[accn++] = out12[i];
-        g_cw_rx_freq_khz = freq_khz;
-        while (accn >= block) {
-            char decoded[64] = {0};
-            int got = sbitx_cw_rx_process(acc, block, decoded, sizeof(decoded),
-                                          radio_h_dsp->cw_wpm, radio_h_dsp->cw_pitch);
-            for (int i = 0; i < got && decoded[i]; i++)
-                digi_cw_char_cb(decoded[i]);
-            memmove(acc, acc + block, (accn - block) * sizeof(float));
-            accn -= block;
-        }
+        sbitx_cw_rx_feed(out12, n12, digi_cw_line_cb, &freq_khz);
     }
     else if (mode == MODE_RTTY) {
-        static bool inited = false;
-        if (!inited) {
-            sbitx_rtty_init(radio_h_dsp->rtty_baud, radio_h_dsp->rtty_mark,
-                            radio_h_dsp->rtty_shift);
-            inited = true;
-        }
-        int block = sbitx_rtty_rx_samples_per_block();
-        static float acc[16384]; static int accn = 0;
-        for (int i = 0; i < n12 && accn < (int) (sizeof(acc)/sizeof(acc[0])); i++)
-            acc[accn++] = out12[i];
-        g_rtty_rx_freq_khz = freq_khz;
-        while (accn >= block) {
-            int before = g_rtty_rx_pos;
-            sbitx_rtty_rx_process(acc, block, radio_h_dsp->rtty_baud,
-                                  radio_h_dsp->rtty_mark, radio_h_dsp->rtty_shift,
-                                  digi_rtty_char_cb);
-            memmove(acc, acc + block, (accn - block) * sizeof(float));
-            accn -= block;
-            /* Log a line left without CR/LF after 2 s of no new text. */
-            static int idle = 0;
-            if (g_rtty_rx_pos != before)
-                idle = 0;
-            else if (g_rtty_rx_pos > 0 && (idle += block) >= 2 * DIGI_RX_RATE) {
-                digi_rtty_char_cb('\n');
-                idle = 0;
-            }
-        }
+        sbitx_rtty_rx_feed(out12, n12, radio_h_dsp->rtty_baud, radio_h_dsp->rtty_shift,
+                           digi_rtty_line_cb, &freq_khz);
     }
     else if (mode == MODE_FT8) {
         static bool inited = false;
@@ -2155,11 +2096,14 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     if (tx_mode == MODE_CW)
     {
         static bool   cw_tx_inited = false;
-        /* 8 s of CW audio at 96 kHz; ample for short messages even at
-         * slow WPM. Long messages are encoded one chunk per pop. */
+        /* 8 s of CW audio at 96 kHz, a part of the message at a time:
+         * whole words, the next part when this one has gone out
+         * (sbitx_cw_encode_part). A longer message was cut at 8 s. */
         static float  cw_audio[96000 * 8];
         static int    cw_audio_len = 0;
         static int    cw_audio_pos = 0;
+        static char   cw_text[DIGI_TX_MSG_MAX];
+        static const char *cw_rest = "";
 
         if (!cw_tx_inited)
         {
@@ -2169,24 +2113,27 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
 
         if (digi_tx_new_over) {
             cw_audio_pos = cw_audio_len;
+            cw_rest = "";                  /* what an unkeyed over left unsent */
             digi_tx_new_over = false;
         }
         if (cw_audio_pos >= cw_audio_len)
         {
-            char text[DIGI_TX_MSG_MAX];
-            if (digi_tx_queue_pop(&radio_h_dsp->digi_tx, text, sizeof(text)))
+            if (!*cw_rest && digi_tx_queue_pop(&radio_h_dsp->digi_tx, cw_text, sizeof(cw_text)))
+            {
+                cw_rest = cw_text;
+                digi_tx_log("CW", cw_text, radio_h_dsp->cw_pitch);
+            }
+            if (*cw_rest)
             {
                 /* Busy from the moment the text leaves the queue: FT8's
                  * encode + 8x upsample takes long enough that io_tick
                  * saw an empty queue and an idle DSP, and unkeyed. */
                 digi_tx_sending = true;
-                cw_audio_len = sbitx_cw_encode(
-                    text, cw_audio,
+                cw_audio_len = sbitx_cw_encode_part(
+                    &cw_rest, cw_audio,
                     (int) (sizeof(cw_audio) / sizeof(cw_audio[0])),
                     radio_h_dsp->cw_wpm, radio_h_dsp->cw_pitch);
                 cw_audio_pos = 0;
-
-                digi_tx_log("CW", text, radio_h_dsp->cw_pitch);
             }
             else
             {
@@ -2206,7 +2153,8 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             fft_in[i] = (double) tone;
             fft_m[k]  = fft_in[i];
         }
-        digi_tx_sending = cw_audio_pos < cw_audio_len;
+        /* and between parts: the control loop must not unkey there */
+        digi_tx_sending = cw_audio_pos < cw_audio_len || *cw_rest;
     }
     // FT8 TX: pop messages from the digi_tx queue, encode to 12 kHz
     // GFSK audio via sbitx_ft8_encode, then upsample 8× to 96 kHz once
@@ -2328,11 +2276,15 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     else if (tx_mode == MODE_RTTY)
     {
         static bool  rtty_inited      = false;
-        /* 8 s at 96 kHz. The old 8192-sample (~0.085 s) buffer truncated
-         * RTTY to less than one Baudot character. */
+        /* 8 s at 96 kHz, a part of the message at a time (whole words,
+         * sbitx_rtty_encode_part): a longer one was cut at 8 s. The old
+         * 8192-sample (~0.085 s) buffer truncated RTTY to less than one
+         * Baudot character. */
         static float rtty_audio[96000 * 8];
         static int   rtty_audio_len   = 0;
         static int   rtty_audio_pos   = 0;
+        static char  rtty_text[DIGI_TX_MSG_MAX];
+        static const char *rtty_rest = NULL;     /* NULL: no message going out */
 
         if (!rtty_inited)
         {
@@ -2345,28 +2297,36 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
          * there's another one waiting. If not, emit silence. */
         if (digi_tx_new_over) {
             rtty_audio_pos = rtty_audio_len;
+            rtty_rest = NULL;              /* what an unkeyed over left unsent */
             digi_tx_new_over = false;
         }
         if (rtty_audio_pos >= rtty_audio_len)
         {
-            char text[DIGI_TX_MSG_MAX];
-            if (digi_tx_queue_pop(&radio_h_dsp->digi_tx, text, sizeof(text)))
+            bool first = false;
+            if ((!rtty_rest || !*rtty_rest) &&
+                digi_tx_queue_pop(&radio_h_dsp->digi_tx, rtty_text, sizeof(rtty_text)))
+            {
+                rtty_rest = rtty_text;
+                first = true;
+                /* Also log the outbound message, so `digi_messages` shows what
+                 * we transmitted. */
+                digi_tx_log("RTTY", rtty_text, radio_h_dsp->rtty_mark);
+            }
+            if (rtty_rest && (first || *rtty_rest))
             {
                 /* Busy from the moment the text leaves the queue: FT8's
                  * encode + 8x upsample takes long enough that io_tick
                  * saw an empty queue and an idle DSP, and unkeyed. */
                 digi_tx_sending = true;
-                rtty_audio_len = sbitx_rtty_encode(
-                    text, rtty_audio,
+                rtty_audio_len = sbitx_rtty_encode_part(
+                    &rtty_rest, first, rtty_audio,
                     (int) (sizeof(rtty_audio) / sizeof(rtty_audio[0])),
                     radio_h_dsp->rtty_baud,
                     radio_h_dsp->rtty_mark,
                     radio_h_dsp->rtty_shift);
                 rtty_audio_pos = 0;
-
-                /* Also log the outbound message, so `digi_messages` shows what
-                 * we transmitted. */
-                digi_tx_log("RTTY", text, radio_h_dsp->rtty_mark);
+                if (!*rtty_rest)
+                    rtty_rest = NULL;
             }
             else
             {
@@ -2386,7 +2346,7 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             fft_in[i] = (double) tone;
             fft_m[k]  = fft_in[i];
         }
-        digi_tx_sending = rtty_audio_pos < rtty_audio_len;
+        digi_tx_sending = rtty_audio_pos < rtty_audio_len || rtty_rest != NULL;
     }
     // D-STAR TX: mic 96k -> 8k -> AMBE -> GMSK 24k -> 96k -> FM modulator
     else if (tx_mode == MODE_DSTAR)
