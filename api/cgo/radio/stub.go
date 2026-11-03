@@ -138,6 +138,7 @@ func (s *Stub) State() State {
 	st := s.state
 	p := s.profiles[st.ActiveProfile]
 	st.FrequencyHz, st.Mode, st.Power, st.DigitalVoice = p.FrequencyHz, p.Mode, p.Power, p.DigitalVoice
+	st.NoiseReduction = p.NoiseReduction
 	return st
 }
 
@@ -228,6 +229,10 @@ func (s *Stub) SetDigitalVoice(n int, on bool) error {
 		return ErrBusy
 	}
 	return s.with(n, func(p *Profile) error { p.DigitalVoice = on; return nil })
+}
+
+func (s *Stub) SetNoiseReduction(n int, on bool) error {
+	return s.with(n, func(p *Profile) error { p.NoiseReduction = on; return nil })
 }
 
 func (s *Stub) ResetProtection() { s.mu.Lock(); s.state.Protection = false; s.mu.Unlock() }

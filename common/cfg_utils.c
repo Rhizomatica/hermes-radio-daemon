@@ -21,6 +21,7 @@
  */
 
 #include <iniparser.h>
+#include <math.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
@@ -31,6 +32,7 @@
 #include "cfg_utils.h"
 #include "cat_server.h"
 #include "radio.h"
+#include "dsp/rx_denoise.h"
 
 #include "radiod_log.h"
 
@@ -560,6 +562,16 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     radio_h->dstar_verbose = (uint16_t) i;
     i = iniparser_getint(ini, "main:dstar_denoise", 1);
     radio_h->dstar_denoise = (uint16_t) i;
+    {
+        double v = iniparser_getdouble(ini, "main:rx_noise_reduction_db", RX_DENOISE_REDUCTION_DB);
+        if (!isfinite(v))       /* "nan" would start a new denoiser every block */
+            v = RX_DENOISE_REDUCTION_DB;
+        radio_h->rx_nr_reduction_db = (float) (v < 0.0 ? 0.0 : v > 40.0 ? 40.0 : v);
+        v = iniparser_getdouble(ini, "main:rx_noise_reduction_strength", RX_DENOISE_STRENGTH);
+        if (!isfinite(v))
+            v = RX_DENOISE_STRENGTH;
+        radio_h->rx_nr_strength = (float) (v < 0.0 ? 0.0 : v > 1.0 ? 1.0 : v);
+    }
     i = iniparser_getint(ini, "main:dstar_encrypt", 0);
     radio_h->dstar_encrypt = (uint16_t) i;
     i = iniparser_getint(ini, "main:rade_encrypt", 0);
@@ -699,8 +711,9 @@ bool init_config_user(radio *radio_h, const char *ini_name)
 
         snprintf(key, sizeof(key), "profile%d:compressor", k);
         s = iniparser_getstring(ini, key, "OFF");
+        /* ON, or 1 as the sBitx's controls save it */
         radio_h->profiles[k].compressor =
-            (!strcmp(s, "ON")) ? COMPRESSOR_ON : COMPRESSOR_OFF;
+            (!strcasecmp(s, "ON") || !strcmp(s, "1")) ? COMPRESSOR_ON : COMPRESSOR_OFF;
 
         snprintf(key, sizeof(key), "profile%d:digital_voice", k);
         int b2 = iniparser_getboolean(ini, key, 0);
@@ -755,7 +768,7 @@ bool init_config_user(radio *radio_h, const char *ini_name)
         snprintf(key, sizeof(key), "profile%d:noise_reduction", k);
         s = iniparser_getstring(ini, key, "OFF");
         radio_h->profiles[k].noise_reduction =
-            !strcasecmp(s, "ON") ? NOISE_REDUCTION_ON : NOISE_REDUCTION_OFF;
+            (!strcasecmp(s, "ON") || !strcmp(s, "1")) ? NOISE_REDUCTION_ON : NOISE_REDUCTION_OFF;
     }
 
     if (radio_h->profile_active_idx >= radio_h->profiles_count)

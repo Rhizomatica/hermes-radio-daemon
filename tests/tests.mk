@@ -167,8 +167,10 @@ tests/modem/test_modem_audio: tests/modem/test_modem_audio.c modem/modem_audio.c
 	$(CC) $(TEST_CFLAGS) $< modem/modem_audio.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread -lm
 
 # ── audioio/ ────────────────────────────────────────────────────
-tests/audioio/test_audio_bridge: tests/audioio/test_audio_bridge.c audioio/audio_bridge.c audioio/audio_bridge.h radio/radio.h
-	$(CC) $(TEST_CFLAGS) -I/usr/include/csdr $< audioio/audio_bridge.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lcsdr -lfftw3f -lm
+tests/audioio/test_audio_bridge: tests/audioio/test_audio_bridge.c audioio/audio_bridge.c audioio/audio_bridge.h radio/radio.h \
+                                 dsp/rx_denoise.c dsp/rx_denoise.h
+	$(CC) $(TEST_CFLAGS) -I/usr/include/csdr $< audioio/audio_bridge.c dsp/rx_denoise.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ \
+	    -lcsdr -lfftw3f -lspecbleach -lm
 
 # ── dsp/ ────────────────────────────────────────────────────────
 tests/dsp/test_upsample2: tests/dsp/test_upsample2.c dsp/upsample2.c dsp/upsample2.h
