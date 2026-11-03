@@ -106,7 +106,11 @@ static int cw_emit(float *signal, int idx, int max_n, int n, bool key_on,
             env = 0.5f + 0.5f * cosf((float) M_PI * (i - n + slope_n) / slope_n);
         *phase += dds_step;
         if (*phase > 2.0f * (float) M_PI) *phase -= 2.0f * (float) M_PI;
-        signal[idx] = env * sinf(*phase);
+        /* 0.4, as RTTY's tones: digi_tx_gain then drives both alike. At
+         * full scale a gain of 2 (the stations') clipped the tone towards
+         * a square, and its third harmonic, 1.4 kHz above a 700 Hz pitch
+         * and inside the passband, went out only 7-10 dB down. */
+        signal[idx] = 0.4f * env * sinf(*phase);
     }
     if (!key_on)
         *phase = 0.0f;

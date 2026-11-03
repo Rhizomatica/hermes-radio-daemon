@@ -130,7 +130,7 @@ static const char *rx_line_at(float hz, float *got_hz)
     return best;
 }
 
-/* Signal amplitudes: CW 1.0, RTTY 0.4 (the encoders'). Noise RMS is over
+/* Signal amplitudes: CW and RTTY 0.4 (the encoders'). Noise RMS is over
  * the full 48 kHz band at 96 kHz; the decoders see ~1/16 of it (3 kHz). */
 static void check_cw(float noise_rms)
 {
