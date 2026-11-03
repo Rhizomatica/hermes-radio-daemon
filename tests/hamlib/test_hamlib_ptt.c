@@ -13,7 +13,9 @@
  *   - shutdown unkeys whatever the cache says;
  *   - radio_daemon --ptt-off (force_ptt_off) unkeys with nothing running;
  *   - a CAT link that stops answering (the radio's USB went away and came
- *     back) is reopened, and the rig unkeyed, once it answers again.
+ *     back) is reopened, and the rig unkeyed, once it answers again;
+ *   - a frequency in another band, where the rig's band memory brings back
+ *     another mode, keeps the profile's mode.
  *
  * Copyright (C) 2026 Rhizomatica
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -218,6 +220,35 @@ static void test_reopens_a_dead_cat_link(void)
     printf("  a dead CAT link is reopened .......... ok\n");
 }
 
+/* The FT-710 restores a band's last mode when the frequency moves into
+ * it; Hamlib's dummy rig does not, so the test changes the mode behind
+ * radiod's back, as the band memory would, and moves the frequency. */
+static void test_band_change_keeps_the_mode(void)
+{
+    radio local;
+    init_local(&local);
+    local.hamlib_model = RIG_MODEL_DUMMY;
+    local.rig_pathname[0] = '\0';
+    local.profiles_count = 1;
+    local.profiles[0].mode = MODE_USB;
+    local.profiles[0].freq = 7100000;
+    TEST_ASSERT_TRUE(radio_hamlib_init(&local));
+    RIG *rig = (RIG *) local.rig;
+    rmode_t m;
+    pbwidth_t w;
+    freq_t f;
+
+    TEST_ASSERT_EQUAL_INT(RIG_OK, rig_set_mode(rig, RIG_VFO_CURR, RIG_MODE_LSB, RIG_PASSBAND_NOCHANGE));
+    set_frequency(&local, 3600000, 0);
+    TEST_ASSERT_EQUAL_INT(RIG_OK, rig_get_mode(rig, RIG_VFO_CURR, &m, &w));
+    TEST_ASSERT_EQUAL_STRING("USB", rig_strrmode(m));
+    TEST_ASSERT_EQUAL_INT(RIG_OK, rig_get_freq(rig, RIG_VFO_CURR, &f));
+    TEST_ASSERT_EQUAL_DOUBLE(3600000.0, f);
+
+    radio_hamlib_shutdown(&local);
+    printf("  a band change keeps the mode ......... ok\n");
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -232,6 +263,7 @@ int main(void)
     RUN_TEST(test_shutdown_unkeys_whatever_the_cache);
     RUN_TEST(test_force_ptt_off);
     RUN_TEST(test_reopens_a_dead_cat_link);
+    RUN_TEST(test_band_change_keeps_the_mode);
     int failed = UNITY_END();
 
     rig_server_stop();
