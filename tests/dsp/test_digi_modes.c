@@ -207,6 +207,29 @@ static void test_cw_long_message_in_parts(void)
     TEST_ASSERT_EQUAL_STRING(msg, got);
 }
 
+/* A word longer than a whole part (2 s here, 8 s on air at 8 WPM): its
+ * characters go out over two parts, none lost. */
+static void test_cw_long_word_in_parts(void)
+{
+    static const char msg[] = "DE PY2XYZ ABCDEFGHIJKLMN K";
+    static float x[96000 * 30], y[12000 * 30], part[96000 * 2];
+    int n = 96000, parts = 0;
+    memset(x, 0, sizeof x);
+    const char *rest = msg;
+    int k;
+    while ((k = sbitx_cw_encode_part(&rest, part, 96000 * 2, 20, 700)) > 0) {
+        TEST_ASSERT_TRUE_MESSAGE(n + k < 96000 * 29, "fits the test buffer");
+        TEST_ASSERT_TRUE_MESSAGE(k < 96000 * 2, "a part is not cut at the buffer's end");
+        memcpy(x + n, part, (size_t) k * sizeof(float));
+        n += k;
+        parts++;
+    }
+    int m = to12k(x, n + 96000, 0.05f, y);
+    const char *got = cw_decode(y, m);
+    printf("CW   long word, %d parts, %.1f s: [%s]\n", parts, n / 96000.0, got);
+    TEST_ASSERT_EQUAL_STRING(msg, got);
+}
+
 static void test_rtty_long_message_in_parts(void)
 {
     static const char msg[] = "CQ CQ CQ DE PY2XYZ PY2XYZ RTTY TEST, A MESSAGE LONGER THAN EIGHT SECONDS OF RTTY AT 45 BAUD K";
@@ -525,6 +548,7 @@ int main(void)
     RUN_TEST(test_rtty_two_stations);
     RUN_TEST(test_cw_among_birdies);
     RUN_TEST(test_cw_long_message_in_parts);
+    RUN_TEST(test_cw_long_word_in_parts);
     RUN_TEST(test_rtty_long_message_in_parts);
     RUN_TEST(test_ft8_clean);
     RUN_TEST(test_ft8_noisy);

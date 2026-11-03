@@ -193,9 +193,21 @@ int sbitx_cw_encode_part(const char **text, float *signal, int max_n,
         if (!p[w])
             break;
     }
-    if (!best) {                           /* one word longer than max_n: cut */
-        while (p[best] && p[best] != ' ' && best < sizeof part - 1)
+    if (!best) {
+        /* one word longer than max_n: the characters of it that fit (one
+         * at least), the rest in the next part, a character gap after
+         * this one's last; it was cut, and its tail lost. Never its last
+         * character: the part with it goes out as a whole word, with the
+         * word space after it. */
+        best = 1;
+        while (best < sizeof part - 1 && p[best] && p[best] != ' ' &&
+               p[best + 1] && p[best + 1] != ' ') {
+            memcpy(part, p, best + 1);
+            part[best + 1] = '\0';
+            if (cw_samples(part, wpm) > max_n)
+                break;
             best++;
+        }
     }
     memcpy(part, p, best);
     part[best] = '\0';

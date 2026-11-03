@@ -230,6 +230,11 @@ typedef struct {
      * last third of a second. */
     float *tx_pend;
     size_t tx_pend_len, tx_pend_pos, tx_pend_cap;
+    /* The CW or RTTY message going out a part at a time: what is left of
+     * tx_text (NULL: none), in tx_rest_mode. */
+    char tx_text[DIGI_TX_MSG_MAX];
+    const char *tx_rest;
+    uint16_t tx_rest_mode;
 } hamlib_digi_state;
 
 static hamlib_digi_state g_state;
@@ -296,6 +301,34 @@ static bool tx_pend_busy(const hamlib_digi_state *s)
     return s->tx_pend_pos < s->tx_pend_len;
 }
 
+/* Unkeyed, timed out, or out of the digital modes: what is left of the
+ * message is dropped, and the next one starts afresh (an RTTY message with
+ * its lead-in); it went out at the start of the next transmission. */
+static void tx_drop(hamlib_digi_state *s)
+{
+    s->tx_pend_len = s->tx_pend_pos = 0;
+    s->tx_rest = NULL;
+}
+
+/* The next part's text: the rest of the message in this mode, or the next
+ * message queued (*first then). NULL when there is none. */
+static const char **tx_next(hamlib_digi_state *s, uint16_t mode, const char *name,
+                            uint32_t freq_hz, int offset_hz, bool *first)
+{
+    *first = false;
+    if (s->tx_rest && (!*s->tx_rest || s->tx_rest_mode != mode))
+        s->tx_rest = NULL;
+    if (!s->tx_rest) {
+        if (!digi_tx_queue_pop(&s->radio_h->digi_tx, s->tx_text, sizeof(s->tx_text)))
+            return NULL;
+        s->tx_rest = s->tx_text;
+        s->tx_rest_mode = mode;
+        *first = true;
+        digi_spool_log(name, "tx", freq_hz, s->tx_text, offset_hz);
+    }
+    return &s->tx_rest;
+}
+
 /* Top tx_audio_ring up from tx_pend, never past its capacity. */
 static void tx_pend_feed(hamlib_digi_state *s)
 {
@@ -320,23 +353,19 @@ static void do_cw_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz,
     /* A part of the message at a time, whole words, 8 s at most: the next
      * when this one has gone out (sbitx_cw_encode_part). A longer message
      * was cut at 8 s. */
-    static char text[DIGI_TX_MSG_MAX];
-    static const char *rest = "";
     static float cw_audio[96000 * 8];
+    bool first;
 
     if (tx_pend_busy(s))
         return;
-    if (!*rest) {
-        if (!digi_tx_queue_pop(&s->radio_h->digi_tx, text, sizeof(text)))
-            return;
-        rest = text;
-        digi_spool_log("CW", "tx", freq_hz, text, pitch);
-    }
-    int n96 = sbitx_cw_encode_part(&rest, cw_audio,
+    const char **rest = tx_next(s, MODE_CW, "CW", freq_hz, pitch, &first);
+    if (!rest)
+        return;
+    int n96 = sbitx_cw_encode_part(rest, cw_audio,
                                    (int)(sizeof(cw_audio) / sizeof(cw_audio[0])),
                                    wpm, pitch);
     if (n96 <= 0 || !tx_pend_set(s, &s->cw_to_ring, cw_audio, (size_t) n96, 96000, ring_rate))
-        rest = "";
+        s->tx_rest = NULL;
     else
         s->digi_tx_start = time(NULL);     /* DIGI_TX_MAX_SECS: a stall, not a long message */
 }
@@ -366,30 +395,22 @@ static void do_rtty_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_h
 {
     /* A part of the message at a time, as CW (sbitx_rtty_encode_part):
      * the lead-in on the first, the line's end on the last. */
-    static char text[DIGI_TX_MSG_MAX];
-    static const char *rest = NULL;        /* NULL: no message going out */
     static float rtty_audio[96000 * 8];
-    bool first = false;
+    bool first;
 
     if (tx_pend_busy(s))
         return;
-    if (!rest || !*rest) {
-        if (!digi_tx_queue_pop(&s->radio_h->digi_tx, text, sizeof(text)))
-            return;
-        rest = text;
-        first = true;
-        digi_spool_log("RTTY", "tx", freq_hz, text, mark);
-    }
-    int n96 = sbitx_rtty_encode_part(&rest, first, rtty_audio,
+    const char **rest = tx_next(s, MODE_RTTY, "RTTY", freq_hz, mark, &first);
+    if (!rest)
+        return;
+    int n96 = sbitx_rtty_encode_part(rest, first, rtty_audio,
                                      (int)(sizeof(rtty_audio) / sizeof(rtty_audio[0])),
                                      baud, mark, shift);
     if (n96 <= 0 || !tx_pend_set(s, &s->rtty_to_ring, rtty_audio, (size_t) n96, 96000, ring_rate)) {
-        rest = NULL;
+        s->tx_rest = NULL;
         return;
     }
     s->digi_tx_start = time(NULL);         /* DIGI_TX_MAX_SECS: a stall, not a long message */
-    if (!*rest)
-        rest = NULL;
 }
 
 /* ─── RX paths ───────────────────────────────────────────────── */
@@ -1010,7 +1031,7 @@ static void *hamlib_digi_thread(void *radio_h_v)
                 s->digi_auto_tx = false;
                 s->digi_drain_ticks = 0;
             }
-            s->tx_pend_len = s->tx_pend_pos = 0;
+            tx_drop(s);
             usleep(50000);
             continue;
         }
@@ -1091,7 +1112,7 @@ static void *hamlib_digi_thread(void *radio_h_v)
                     s->digi_auto_tx = false;
                     s->digi_drain_ticks = 0;
                     if (timed_out) {   /* flush a stuck queue so we don't re-key */
-                        s->tx_pend_len = s->tx_pend_pos = 0;
+                        tx_drop(s);
                         char junk[DIGI_TX_MSG_MAX];
                         while (digi_tx_queue_pop(&radio_h->digi_tx, junk, sizeof(junk))) {}
                     }
@@ -1100,7 +1121,7 @@ static void *hamlib_digi_thread(void *radio_h_v)
         } else {
             /* Unkeyed mid-message (by hand, or the timeout): drop the rest
              * rather than start the next transmission with it. */
-            s->tx_pend_len = s->tx_pend_pos = 0;
+            tx_drop(s);
             switch (mode) {
             case MODE_CW:
                 do_cw_rx(s, ring_rate, freq_hz);

@@ -24,10 +24,10 @@ int  sbitx_cw_encode(const char *message, float *signal, int max_n,
                      int wpm, int pitch);
 
 /* A message longer than the buffer, in parts: encodes the whole words of
- * *text that fit in max_n samples (a single word that does not is cut),
- * with the word space after them when more follows, and moves *text past
- * them. The parts played one after another are the message. Returns the
- * samples, 0 once *text is all sent. */
+ * *text that fit in max_n samples (of a single word that does not, the
+ * characters that fit), with the word space after them when more follows,
+ * and moves *text past them. The parts played one after another are the
+ * message. Returns the samples, 0 once *text is all sent. */
 int  sbitx_cw_encode_part(const char **text, float *signal, int max_n,
                           int wpm, int pitch);
 
