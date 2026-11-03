@@ -56,6 +56,28 @@ func TestUpdateProfile(t *testing.T) {
 	}
 }
 
+// noise_reduction: a profile's, by PATCH and radio.set, and the active
+// profile's in the state.
+func TestNoiseReduction(t *testing.T) {
+	e := testapi.New(t)
+	r := e.Do("PATCH", "/radio/profiles/1", `{"noise_reduction":true}`)
+	if r.Status != 200 || r.JSON(t)["noise_reduction"] != true {
+		t.Fatalf("PATCH noise_reduction = %d %s", r.Status, r.Body)
+	}
+	if j := e.Do("GET", "/radio", "").JSON(t); j["noise_reduction"] != false {
+		t.Errorf("state = %v (profile 0 is active, without it)", j["noise_reduction"])
+	}
+	if r := e.Do("PATCH", "/radio/profiles/1", `{"noise_reduction":"on"}`); r.Status != 422 {
+		t.Errorf("noise_reduction \"on\" = %d %s", r.Status, r.Body)
+	}
+	if m := e.Cmd("radio.set", `{"noise_reduction":true}`); m["ok"] != true {
+		t.Errorf("radio.set noise_reduction = %v", m)
+	}
+	if j := e.Do("GET", "/radio", "").JSON(t); j["noise_reduction"] != true {
+		t.Errorf("state after radio.set = %v", j["noise_reduction"])
+	}
+}
+
 func TestSelectProfileAndProtection(t *testing.T) {
 	e := testapi.New(t)
 	if j := e.Do("PUT", "/radio/active-profile", `{"profile":1}`).JSON(t); j["active_profile"] != 1.0 {

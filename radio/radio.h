@@ -245,6 +245,18 @@ typedef struct {
     _Atomic uint16_t dv_restore_mode;
 } radio_profile;
 
+/* Whether the profile's received audio is noise-reduced: noise_reduction ON
+ * on a voice profile (operating_mode 0), in a mode people listen to. The
+ * modem's profile, FT8, RTTY, DRM and digital voice are tones and data,
+ * which the denoiser would only smear. The same on every backend. */
+static inline bool radio_profile_denoised(const radio_profile *p)
+{
+    uint16_t m = p->mode;
+    return p->noise_reduction == NOISE_REDUCTION_ON && !p->digital_voice &&
+           p->operating_mode == OPERATING_MODE_FULL_VOICE &&
+           (m == MODE_USB || m == MODE_LSB || m == MODE_AM || m == MODE_FM || m == MODE_CW);
+}
+
 /* Main radio handle. One instance per process; passed to every backend
  * vtable function. Backend-specific fields (rig handle, encoders, hw GPIO
  * mutex) coexist; each backend uses what it needs. */
@@ -472,6 +484,11 @@ typedef struct {
     /* Run-time tunable: enable the specbleach denoise front-end on the
      * D-STAR TX mic path (1 on, 0 off). */
     _Atomic uint16_t dstar_denoise;
+    /* A Hamlib rig's listening audio, on a profile with noise_reduction ON
+     * (dsp/rx_denoise.h): how far the noise comes down (dB) and how hard
+     * noise is told from signal (0-1). */
+    float rx_nr_reduction_db;
+    float rx_nr_strength;
     /* Opt-in D-STAR voice encryption (dsp/dstar_voice.h): 1 encrypts every
      * over this station sends, with the key from voice_key_file. Receiving
      * decrypts whenever a key is loaded, whatever this is set to. */

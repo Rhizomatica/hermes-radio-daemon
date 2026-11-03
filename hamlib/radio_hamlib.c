@@ -456,6 +456,34 @@ static void hamlib_sync_txrx_state(radio *radio_h, bool fallback_state)
         radio_h->txrx_state = fallback_state;
 }
 
+/* A frequency in another band brings back the rig's band memory: the
+ * FT-710 restores the mode it last had there (LSB on 80 m after USB on 40 m),
+ * whatever the profile says. After a frequency change, read the rig's mode
+ * (past Hamlib's cache, which still has the one radiod set) and, when the
+ * band changed it, put the profile's back, and the frequency after it (a
+ * mode change moves the FT-710's dial). Under RIG_LOCK. */
+static void hamlib_keep_mode(radio *radio_h, RIG *rig, uint32_t profile)
+{
+    const radio_profile *p = &radio_h->profiles[profile];
+    rmode_t want = mode_to_hamlib(p->mode, profile_data_path(p)), got = RIG_MODE_NONE;
+    pbwidth_t width;
+
+    int cached = rig_get_cache_timeout_ms(rig, HAMLIB_CACHE_MODE);
+    rig_set_cache_timeout_ms(rig, HAMLIB_CACHE_MODE, 0);
+    int ret = rig_get_mode(rig, RIG_VFO_CURR, &got, &width);
+    rig_set_cache_timeout_ms(rig, HAMLIB_CACHE_MODE, cached);
+    if (ret != RIG_OK || got == want)
+        return;
+
+    HLOGI(LOG_C, "the rig went to %s with the band; back to %s",
+            rig_strrmode(got), rig_strrmode(want));
+    ret = rig_set_mode(rig, RIG_VFO_CURR, want, mode_passband(want, p));
+    if (ret == RIG_OK)
+        ret = rig_set_freq(rig, RIG_VFO_CURR, (freq_t) p->freq);
+    if (ret != RIG_OK)
+        HLOGE(LOG_C, "keeping the mode: %s", rigerror(ret));
+}
+
 static void hamlib_apply_profile(radio *radio_h, uint32_t profile)
 {
     RIG *rig;
@@ -492,6 +520,8 @@ static void hamlib_apply_profile(radio *radio_h, uint32_t profile)
     if (ret != RIG_OK)
         HLOGE(LOG_C, "hamlib_apply_profile: rig_set_freq failed: %s",
                 rigerror(ret));
+    else if (pm != MODE_CW && pm != MODE_RTTY && pm != MODE_FT8)
+        hamlib_keep_mode(radio_h, rig, profile);
 
     hamlib_set_level_float(rig,
                            RIG_LEVEL_RFPOWER,
@@ -680,7 +710,12 @@ static bool radio_hamlib_init(radio *radio_h)
     if (rig_get_freq(rig, RIG_VFO_CURR, &hfreq) == RIG_OK && hfreq > 0)
         radio_h->profiles[profile].freq = (uint32_t) hfreq;
 
-    if (rig_get_mode(rig, RIG_VFO_CURR, &hmode, &width) == RIG_OK)
+    /* As the poll does: a digital-text profile (CW/RTTY/FT8) keeps its mode,
+     * which the rig's PKTUSB reads back as USB; overwriting it lost an FT8
+     * profile's mode at every start. */
+    uint16_t pm = radio_h->profiles[profile].mode;
+    if (pm != MODE_CW && pm != MODE_RTTY && pm != MODE_FT8 &&
+        rig_get_mode(rig, RIG_VFO_CURR, &hmode, &width) == RIG_OK)
         radio_h->profiles[profile].mode = hamlib_to_mode(hmode);
     RIG_UNLOCK();
 
@@ -767,6 +802,8 @@ static void set_frequency(radio *radio_h, uint32_t frequency, uint32_t profile)
         RIG *rig = (RIG *) radio_h->rig;
         RIG_LOCK();
         int ret = rig_set_freq(rig, RIG_VFO_CURR, (freq_t) frequency);
+        if (ret == RIG_OK)
+            hamlib_keep_mode(radio_h, rig, profile);
         RIG_UNLOCK();
         if (ret != RIG_OK)
             HLOGE(LOG_C, "set_frequency: rig_set_freq failed: %s",

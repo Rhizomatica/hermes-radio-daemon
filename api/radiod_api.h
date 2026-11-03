@@ -45,6 +45,7 @@ typedef struct {
     double   s_meter_db;          /* dB relative to S9 */
     bool     protection;          /* high-SWR protection tripped */
     bool     digital_voice;
+    bool     noise_reduction;     /* the active profile's, on received audio */
     char     backend[8];          /* sbitx, hamlib */
 } radiod_api_state;
 
@@ -56,6 +57,7 @@ typedef struct {
     int      volume;              /* percent */
     uint32_t filter_width_hz;     /* 0: the rig's default */
     bool     digital_voice;
+    bool     noise_reduction;     /* on the received audio people listen to */
 } radiod_api_profile;
 
 /* What radiod keeps once for the station, not per profile (RadioSettings). */
@@ -80,6 +82,7 @@ int radiod_api_set_power(uint32_t profile, int percent);
 int radiod_api_set_volume(uint32_t profile, int percent);
 int radiod_api_set_filter_width(uint32_t profile, uint32_t hz);
 int radiod_api_set_digital_voice(uint32_t profile, bool on);
+int radiod_api_set_noise_reduction(uint32_t profile, bool on);
 
 /* Station-wide settings; each is saved to the configuration. */
 int radiod_api_set_default_profile(uint32_t profile);
