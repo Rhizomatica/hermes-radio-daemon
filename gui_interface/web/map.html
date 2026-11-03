@@ -6,7 +6,8 @@
 <title>HERMES FT8 map</title>
 <!--
   Who the station hears: every FT8 decode on the station API (hermes.v1),
-  the senders placed on a world map by the locator they send. Log in,
+  the senders placed on a world map by the locator they send, or by their
+  callsign's country until they send one (map-prefixes.js). Log in,
   subscribe to digi, radio.state and gps, and read the last hours from
   GET /digi/log. With rtc.offer, Listen plays the receiver (receive only).
   Self-contained: stations are often offline, so no library, no web font
@@ -88,6 +89,7 @@
   <span class="tag" id="mode">–</span>
   <span class="tag" id="txrx">RX</span>
   <span class="stat"><b id="ndecodes">0</b> decodes</span>
+  <span class="stat"><b id="nheard">0</b> stations</span>
   <span class="stat"><b id="nstations">0</b> on the map</span>
   <span class="grow"></span>
   <button id="listen" type="button" hidden title="Play the receiver here (receive only)">Listen</button>
@@ -147,6 +149,7 @@
 
 <audio id="rx"></audio>
 <script src="map-world.js"></script>
+<script src="map-prefixes.js"></script>
 <script>
 'use strict';
 var $ = function (id) { return document.getElementById(id); };
@@ -325,16 +328,43 @@ function gridToLatLon(g) {                     // the centre of the square
   return [lat, lon];
 }
 
+// A callsign's country, from its prefix (AD1C's cty.dat, map-prefixes.js):
+// where a station is placed until it sends its locator.
+var PREFIXES = {};
+(typeof MAP_PREFIXES === 'string' ? MAP_PREFIXES : '').split(';').forEach(function (g) {
+  var i = g.indexOf(':'), pos = g.slice(0, i).split(','), c;
+  if (i < 0 || pos.length < 3) return;
+  c = {lat: +pos[0] / 10, lon: +pos[1] / 10, name: pos.slice(2).join(',')};
+  g.slice(i + 1).split(' ').forEach(function (p) { if (p) PREFIXES[p] = c; });
+});
+function countryOf(call) {
+  // EA8/DL1ABC is in EA8; DL1ABC/P, /M, /QRP or /7 stay where DL is
+  var parts = call.split('/'), base = parts[0];
+  if (parts.length > 1) {
+    var other = parts[1];
+    if (parts[0].length < parts[1].length) { base = parts[1]; other = parts[0]; }
+    if (/^[A-Z0-9]{1,4}$/.test(other) && /[A-Z]/.test(other) && !/^(P|M|MM|AM|QRP|A|B)$/.test(other)) base = other;
+  }
+  for (var n = Math.min(base.length, 8); n > 0; n--)
+    if (PREFIXES[base.slice(0, n)]) return PREFIXES[base.slice(0, n)];
+  return null;
+}
+
 function add(d) {
   if (!d || d.mode !== 'FT8' || seen[d.id]) return;
   seen[d.id] = true;
   d.t = Date.parse(d.at) || Date.now();
-  var call = d.dir === 'rx' && d.from ? String(d.from).toUpperCase() : null;
+  // a hashed call comes as <...>, or <CALL> once resolved: only the latter is a station
+  var call = d.dir === 'rx' && d.from ? String(d.from).toUpperCase().replace(/[<>]/g, '') : null;
+  if (call && !/^[A-Z0-9\/]+$/.test(call)) call = null;
   if (call) {
     var s = stations[call] || (stations[call] = {call: call});
     if (d.grid && GRID.test(d.grid)) {
       var ll = gridToLatLon(d.grid);
-      s.grid = d.grid; s.lat = ll[0]; s.lon = ll[1];
+      s.grid = d.grid; s.lat = ll[0]; s.lon = ll[1]; s.country = null;
+    } else if (!s.grid && s.lat == null) {
+      var c = countryOf(call);                   // until it sends a locator
+      if (c) { s.lat = c.lat; s.lon = c.lon; s.country = c.name; }
     }
     if (!s.last || d.t >= s.last.t) s.last = d;
     d.station = s;
@@ -364,7 +394,8 @@ function renderList() {
     var tr = document.createElement('tr');
     if (d.dir === 'tx') tr.className = 'tx';
     if (selected && d.station === selected) tr.className += ' sel';
-    var km = d.station && d.station.grid && home ? Math.round(distance(home, d.station)) : '';
+    var km = d.station && d.station.lat != null && home ?
+      (d.station.grid ? '' : '~') + Math.round(distance(home, d.station)) : '';
     [new Date(d.t).toISOString().slice(11, 19), d.snr_db, d.dt_s == null ? '' : d.dt_s.toFixed(1),
      d.offset_hz, (d.dir === 'tx' ? 'TX ' : '') + (d.text || ''), km].forEach(function (v, i) {
       var td = document.createElement('td');
@@ -548,11 +579,14 @@ function render() {
   }
 
   // the stations, oldest underneath; fading with age
-  var now = Date.now(), list = [], n = 0;
+  var now = Date.now(), list = [], n = 0, heard = 0;
   for (var c in stations) {
     var s = stations[c];
-    if (s.grid && s.last && visible(s.last, now)) list.push(s);
+    if (!s.last || !visible(s.last, now)) continue;
+    heard++;                                    // a hashed call (<...>) has nowhere to go
+    if (s.lat != null) list.push(s);
   }
+  $('nheard').textContent = heard;
   list.sort(function (a, b) { return a.last.t - b.last.t; });
   var max = (+$('age').value || 6 * 3600) * 1000;
 
@@ -579,9 +613,15 @@ function render() {
       if (p[0] < -20 || p[0] > W + 20 || p[1] < -20 || p[1] > H + 20) return;
       var r = s === selected ? 7 : 5;
       ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, 2 * Math.PI);
-      ctx.fillStyle = snrColour(s.last.snr_db, alpha); ctx.fill();
-      ctx.lineWidth = s === selected ? 2 : 1;
-      ctx.strokeStyle = s === selected ? colours.fg : 'rgba(0, 0, 0, .6)'; ctx.stroke();
+      if (s.grid) {                              // by its locator: a dot
+        ctx.fillStyle = snrColour(s.last.snr_db, alpha); ctx.fill();
+        ctx.lineWidth = s === selected ? 2 : 1;
+        ctx.strokeStyle = s === selected ? colours.fg : 'rgba(0, 0, 0, .6)';
+      } else {                                   // by its callsign's country: a ring
+        ctx.lineWidth = s === selected ? 3 : 2;
+        ctx.strokeStyle = s === selected ? colours.fg : snrColour(s.last.snr_db, alpha);
+      }
+      ctx.stroke();
       if (view.scale >= 6 || s === selected) {
         ctx.fillStyle = s === selected ? colours.fg : 'rgba(215, 224, 234, ' + (0.85 * alpha) + ')';
         ctx.fillText(s.call, p[0] + r + 3, p[1]);
@@ -614,16 +654,16 @@ function nearest(x, y) {
 }
 
 function tipText(s) {
-  var d = s.last, lines = [s.call + '  ' + s.grid];
+  var d = s.last, lines = [s.call + '  ' + (s.grid || '~' + s.country + ' (from the callsign)')];
   lines.push((d.snr_db == null ? '' : d.snr_db + ' dB  ') + new Date(d.t).toISOString().slice(11, 19) + ' UTC');
-  if (home) lines.push(Math.round(distance(home, s)) + ' km  ' + Math.round(bearing(home, s)) + '°');
+  if (home) lines.push((s.grid ? '' : '~') + Math.round(distance(home, s)) + ' km  ' + Math.round(bearing(home, s)) + '°');
   lines.push(d.text || '');
   return lines.join('\n');
 }
 
 function select(s, centre) {
   selected = selected === s ? null : s;
-  if (selected && centre && s.grid) { view.lon = s.lon; view.lat = s.lat; clampView(); }
+  if (selected && centre && s.lat != null) { view.lon = s.lon; view.lat = s.lat; clampView(); }
   listDirty = true; draw();
 }
 

@@ -971,7 +971,9 @@ Served from elsewhere, it logs in to the station named in its login form (CORS).
 
 `https://<station>:8080/map.html` is who the station hears on FT8, on a world map
 (`gui_interface/web/map.html`): it subscribes to `digi`, `radio.state` and `gps`, reads the
-last six hours from `GET /digi/log`, and places each sender by the locator it sends,
+last six hours from `GET /digi/log`, and places each sender by the locator it sends (until it
+sends one, by its callsign's country, a ring: `map-prefixes.js` from AD1C's `cty.dat`, made by
+`utils/map_prefixes.py`),
 coloured by SNR and fading with age. With the station's GPS fix, or a locator typed in,
 it draws the paths and gives distance and bearing. **Listen** plays the receiver over
 WebRTC (`rtc.offer`, receive only). It works offline: the coastlines are Natural Earth's
