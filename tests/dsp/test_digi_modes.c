@@ -188,7 +188,7 @@ static void test_cw_two_stations(void)
  * cut at 8 s, mid-word. */
 static void test_cw_long_message_in_parts(void)
 {
-    static const char msg[] = "CQ TEST DE PU2UIT PU2UIT PU2UIT TESTING THE LONG MESSAGE K";
+    static const char msg[] = "CQ TEST DE PY2XYZ PY2XYZ PY2XYZ TESTING THE LONG MESSAGE K";
     static float x[96000 * 60], y[12000 * 60], part[96000 * 8];
     int n = 96000, parts = 0;
     memset(x, 0, sizeof x);
@@ -209,7 +209,7 @@ static void test_cw_long_message_in_parts(void)
 
 static void test_rtty_long_message_in_parts(void)
 {
-    static const char msg[] = "CQ CQ CQ DE PU2UIT PU2UIT RTTY TEST, A MESSAGE LONGER THAN EIGHT SECONDS OF RTTY AT 45 BAUD K";
+    static const char msg[] = "CQ CQ CQ DE PY2XYZ PY2XYZ RTTY TEST, A MESSAGE LONGER THAN EIGHT SECONDS OF RTTY AT 45 BAUD K";
     static float x[96000 * 40], y[12000 * 40], part[96000 * 8];
     int n = 9600, parts = 0;
     memset(x, 0, sizeof x);
