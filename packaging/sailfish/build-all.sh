@@ -22,7 +22,7 @@ install_rpms() {    # devel-su runs one program: hand it a script
 }
 
 for spec in fftw iniparser hamlib i2c-tools mbelib-neo csdr libspecbleach \
-            hermes-radio-daemon; do
+            libjuice libdatachannel hermes-radio-daemon mercury; do
     printf '%s: ' "$spec"
     if ! rpmbuild -ba "$R/SPECS/$spec.spec" > "$R/logs/$spec.log" 2>&1; then
         echo "FAILED, see $R/logs/$spec.log"; tail -15 "$R/logs/$spec.log"; exit 1

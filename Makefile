@@ -306,6 +306,9 @@ install: radio_daemon radio_client
 	install -d $(DESTDIR)$(sysconfdir)/hermes/web
 	install -m 644 gui_interface/web/index.html $(DESTDIR)$(sysconfdir)/hermes/web/index.html
 	install -m 644 gui_interface/web/spectrum.html $(DESTDIR)$(sysconfdir)/hermes/web/spectrum.html
+	install -m 644 gui_interface/web/map.html $(DESTDIR)$(sysconfdir)/hermes/web/map.html
+	install -m 644 gui_interface/web/map-world.js $(DESTDIR)$(sysconfdir)/hermes/web/map-world.js
+	install -m 644 gui_interface/web/tune.html $(DESTDIR)$(sysconfdir)/hermes/web/tune.html
 	install -D -m 644 config/avahi/hermes-radio.service \
 	  $(DESTDIR)$(sysconfdir)/hermes/avahi/hermes-radio.service
 	# One radio controller per station: on a real install (not a package
