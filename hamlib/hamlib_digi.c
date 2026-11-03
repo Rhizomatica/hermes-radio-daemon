@@ -317,18 +317,28 @@ static void tx_pend_feed(hamlib_digi_state *s)
 static void do_cw_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz,
                      int wpm, int pitch)
 {
-    char text[DIGI_TX_MSG_MAX];
-    if (tx_pend_busy(s) || !digi_tx_queue_pop(&s->radio_h->digi_tx, text, sizeof(text)))
-        return;
-
-    /* CW encodes at 96 kHz; bound the buffer at 8 s. */
+    /* A part of the message at a time, whole words, 8 s at most: the next
+     * when this one has gone out (sbitx_cw_encode_part). A longer message
+     * was cut at 8 s. */
+    static char text[DIGI_TX_MSG_MAX];
+    static const char *rest = "";
     static float cw_audio[96000 * 8];
-    int n96 = sbitx_cw_encode(text, cw_audio,
-                              (int)(sizeof(cw_audio) / sizeof(cw_audio[0])),
-                              wpm, pitch);
-    if (n96 <= 0 || !tx_pend_set(s, &s->cw_to_ring, cw_audio, (size_t) n96, 96000, ring_rate))
+
+    if (tx_pend_busy(s))
         return;
-    digi_spool_log("CW", "tx", freq_hz, text, pitch);
+    if (!*rest) {
+        if (!digi_tx_queue_pop(&s->radio_h->digi_tx, text, sizeof(text)))
+            return;
+        rest = text;
+        digi_spool_log("CW", "tx", freq_hz, text, pitch);
+    }
+    int n96 = sbitx_cw_encode_part(&rest, cw_audio,
+                                   (int)(sizeof(cw_audio) / sizeof(cw_audio[0])),
+                                   wpm, pitch);
+    if (n96 <= 0 || !tx_pend_set(s, &s->cw_to_ring, cw_audio, (size_t) n96, 96000, ring_rate))
+        rest = "";
+    else
+        s->digi_tx_start = time(NULL);     /* DIGI_TX_MAX_SECS: a stall, not a long message */
 }
 
 static void do_ft8_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz)
@@ -354,18 +364,32 @@ static void do_ft8_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz
 static void do_rtty_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz,
                        int baud, int mark, int shift)
 {
-    char text[DIGI_TX_MSG_MAX];
-    if (tx_pend_busy(s) || !digi_tx_queue_pop(&s->radio_h->digi_tx, text, sizeof(text)))
-        return;
-
-    /* RTTY encodes at 96 kHz; bound at 8 s. */
+    /* A part of the message at a time, as CW (sbitx_rtty_encode_part):
+     * the lead-in on the first, the line's end on the last. */
+    static char text[DIGI_TX_MSG_MAX];
+    static const char *rest = NULL;        /* NULL: no message going out */
     static float rtty_audio[96000 * 8];
-    int n96 = sbitx_rtty_encode(text, rtty_audio,
-                                (int)(sizeof(rtty_audio) / sizeof(rtty_audio[0])),
-                                baud, mark, shift);
-    if (n96 <= 0 || !tx_pend_set(s, &s->rtty_to_ring, rtty_audio, (size_t) n96, 96000, ring_rate))
+    bool first = false;
+
+    if (tx_pend_busy(s))
         return;
-    digi_spool_log("RTTY", "tx", freq_hz, text, mark);
+    if (!rest || !*rest) {
+        if (!digi_tx_queue_pop(&s->radio_h->digi_tx, text, sizeof(text)))
+            return;
+        rest = text;
+        first = true;
+        digi_spool_log("RTTY", "tx", freq_hz, text, mark);
+    }
+    int n96 = sbitx_rtty_encode_part(&rest, first, rtty_audio,
+                                     (int)(sizeof(rtty_audio) / sizeof(rtty_audio[0])),
+                                     baud, mark, shift);
+    if (n96 <= 0 || !tx_pend_set(s, &s->rtty_to_ring, rtty_audio, (size_t) n96, 96000, ring_rate)) {
+        rest = NULL;
+        return;
+    }
+    s->digi_tx_start = time(NULL);         /* DIGI_TX_MAX_SECS: a stall, not a long message */
+    if (!*rest)
+        rest = NULL;
 }
 
 /* ─── RX paths ───────────────────────────────────────────────── */

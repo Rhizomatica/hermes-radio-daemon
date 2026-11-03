@@ -23,6 +23,15 @@ void sbitx_rtty_shutdown(void);
 int  sbitx_rtty_encode(const char *message, float *signal, int max_n,
                        int baud, int mark, int shift);
 
+/* A message longer than the buffer, in parts: the whole words of *text that
+ * fit in max_n samples, the mark lead-in and LTRS only on the first part
+ * (first), the line's end (CR LF) and mark tail only on the last, the
+ * letters/figures shift and the tones' phase kept between them; moves
+ * *text past what it encoded. The parts played one after another are the
+ * message. Returns the samples, 0 once *text is all sent. */
+int  sbitx_rtty_encode_part(const char **text, bool first, float *signal, int max_n,
+                            int baud, int mark, int shift);
+
 /* A decoded line: ended by CR/LF, 2 s without a character, or ~70
  * characters. */
 typedef struct {

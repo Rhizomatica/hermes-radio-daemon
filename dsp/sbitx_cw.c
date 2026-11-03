@@ -91,6 +91,8 @@ static int lookup_morse(const char *text, char *pattern, int max_pat)
 static int cw_emit(float *signal, int idx, int max_n, int n, bool key_on,
                    int slope_n, float *phase, float dds_step)
 {
+    if (!signal)                       /* only counting (cw_samples) */
+        return idx + n < max_n ? idx + n : max_n;
     for (int i = 0; i < n && idx < max_n; i++, idx++)
     {
         if (!key_on) {
@@ -147,6 +149,54 @@ int sbitx_cw_encode(const char *message, float *signal, int max_n,
     /* A character gap at the end, so a receiver sees it finish. */
     idx = cw_emit(signal, idx, max_n, 3 * dot_n, false, slope_n, &phase, dds_step);
     return idx;
+}
+
+/* The samples a message takes at wpm, as sbitx_cw_encode would write them. */
+static long cw_samples(const char *message, int wpm)
+{
+    return sbitx_cw_encode(message, NULL, 0x7fffffff, wpm, 700);
+}
+
+int sbitx_cw_encode_part(const char **text, float *signal, int max_n,
+                         int wpm, int pitch)
+{
+    const char *p = *text;
+    while (*p == ' ')
+        p++;
+    if (!*p) {
+        *text = p;
+        return 0;
+    }
+
+    /* the longest run of whole words, with the space after them when more
+     * follows (a word space between this part and the next), that fits */
+    char part[1024];
+    size_t best = 0, end = 0;
+    while (p[end]) {
+        size_t w = end;
+        while (p[w] == ' ')
+            w++;
+        while (p[w] && p[w] != ' ')
+            w++;
+        size_t n = w + (p[w] == ' ');      /* the space after it */
+        if (n >= sizeof part)
+            break;
+        memcpy(part, p, n);
+        part[n] = '\0';
+        if (cw_samples(part, wpm) > max_n)
+            break;
+        best = end = n;
+        if (!p[w])
+            break;
+    }
+    if (!best) {                           /* one word longer than max_n: cut */
+        while (p[best] && p[best] != ' ' && best < sizeof part - 1)
+            best++;
+    }
+    memcpy(part, p, best);
+    part[best] = '\0';
+    *text = p + best;
+    return sbitx_cw_encode(part, signal, max_n, wpm, pitch);
 }
 /* ─── RX: the skimmer ──────────────────────────────────────────────
  *

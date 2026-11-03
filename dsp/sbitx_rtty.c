@@ -112,6 +112,73 @@ int sbitx_rtty_encode(const char *message, float *signal, int max_n,
     return t.idx;
 }
 
+/* The tones' phase from one part of a message to the next. */
+static float part_phase_mark, part_phase_space;
+
+static void rtty_char(rtty_tx *t, char c)
+{
+    unsigned int words[2] = {0, 0};
+    int nw = baudot_encode(words, c);
+    for (int w = 0; w < nw && w < 2; w++)
+        rtty_word(t, words[w]);
+}
+
+int sbitx_rtty_encode_part(const char **text, bool first, float *signal, int max_n,
+                           int baud, int mark, int shift)
+{
+    rtty_tx t = {
+        .signal = signal, .max_n = max_n, .idx = 0,
+        .samples_per_bit = 96000 / baud,
+        .dds_mark = 2.0f * (float) M_PI * mark / 96000.0f,
+        .dds_space = 2.0f * (float) M_PI * (mark - shift) / 96000.0f,
+    };
+    const char *p = *text;
+    if (!*p && !first)
+        return 0;
+
+    if (first) {
+        baudot_reset();
+        part_phase_mark = part_phase_space = 0.0f;
+    }
+    t.phase_mark = part_phase_mark;
+    t.phase_space = part_phase_space;
+
+    /* How many characters fit: at worst two words each (a shift and the
+     * character), after the lead-in and before the line's end and tail. */
+    const int word_n = t.samples_per_bit * 7 + t.samples_per_bit / 2;
+    const int lead_n = first ? t.samples_per_bit * 8 + word_n : 0;
+    const int end_n = 4 * word_n + t.samples_per_bit * 4;
+    long room = ((long) max_n - lead_n - end_n) / (2 * word_n);
+    if (room < 1)
+        room = 1;
+    size_t len = strlen(p), n = len;
+    if ((long) len > room) {               /* cut after a whole word */
+        n = (size_t) room;
+        while (n > 0 && p[n - 1] != ' ')
+            n--;
+        if (n == 0)
+            n = (size_t) room;
+    }
+
+    if (first) {
+        rtty_tone(&t, true, t.samples_per_bit * 8);      /* ~180 ms */
+        rtty_word(&t, 0x1F);                              /* LTRS */
+    }
+    for (size_t i = 0; i < n && t.idx < max_n; i++)
+        rtty_char(&t, p[i]);
+    if (n == len) {                        /* the last part: end the line */
+        if (!(len && (p[len - 1] == '\n' || p[len - 1] == '\r'))) {
+            rtty_char(&t, '\r');
+            rtty_char(&t, '\n');
+        }
+        rtty_tone(&t, true, t.samples_per_bit * 4);      /* mark tail */
+    }
+    part_phase_mark = t.phase_mark;
+    part_phase_space = t.phase_space;
+    *text = p + n;
+    return t.idx;
+}
+
 
 /* ─── RX: the skimmer ──────────────────────────────────────────────
  *

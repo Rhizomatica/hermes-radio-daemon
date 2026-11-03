@@ -183,6 +183,53 @@ static void test_cw_two_stations(void)
     TEST_ASSERT_FLOAT_WITHIN(5.0f, 1430.0f, hz_b);
 }
 
+/* A message longer than the 8 s TX buffer goes out whole, in parts played
+ * one after another (sbitx_cw_encode_part, sbitx_rtty_encode_part): it was
+ * cut at 8 s, mid-word. */
+static void test_cw_long_message_in_parts(void)
+{
+    static const char msg[] = "CQ TEST DE PU2UIT PU2UIT PU2UIT TESTING THE LONG MESSAGE K";
+    static float x[96000 * 60], y[12000 * 60], part[96000 * 8];
+    int n = 96000, parts = 0;
+    memset(x, 0, sizeof x);
+    const char *rest = msg;
+    int k;
+    while ((k = sbitx_cw_encode_part(&rest, part, 96000 * 8, 20, 700)) > 0) {
+        TEST_ASSERT_TRUE_MESSAGE(n + k < 96000 * 59, "fits the test buffer");
+        memcpy(x + n, part, (size_t) k * sizeof(float));
+        n += k;
+        parts++;
+    }
+    int m = to12k(x, n + 96000, 0.05f, y);
+    const char *got = cw_decode(y, m);
+    printf("CW   long message, %d parts, %.1f s: [%s]\n", parts, n / 96000.0, got);
+    TEST_ASSERT_GREATER_THAN_INT(1, parts);
+    TEST_ASSERT_EQUAL_STRING(msg, got);
+}
+
+static void test_rtty_long_message_in_parts(void)
+{
+    static const char msg[] = "CQ CQ CQ DE PU2UIT PU2UIT RTTY TEST, A MESSAGE LONGER THAN EIGHT SECONDS OF RTTY AT 45 BAUD K";
+    static float x[96000 * 40], y[12000 * 40], part[96000 * 8];
+    int n = 9600, parts = 0;
+    memset(x, 0, sizeof x);
+    const char *rest = msg;
+    bool first = true;
+    int k;
+    while ((k = sbitx_rtty_encode_part(&rest, first, part, 96000 * 8, 45, 1585, 170)) > 0) {
+        TEST_ASSERT_TRUE_MESSAGE(n + k < 96000 * 39, "fits the test buffer");
+        memcpy(x + n, part, (size_t) k * sizeof(float));
+        n += k;
+        parts++;
+        first = false;
+    }
+    int m = to12k(x, n + 9600, 0.05f, y);
+    const char *got = rtty_decode(y, m);
+    printf("RTTY long message, %d parts, %.1f s: [%s]\n", parts, n / 96000.0, got);
+    TEST_ASSERT_GREATER_THAN_INT(1, parts);
+    TEST_ASSERT_EQUAL_STRING(msg, got);
+}
+
 /* A comb of birdies, more of them than there are CW channels, and then a
  * station between two of them: steady carriers take no channel, so the
  * station still gets one. */
@@ -477,6 +524,8 @@ int main(void)
     RUN_TEST(test_cw_two_stations);
     RUN_TEST(test_rtty_two_stations);
     RUN_TEST(test_cw_among_birdies);
+    RUN_TEST(test_cw_long_message_in_parts);
+    RUN_TEST(test_rtty_long_message_in_parts);
     RUN_TEST(test_ft8_clean);
     RUN_TEST(test_ft8_noisy);
     RUN_TEST(test_noise_only);
