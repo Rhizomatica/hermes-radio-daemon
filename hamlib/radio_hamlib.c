@@ -710,7 +710,12 @@ static bool radio_hamlib_init(radio *radio_h)
     if (rig_get_freq(rig, RIG_VFO_CURR, &hfreq) == RIG_OK && hfreq > 0)
         radio_h->profiles[profile].freq = (uint32_t) hfreq;
 
-    if (rig_get_mode(rig, RIG_VFO_CURR, &hmode, &width) == RIG_OK)
+    /* As the poll does: a digital-text profile (CW/RTTY/FT8) keeps its mode,
+     * which the rig's PKTUSB reads back as USB; overwriting it lost an FT8
+     * profile's mode at every start. */
+    uint16_t pm = radio_h->profiles[profile].mode;
+    if (pm != MODE_CW && pm != MODE_RTTY && pm != MODE_FT8 &&
+        rig_get_mode(rig, RIG_VFO_CURR, &hmode, &width) == RIG_OK)
         radio_h->profiles[profile].mode = hamlib_to_mode(hmode);
     RIG_UNLOCK();
 

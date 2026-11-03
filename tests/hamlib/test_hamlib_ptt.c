@@ -15,7 +15,8 @@
  *   - a CAT link that stops answering (the radio's USB went away and came
  *     back) is reopened, and the rig unkeyed, once it answers again;
  *   - a frequency in another band, where the rig's band memory brings back
- *     another mode, keeps the profile's mode.
+ *     another mode, keeps the profile's mode;
+ *   - a digital-text profile keeps its mode across a start.
  *
  * Copyright (C) 2026 Rhizomatica
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -249,6 +250,27 @@ static void test_band_change_keeps_the_mode(void)
     printf("  a band change keeps the mode ......... ok\n");
 }
 
+/* At start radiod mirrors the rig's state into the active profile; the
+ * rig's PKTUSB reads back as USB, which an FT8 profile must not become. */
+static void test_start_keeps_a_digital_mode(void)
+{
+    static const uint16_t modes[] = { MODE_FT8, MODE_CW, MODE_RTTY };
+    for (int i = 0; i < 3; i++) {
+        radio local;
+        init_local(&local);
+        local.hamlib_model = RIG_MODEL_DUMMY;
+        local.rig_pathname[0] = '\0';
+        local.profiles_count = 1;
+        local.profiles[0].mode = modes[i];
+        local.profiles[0].operating_mode = OPERATING_MODE_FULL_LOOPBACK;
+        local.profiles[0].freq = 7074000;
+        TEST_ASSERT_TRUE(radio_hamlib_init(&local));
+        TEST_ASSERT_EQUAL_STRING(mode_to_string(modes[i]), mode_to_string(local.profiles[0].mode));
+        radio_hamlib_shutdown(&local);
+    }
+    printf("  a start keeps a digital mode ......... ok\n");
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -264,6 +286,7 @@ int main(void)
     RUN_TEST(test_force_ptt_off);
     RUN_TEST(test_reopens_a_dead_cat_link);
     RUN_TEST(test_band_change_keeps_the_mode);
+    RUN_TEST(test_start_keeps_a_digital_mode);
     int failed = UNITY_END();
 
     rig_server_stop();
