@@ -60,6 +60,14 @@ label { color: #080; }
 .tab-content { display: none; }
 .tab-content.active { display: block; }
 #pages { font-size: 12px; color: #888; }
+#drm-panel { display: none; margin-top: 6px; border-top: 1px solid #333; padding-top: 6px; }
+#drm-panel .row { margin-bottom: 4px; }
+.drm-flag { display: inline-block; min-width: 46px; text-align: center; padding: 1px 4px; border: 1px solid #333; border-radius: 3px; color: #555; }
+.drm-flag.ok { color: #0f0; border-color: #2a5; background: #0d1f0d; }
+.drm-flag.data { color: #fd3; border-color: #a82; }
+.drm-flag.crc { color: #f55; border-color: #a33; }
+#drm-service { color: #cfe; }
+#drm-text { color: #8cf; white-space: pre-wrap; }
 #pages a { color: #8cf; margin-left: 10px; }
 </style>
 </head>
@@ -150,6 +158,65 @@ label { color: #080; }
       <span>RPT2: <code id="ds-r2">--------</code></span>
       <span>headers: <code id="ds-heard">0</code></span>
       <span id="ds-age" style="color:#888"></span>
+    </div>
+    <!-- DRM: the receiver's report (from Dream) and the transmitter's
+         settings. Hidden unless the radio is in DRM. -->
+    <div id="drm-panel">
+      <div class="row">
+        <strong style="color:#8cf">DRM RX</strong>
+        <span class="drm-flag" id="drm-f-io">IO</span>
+        <span class="drm-flag" id="drm-f-time">Time</span>
+        <span class="drm-flag" id="drm-f-frame">Frame</span>
+        <span class="drm-flag" id="drm-f-fac">FAC</span>
+        <span class="drm-flag" id="drm-f-sdc">SDC</span>
+        <span class="drm-flag" id="drm-f-msc">MSC</span>
+        <span>SNR: <code id="drm-snr">-</code></span>
+      </div>
+      <div class="row">
+        <span id="drm-mode" style="color:#888">no signal</span>
+      </div>
+      <div class="row">
+        <span id="drm-service"></span>
+      </div>
+      <div class="row"><span id="drm-text"></span></div>
+      <div class="row" style="margin-top:6px">
+        <strong style="color:#8cf">DRM TX</strong>
+        <label>Mode</label>
+        <select id="drm_robustness">
+          <option value="A">A</option><option value="B">B</option>
+          <option value="C">C</option><option value="D">D</option>
+        </select>
+        <label>Bandwidth</label>
+        <select id="drm_spectrum">
+          <option value="0">4.5 kHz</option><option value="1">5 kHz</option>
+          <option value="2">9 kHz</option><option value="3">10 kHz</option>
+          <option value="4">18 kHz</option><option value="5">20 kHz</option>
+        </select>
+        <label>MSC</label>
+        <select id="drm_msc_qam">
+          <option value="16">16-QAM</option><option value="64">64-QAM</option>
+        </select>
+        <label>Protection</label>
+        <select id="drm_protection">
+          <option value="0">0</option><option value="1">1</option>
+          <option value="2">2</option><option value="3">3</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>Codec</label>
+        <select id="drm_codec">
+          <option value="xHE-AAC">xHE-AAC</option>
+          <option value="HE-AAC">HE-AAC</option>
+          <option value="AAC">AAC</option>
+        </select>
+        <label>Label</label>
+        <input type="text" id="drm_label" size="16" maxlength="16" placeholder="HERMES">
+        <button onclick="drm_apply()">Apply</button>
+        <span id="drm-tx-status" style="font-size:11px; color:#888"></span>
+      </div>
+      <div style="font-size:11px; color:#888">
+        Transmits the radio's microphone input. Settings take effect from the next over.
+      </div>
     </div>
     <div id="state" style="margin-top:6px; font-size:12px; color:#888;"></div>
   </div>
@@ -413,6 +480,7 @@ function handle_text(data) {
       audio_rate_from_state(j);
       show_active();
       update_dstar(j);
+      update_drm(j);
       if (j.s_meter !== undefined) update_smeter(j.s_meter);
       if (j.txrx_state !== undefined) {
         ptt_on = (j.txrx_state === 1);
@@ -454,6 +522,16 @@ function handle_text(data) {
       if (j.rtty_baud) $('rtty_baud').value = j.rtty_baud;
       if (j.rtty_mark) $('rtty_mark').value = j.rtty_mark;
       if (j.rtty_shift) $('rtty_shift').value = j.rtty_shift;
+      drm_show_config(j);
+    }
+    if (j.cmd === 'digi_config' && g_drm_pending > 0) {
+      g_drm_pending--;
+      if (!j.ok) g_drm_errors.push(j.error || 'failed');
+      if (g_drm_pending === 0) {
+        $('drm-tx-status').textContent = g_drm_errors.length ? 'Failed: ' + g_drm_errors.join('; ') : 'applied';
+        send_cmd('digi_get_config');    /* show what the radio took */
+      }
+      return;
     }
     if (j.cmd === 'digi_config' || j.cmd === 'digi_send') {
       var msg = j.ok ? (j.status || 'OK') : ('Failed: ' + (j.error || ''));
@@ -995,6 +1073,82 @@ function update_dstar(j) {
   } else {
     age.textContent = '(nothing decoded yet)';
   }
+}
+
+/* DRM: the receiver's report, as Dream gives it in state.drm_rx (null when
+ * there is none: not in DRM, the receiver starting, or a Dream without
+ * --status-file); and the transmitter's settings, from digi_get_config. */
+var DRM_SPECTRUM_KHZ = ['4.5', '5', '9', '10', '18', '20'];
+var DRM_KEYS = ['drm_robustness', 'drm_spectrum', 'drm_msc_qam', 'drm_protection', 'drm_codec', 'drm_label'];
+var g_drm_config = {}, g_drm_pending = 0, g_drm_errors = [];
+
+function drm_flag(id, c) {
+  var el = $(id);
+  el.className = 'drm-flag' + (c === 'O' ? ' ok' : c === '*' ? ' data' : c === 'X' ? ' crc' : '');
+}
+
+function update_drm(j) {
+  var panel = $('drm-panel');
+  if (!panel) return;
+  panel.style.display = (j.mode === 'DRM') ? 'block' : 'none';
+  if (j.mode !== 'DRM') return;
+  var r = j.drm_rx;
+  var flags = ['io', 'time', 'frame', 'fac', 'sdc', 'msc'];
+  for (var i = 0; i < flags.length; i++) drm_flag('drm-f-' + flags[i], r ? r[flags[i]] : ' ');
+  if (!r) {
+    $('drm-snr').textContent = '-';
+    $('drm-mode').textContent = 'no receiver report (the receiver is starting, or this Dream has no --status-file)';
+    $('drm-service').textContent = '';
+    $('drm-text').textContent = '';
+    return;
+  }
+  if (!r.signal) {
+    $('drm-snr').textContent = '-';
+    $('drm-mode').textContent = 'no DRM signal' + (typeof r.if_level === 'number' ? ' (IF ' + r.if_level.toFixed(1) + ' dB)' : '');
+    $('drm-service').textContent = '';
+    $('drm-text').textContent = '';
+    return;
+  }
+  $('drm-snr').textContent = typeof r.snr === 'number' ? r.snr.toFixed(1) + ' dB' : '-';
+  var khz = DRM_SPECTRUM_KHZ[r.spectrum];
+  $('drm-mode').textContent = 'mode ' + (r.robustness || '?') + ' | ' + (khz ? khz + ' kHz' : '?') +
+    ' | MSC ' + (r.msc_mode || '?') + ' | SDC ' + (r.sdc_mode || '?') +
+    ' | protection ' + (r.protection_b !== undefined ? r.protection_b : '?') +
+    ' | interleaver ' + (r.interleaver || '?');
+  var s = null, list = r.services || [];
+  for (var k = 0; k < list.length; k++) if (list[k].selected) s = list[k];
+  if (!s && list.length) s = list[0];
+  $('drm-service').textContent = s
+    ? (s.label || '(no label)') + ' | ' + (s.audio ? (s.codec || 'audio') : 'data') +
+      (s.audio ? (s.stereo ? ' stereo' : ' mono') : '') +
+      (typeof s.bitrate === 'number' ? ' | ' + s.bitrate.toFixed(2) + ' kbit/s' : '') +
+      (list.length > 1 ? ' | ' + list.length + ' services' : '')
+    : 'no service yet';
+  $('drm-text').textContent = r.text || '';
+}
+
+function drm_show_config(j) {
+  for (var i = 0; i < DRM_KEYS.length; i++) {
+    var k = DRM_KEYS[i];
+    if (j[k] === undefined) continue;
+    g_drm_config[k] = String(j[k]);
+    if (document.activeElement !== $(k)) $(k).value = String(j[k]);
+  }
+}
+
+/* Only what changed is sent, one digi_config each; the radio refuses them
+ * while transmitting. */
+function drm_apply() {
+  if (!ws) return;
+  g_drm_pending = 0; g_drm_errors = [];
+  for (var i = 0; i < DRM_KEYS.length; i++) {
+    var k = DRM_KEYS[i], v = $(k).value;
+    if (k === 'drm_label') v = v.trim();
+    if (v === g_drm_config[k]) continue;
+    g_drm_pending++;
+    ws.send(JSON.stringify({ cmd: 'digi_config', key: k, value: v }));
+  }
+  $('drm-tx-status').textContent = g_drm_pending ? 'applying...' : 'nothing changed';
 }
 
 function update_smeter(db) {

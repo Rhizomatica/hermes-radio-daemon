@@ -6,6 +6,7 @@
 package integration
 
 import (
+	"encoding/json/v2"
 	"os"
 	"regexp"
 	"strconv"
@@ -261,5 +262,63 @@ func TestExampleUserINI(t *testing.T) {
 		if got := ws.call("get_mode", nil).String(t); got != string(m[3]) {
 			t.Errorf("profile %d mode = %q, want %s", n, got, m[3])
 		}
+	}
+}
+
+// The DRM transmitter's settings through digi_config, as text and as numbers,
+// refused when they are not valid, and read back with digi_get_config.
+func TestDRMSettings(t *testing.T) {
+	d := startDaemon(t, daemonOpts{})
+	ws := dialRadiod(t, d)
+
+	for _, set := range []map[string]any{
+		{"key": "drm_label", "value": "B0AA RADIO"},
+		{"key": "drm_msc_qam", "value": 64},
+		{"key": "drm_codec", "value": "HE-AAC"},
+		{"key": "drm_robustness", "value": "a"},
+		{"key": "drm_protection", "value": "0"},
+	} {
+		if r := ws.call("digi_config", set); !r.OK {
+			t.Errorf("digi_config %v = %+v", set, r)
+		}
+	}
+	for _, bad := range []map[string]any{
+		{"key": "drm_codec", "value": "Opus"},
+		{"key": "drm_msc_qam", "value": 32},
+		{"key": "drm_label", "value": "X]\nmsc=CS_3_SM"},
+		{"key": "drm_spectrum", "value": "six"},
+	} {
+		if r := ws.call("digi_config", bad); r.OK {
+			t.Errorf("digi_config %v was accepted", bad)
+		}
+	}
+
+	b, _ := json.Marshal(map[string]any{"cmd": "digi_get_config"})
+	if err := ws.ws.writeFrame(opText, b); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		op, msg, err := ws.ws.readMessage(deadline)
+		if err != nil {
+			t.Fatalf("waiting for digi_get_config: %v", err)
+		}
+		var got struct {
+			Cmd        string `json:"cmd"`
+			Robustness string `json:"drm_robustness"`
+			Spectrum   int    `json:"drm_spectrum"`
+			QAM        int    `json:"drm_msc_qam"`
+			Protection int    `json:"drm_protection"`
+			Codec      string `json:"drm_codec"`
+			Label      string `json:"drm_label"`
+		}
+		if op != opText || json.Unmarshal(msg, &got) != nil || got.Cmd != "digi_get_config" {
+			continue
+		}
+		if got.Robustness != "A" || got.Spectrum != 3 || got.QAM != 64 || got.Protection != 0 ||
+			got.Codec != "HE-AAC" || got.Label != "B0AA RADIO" {
+			t.Errorf("digi_get_config = %s", msg)
+		}
+		return
 	}
 }

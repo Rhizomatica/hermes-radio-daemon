@@ -114,11 +114,13 @@ sudo cmake --install build && sudo ldconfig
 
 **Dream** (optional, for DRM mode): its console build, from the `xhe-aac-tx`
 branch of `rafael2k/dream`, which reads and writes raw s16le on stdin and
-stdout and transmits xHE-AAC. xHE-AAC needs fdk-aac's `libfdk-xhe-aac`
-(`pkg-config fdk-xhe-aac`); Dream builds without it, with no xHE-AAC.
+stdout and transmits xHE-AAC. `CONFIG+=vendored-fdk` builds the fdk-aac it
+carries, with xHE-AAC. `DEFINES+=USE_CONSOLEIO` builds the console receiver's
+`--status-file`, the report radiod shows (lock, SNR, mode, services); a Dream
+without it still works, with no report.
 ```bash
 cd dream                     # your checkout of Dream, branch xhe-aac-tx
-qmake6 CONFIG+=console CONFIG+=release dream.pro
+qmake6 CONFIG+=console CONFIG+=release CONFIG+=vendored-fdk DEFINES+=USE_CONSOLEIO dream.pro
 make
 sudo cp dream /usr/bin/dream
 ```
@@ -654,9 +656,21 @@ move the samples (`dsp/dream_proc.c`), so the DSP never waits on a pipe.
   dial and sends both halves of the spectrum, as AM. A transmission starts
   Dream's transmitter, and receiving stops it.
 
+- **The receiver's report**: radiod asks Dream's `--help` once, at start;
+  a Dream that has `--status-file` writes its receiver's status there
+  (`/dev/shm/radiod-drm-<pid>.json`) about once a second. In DRM, the state
+  frame carries it as `drm_rx`, checked to be one JSON object and no older
+  than 5 s (`null` otherwise): the sync flags (`io`, `time`, `frame`, `fac`,
+  `sdc`, `msc`: `O` ok, `*` data error, `X` CRC error), `signal`, `snr`, the
+  mode, and the services with label, codec and bitrate. The web page's
+  Control tab shows it in DRM, with the transmitter's settings.
+
 The transmission's parameters are `core.ini`'s `drm_*` keys: robustness,
-spectrum occupancy, MSC QAM, protection level, codec (xHE-AAC by default) and
-label. xHE-AAC needs 12 kbit/s or more, which the 10 kHz channel gives in mode
+spectrum occupancy, MSC QAM, protection level, codec (xHE-AAC by default;
+HE-AAC, AAC with SBR on a 12 kHz core; or AAC) and label. `digi_config`
+sets them at run time (`{"cmd":"digi_config","key":"drm_codec","value":"HE-AAC"}`,
+refused while transmitting; the next over uses them) and `digi_get_config`
+reports them; the file and the command check them alike. xHE-AAC needs 12 kbit/s or more, which the 10 kHz channel gives in mode
 B: 14 kbit/s with 16-QAM (the default), 20 with 64-QAM, which needs some 6 dB
 more SNR (between two sBitx stations on 40 m, about 10 dB of SNR decoded with
 16-QAM and not with 64); the narrower channels (4.5 and 5 kHz) do not, and SSB rigs on

@@ -8,11 +8,13 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -384,4 +386,57 @@ void dream_proc_stop(dream_proc *p)
     free(p->out.buf);
     HLOGI(LOG_C, "Dream (pid %d) stopped", (int) p->pid);
     free(p);
+}
+
+bool dream_proc_has_option(const char *dream_path, const char *option)
+{
+    char help[65536];
+    size_t got = 0;
+    int out[2];
+    pid_t pid;
+    bool found;
+    struct timespec t0, t;
+
+    if (pipe2(out, O_CLOEXEC) < 0)
+        return false;
+    pid = fork();
+    if (pid < 0) {
+        close(out[0]);
+        close(out[1]);
+        return false;
+    }
+    if (pid == 0) {
+        int null = open("/dev/null", O_RDWR);
+
+        if (null >= 0)
+            dup2(null, STDIN_FILENO);
+        dup2(out[1], STDOUT_FILENO);
+        dup2(out[1], STDERR_FILENO);    /* Dream prints its help here */
+        execlp(dream_path, "dream", "--help", (char *) NULL);
+        _exit(127);
+    }
+    close(out[1]);
+
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (;;) {
+        struct pollfd pfd = { .fd = out[0], .events = POLLIN };
+        long left;
+        ssize_t n;
+
+        clock_gettime(CLOCK_MONOTONIC, &t);
+        left = 3000 - ((t.tv_sec - t0.tv_sec) * 1000 + (t.tv_nsec - t0.tv_nsec) / 1000000);
+        if (left <= 0 || got >= sizeof(help) - 1 || poll(&pfd, 1, (int) left) <= 0)
+            break;
+        n = read(out[0], help + got, sizeof(help) - 1 - got);
+        if (n <= 0)
+            break;
+        got += (size_t) n;
+    }
+    close(out[0]);
+    kill(pid, SIGKILL);                 /* gone already, or hung */
+    waitpid(pid, NULL, 0);
+    help[got] = '\0';
+    found = strstr(help, option) != NULL;
+    HLOGI(LOG_C, "%s %s %s", dream_path, found ? "has" : "has no", option);
+    return found;
 }
