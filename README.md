@@ -676,6 +676,10 @@ more SNR (between two sBitx stations on 40 m, about 10 dB of SNR decoded with
 16-QAM and not with 64); the narrower channels (4.5 and 5 kHz) do not, and SSB rigs on
 Hamlib cannot pass a DRM channel centred on their dial, so DRM is the sBitx's.
 
+A ring with no room for what comes in drops it, and radiod logs that, at
+most every 10 s (`Dream's receiver: N samples dropped going in, M coming
+out`): a Dream that falls behind gets a broken stream.
+
 For testing, `RADIOD_DRM_DUMP=<prefix>` in radiod's environment writes the
 receiver's I/Q into Dream and audio out of it (`<prefix>.iq`, `.audio`) and
 the transmitter's audio in and I/Q out (`.txaudio`, `.txiq`), all s16le at
@@ -937,6 +941,13 @@ Text frames use compact JSON commands:
 {"cmd":"digi_messages","count":10}
 {"cmd":"digi_config","key":"cw_wpm","value":25}
 ```
+
+**PTT and the client that keyed it.** A client that keys the radio and then
+goes away unkeys it: a closed websocket, a rigctl or CAT connection that
+ends, an `sbitx_client` that exits. That way a crashed UI can't leave the
+transmitter on. AM and DRM are the exception, being broadcast modes: there
+the transmission goes on until any client sends `ptt_off`, or SWR
+protection trips. The log says `PTT stays ON (AM)` or `(DRM)`.
 
 Rig controls (levels, funcs, parms, split, RIT/XIT, filter width, antenna,
 tuner, …) have their own commands — see [Radio Controls](#radio-controls).

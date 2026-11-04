@@ -28,6 +28,33 @@
 static dream_proc *rx, *tx;
 static double tx_phase;
 
+/* Samples a ring had no room for, into Dream or out of it, logged at most
+ * every 10 s: a Dream that falls behind gets a broken stream, and a
+ * receiver fed one does not lock. */
+typedef struct {
+    const char *what;
+    uint64_t in, out;
+    time_t   when;
+} drop_log;
+
+static drop_log rx_drops = { "receiver" }, tx_drops = { "transmitter" };
+
+static void log_drops(dream_proc *p, drop_log *d)
+{
+    uint64_t in, out;
+    time_t now = time(NULL);
+
+    if (!p || now - d->when < 10)
+        return;
+    d->when = now;
+    dream_proc_dropped(p, &in, &out);
+    if (in != d->in || out != d->out)
+        HLOGW(LOG_C, "Dream's %s: %llu samples dropped going in, %llu coming out, in %d s",
+              d->what, (unsigned long long) (in - d->in), (unsigned long long) (out - d->out), 10);
+    d->in = in;
+    d->out = out;
+}
+
 /* The receiver's status report: Dream rewrites it about once a second, on
  * the RAM disk rather than the SD card; one per radiod, by its pid. */
 static bool status_supported;
@@ -119,6 +146,8 @@ bool sbitx_drm_rx_start(const char *dream_path, const char *dir)
     }
     args[n] = NULL;
     rx_primed = false;
+    rx_drops.in = rx_drops.out = 0;
+    rx_drops.when = time(NULL);
     dump_open();
     rx = dream_proc_start(dream_path, dir, "", args, DRM_RING);
     if (!rx)
@@ -276,6 +305,8 @@ void sbitx_drm_rx_iq(const float *i, const float *q, size_t n)
 {
     int16_t s[2048];
 
+    log_drops(rx, &rx_drops);
+
     while (rx && n) {
         size_t k = n < sizeof(s) / sizeof(s[0]) / 2 ? n : sizeof(s) / sizeof(s[0]) / 2;
 
@@ -380,6 +411,8 @@ bool sbitx_drm_tx_start(const char *dream_path, const char *dir, const sbitx_drm
         return true;
     if (sbitx_drm_tx_ini(cfg, ini, sizeof(ini)) < 0)
         return false;
+    tx_drops.in = tx_drops.out = 0;
+    tx_drops.when = time(NULL);
     tx = dream_proc_start(dream_path, dir, ini, args, DRM_RING);
     if (!tx)
         HLOGE(LOG_C, "cannot start Dream's transmitter (%s)", dream_path);
@@ -406,6 +439,8 @@ bool sbitx_drm_tx_running(void)
 void sbitx_drm_tx_audio(const float *in, size_t n)
 {
     int16_t s[2048];
+
+    log_drops(tx, &tx_drops);
 
     while (tx && n) {
         size_t k = n < sizeof(s) / sizeof(s[0]) ? n : sizeof(s) / sizeof(s[0]);

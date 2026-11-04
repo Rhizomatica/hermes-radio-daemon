@@ -255,6 +255,19 @@ bool radio_backend_holds_ptt(radio *radio_h, ptt_source src, long id)
     return holds;
 }
 
+/* AM and DRM are broadcast modes: a transmission goes on until someone
+ * sends ptt_off (or SWR protection trips), not only while the client that
+ * keyed it stays connected. */
+static bool ptt_survives_holder(const radio *radio_h)
+{
+    uint16_t mode;
+
+    if (radio_h->profile_active_idx >= radio_h->profiles_count)
+        return false;
+    mode = radio_h->profiles[radio_h->profile_active_idx].mode;
+    return mode == MODE_AM || mode == MODE_DRM;
+}
+
 bool radio_backend_release_ptt(radio *radio_h, ptt_source src, long id,
                                const char *why)
 {
@@ -263,12 +276,23 @@ bool radio_backend_release_ptt(radio *radio_h, ptt_source src, long id,
     pthread_mutex_lock(&ptt_lock);
     if (src != PTT_SRC_NONE && ptt_owner_src == src && ptt_owner_id == id)
     {
+        /* no owner from here on: any client's ptt_off ends it, and no
+         * modem can claim the transmission */
         ptt_owner_src = PTT_SRC_NONE;
         ptt_owner_id = 0;
-        HLOGI(LOG_C, "PTT OFF, %s %ld %s while keyed",
-               ptt_source_name(src), id, why);
-        ptt_apply(radio_h, IN_RX);
-        released = true;
+        if (ptt_survives_holder(radio_h) && radio_h->txrx_state == IN_TX)
+        {
+            HLOGI(LOG_C, "PTT stays ON (%s): %s %ld %s while keyed",
+                   radio_h->profiles[radio_h->profile_active_idx].mode == MODE_AM ? "AM" : "DRM",
+                   ptt_source_name(src), id, why);
+        }
+        else
+        {
+            HLOGI(LOG_C, "PTT OFF, %s %ld %s while keyed",
+                   ptt_source_name(src), id, why);
+            ptt_apply(radio_h, IN_RX);
+            released = true;
+        }
     }
     pthread_mutex_unlock(&ptt_lock);
 
