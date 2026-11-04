@@ -153,7 +153,7 @@ static void test_tx_ini(void)
     TEST_ASSERT_GREATER_THAN(0, sbitx_drm_tx_ini(&c, ini, sizeof(ini)));
     TEST_ASSERT_NOT_NULL(strstr(ini, "robustness=RM_ROBUSTNESS_MODE_B\n"));
     TEST_ASSERT_NOT_NULL(strstr(ini, "spectocc=SO_3\n"));
-    TEST_ASSERT_NOT_NULL(strstr(ini, "msc=CS_3_SM\n"));
+    TEST_ASSERT_NOT_NULL(strstr(ini, "msc=CS_2_SM\n"));      /* 32: 16-QAM */
     TEST_ASSERT_NOT_NULL(strstr(ini, "protlevel=1\n"));
     TEST_ASSERT_NOT_NULL(strstr(ini, "codec=xHE-AAC\n"));
     TEST_ASSERT_EQUAL_INT(-1, sbitx_drm_tx_ini(&c, ini, 40));

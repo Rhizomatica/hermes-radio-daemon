@@ -621,8 +621,8 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
                             : (s[0] >= 'a' && s[0] <= 'd') ? (char) (s[0] - 'a' + 'A') : 'B';
     i = iniparser_getint(ini, "main:drm_spectrum", 3);
     radio_h->drm_spectrum = i >= 0 && i <= 5 ? i : 3;
-    i = iniparser_getint(ini, "main:drm_msc_qam", 64);
-    radio_h->drm_msc_qam = i == 16 ? 16 : 64;
+    i = iniparser_getint(ini, "main:drm_msc_qam", 16);
+    radio_h->drm_msc_qam = i == 64 ? 64 : 16;
     i = iniparser_getint(ini, "main:drm_protection", 1);
     radio_h->drm_protection = i >= 0 && i <= 3 ? i : 1;
     s = iniparser_getstring(ini, "main:drm_codec", "xHE-AAC");

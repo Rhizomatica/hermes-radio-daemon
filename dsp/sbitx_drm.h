@@ -33,7 +33,7 @@
 typedef struct {
     char robustness;                     /* 'A'..'D' */
     int  spectrum;                       /* occupancy 0..5; 3 is 10 kHz */
-    int  msc_qam;                        /* 16 or 64 */
+    int  msc_qam;                        /* 16 (or 64, for some 6 dB more SNR) */
     int  protection;                     /* 0..3 */
     char codec[16];                      /* xHE-AAC, AAC, Opus */
     char label[17];                      /* the service's, up to 16 bytes */

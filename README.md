@@ -657,8 +657,16 @@ move the samples (`dsp/dream_proc.c`), so the DSP never waits on a pipe.
 The transmission's parameters are `core.ini`'s `drm_*` keys: robustness,
 spectrum occupancy, MSC QAM, protection level, codec (xHE-AAC by default) and
 label. xHE-AAC needs 12 kbit/s or more, which the 10 kHz channel gives in mode
-B with 64-QAM; the narrower channels (4.5 and 5 kHz) do not, and SSB rigs on
+B: 14 kbit/s with 16-QAM (the default), 20 with 64-QAM, which needs some 6 dB
+more SNR (between two sBitx stations on 40 m, about 10 dB of SNR decoded with
+16-QAM and not with 64); the narrower channels (4.5 and 5 kHz) do not, and SSB rigs on
 Hamlib cannot pass a DRM channel centred on their dial, so DRM is the sBitx's.
+
+For testing, `RADIOD_DRM_DUMP=<prefix>` in radiod's environment writes the
+receiver's I/Q into Dream and audio out of it (`<prefix>.iq`, `.audio`) and
+the transmitter's audio in and I/Q out (`.txaudio`, `.txiq`), all s16le at
+48 kHz, to replay Dream on offline. The DSP thread writes them: put them on a
+RAM disk (`/dev/shm`), as an SD card stalls it.
 
 ### FT8 (Weak-signal digital mode)
 
