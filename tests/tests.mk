@@ -52,7 +52,7 @@ TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
             tests/audioio/test_audio_bridge \
             tests/dsp/test_upsample2 tests/dsp/test_stream_resampler tests/dsp/test_mic_filter \
             tests/dsp/test_digi_modes tests/dsp/test_digi_log tests/dsp/test_dstar_voice \
-            tests/dsp/test_rade_voice tests/dsp/test_radae_vocoder \
+            tests/dsp/test_rade_voice tests/dsp/test_radae_vocoder tests/dsp/test_drm \
             tests/sbitx/test_sbitx_buffer \
             tests/common/test_radiod_log
 # Browser audio end to end, against a real libdatachannel peer: only where
@@ -198,6 +198,10 @@ tests/common/test_radiod_log: tests/common/test_radiod_log.c common/radiod_log.c
 
 tests/dsp/test_digi_log: tests/dsp/test_digi_log.c dsp/digi_log.c dsp/digi_log.h
 	$(CC) $(TEST_CFLAGS) -Idsp $< dsp/digi_log.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread -lm
+
+# DREAM=/path/to/dream also runs the loop through a real Dream
+tests/dsp/test_drm: tests/dsp/test_drm.c dsp/dream_proc.c dsp/dream_proc.h dsp/sbitx_drm.c dsp/sbitx_drm.h
+	$(CC) $(TEST_CFLAGS) -Idsp $< dsp/dream_proc.c dsp/sbitx_drm.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread -lm
 
 tests/dsp/test_dstar_voice: tests/dsp/test_dstar_voice.c dsp/dstar_voice.c dsp/dstar_voice.h \
                             dsp/voice_crypto.c dsp/voice_crypto.h dsp/sbitx_dstar.c dsp/sbitx_dstar.h

@@ -33,6 +33,8 @@
 #include <complex.h>
 #include <fftw3.h>
 #include <math.h>
+#include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 
@@ -1238,6 +1240,56 @@ static void dsp_radae_follow_profile(void)
     }
 }
 
+/* DRM: Dream works at 48 kHz, the DSP at 96 kHz. Each direction has its
+ * resamplers, made once. */
+static stream_resampler drm_rx_down_i, drm_rx_down_q, drm_rx_up;
+static stream_resampler drm_tx_down, drm_tx_up_i, drm_tx_up_q;
+static bool drm_rs_ready;
+static float drm_rx_fifo[8192];         /* decoded audio at 96 kHz */
+static size_t drm_rx_fifo_n;
+static float drm_tx_fifo_i[8192], drm_tx_fifo_q[8192];  /* IQ at 96 kHz */
+static size_t drm_tx_fifo_n;
+
+static bool drm_resamplers(void)
+{
+    if (!drm_rs_ready)
+        drm_rs_ready = stream_resampler_init(&drm_rx_down_i, 1, 2, 0.05f) &&
+                       stream_resampler_init(&drm_rx_down_q, 1, 2, 0.05f) &&
+                       stream_resampler_init(&drm_rx_up, 2, 1, 0.05f) &&
+                       stream_resampler_init(&drm_tx_down, 1, 2, 0.05f) &&
+                       stream_resampler_init(&drm_tx_up_i, 2, 1, 0.05f) &&
+                       stream_resampler_init(&drm_tx_up_q, 2, 1, 0.05f);
+    return drm_rs_ready;
+}
+
+static void drm_dir(char *buf, size_t len, const char *which)
+{
+    snprintf(buf, len, "%s/drm-%s", radio_h_dsp->recording_dir, which);
+}
+
+/* Dream's transmitter starts with a transmission in DRM and stops after it */
+static void drm_tx_begin(void)
+{
+    sbitx_drm_tx_config c;
+    char dir[RECORDING_PATH_MAX + 16];
+
+    memset(&c, 0, sizeof(c));
+    c.robustness = radio_h_dsp->drm_robustness;
+    c.spectrum = radio_h_dsp->drm_spectrum;
+    c.msc_qam = radio_h_dsp->drm_msc_qam;
+    c.protection = radio_h_dsp->drm_protection;
+    snprintf(c.codec, sizeof(c.codec), "%s", radio_h_dsp->drm_codec);
+    snprintf(c.label, sizeof(c.label), "%s", radio_h_dsp->drm_label);
+    drm_dir(dir, sizeof(dir), "tx");
+    drm_tx_fifo_n = 0;
+    if (drm_rs_ready) {
+        stream_resampler_reset(&drm_tx_down);
+        stream_resampler_reset(&drm_tx_up_i);
+        stream_resampler_reset(&drm_tx_up_q);
+    }
+    sbitx_drm_tx_start(radio_h_dsp->dream_path, dir, &c);
+}
+
 void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *output_loopback, uint8_t *output_tx, uint32_t block_size)
 {
     double i_sample;
@@ -1824,19 +1876,26 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
         return;
     }
 
-    // STEP 7.7: DRM mode via Dream subprocess
+    // STEP 7.7: DRM via Dream (sbitx_drm.h): the IQ around the dial at
+    // 48 kHz in, the decoded audio back at 96 kHz. Receiving means the over
+    // has ended: Dream's transmitter, if one ran, goes (nothing otherwise).
+    sbitx_drm_tx_stop();
     if (rx_mode == MODE_DRM)
     {
-        static bool drm_inited = false;
-        if (!drm_inited)
-        {
-            drm_inited = true;
-            sbitx_drm_init(radio_h_dsp->dream_path, 48000, 8000);
-        }
+        static float drm_i[MAX_BINS/2], drm_q[MAX_BINS/2], drm_audio[1024];
+        static time_t drm_rx_tried;
 
-        static float drm_i[MAX_BINS/2];
-        static float drm_q[MAX_BINS/2];
-        static float drm_audio[2048];
+        if (!sbitx_drm_rx_running() && drm_resamplers() && time(NULL) - drm_rx_tried >= 5)
+        {
+            char dir[RECORDING_PATH_MAX + 16];
+
+            /* a Dream that died, or never came up, is tried again every 5 s */
+            drm_rx_tried = time(NULL);
+            sbitx_drm_rx_stop();
+            drm_dir(dir, sizeof(dir), "rx");
+            sbitx_drm_rx_start(radio_h_dsp->dream_path, dir);
+            drm_rx_fifo_n = 0;
+        }
 
         for (int k = 0; k < MAX_BINS / 2; k++)
         {
@@ -1844,33 +1903,49 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             drm_q[k] = (float) cimag(fft_time[k + (MAX_BINS / 2)]);
         }
 
-        int audio_n = 0;
-        sbitx_drm_process(drm_i, drm_q, MAX_BINS / 2, drm_audio, &audio_n);
+        if (drm_rs_ready)
+        {
+            size_t ni = stream_resampler_run(&drm_rx_down_i, drm_i, MAX_BINS / 2);
+            size_t nq = stream_resampler_run(&drm_rx_down_q, drm_q, MAX_BINS / 2);
+            sbitx_drm_rx_iq(drm_rx_down_i.out, drm_rx_down_q.out, ni < nq ? ni : nq);
+
+            /* this block's worth of audio, at 96 kHz */
+            size_t a = sbitx_drm_rx_audio(drm_audio, block_size / 2);
+            if (a)
+            {
+                size_t u = stream_resampler_run(&drm_rx_up, drm_audio, a);
+                size_t room = sizeof(drm_rx_fifo) / sizeof(drm_rx_fifo[0]) - drm_rx_fifo_n;
+                if (u > room)
+                    u = room;
+                memcpy(drm_rx_fifo + drm_rx_fifo_n, drm_rx_up.out, u * sizeof(float));
+                drm_rx_fifo_n += u;
+            }
+        }
 
         int32_t *output_speaker_int = (int32_t *)output_speaker;
         int32_t *output_loopback_int = (int32_t *)output_loopback;
+        size_t use = drm_rx_fifo_n < block_size ? drm_rx_fifo_n : block_size;
 
-        if (audio_n > 0)
+        for (int k = 0; k < (int) block_size; k++)
         {
-            for (int k = 0; k < block_size && k < audio_n; k++)
+            float v = (size_t) k < use ? drm_rx_fifo[k] : 0.0f;
+            output_speaker_int[k] = (int32_t) (v * MAX_SAMPLE_VALUE);
+            if ((k % 2) == 0)
             {
-                output_speaker_int[k] = (int32_t) (drm_audio[k] * MAX_SAMPLE_VALUE);
-                if ((k % 2) == 0)
-                {
-                    output_loopback_int[k] = output_speaker_int[k] << 4;
-                    output_loopback_int[k + 1] = output_loopback_int[k];
-                }
-                output_speaker_int[k] <<= 8;
+                output_loopback_int[k] = output_speaker_int[k] << 4;
+                output_loopback_int[k + 1] = output_loopback_int[k];
             }
+            output_speaker_int[k] <<= 8;
         }
-        else
-        {
-            memset(output_speaker, 0, block_size * (snd_pcm_format_width(format) / 8));
-            memset(output_loopback, 0, block_size * (snd_pcm_format_width(format) / 8));
-        }
+        drm_rx_fifo_n -= use;
+        memmove(drm_rx_fifo, drm_rx_fifo + use, drm_rx_fifo_n * sizeof(float));
 
         memset(output_tx, 0, block_size * (snd_pcm_format_width(format) / 8));
         return;
+    }
+    else
+    {
+        sbitx_drm_rx_stop();            /* out of DRM: Dream's receiver goes */
     }
 
     // STEP 7.8: FT8 mode - SSB demod + optional decode
@@ -2032,6 +2107,9 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
         clear_buffers();
         if (loop_up_ready)
             upsample2_reset(&loop_up);
+        if (radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].mode == MODE_DRM
+                && drm_resamplers())
+            drm_tx_begin();
         tx_starting = false;
     }
 
@@ -2554,6 +2632,48 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             fft_m[k] = fft_in[i];
         }
     }
+    // DRM TX: the audio through Dream's transmitter, its I/Q centred on the
+    // dial (sbitx_drm.h), on both halves of the spectrum as AM's. The voice
+    // chain (compressor, EQ) stays out: it is not voice that goes out.
+    else if (tx_mode == MODE_DRM)
+    {
+        static float drm_in_48k[1024], drm_i_48k[1024], drm_q_48k[1024];
+        float gain = radio_h_dsp->drm_tx_gain;
+
+        for (i = 0; i < block_size; i++)
+            tx_float_buf[i] = (float) signal_input_f[i];
+        size_t down = drm_rs_ready ? stream_resampler_run(&drm_tx_down, tx_float_buf, block_size) : 0;
+        for (size_t k = 0; k < down && k < 1024; k++)
+            drm_in_48k[k] = drm_tx_down.out[k];
+        sbitx_drm_tx_audio(drm_in_48k, down < 1024 ? down : 1024);
+
+        /* what Dream has, up to this block's worth, at 96 kHz */
+        size_t got = sbitx_drm_tx_iq(drm_i_48k, drm_q_48k, block_size / 2);
+        if (got && drm_rs_ready) {
+            size_t ui = stream_resampler_run(&drm_tx_up_i, drm_i_48k, got);
+            size_t uq = stream_resampler_run(&drm_tx_up_q, drm_q_48k, got);
+            size_t u = ui < uq ? ui : uq;
+            size_t room = sizeof(drm_tx_fifo_i) / sizeof(drm_tx_fifo_i[0]) - drm_tx_fifo_n;
+            if (u > room)
+                u = room;
+            memcpy(drm_tx_fifo_i + drm_tx_fifo_n, drm_tx_up_i.out, u * sizeof(float));
+            memcpy(drm_tx_fifo_q + drm_tx_fifo_n, drm_tx_up_q.out, u * sizeof(float));
+            drm_tx_fifo_n += u;
+        }
+
+        size_t use = drm_tx_fifo_n < block_size ? drm_tx_fifo_n : block_size;
+        for (i = MAX_BINS/2; i < MAX_BINS; i++)
+        {
+            int k = i - MAX_BINS/2;
+            double re = (size_t) k < use ? gain * drm_tx_fifo_i[k] : 0.0;
+            double im = (size_t) k < use ? gain * drm_tx_fifo_q[k] : 0.0;
+            fft_in[i] = re + I * im;
+            fft_m[k] = fft_in[i];
+        }
+        drm_tx_fifo_n -= use;
+        memmove(drm_tx_fifo_i, drm_tx_fifo_i + use, drm_tx_fifo_n * sizeof(float));
+        memmove(drm_tx_fifo_q, drm_tx_fifo_q + use, drm_tx_fifo_n * sizeof(float));
+    }
     // SSB/DV voice path
     else
     {
@@ -2792,7 +2912,18 @@ void dsp_free(radio *radio_h)
         loop_up_ready = false;
     }
 
-    sbitx_drm_shutdown();
+    sbitx_drm_rx_stop();
+    sbitx_drm_tx_stop();
+    if (drm_rs_ready)
+    {
+        stream_resampler_free(&drm_rx_down_i);
+        stream_resampler_free(&drm_rx_down_q);
+        stream_resampler_free(&drm_rx_up);
+        stream_resampler_free(&drm_tx_down);
+        stream_resampler_free(&drm_tx_up_i);
+        stream_resampler_free(&drm_tx_up_q);
+        drm_rs_ready = false;
+    }
 }
 
 void dsp_set_filters()
@@ -2804,7 +2935,15 @@ void dsp_set_filters()
     double bpf_high = (double) radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].bpf_high;
     uint16_t mode = radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].mode;
 
-    if (mode == MODE_FM || mode == MODE_AM || mode == MODE_DRM)
+    if (mode == MODE_DRM)
+    {
+        /* the channel is centred on the dial: +-bpf_high (5200 for the
+         * 10 kHz channel), the same both ways */
+        double edge = bpf_high / 96000.0;
+        filter_tune(rx_filter, -edge, edge, 5);
+        filter_tune(tx_filter, -edge, edge, 5);
+    }
+    else if (mode == MODE_FM || mode == MODE_AM)
     {
         double lo = (1.0 * bpf_low) / 96000.0;
         double hi = (1.0 * bpf_high) / 96000.0;

@@ -112,10 +112,13 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
 sudo cmake --install build && sudo ldconfig
 ```
 
-**Dream** (optional, for DRM mode): build in console mode:
+**Dream** (optional, for DRM mode): its console build, from the `xhe-aac-tx`
+branch of `rafael2k/dream`, which reads and writes raw s16le on stdin and
+stdout and transmits xHE-AAC. xHE-AAC needs fdk-aac's `libfdk-xhe-aac`
+(`pkg-config fdk-xhe-aac`); Dream builds without it, with no xHE-AAC.
 ```bash
-cd dream                     # your checkout of Dream
-qmake "CONFIG+=console"
+cd dream                     # your checkout of Dream, branch xhe-aac-tx
+qmake6 CONFIG+=console CONFIG+=release dream.pro
 make
 sudo cp dream /usr/bin/dream
 ```
@@ -523,8 +526,8 @@ enable_ptt = 1
 freq = 6095000
 mode = DRM
 operating_mode = 0
-bpf_low = 100
-bpf_high = 6000
+bpf_low = 0
+bpf_high = 5200
 agc = OFF
 compressor = OFF
 tx_preemphasis = OFF
@@ -579,7 +582,7 @@ enable_ptt = 1
 | SSB data | 50 | 3000 | 3.0 kHz |
 | FM (NBFM) | 100 | 7000 | 14 kHz (Carson rule: 2×5k dev + 2×2k audio) |
 | AM | 50 | 10000 | 20 kHz (broadcast audio) |
-| DRM | 100 | 6000 | 12 kHz (DRM mode B 10 kHz + margin) |
+| DRM | 0 | 5200 | the channel centred on the dial, +-bpf_high: 10.4 kHz for the 10 kHz channel |
 | FT8 | 50 | 3000 | 3.0 kHz (SSB-based) |
 | CW | 500 | 900 | ~400 Hz around pitch (700 Hz) |
 | RTTY | 1300 | 1700 | ~400 Hz around mark/space (1585/1415 Hz) |
@@ -635,16 +638,27 @@ Uses csdr `amdemod_cf` (envelope detection) and `add_dcoffset_cc`:
 
 ### DRM (Digital Radio Mondiale)
 
-Launches **Dream** as a subprocess via dual Unix pipes:
-- **Signal**: 48 kHz stereo S16_LE zero-IF I/Q (left=I, right=Q) → Dream stdin
-- **Audio**: 8 kHz stereo S16_LE decoded audio from Dream stdout → upsample 96k → speaker + loopback
+The DRM channel is centred on the dial, as broadcast DRM is: the 10 kHz HF
+channel is the dial +-5 kHz. **Dream** runs as a subprocess, its receiver and
+its transmitter each in a directory of its own under `recording_dir`
+(`drm-rx`, `drm-tx`), with the `Dream.ini` radiod writes there. Two threads
+move the samples (`dsp/dream_proc.c`), so the DSP never waits on a pipe.
 
-Dream is launched with:
-```
-dream --console -I - -O - --sigsrate 48000 --inchansel 6 --audsrate 8000
-```
+- **Receive**: the I/Q around the dial at 48 kHz, s16le stereo (I left, Q
+  right), into `dream -n -I - -c 6 -O -mono` (I/Q, 0 Hz IF); the decoded
+  audio back mono, upsampled to 96 kHz, to the speaker and loopback.
+- **Transmit** (sBitx): the microphone (or loopback) audio at 48 kHz into
+  `dream -n -t -I -mono -O -`, the profile's voice chain (compressor, EQ)
+  left out. Dream's I/Q leaves it at a 6 kHz IF (its band-pass is a real
+  filter around the IF, which folds at 0 Hz); radiod mixes it down onto the
+  dial and sends both halves of the spectrum, as AM. A transmission starts
+  Dream's transmitter, and receiving stops it.
 
-DRM TX is not implemented (use Dream's native transmitter if needed).
+The transmission's parameters are `core.ini`'s `drm_*` keys: robustness,
+spectrum occupancy, MSC QAM, protection level, codec (xHE-AAC by default) and
+label. xHE-AAC needs 12 kbit/s or more, which the 10 kHz channel gives in mode
+B with 64-QAM; the narrower channels (4.5 and 5 kHz) do not, and SSB rigs on
+Hamlib cannot pass a DRM channel centred on their dial, so DRM is the sBitx's.
 
 ### FT8 (Weak-signal digital mode)
 

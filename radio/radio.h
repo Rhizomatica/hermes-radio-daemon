@@ -278,6 +278,15 @@ typedef struct {
     /* ── sbitx hardware backend ──────────────────────────────────── */
     char i2c_device[64];
     char dream_path[256];
+    /* DRM transmission (Dream, dsp/sbitx_drm.h): robustness mode 'A'..'D',
+     * spectrum occupancy 0..5 (3: the 10 kHz HF channel), MSC 16 or
+     * 64-QAM, protection level 0..3, the service's codec and label, and the
+     * I/Q's level into the transmitter */
+    char  drm_robustness;
+    int   drm_spectrum, drm_msc_qam, drm_protection;
+    char  drm_codec[16];
+    char  drm_label[17];
+    float drm_tx_gain;
     int  i2c_bus;
     pthread_mutex_t i2c_mutex;
     pthread_mutex_t gpio_mutex;
