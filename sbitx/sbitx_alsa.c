@@ -39,6 +39,7 @@
 #include "../dsp/mic_filter.h"
 
 #include "radiod_log.h"
+#include "async_file.h"
 
 #define LOG_C "alsa"
 char *radio_capture_dev = "hw:0,0";
@@ -60,10 +61,10 @@ snd_pcm_t *pcm_play_handle;
 snd_pcm_t *loopback_capture_handle;
 snd_pcm_t *loopback_play_handle;
 
-static int mic_inject_fd = -1;
-static bool mic_inject_missing_logged = false;
-static FILE *rx_speaker_dump_fp = NULL;
-static FILE *mic_dump_fp = NULL;
+/* The test hooks' file side runs in threads of their own (async_file): the
+ * codec thread only copies into and out of their rings. */
+static async_loop *mic_inject = NULL;
+static async_writer *rx_speaker_dump = NULL, *mic_dump = NULL;
 
 unsigned int hw_rate = 96000; /* Sample rate */
 snd_pcm_uframes_t hw_period_size = 512; // in frames
@@ -93,143 +94,43 @@ extern _Atomic bool shutdown_;
 
 static void close_mic_inject(void)
 {
-    if (mic_inject_fd >= 0)
-        close(mic_inject_fd);
-
-    mic_inject_fd = -1;
+    async_loop_free(mic_inject);
+    mic_inject = NULL;
 }
 
 static void close_rx_speaker_dump(void)
 {
-    if (rx_speaker_dump_fp)
-        fclose(rx_speaker_dump_fp);
-
-    rx_speaker_dump_fp = NULL;
-    if (mic_dump_fp)
-        fclose(mic_dump_fp);
-    mic_dump_fp = NULL;
+    async_writer_free(rx_speaker_dump);
+    async_writer_free(mic_dump);
+    rx_speaker_dump = mic_dump = NULL;
 }
 
 // Optional test hook: if /tmp/sbitx_mic_inject.s32 exists, use it as the TX
 // source for the normal mic path. Format must be raw S32_LE, 96 kHz, mono.
+// The file is read, in a loop and following its path (deleting or replacing
+// it ends or changes the injection), by a thread of its own.
 static bool read_mic_inject(uint8_t *buffer, uint32_t size)
 {
-    size_t offset = 0;
-
-    /* Follow the path, not the open file: deleting or replacing the file
-     * must end or change the injection. Holding the descriptor kept a
-     * deleted file looping, so every later transmission sent it in place
-     * of the real mic -- silence, from a test that had injected zeros. */
-    if (mic_inject_fd >= 0)
-    {
-        struct stat path_st, fd_st;
-        if (stat(MIC_INJECT_PATH, &path_st) != 0 || fstat(mic_inject_fd, &fd_st) != 0 ||
-            path_st.st_ino != fd_st.st_ino || path_st.st_dev != fd_st.st_dev)
-        {
-            HLOGI(LOG_C, "Mic inject ended: %s removed or replaced", MIC_INJECT_PATH);
-            close_mic_inject();
-        }
-    }
-
-    while (offset < size)
-    {
-        if (mic_inject_fd < 0)
-        {
-            struct stat st;
-
-            mic_inject_fd = open(MIC_INJECT_PATH, O_RDONLY | O_CLOEXEC);
-            if (mic_inject_fd < 0)
-            {
-                if (!mic_inject_missing_logged && errno != ENOENT)
-                    HLOGE(LOG_C, "Could not open mic inject file %s (%s)", MIC_INJECT_PATH, strerror(errno));
-
-                mic_inject_missing_logged = true;
-                return false;
-            }
-
-            if (fstat(mic_inject_fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size == 0)
-            {
-                HLOGW(LOG_C, "Mic inject file %s is empty", MIC_INJECT_PATH);
-                close_mic_inject();
-                mic_inject_missing_logged = true;
-                return false;
-            }
-
-            HLOGI(LOG_C, "Mic inject active: %s", MIC_INJECT_PATH);
-            mic_inject_missing_logged = false;
-        }
-
-        ssize_t n = read(mic_inject_fd, buffer + offset, size - offset);
-        if (n > 0)
-        {
-            offset += (size_t) n;
-            continue;
-        }
-
-        if (n == 0)
-        {
-            if (lseek(mic_inject_fd, 0, SEEK_SET) >= 0)
-                continue;
-
-            HLOGI(LOG_C, "Mic inject stream ended for %s", MIC_INJECT_PATH);
-            close_mic_inject();
-            return false;
-        }
-
-        HLOGE(LOG_C, "Mic inject read failed for %s (%s)", MIC_INJECT_PATH, strerror(errno));
-        close_mic_inject();
-        return false;
-    }
-
-    return true;
+    return async_loop_read(mic_inject, buffer, size);
 }
 
 /* Optional test hooks. While the trigger file exists, the matching 96 kHz
  * mono S32_LE buffer is appended to the dump file; removing the trigger
- * closes it. Each hook checks its trigger about every 250 ms (24 of its
- * own blocks: one counter per hook -- a shared one advanced twice a block,
- * so only one of the two hooks ever reached a check).
+ * closes it. The writers check their trigger every 250 ms, and write, in
+ * threads of their own.
  *   /tmp/sbitx_rx_speaker_dump -> the speaker buffer, receiving only
  *   /tmp/sbitx_mic_dump        -> the raw mic buffer, always (the mic is
  *                                 read while receiving too, so no need to
  *                                 key to record an idle mic) */
-static void dump_hook(FILE **fp, unsigned *tick, const char *trigger, const char *path,
-                      const char *name, const uint8_t *buffer, uint32_t size)
-{
-    if (((*tick)++ % 24) == 0)
-    {
-        bool on = access(trigger, F_OK) == 0;
-        if (on && !*fp)
-        {
-            *fp = fopen(path, "wb");
-            if (!*fp)
-                HLOGE(LOG_C, "Could not open %s dump file %s (%s)", name, path, strerror(errno));
-            else
-                HLOGI(LOG_C, "%s dump active: %s", name, path);
-        }
-        else if (!on && *fp)
-        {
-            fclose(*fp);
-            *fp = NULL;
-            HLOGI(LOG_C, "%s dump closed: %s", name, path);
-        }
-    }
-    if (*fp && buffer && size)
-        fwrite(buffer, 1, size, *fp);
-}
-
 static void maybe_dump_rx_speaker(const uint8_t *buffer, uint32_t size, bool active_rx)
 {
-    static unsigned tick;
     if (active_rx)
-        dump_hook(&rx_speaker_dump_fp, &tick, RX_SPEAKER_DUMP_TRIGGER, RX_SPEAKER_DUMP_PATH,
-                  "RX speaker", buffer, size);
+        async_writer_write(rx_speaker_dump, buffer, size);
 }
 
 static void maybe_dump_mic(const uint8_t *buffer, uint32_t size)
 {
-    static unsigned tick;
-    dump_hook(&mic_dump_fp, &tick, MIC_DUMP_TRIGGER, MIC_DUMP_PATH, "Mic", buffer, size);
+    async_writer_write(mic_dump, buffer, size);
 }
 
 void show_alsa(snd_pcm_t *handle, snd_pcm_hw_params_t *params)
@@ -1519,6 +1420,13 @@ void sound_system_init(radio *radio_h, pthread_t *control_tid, pthread_t *radio_
         return;
 
     sbitx_buf_init_all();
+
+    /* the test hooks, before the codec threads that use them: 1 s of the
+     * injection queued, 2 s of each dump */
+    mic_inject = async_loop_new(MIC_INJECT_PATH, 96000 * 4);
+    rx_speaker_dump = async_writer_new("RX speaker dump", 2 * 96000 * 4,
+                                       RX_SPEAKER_DUMP_TRIGGER, RX_SPEAKER_DUMP_PATH);
+    mic_dump = async_writer_new("Mic dump", 2 * 96000 * 4, MIC_DUMP_TRIGGER, MIC_DUMP_PATH);
 
     loop_started = radio_h->enable_loop_audio;
     pthread_mutex_lock(&loop_ready_lock);

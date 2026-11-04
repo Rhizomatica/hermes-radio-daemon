@@ -89,6 +89,7 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   common/cfg_utils.o \
                   common/shm_utils.o \
                   common/radiod_log.o \
+                  common/async_file.o \
                   gps/gps.o \
                   gui_interface/websocket/ws_server.o \
                   gui_interface/websocket/ws_frame.o \

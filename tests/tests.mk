@@ -200,8 +200,8 @@ tests/dsp/test_digi_log: tests/dsp/test_digi_log.c dsp/digi_log.c dsp/digi_log.h
 	$(CC) $(TEST_CFLAGS) -Idsp $< dsp/digi_log.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread -lm
 
 # DREAM=/path/to/dream also runs the loop through a real Dream
-tests/dsp/test_drm: tests/dsp/test_drm.c dsp/dream_proc.c dsp/dream_proc.h dsp/sbitx_drm.c dsp/sbitx_drm.h
-	$(CC) $(TEST_CFLAGS) -Idsp $< dsp/dream_proc.c dsp/sbitx_drm.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread -lm
+tests/dsp/test_drm: tests/dsp/test_drm.c dsp/dream_proc.c dsp/dream_proc.h dsp/sbitx_drm.c dsp/sbitx_drm.h common/async_file.c common/async_file.h
+	$(CC) $(TEST_CFLAGS) -Idsp -Icommon $< dsp/dream_proc.c dsp/sbitx_drm.c common/async_file.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread -lm
 
 tests/dsp/test_dstar_voice: tests/dsp/test_dstar_voice.c dsp/dstar_voice.c dsp/dstar_voice.h \
                             dsp/voice_crypto.c dsp/voice_crypto.h dsp/sbitx_dstar.c dsp/sbitx_dstar.h

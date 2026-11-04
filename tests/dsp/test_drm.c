@@ -69,12 +69,17 @@ static void test_cat_echoes_in_order(void)
     for (int i = 0; i < 20000; i++)
         in[i] = (int16_t) (i * 7 - 30000);
 
-    /* more than a ring holds: written as it drains */
+    /* more than a ring holds, written as it drains: with at most one ring
+     * in flight, as the reader drops what its ring has no room for (cat
+     * echoes faster than a test that sleeps reads) */
     end = now() + 5;
     while (got < 20000 && now() < end) {
-        if (sent < 20000)
-            sent += dream_proc_write(p, in + sent, 20000 - sent);
         got += dream_proc_read(p, out + got, 20000 - got);
+        if (sent < 20000 && sent - got < 4096) {
+            size_t k = 20000 - sent < 4096 ? 20000 - sent : 4096;
+
+            sent += dream_proc_write(p, in + sent, k);
+        }
         usleep(1000);
     }
     TEST_ASSERT_EQUAL_UINT(20000, got);
