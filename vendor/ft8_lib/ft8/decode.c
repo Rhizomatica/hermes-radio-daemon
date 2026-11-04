@@ -1,4 +1,5 @@
 #include "decode.h"
+#include <string.h>
 #include "constants.h"
 #include "crc.h"
 #include "ldpc.h"
@@ -305,6 +306,8 @@ static void ft8_extract_likelihood(const ftx_waterfall_t* wf, const ftx_candidat
     }
 }
 
+void ftx_normalize_llr(float log174[FTX_LDPC_N]) { ftx_normalize_logl(log174); }
+
 static void ftx_normalize_logl(float* log174)
 {
     // Compute the variance of log174
@@ -326,9 +329,8 @@ static void ftx_normalize_logl(float* log174)
     }
 }
 
-bool ftx_decode_candidate(const ftx_waterfall_t* wf, const ftx_candidate_t* cand, int max_iterations, ftx_message_t* message, ftx_decode_status_t* status)
+void ftx_candidate_llr(const ftx_waterfall_t* wf, const ftx_candidate_t* cand, float log174[FTX_LDPC_N])
 {
-    float log174[FTX_LDPC_N]; // message bits encoded as likelihood
     if (wf->protocol == FTX_PROTOCOL_FT4)
     {
         ft4_extract_likelihood(wf, cand, log174);
@@ -339,10 +341,50 @@ bool ftx_decode_candidate(const ftx_waterfall_t* wf, const ftx_candidate_t* cand
     }
 
     ftx_normalize_logl(log174);
+}
 
+bool ftx_candidate_tones(const ftx_waterfall_t* wf, const ftx_candidate_t* cand, float tones_db[FT8_ND][8])
+{
+    if (wf->protocol == FTX_PROTOCOL_FT4)
+    {
+        return false;
+    }
+
+    const WF_ELEM_T* mag = get_cand_mag(wf, cand);
+
+    for (int k = 0; k < FT8_ND; ++k)
+    {
+        int sym_idx = k + ((k < 29) ? 7 : 14);
+        int block = cand->time_offset + sym_idx;
+
+        for (int j = 0; j < 8; ++j)
+        {
+            tones_db[k][j] = ((block < 0) || (block >= wf->num_blocks))
+                                 ? -120.0f
+                                 : WF_ELEM_MAG(mag[sym_idx * wf->block_stride + kFT8_Gray_map[j]]);
+        }
+    }
+
+    return true;
+}
+
+bool ftx_decode_candidate(const ftx_waterfall_t* wf, const ftx_candidate_t* cand, int max_iterations, ftx_message_t* message, ftx_decode_status_t* status)
+{
+    float log174[FTX_LDPC_N]; // message bits encoded as likelihood
+    ftx_candidate_llr(wf, cand, log174);
+    return ftx_decode_llr(log174, max_iterations, wf->protocol, message, status, NULL);
+}
+
+bool ftx_decode_llr(float log174[FTX_LDPC_N], int max_iterations, ftx_protocol_t protocol, ftx_message_t* message, ftx_decode_status_t* status, uint8_t plain_out[FTX_LDPC_N])
+{
     uint8_t plain174[FTX_LDPC_N]; // message bits (0/1)
     bp_decode(log174, max_iterations, plain174, &status->ldpc_errors);
     // ldpc_decode(log174, max_iterations, plain174, &status->ldpc_errors);
+
+    if (plain_out)
+    {
+        memcpy(plain_out, plain174, sizeof(plain174));
+    }
 
     if (status->ldpc_errors > 0)
     {
@@ -368,7 +410,7 @@ bool ftx_decode_candidate(const ftx_waterfall_t* wf, const ftx_candidate_t* cand
     // Reuse CRC value as a hash for the message (TODO: 14 bits only, should perhaps use full 16 or 32 bits?)
     message->hash = status->crc_calculated;
 
-    if (wf->protocol == FTX_PROTOCOL_FT4)
+    if (protocol == FTX_PROTOCOL_FT4)
     {
         // '[..] for FT4 only, in order to avoid transmitting a long string of zeros when sending CQ messages,
         // the assembled 77-bit message is bitwise exclusive-OR’ed with [a] pseudorandom sequence before computing the CRC and FEC parity bits'
