@@ -47,4 +47,8 @@ void dream_proc_dropped(dream_proc *p, uint64_t *in, uint64_t *out);
 /* Stop it (SIGTERM, then SIGKILL after 2 s) and free everything. */
 void dream_proc_stop(dream_proc *p);
 
+/* Whether dream_path's --help lists option, for an option an older Dream
+ * would refuse to start with. Waits up to 3 s: not for the DSP thread. */
+bool dream_proc_has_option(const char *dream_path, const char *option);
+
 #endif /* DREAM_PROC_H_ */

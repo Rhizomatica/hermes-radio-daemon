@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -157,6 +158,87 @@ static void test_tx_ini(void)
     TEST_ASSERT_NOT_NULL(strstr(ini, "protlevel=1\n"));
     TEST_ASSERT_NOT_NULL(strstr(ini, "codec=xHE-AAC\n"));
     TEST_ASSERT_EQUAL_INT(-1, sbitx_drm_tx_ini(&c, ini, 40));
+
+    /* HE-AAC is Dream's AAC with SBR on a 12 kHz core; AAC is without */
+    snprintf(c.codec, sizeof(c.codec), "HE-AAC");
+    TEST_ASSERT_GREATER_THAN(0, sbitx_drm_tx_ini(&c, ini, sizeof(ini)));
+    TEST_ASSERT_NOT_NULL(strstr(ini, "codec=AAC\nsbr=1\naudiosamplerate=12000\n"));
+    snprintf(c.codec, sizeof(c.codec), "AAC");
+    TEST_ASSERT_GREATER_THAN(0, sbitx_drm_tx_ini(&c, ini, sizeof(ini)));
+    TEST_ASSERT_NOT_NULL(strstr(ini, "codec=AAC\nsbr=0\naudiosamplerate=24000\n"));
+    snprintf(c.codec, sizeof(c.codec), "xHE-AAC");
+    TEST_ASSERT_GREATER_THAN(0, sbitx_drm_tx_ini(&c, ini, sizeof(ini)));
+    TEST_ASSERT_NULL(strstr(ini, "sbr="));
+}
+
+/* What a report must be to reach the state frame: one JSON object */
+static void test_json_object(void)
+{
+    static const char *const good[] = {
+        "{}",
+        " {\"io\":\"O\",\"signal\":false,\"if_level\":-11.7,\"services\":[]}\n",
+        "{\"snr\":39.7,\"doppler_hz\":null,\"services\":[{\"index\":1,\"label\":\"Dream Test\","
+            "\"audio\":true,\"bitrate\":2.096e1,\"selected\":true}]}",
+        "{\"text\":\"a \\\"quote\\\" \\u00e9 \\n\"}",
+    };
+    static const char *const bad[] = {
+        "", "[]", "\"x\"", "{", "{\"a\":1,}", "{\"a\":1}x", "{\"a\":01.}", "{\"a\":tru}",
+        "{\"a\":\"raw\ttab\"}", "{\"a\":\"\\x\"}", "{\"a\":\"\\u12\"}", "{a:1}",
+        "{\"a\":[[[[[[[[[[1]]]]]]]]]]}",
+    };
+
+    for (size_t k = 0; k < sizeof(good) / sizeof(good[0]); k++)
+        TEST_ASSERT_TRUE_MESSAGE(sbitx_drm_json_object(good[k], strlen(good[k])), good[k]);
+    for (size_t k = 0; k < sizeof(bad) / sizeof(bad[0]); k++)
+        TEST_ASSERT_FALSE_MESSAGE(sbitx_drm_json_object(bad[k], strlen(bad[k])), bad[k]);
+}
+
+/* The receiver's report end to end, with a stand-in for Dream: it lists
+ * --status-file in its help, writes its report where it is told, and passes
+ * its input through */
+static void test_rx_status(void)
+{
+    char script[300], rxdir[300], st[3072];
+    FILE *f;
+    double end;
+    size_t n = 0;
+
+    snprintf(script, sizeof(script), "%s/dream", dir);
+    snprintf(rxdir, sizeof(rxdir), "%s/rx", dir);
+    f = fopen(script, "w");
+    TEST_ASSERT_NOT_NULL(f);
+    fputs("#!/bin/sh\n"
+          "case \"$1\" in --help) echo '  --status-file <s>  status' >&2; exit 0;; esac\n"
+          "while [ $# -gt 0 ]; do\n"
+          "  if [ \"$1\" = --status-file ]; then\n"
+          "    printf '{\"io\":\"O\",\"signal\":true,\"snr\":14.5,\"services\":"
+          "[{\"label\":\"HERMES\",\"codec\":\"xHE-AAC\"}]}' > \"$2.tmp\" && mv \"$2.tmp\" \"$2\"\n"
+          "  fi\n"
+          "  shift\n"
+          "done\n"
+          "exec cat\n", f);
+    fclose(f);
+    TEST_ASSERT_EQUAL_INT(0, chmod(script, 0755));
+
+    TEST_ASSERT_EQUAL_UINT(0, sbitx_drm_rx_status(st, sizeof(st)));   /* none running */
+    sbitx_drm_init(script);
+    TEST_ASSERT_TRUE(sbitx_drm_rx_start(script, rxdir));
+    end = now() + 5;
+    while (!(n = sbitx_drm_rx_status(st, sizeof(st))) && now() < end)
+        usleep(10000);
+    TEST_ASSERT_GREATER_THAN_UINT(0, n);
+    TEST_ASSERT_NOT_NULL(strstr(st, "\"snr\":14.5"));
+    TEST_ASSERT_NOT_NULL(strstr(st, "\"label\":\"HERMES\""));
+    TEST_ASSERT_EQUAL_UINT(0, sbitx_drm_rx_status(st, 16));            /* would not fit */
+    sbitx_drm_rx_stop();
+    TEST_ASSERT_EQUAL_UINT(0, sbitx_drm_rx_status(st, sizeof(st)));   /* stopped: gone */
+
+    /* a Dream without the option is started without it */
+    sbitx_drm_init("/nonexistent/no-such-dream");
+    TEST_ASSERT_TRUE(sbitx_drm_rx_start(script, rxdir));
+    usleep(300000);
+    TEST_ASSERT_EQUAL_UINT(0, sbitx_drm_rx_status(st, sizeof(st)));
+    sbitx_drm_rx_stop();
 }
 
 /* the strongest of 440 and 880 Hz in a second of audio, or 0 if quiet */
@@ -199,6 +281,10 @@ static void test_loopback_through_dream(void)
 
     snprintf(txdir, sizeof(txdir), "%s/tx", dir);
     snprintf(rxdir, sizeof(rxdir), "%s/rx", dir);
+    static char report[3072];
+    bool locked = false;
+
+    sbitx_drm_init(dream);                  /* --status-file, if this Dream has it */
     TEST_ASSERT_TRUE(sbitx_drm_tx_start(dream, txdir, &c));
     TEST_ASSERT_TRUE(sbitx_drm_rx_start(dream, rxdir));
 
@@ -225,12 +311,16 @@ static void test_loopback_through_dream(void)
         iq_n += (long) n;
         sbitx_drm_rx_iq(i_, q_, n);
         got += sbitx_drm_rx_audio(audio + got, sizeof(audio) / sizeof(audio[0]) - got);
+        if (!locked && sbitx_drm_rx_status(report, sizeof(report)) &&
+                strstr(report, "\"signal\":true") && strstr(report, "\"msc\":\"O\""))
+            locked = true;
         usleep(12000);                  /* 50 ms of audio each 12 ms: 4x real time */
     }
     sbitx_drm_tx_stop();
     sbitx_drm_rx_stop();
 
     printf("DRM loopback: %ld I/Q samples (peak %.2f), %zu audio samples\n", iq_n, peak, got);
+    printf("DRM receiver report: %s\n", locked ? report : "none (a Dream without --status-file?)");
     TEST_ASSERT_GREATER_THAN_MESSAGE(48000 * 8, iq_n, "the transmitter gave little I/Q");
     TEST_ASSERT_LESS_THAN_DOUBLE_MESSAGE(1.0, peak, "the I/Q clipped");
 
@@ -263,6 +353,8 @@ int main(void)
     RUN_TEST(test_missing_program_stops_running);
     RUN_TEST(test_mix_down);
     RUN_TEST(test_tx_ini);
+    RUN_TEST(test_json_object);
+    RUN_TEST(test_rx_status);
     RUN_TEST(test_loopback_through_dream);
     return UNITY_END();
 }

@@ -7,9 +7,13 @@
  */
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
 
 #include "dream_proc.h"
 #include "sbitx_drm.h"
@@ -23,6 +27,12 @@
 
 static dream_proc *rx, *tx;
 static double tx_phase;
+
+/* The receiver's status report: Dream rewrites it about once a second, on
+ * the RAM disk rather than the SD card; one per radiod, by its pid. */
+static bool status_supported;
+static char status_path[64];
+static atomic_bool status_live;
 
 /* Dream hands out its audio and its I/Q a 400 ms frame at a time, the DSP
  * takes it 10 ms at a time: half a second is queued before any goes out,
@@ -87,22 +97,33 @@ static int16_t to_s16(float v)
 
 /* ---- receive ---- */
 
+void sbitx_drm_init(const char *dream_path)
+{
+    snprintf(status_path, sizeof(status_path), "/dev/shm/radiod-drm-%d.json", (int) getpid());
+    status_supported = dream_proc_has_option(dream_path, "--status-file");
+}
+
 bool sbitx_drm_rx_start(const char *dream_path, const char *dir)
 {
-    /* "I/Q input positive, 0 Hz IF": the IQ is the dial's; audio out mono.
-     * An empty Dream.ini each time: what a previous run saved does not
-     * carry over. */
-    static const char *const args[] = {
-        "dream", "-n", "-I", "-", "-c", "6", "-O", "-mono", NULL
-    };
+    /* "I/Q input positive, 0 Hz IF": the IQ is the dial's; audio out mono
+     * (both channels mixed, in a Dream that does). An empty Dream.ini each
+     * time: what a previous run saved does not carry over. */
+    const char *args[12] = { "dream", "-n", "-I", "-", "-c", "6", "-O", "-mono" };
+    int n = 8;
 
     if (rx)
         return true;
+    if (status_supported) {
+        args[n++] = "--status-file";
+        args[n++] = status_path;
+    }
+    args[n] = NULL;
     rx_primed = false;
     dump_open();
     rx = dream_proc_start(dream_path, dir, "", args, DRM_RING);
     if (!rx)
         HLOGE(LOG_C, "cannot start Dream's receiver (%s)", dream_path);
+    atomic_store(&status_live, rx != NULL && status_supported);
     return rx != NULL;
 }
 
@@ -110,9 +131,140 @@ void sbitx_drm_rx_stop(void)
 {
     if (!rx)
         return;
+    atomic_store(&status_live, false);
     dream_proc_stop(rx);
     rx = NULL;
+    if (status_supported)
+        unlink(status_path);
     dump_close();
+}
+
+/* A strict JSON check, enough that a report cannot break the state frame
+ * it is copied into: values, nesting (to a depth of 8), strings with their
+ * escapes and no raw control characters, numbers. */
+static const char *json_ws(const char *p, const char *e)
+{
+    while (p < e && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r'))
+        p++;
+    return p;
+}
+
+static const char *json_value(const char *p, const char *e, int depth);
+
+static const char *json_string(const char *p, const char *e)
+{
+    if (p >= e || *p != '"')
+        return NULL;
+    for (p++; p < e; p++) {
+        unsigned char c = (unsigned char) *p;
+
+        if (c == '"')
+            return p + 1;
+        if (c < 0x20)
+            return NULL;
+        if (c == '\\') {
+            if (++p >= e)
+                return NULL;
+            if (*p == 'u') {
+                for (int k = 0; k < 4; k++)
+                    if (++p >= e || !strchr("0123456789abcdefABCDEF", *p))
+                        return NULL;
+            } else if (!strchr("\"\\/bfnrt", *p)) {
+                return NULL;
+            }
+        }
+    }
+    return NULL;
+}
+
+static const char *json_number(const char *p, const char *e)
+{
+    const char *d;
+
+    if (p < e && *p == '-')
+        p++;
+    for (d = p; p < e && *p >= '0' && *p <= '9'; p++) {}
+    if (p == d)
+        return NULL;
+    if (p < e && *p == '.') {
+        for (d = ++p; p < e && *p >= '0' && *p <= '9'; p++) {}
+        if (p == d)
+            return NULL;
+    }
+    if (p < e && (*p == 'e' || *p == 'E')) {
+        if (++p < e && (*p == '+' || *p == '-'))
+            p++;
+        for (d = p; p < e && *p >= '0' && *p <= '9'; p++) {}
+        if (p == d)
+            return NULL;
+    }
+    return p;
+}
+
+static const char *json_list(const char *p, const char *e, int depth, char close, bool keys)
+{
+    p = json_ws(p + 1, e);
+    if (p < e && *p == close)
+        return p + 1;
+    for (;;) {
+        if (keys) {
+            if (!(p = json_string(p, e)))
+                return NULL;
+            p = json_ws(p, e);
+            if (p >= e || *p != ':')
+                return NULL;
+            p = json_ws(p + 1, e);
+        }
+        if (!(p = json_value(p, e, depth + 1)))
+            return NULL;
+        p = json_ws(p, e);
+        if (p < e && *p == ',') {
+            p = json_ws(p + 1, e);
+            continue;
+        }
+        return p < e && *p == close ? p + 1 : NULL;
+    }
+}
+
+static const char *json_value(const char *p, const char *e, int depth)
+{
+    if (depth > 8 || p >= e)
+        return NULL;
+    switch (*p) {
+    case '{': return json_list(p, e, depth, '}', true);
+    case '[': return json_list(p, e, depth, ']', false);
+    case '"': return json_string(p, e);
+    case 't': return e - p >= 4 && !strncmp(p, "true", 4) ? p + 4 : NULL;
+    case 'f': return e - p >= 5 && !strncmp(p, "false", 5) ? p + 5 : NULL;
+    case 'n': return e - p >= 4 && !strncmp(p, "null", 4) ? p + 4 : NULL;
+    default:  return json_number(p, e);
+    }
+}
+
+bool sbitx_drm_json_object(const char *s, size_t n)
+{
+    const char *e = s + n, *p = json_ws(s, e);
+
+    if (p >= e || *p != '{' || !(p = json_value(p, e, 0)))
+        return false;
+    return json_ws(p, e) == e;
+}
+
+size_t sbitx_drm_rx_status(char *out, size_t len)
+{
+    struct stat st;
+    FILE *f;
+    size_t n;
+
+    if (len < 2 || !atomic_load(&status_live) || stat(status_path, &st) < 0 ||
+        time(NULL) - st.st_mtime > 5 || st.st_size <= 0 || (size_t) st.st_size >= len)
+        return 0;
+    if (!(f = fopen(status_path, "r")))
+        return 0;
+    n = fread(out, 1, len - 1, f);
+    fclose(f);
+    out[n] = '\0';
+    return sbitx_drm_json_object(out, n) ? n : 0;
 }
 
 bool sbitx_drm_rx_running(void)
@@ -176,7 +328,18 @@ int sbitx_drm_tx_ini(const sbitx_drm_tx_config *c, char *buf, size_t len)
     char robustness = c->robustness >= 'A' && c->robustness <= 'D' ? c->robustness : 'B';
     int spectrum = c->spectrum >= 0 && c->spectrum <= 5 ? c->spectrum : 3;
     int protection = c->protection >= 0 && c->protection <= 3 ? c->protection : 1;
+    const char *codec = c->codec[0] ? c->codec : "xHE-AAC";
+    char aac[48] = "";
     int n;
+
+    /* AAC's own settings: HE-AAC is Dream's AAC with SBR, on a 12 kHz core
+     * (24 kHz out), as DRM uses it on narrow channels */
+    if (!strcmp(codec, "HE-AAC") || !strcmp(codec, "AAC")) {
+        bool he = codec[0] == 'H';
+
+        snprintf(aac, sizeof(aac), "sbr=%d\naudiosamplerate=%d\n", he, he ? 12000 : 24000);
+        codec = "AAC";
+    }
 
     /* the SDC in 4-QAM, as robust as it gets: it is what a receiver needs
      * first, and its capacity is the least of the channel */
@@ -194,12 +357,13 @@ int sbitx_drm_tx_ini(const sbitx_drm_tx_config *c, char *buf, size_t len)
                  "\n"
                  "[Transmitter Service 1]\n"
                  "codec=%s\n"
+                 "%s"
                  "audiomode=mono\n"
                  "label=%s\n"
                  "id=1\n",
                  robustness, spectrum, c->msc_qam == 64 ? "CS_3_SM" : "CS_2_SM",
                  protection, (int) SBITX_DRM_TX_IF,
-                 c->codec[0] ? c->codec : "xHE-AAC",
+                 codec, aac,
                  c->label[0] ? c->label : "HERMES");
     return n > 0 && (size_t) n < len ? n : -1;
 }

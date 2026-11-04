@@ -2845,6 +2845,9 @@ void dsp_init(radio *radio_h)
 {
     radio_h_dsp = radio_h;
 
+    /* before the DSP thread can start a DRM receiver */
+    sbitx_drm_init(radio_h->dream_path);
+
     if (radio_h->profiles[radio_h->profile_active_idx].operating_mode == OPERATING_MODE_CONTROLS_ONLY)
         return;
 

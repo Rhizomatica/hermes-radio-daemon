@@ -35,9 +35,13 @@ typedef struct {
     int  spectrum;                       /* occupancy 0..5; 3 is 10 kHz */
     int  msc_qam;                        /* 16 (or 64, for some 6 dB more SNR) */
     int  protection;                     /* 0..3 */
-    char codec[16];                      /* xHE-AAC, AAC, Opus */
+    char codec[16];                      /* xHE-AAC, HE-AAC, AAC */
     char label[17];                      /* the service's, up to 16 bytes */
 } sbitx_drm_tx_config;
+
+/* Once, before the first start and not on the DSP thread: whether this
+ * Dream can report its receiver's status (--status-file). */
+void   sbitx_drm_init(const char *dream_path);
 
 /* Receive. dir is Dream's working directory (made if missing). */
 bool   sbitx_drm_rx_start(const char *dream_path, const char *dir);
@@ -47,6 +51,13 @@ bool   sbitx_drm_rx_running(void);
 void   sbitx_drm_rx_iq(const float *i, const float *q, size_t n);
 /* up to n samples of decoded audio (+-1.0) at 48 kHz; how many */
 size_t sbitx_drm_rx_audio(float *out, size_t n);
+/* The receiver's status, as Dream reports it: one JSON object (lock, SNR,
+ * the mode, the services with label, codec and bitrate), its length, or 0
+ * with none running, a Dream without --status-file, or a report older than
+ * 5 s or not valid JSON. Any thread. */
+size_t sbitx_drm_rx_status(char *out, size_t len);
+/* Whether s[0..n) is exactly one JSON object (whitespace around it). */
+bool   sbitx_drm_json_object(const char *s, size_t n);
 
 /* Transmit. */
 bool   sbitx_drm_tx_start(const char *dream_path, const char *dir,
