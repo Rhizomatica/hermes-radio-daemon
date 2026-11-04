@@ -67,7 +67,7 @@ typedef struct {
     time_t   when;
 } drop_log;
 
-static drop_log rx_drops = { "receiver" }, tx_drops = { "transmitter" };
+static drop_log rx_drops = { .what = "receiver" }, tx_drops = { .what = "transmitter" };
 
 static void log_drops(dream_proc *p, drop_log *d)
 {
@@ -516,14 +516,19 @@ int sbitx_drm_tx_ini(const sbitx_drm_tx_config *c, char *buf, size_t len)
         codec = "AAC";
     }
 
-    /* the SDC in 4-QAM, as robust as it gets: it is what a receiver needs
-     * first, and its capacity is the least of the channel */
+    /* The SDC in 4-QAM, as robust as it gets: it is what a receiver needs
+     * first. In the 4.5 and 5 kHz channels a 4-QAM SDC has 104-120 bits,
+     * and Dream drops what does not fit: the label, and xHE-AAC's audio
+     * entity (88 bits) with it, so a receiver finds no audio. There it is
+     * 16-QAM (224-296 bits), as the MSC is anyway. */
+    const char *sdc = spectrum <= 1 ? "CS_2_SM" : "CS_1_SM";
+
     n = snprintf(buf, len,
                  "[Transmitter]\n"
                  "robustness=RM_ROBUSTNESS_MODE_%c\n"
                  "spectocc=SO_%d\n"
                  "msc=%s\n"
-                 "sdc=CS_1_SM\n"
+                 "sdc=%s\n"
                  "protlevel=%d\n"
                  "interleaver=SI_LONG\n"
                  "ifformat=OF_IQ_POS\n"
@@ -536,7 +541,7 @@ int sbitx_drm_tx_ini(const sbitx_drm_tx_config *c, char *buf, size_t len)
                  "audiomode=mono\n"
                  "label=%s\n"
                  "id=1\n",
-                 robustness, spectrum, c->msc_qam == 64 ? "CS_3_SM" : "CS_2_SM",
+                 robustness, spectrum, c->msc_qam == 64 ? "CS_3_SM" : "CS_2_SM", sdc,
                  protection, (int) SBITX_DRM_TX_IF,
                  codec, aac,
                  c->label[0] ? c->label : "HERMES");

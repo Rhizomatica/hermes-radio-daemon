@@ -174,6 +174,15 @@ static void test_tx_ini(void)
     snprintf(c.codec, sizeof(c.codec), "xHE-AAC");
     TEST_ASSERT_GREATER_THAN(0, sbitx_drm_tx_ini(&c, ini, sizeof(ini)));
     TEST_ASSERT_NULL(strstr(ini, "sbr="));
+
+    /* the SDC: 4-QAM, but 16-QAM in the 4.5 and 5 kHz channels, where a
+     * 4-QAM one cannot carry the label and xHE-AAC's audio entity */
+    TEST_ASSERT_NOT_NULL(strstr(ini, "sdc=CS_1_SM\n"));
+    for (int so = 0; so <= 5; so++) {
+        c.spectrum = so;
+        TEST_ASSERT_GREATER_THAN(0, sbitx_drm_tx_ini(&c, ini, sizeof(ini)));
+        TEST_ASSERT_NOT_NULL(strstr(ini, so <= 1 ? "sdc=CS_2_SM\n" : "sdc=CS_1_SM\n"));
+    }
 }
 
 /* What a report must be to reach the state frame: one JSON object */
