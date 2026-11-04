@@ -31,7 +31,7 @@ CFLAGS  = -Ofast -Wall -std=gnu11 -fstack-protector -MMD -MP \
           -I. $(MODULE_INCLUDES) -I/usr/include/iniparser -I/usr/include/csdr \
           -Wno-deprecated-declarations
 LDFLAGS = -liniparser -lhamlib -lasound -lcrypto -lssl -lfftw3f -lfftw3 \
-          -lpthread -lm -li2c -lcsdr -lspecbleach -lcw -lrt -lmbe-neo
+          -lpthread -lm -li2c -lcsdr -lspecbleach -lrt -lmbe-neo
 
 # The in-tree gui_interface/websocket/ module serves as the transport in gui_interface/radio_websocket.c;
 # wss:// is provided by OpenSSL.
@@ -93,7 +93,9 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   gui_interface/websocket/ws_server.o \
                   gui_interface/websocket/ws_frame.o \
                   gui_interface/websocket/ws_crypto.o \
-                  gui_interface/websocket/ws_tls.o
+                  gui_interface/websocket/ws_tls.o \
+                  gui_interface/webrtc/radio_webrtc.o \
+                  gui_interface/webrtc/webrtc_sdp.o
 
 # ── embedded sBitx HW/DSP/ALSA objects (now plain .o, no objcopy) ──
 SBITX_GPIOLIB_OBJS = sbitx/gpiolib/gpiolib.o \
@@ -113,16 +115,19 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              dsp/sbitx_radae.o \
              dsp/radae_vocoder.o \
              dsp/sbitx_drm.o \
+             dsp/dream_proc.o \
              dsp/sbitx_ft8.o \
              dsp/ft8_js8.o \
              dsp/ft8_subtract.o \
              dsp/sbitx_cw.o \
+             dsp/tone_scan.o \
              dsp/sbitx_rtty.o \
              dsp/sbitx_dstar.o \
              dsp/dstar_voice.o \
              dsp/voice_crypto.o \
              dsp/rade_voice.o \
              dsp/mic_filter.o \
+             dsp/rx_denoise.o \
              sbitx/sbitx_si5351.o \
              sbitx/ring_buffer.o \
              $(SBITX_GPIOLIB_OBJS) \
@@ -176,6 +181,21 @@ $(GO_API_LIB) $(GO_API_DIR)/libhermes_api.h &: $(GO_API_SRCS) api/radiod_api.h v
 	cd $(GO_API_DIR) && CGO_ENABLED=1 CC="$(CC)" $(GO) build -tags radiod -buildmode=c-archive \
 	    -o libhermes_api.a ./cmd/hermesapi
 gui_interface/radio_websocket.o: $(GO_API_DIR)/libhermes_api.h
+endif
+
+# ── browser audio over WebRTC (gui_interface/webrtc) ───────────
+# hermes.v1's rtc.offer: libdatachannel carries ICE and DTLS-SRTP, libopus
+# codes the audio.  Built when both are installed (WEBRTC_CFLAGS and
+# WEBRTC_LIBS for another prefix); without them rtc.offer answers
+# not_supported.  libopus exports only its API, so it does not meet the
+# Opus internals vendor/opus_dnn compiles in.
+WEBRTC_CFLAGS ?=
+WEBRTC_LIBS   ?= -ldatachannel -lopus
+HAVE_WEBRTC   ?= $(shell printf '\043include <rtc/rtc.h>\n\043include <opus/opus.h>\n' | \
+                   $(CC) $(WEBRTC_CFLAGS) -E -x c - >/dev/null 2>&1 && echo 1 || echo 0)
+ifeq ($(HAVE_WEBRTC),1)
+gui_interface/webrtc/radio_webrtc.o: EXTRA_CPPFLAGS += -DHAVE_WEBRTC=1 $(WEBRTC_CFLAGS)
+LDFLAGS += $(WEBRTC_LIBS)
 endif
 
 # The C API reports the commit it was built from; the stamp changes only
@@ -290,6 +310,9 @@ install: radio_daemon radio_client
 	install -d $(DESTDIR)$(sysconfdir)/hermes/web
 	install -m 644 gui_interface/web/index.html $(DESTDIR)$(sysconfdir)/hermes/web/index.html
 	install -m 644 gui_interface/web/spectrum.html $(DESTDIR)$(sysconfdir)/hermes/web/spectrum.html
+	install -m 644 gui_interface/web/map.html $(DESTDIR)$(sysconfdir)/hermes/web/map.html
+	install -m 644 gui_interface/web/map-world.js $(DESTDIR)$(sysconfdir)/hermes/web/map-world.js
+	install -m 644 gui_interface/web/tune.html $(DESTDIR)$(sysconfdir)/hermes/web/tune.html
 	install -D -m 644 config/avahi/hermes-radio.service \
 	  $(DESTDIR)$(sysconfdir)/hermes/avahi/hermes-radio.service
 	# One radio controller per station: on a real install (not a package

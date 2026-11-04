@@ -96,6 +96,44 @@ static void hl_serial_lock_init(void)
  * mode used to lag one switch behind). The io thread ticks it back down. */
 static _Atomic int vfo_poll_suppress = 0;
 
+/* CAT that stops answering: the radio's USB went away and came back (the
+ * FT-710's own hub resets now and then, re-enumerating its serial bridge and
+ * codec), or it was unplugged or switched off. The port Hamlib holds stays
+ * dead whatever comes back on the bus, so once the rig has not answered a
+ * frequency or PTT read for CAT_LOST_MS the io thread closes the port and
+ * opens it again, as at start-up, until the rig answers: CAT_REOPEN_MIN_MS
+ * after the first try, doubling up to CAT_REOPEN_MAX_MS. cat_freq_failing
+ * and cat_ptt_failing hold when those reads began failing, 0 while they
+ * answer. */
+#ifndef CAT_LOST_MS
+#define CAT_LOST_MS       5000
+#endif
+#ifndef CAT_REOPEN_MIN_MS
+#define CAT_REOPEN_MIN_MS 2000
+#endif
+#define CAT_REOPEN_MAX_MS 30000
+static _Atomic int64_t cat_freq_failing = 0;
+static _Atomic int64_t cat_ptt_failing = 0;
+static int cat_defaulted;               /* hamlib_configure_ports' result */
+
+static int64_t monotonic_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* A read's result: an answer clears the failure, a dead link (no answer,
+ * an I/O error, garbage) starts it. Other errors say nothing either way
+ * (a closed port fails every call with -RIG_EINVAL). */
+static void cat_note(_Atomic int64_t *failing, int ret)
+{
+    if (ret == RIG_OK)
+        *failing = 0;
+    else if ((ret == -RIG_ETIMEOUT || ret == -RIG_EIO || ret == -RIG_EPROTO) && !*failing)
+        *failing = monotonic_ms();
+}
+
 /* Clearing errno works around a hamlib bug: read_string_generic()
  * (src/iofunc.c) tests errno == EAGAIN after every successful one-byte
  * read without resetting it, and sleeps 5 ms each time. A thread that did
@@ -411,10 +449,39 @@ static void hamlib_sync_txrx_state(radio *radio_h, bool fallback_state)
     RIG_LOCK();
     int ret = rig_get_ptt(rig, RIG_VFO_CURR, &ptt_state);
     RIG_UNLOCK();
+    cat_note(&cat_ptt_failing, ret);
     if (ret == RIG_OK)
         radio_h->txrx_state = (ptt_state == RIG_PTT_OFF) ? IN_RX : IN_TX;
     else
         radio_h->txrx_state = fallback_state;
+}
+
+/* A frequency in another band brings back the rig's band memory: the
+ * FT-710 restores the mode it last had there (LSB on 80 m after USB on 40 m),
+ * whatever the profile says. After a frequency change, read the rig's mode
+ * (past Hamlib's cache, which still has the one radiod set) and, when the
+ * band changed it, put the profile's back, and the frequency after it (a
+ * mode change moves the FT-710's dial). Under RIG_LOCK. */
+static void hamlib_keep_mode(radio *radio_h, RIG *rig, uint32_t profile)
+{
+    const radio_profile *p = &radio_h->profiles[profile];
+    rmode_t want = mode_to_hamlib(p->mode, profile_data_path(p)), got = RIG_MODE_NONE;
+    pbwidth_t width;
+
+    int cached = rig_get_cache_timeout_ms(rig, HAMLIB_CACHE_MODE);
+    rig_set_cache_timeout_ms(rig, HAMLIB_CACHE_MODE, 0);
+    int ret = rig_get_mode(rig, RIG_VFO_CURR, &got, &width);
+    rig_set_cache_timeout_ms(rig, HAMLIB_CACHE_MODE, cached);
+    if (ret != RIG_OK || got == want)
+        return;
+
+    HLOGI(LOG_C, "the rig went to %s with the band; back to %s",
+            rig_strrmode(got), rig_strrmode(want));
+    ret = rig_set_mode(rig, RIG_VFO_CURR, want, mode_passband(want, p));
+    if (ret == RIG_OK)
+        ret = rig_set_freq(rig, RIG_VFO_CURR, (freq_t) p->freq);
+    if (ret != RIG_OK)
+        HLOGE(LOG_C, "keeping the mode: %s", rigerror(ret));
 }
 
 static void hamlib_apply_profile(radio *radio_h, uint32_t profile)
@@ -453,6 +520,8 @@ static void hamlib_apply_profile(radio *radio_h, uint32_t profile)
     if (ret != RIG_OK)
         HLOGE(LOG_C, "hamlib_apply_profile: rig_set_freq failed: %s",
                 rigerror(ret));
+    else if (pm != MODE_CW && pm != MODE_RTTY && pm != MODE_FT8)
+        hamlib_keep_mode(radio_h, rig, profile);
 
     hamlib_set_level_float(rig,
                            RIG_LEVEL_RFPOWER,
@@ -596,6 +665,7 @@ static bool radio_hamlib_init(radio *radio_h)
     }
 
     int defaulted = hamlib_configure_ports(rig, radio_h);
+    cat_defaulted = defaulted;
 
     hl_serial_lock_init();
 
@@ -622,6 +692,7 @@ static bool radio_hamlib_init(radio *radio_h)
 
     radio_h->rig = (void *) rig;
     radio_h->s_meter_db = -200;   /* no S-meter reading until the first RX poll */
+    cat_freq_failing = cat_ptt_failing = 0;
 
     /* Apply the selected profile to the rig, then mirror the resulting state. */
     freq_t hfreq = 0;
@@ -639,7 +710,12 @@ static bool radio_hamlib_init(radio *radio_h)
     if (rig_get_freq(rig, RIG_VFO_CURR, &hfreq) == RIG_OK && hfreq > 0)
         radio_h->profiles[profile].freq = (uint32_t) hfreq;
 
-    if (rig_get_mode(rig, RIG_VFO_CURR, &hmode, &width) == RIG_OK)
+    /* As the poll does: a digital-text profile (CW/RTTY/FT8) keeps its mode,
+     * which the rig's PKTUSB reads back as USB; overwriting it lost an FT8
+     * profile's mode at every start. */
+    uint16_t pm = radio_h->profiles[profile].mode;
+    if (pm != MODE_CW && pm != MODE_RTTY && pm != MODE_FT8 &&
+        rig_get_mode(rig, RIG_VFO_CURR, &hmode, &width) == RIG_OK)
         radio_h->profiles[profile].mode = hamlib_to_mode(hmode);
     RIG_UNLOCK();
 
@@ -726,6 +802,8 @@ static void set_frequency(radio *radio_h, uint32_t frequency, uint32_t profile)
         RIG *rig = (RIG *) radio_h->rig;
         RIG_LOCK();
         int ret = rig_set_freq(rig, RIG_VFO_CURR, (freq_t) frequency);
+        if (ret == RIG_OK)
+            hamlib_keep_mode(radio_h, rig, profile);
         RIG_UNLOCK();
         if (ret != RIG_OK)
             HLOGE(LOG_C, "set_frequency: rig_set_freq failed: %s",
@@ -1102,6 +1180,7 @@ static void hamlib_poll_vfo_state(radio *radio_h)
     int fr = rig_get_freq(rig, RIG_VFO_CURR, &hfreq);
     int mr = rig_get_mode(rig, RIG_VFO_CURR, &hmode, &width);
     RIG_UNLOCK();
+    cat_note(&cat_freq_failing, fr);
 
     if (fr == RIG_OK && hfreq > 0)
         radio_h->profiles[profile].freq = (uint32_t) hfreq;
@@ -1131,6 +1210,64 @@ static void hamlib_poll_s_meter(radio *radio_h)
         radio_h->s_meter_db = strength;
 }
 
+/* Close and reopen a CAT port that stopped answering (see CAT_LOST_MS), from
+ * the io thread. Between failed tries the port stays closed, and every CAT
+ * call fails at once instead of timing out. A rig that answers again is
+ * unkeyed first, as at start-up: a transmission the link dropped is lost
+ * with its audio, and nothing would otherwise release the PTT. Its
+ * frequency and mode are read back by the poll, not set: the rig kept them
+ * through the outage, or its operator changed them. */
+static void hamlib_cat_watch(radio *radio_h)
+{
+    static int64_t next_try = 0;
+    static int tries = 0;
+    RIG *rig = (RIG *) radio_h->rig;
+    int64_t now = monotonic_ms();
+    int64_t freq_since = cat_freq_failing, ptt_since = cat_ptt_failing;
+
+    if (!rig)
+        return;
+    if (tries)
+    {
+        /* closed: its calls fail without reaching a rig, so retry on time */
+        if (now < next_try)
+            return;
+    }
+    else
+    {
+        if (!(freq_since && now - freq_since >= CAT_LOST_MS) &&
+            !(ptt_since && now - ptt_since >= CAT_LOST_MS))
+            return;
+        HLOGE(LOG_C, "CAT: no answer from %s for %d s, reopening it",
+                radio_h->rig_pathname, CAT_LOST_MS / 1000);
+    }
+
+    RIG_LOCK();
+    rig_close(rig);
+    int ret = hamlib_open(rig, cat_defaulted);
+    if (ret == RIG_OK)
+        ret = rig_set_ptt(rig, RIG_VFO_CURR, RIG_PTT_OFF);
+    RIG_UNLOCK();
+
+    tries++;
+    if (ret != RIG_OK)
+    {
+        int64_t wait = (int64_t) CAT_REOPEN_MIN_MS << (tries < 5 ? tries - 1 : 4);
+        if (wait > CAT_REOPEN_MAX_MS)
+            wait = CAT_REOPEN_MAX_MS;
+        next_try = now + wait;
+        if (tries <= 6)
+            HLOGE(LOG_C, "CAT: reopening %s failed (attempt %d): %s",
+                    radio_h->rig_pathname, tries, rigerror(ret));
+        return;
+    }
+
+    HLOGI(LOG_C, "CAT: %s answers again (attempt %d)", radio_h->rig_pathname, tries);
+    cat_freq_failing = cat_ptt_failing = 0;
+    tries = 0;
+    hamlib_sync_txrx_state(radio_h, IN_RX);
+}
+
 static void *radio_io_thread(void *radio_h_v)
 {
     radio *radio_h = (radio *) radio_h_v;
@@ -1146,6 +1283,8 @@ static void *radio_io_thread(void *radio_h_v)
     while (!shutdown_)
     {
         wait_next_activation();
+
+        hamlib_cat_watch(radio_h);
 
         /* Reflect the rig's ACTUAL PTT — including manual front-panel or mic
          * keying the daemon didn't initiate — by polling rig_get_ptt ~every

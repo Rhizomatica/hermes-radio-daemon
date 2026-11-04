@@ -30,16 +30,17 @@ lists every package.
 
 | File | |
 |---|---|
-| `specs/hermes-radio-daemon.spec` | radiod, with mercury linked in; no Go API layer (`/api/v2` answers 503) |
-| `specs/*.spec` | the libraries radiod needs that the Sailfish repositories do not carry: fftw, iniparser, hamlib, i2c-tools, csdr, libspecbleach, mbelib-neo, unixcw |
+| `specs/hermes-radio-daemon.spec` | radiod, with mercury linked in and WebRTC audio built in, and the Go API layer (`/api/v2`, `hermes.v1`) when Go is on the PATH (see below); without it `/api/v2` answers 503, and the browser pages and WebRTC audio cannot reach radiod |
+| `specs/mercury.spec` | the standalone mercury modem (its own audio and Hamlib, no GUI), for running mercury without radiod |
+| `specs/*.spec` | the libraries radiod needs that the Sailfish repositories do not carry: fftw, iniparser, hamlib, i2c-tools, csdr, libspecbleach, mbelib-neo, and libjuice and libdatachannel for browser audio |
 | `radiod.service` | the systemd unit, with a wakelock (see below) |
 | `rpmmacros` | an `~/.rpmmacros` for building with busybox |
 | `fetch-sources.sh` | fetches the sources into `~/rpmbuild/SOURCES`, on the device |
 | `make-hamlib-tarball.sh` | makes the Hamlib tarball from Hamlib PR #2272's branch, on a machine with autotools |
 | `build-all.sh` | builds and installs every RPM in dependency order, on the device |
 
-The library versions are the ones the stations run on Debian, and csdr and
-unixcw are Rhizomatica's trees, at the commits their specs name.
+The library versions are the ones the stations run on Debian, and csdr is
+Rhizomatica's tree, at the commit its spec names.
 
 ## Building
 
@@ -49,7 +50,8 @@ On the device, with developer mode on:
    (`devel-su`):
 
    ```sh
-   pkcon install rpm-build gcc-c++ openssl-devel alsa-lib-devel libusb1-devel
+   pkcon install rpm-build gcc-c++ openssl-devel alsa-lib-devel libusb1-devel \
+                 pulseaudio-devel opus-devel
    ```
 
 2. On a machine with autotools, make the Hamlib tarball:
@@ -75,6 +77,22 @@ precision).
 
 To package another radiod commit, change `%global commit` and `gitdate` in
 `specs/hermes-radio-daemon.spec`.
+
+### The Go API layer
+
+The Sailfish repositories have no Go. radiod's API layer (`/api/v2` and the
+`hermes.v1` websocket: the map, the tuner, the spectrum page and browser
+audio) is built when a Go of `api/go.mod`'s version (1.27.3) or later is on
+the PATH; the spec looks once, when it is read. Unpack the upstream
+linux-arm64 Go under `~/sdk`, then:
+
+```sh
+PATH=$HOME/sdk/go1.27.3/bin:$PATH GOTOOLCHAIN=local \
+    rpmbuild -bb ~/rpmbuild/SPECS/hermes-radio-daemon.spec
+```
+
+`go build` fetches the API's modules over the network into `~/go`.
+`--define 'have_go 0'` (or `1`) decides it whatever the PATH has.
 
 ## CAT without a kernel driver
 

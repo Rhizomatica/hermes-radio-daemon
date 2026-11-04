@@ -32,6 +32,10 @@ bool radio_is_zbitx(const radio *radio_h);
 bool   sbitx_bridge_init(radio *radio_h);
 void   sbitx_bridge_shutdown(radio *radio_h);
 void   sbitx_bridge_push_rx(radio *radio_h, const int16_t *samples, size_t nsamples);
+/* As sbitx_bridge_push_rx, with the listening audio (rx_audio_ring) apart
+ * from what the digital-mode decoders get (rx_digi_ring). */
+void   sbitx_bridge_push_rx_split(radio *radio_h, const int16_t *listen,
+                                  const int16_t *digi, size_t nsamples);
 size_t sbitx_bridge_pop_tx(radio *radio_h, int16_t *samples, size_t max_samples);
 
 /* HW I/O thread + tick. */

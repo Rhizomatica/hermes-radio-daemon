@@ -47,13 +47,19 @@ TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
             tests/hamlib/test_hamlib_ptt tests/hamlib/test_hamlib_conf \
             tests/control_interfaces/test_rig_server \
             tests/gui_interface/test_ui_hub tests/gui_interface/test_ws_server \
+            tests/gui_interface/test_webrtc_sdp \
             tests/modem/test_rtp_audio tests/modem/test_modem_audio \
             tests/audioio/test_audio_bridge \
             tests/dsp/test_upsample2 tests/dsp/test_stream_resampler tests/dsp/test_mic_filter \
             tests/dsp/test_digi_modes tests/dsp/test_digi_log tests/dsp/test_dstar_voice \
-            tests/dsp/test_rade_voice tests/dsp/test_radae_vocoder \
+            tests/dsp/test_rade_voice tests/dsp/test_radae_vocoder tests/dsp/test_drm \
             tests/sbitx/test_sbitx_buffer \
             tests/common/test_radiod_log
+# Browser audio end to end, against a real libdatachannel peer: only where
+# radiod itself builds with WebRTC.
+ifeq ($(HAVE_WEBRTC),1)
+TEST_BINS += tests/gui_interface/test_webrtc_loop
+endif
 
 $(TEST_BINS): $(UNITY_SRC) $(HERMES_LOG_SRC) tests/unity/unity.h tests/test_util.h $(TEST_STAMP)
 
@@ -136,6 +142,15 @@ tests/control_interfaces/test_rig_server: tests/control_interfaces/test_rig_serv
 tests/gui_interface/test_ui_hub: tests/gui_interface/test_ui_hub.c gui_interface/ui_hub.c gui_interface/ui_hub.h
 	$(CC) $(TEST_CFLAGS) $< gui_interface/ui_hub.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread
 
+tests/gui_interface/test_webrtc_sdp: tests/gui_interface/test_webrtc_sdp.c gui_interface/webrtc/webrtc_sdp.c \
+                                    gui_interface/webrtc/webrtc_sdp.h
+	$(CC) $(TEST_CFLAGS) $< gui_interface/webrtc/webrtc_sdp.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@
+
+tests/gui_interface/test_webrtc_loop: tests/gui_interface/test_webrtc_loop.c gui_interface/webrtc/radio_webrtc.c \
+                                     gui_interface/webrtc/radio_webrtc.h gui_interface/webrtc/webrtc_sdp.c
+	$(CC) $(TEST_CFLAGS) -DHAVE_WEBRTC=1 $(WEBRTC_CFLAGS) $< gui_interface/webrtc/radio_webrtc.c \
+	    gui_interface/webrtc/webrtc_sdp.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ $(WEBRTC_LIBS) -lm
+
 WS_SERVER_SRCS = gui_interface/websocket/ws_server.c gui_interface/websocket/ws_frame.c \
                  gui_interface/websocket/ws_crypto.c gui_interface/websocket/ws_tls.c
 tests/gui_interface/test_ws_server: tests/gui_interface/test_ws_server.c $(WS_SERVER_SRCS) \
@@ -152,8 +167,10 @@ tests/modem/test_modem_audio: tests/modem/test_modem_audio.c modem/modem_audio.c
 	$(CC) $(TEST_CFLAGS) $< modem/modem_audio.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread -lm
 
 # ── audioio/ ────────────────────────────────────────────────────
-tests/audioio/test_audio_bridge: tests/audioio/test_audio_bridge.c audioio/audio_bridge.c audioio/audio_bridge.h radio/radio.h
-	$(CC) $(TEST_CFLAGS) -I/usr/include/csdr $< audioio/audio_bridge.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lcsdr -lfftw3f -lm
+tests/audioio/test_audio_bridge: tests/audioio/test_audio_bridge.c audioio/audio_bridge.c audioio/audio_bridge.h radio/radio.h \
+                                 dsp/rx_denoise.c dsp/rx_denoise.h
+	$(CC) $(TEST_CFLAGS) -I/usr/include/csdr $< audioio/audio_bridge.c dsp/rx_denoise.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ \
+	    -lcsdr -lfftw3f -lspecbleach -lm
 
 # ── dsp/ ────────────────────────────────────────────────────────
 tests/dsp/test_upsample2: tests/dsp/test_upsample2.c dsp/upsample2.c dsp/upsample2.h
@@ -165,13 +182,15 @@ tests/dsp/test_stream_resampler: tests/dsp/test_stream_resampler.c dsp/stream_re
 tests/dsp/test_mic_filter: tests/dsp/test_mic_filter.c dsp/mic_filter.c dsp/mic_filter.h
 	$(CC) $(TEST_CFLAGS) -Idsp $< dsp/mic_filter.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lm
 
-tests/dsp/test_digi_modes: tests/dsp/test_digi_modes.c dsp/stream_resampler.c dsp/sbitx_cw.c dsp/sbitx_rtty.c \
-                           dsp/sbitx_ft8.c dsp/sbitx_ft8.h dsp/ft8_js8.c dsp/ft8_js8.h dsp/ft8_subtract.c dsp/ft8_subtract.h dsp/digi_log.c dsp/digi_log.h \
+tests/dsp/test_digi_modes: tests/dsp/test_digi_modes.c dsp/stream_resampler.c dsp/sbitx_cw.c dsp/sbitx_cw.h \
+                           dsp/sbitx_rtty.c dsp/sbitx_rtty.h dsp/tone_scan.c dsp/tone_scan.h \
+                           dsp/sbitx_ft8.c dsp/sbitx_ft8.h dsp/ft8_js8.c dsp/ft8_js8.h dsp/ft8_subtract.c dsp/ft8_subtract.h \
+                           dsp/digi_log.c dsp/digi_log.h \
                            $(FT8_TEST_SRCS) $(FT8_TEST_LIBS) $(MM_FSK_SRCS)
 	$(CC) $(TEST_CFLAGS) -w -I/usr/include/csdr -Idsp $(FT8_LIB_CPPFLAGS) $(MM_FSK_CPPFLAGS) \
-	      $< dsp/stream_resampler.c dsp/sbitx_cw.c dsp/sbitx_rtty.c dsp/sbitx_ft8.c dsp/ft8_js8.c dsp/ft8_subtract.c dsp/digi_log.c \
+	      $< dsp/stream_resampler.c dsp/sbitx_cw.c dsp/sbitx_rtty.c dsp/tone_scan.c dsp/sbitx_ft8.c dsp/ft8_js8.c dsp/ft8_subtract.c dsp/digi_log.c \
 	      $(FT8_TEST_SRCS) $(MM_FSK_SRCS) $(FT8_TEST_LIBS) $(UNITY_SRC) $(HERMES_LOG_SRC) \
-	      -o $@ -lcsdr -lfftw3f -lfftw3 -lcw -lpthread -lm
+	      -o $@ -lcsdr -lfftw3f -lfftw3 -lpthread -lm
 
 # Not a test: counts what the FT8 decoder finds in a recording (ft8_bench.c),
 # to compare decoder changes on real audio.  make ft8-bench
@@ -192,6 +211,10 @@ tests/common/test_radiod_log: tests/common/test_radiod_log.c common/radiod_log.c
 
 tests/dsp/test_digi_log: tests/dsp/test_digi_log.c dsp/digi_log.c dsp/digi_log.h
 	$(CC) $(TEST_CFLAGS) -Idsp $< dsp/digi_log.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread -lm
+
+# DREAM=/path/to/dream also runs the loop through a real Dream
+tests/dsp/test_drm: tests/dsp/test_drm.c dsp/dream_proc.c dsp/dream_proc.h dsp/sbitx_drm.c dsp/sbitx_drm.h
+	$(CC) $(TEST_CFLAGS) -Idsp $< dsp/dream_proc.c dsp/sbitx_drm.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread -lm
 
 tests/dsp/test_dstar_voice: tests/dsp/test_dstar_voice.c dsp/dstar_voice.c dsp/dstar_voice.h \
                             dsp/voice_crypto.c dsp/voice_crypto.h dsp/sbitx_dstar.c dsp/sbitx_dstar.h

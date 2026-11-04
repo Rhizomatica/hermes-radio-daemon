@@ -38,7 +38,7 @@ func (binding) State() State {
 		Mode: cstr(s.mode[:]), Power: int(s.power), FwdW: float64(s.fwd_x10) / 10, RefW: float64(s.ref_x10) / 10,
 		SWR: float64(s.swr_x10) / 10, SMeterValid: bool(s.s_meter_valid), SMeterDB: float64(s.s_meter_db),
 		Protection: bool(s.protection), DigitalVoice: bool(s.digital_voice),
-		Backend: cstr(s.backend[:]),
+		NoiseReduction: bool(s.noise_reduction), Backend: cstr(s.backend[:]),
 	}
 }
 
@@ -56,6 +56,7 @@ func (binding) Profile(n int) (Profile, error) {
 		Profile: int(p.profile), FrequencyHz: uint32(p.frequency_hz), Mode: cstr(p.mode[:]),
 		Power: int(p.power), Volume: int(p.volume),
 		FilterWidthHz: uint32(p.filter_width_hz), DigitalVoice: bool(p.digital_voice),
+		NoiseReduction: bool(p.noise_reduction),
 	}, nil
 }
 
@@ -71,6 +72,19 @@ func (binding) SelectProfile(n int) error { return codeErr(int(C.radiod_api_sele
 func (binding) SpectrumSubscribe(conn int64, s Spectrum, on bool) error {
 	return codeErr(int(C.radiod_api_spectrum_subscribe(C.long(conn), C.int(s), C.bool(on))))
 }
+
+func (binding) RTCOffer(conn int64, sdp string, rx, tx bool) (string, error) {
+	cs := C.CString(sdp)
+	defer C.free(unsafe.Pointer(cs))
+	answer := make([]C.char, C.RADIOD_API_SDP_MAX)
+	if err := codeErr(int(C.radiod_api_rtc_offer(C.long(conn), cs, C.bool(rx), C.bool(tx),
+		&answer[0], C.size_t(len(answer))))); err != nil {
+		return "", err
+	}
+	return cstr(answer), nil
+}
+
+func (binding) RTCClose(conn int64) { C.radiod_api_rtc_close(C.long(conn)) }
 
 func (binding) Recording(start bool, stream string) (bool, bool, error) {
 	cs := C.CString(stream)
@@ -108,6 +122,9 @@ func (binding) SetFilterWidth(n int, hz uint32) error {
 }
 func (binding) SetDigitalVoice(n int, on bool) error {
 	return codeErr(int(C.radiod_api_set_digital_voice(prof(n), C.bool(on))))
+}
+func (binding) SetNoiseReduction(n int, on bool) error {
+	return codeErr(int(C.radiod_api_set_noise_reduction(prof(n), C.bool(on))))
 }
 func (binding) ResetProtection() { C.radiod_api_reset_protection() }
 

@@ -24,6 +24,7 @@
 #include <libcsdr.h>
 
 #include "radio.h"
+#include "dsp/rx_denoise.h"
 
 typedef struct {
     uint32_t native_rate;
@@ -60,6 +61,9 @@ typedef struct {
      * scratch_i16, which resample_step may reallocate while reading it. */
     int16_t *pull_i16;
     size_t   pull_cap;
+
+    /* The listening audio's noise reduction (profile noise_reduction). */
+    rx_denoise nr;
 } audio_bridge;
 
 /* Both rates in Hz, both non-zero. When equal, the bridge is a pass-through
@@ -68,7 +72,9 @@ bool audio_bridge_init(audio_bridge *b, uint32_t native_rate, uint32_t dsp_rate)
 void audio_bridge_shutdown(audio_bridge *b);
 
 /* Captured RX audio at native_rate (mono int16) -> daemon rx_audio_ring at
- * dsp_rate. Also taps recording + spectrum (radio_media_tap_rx_audio). */
+ * dsp_rate, noise-reduced there when the profile asks for it (Hamlib
+ * rigs), and as it is into rx_digi_ring. Also taps recording + spectrum
+ * (radio_media_tap_rx_audio), which keep the rig's audio. */
 void audio_bridge_push_rx_native(audio_bridge *b, radio *radio_h,
                                  const int16_t *samples, size_t n_native);
 

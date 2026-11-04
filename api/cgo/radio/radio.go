@@ -60,29 +60,31 @@ type Control struct {
 
 // State is the radio's live state.
 type State struct {
-	ActiveProfile int
-	TX            bool
-	FrequencyHz   uint32
-	Mode          string // LSB, USB, CW, FM, AM, DRM, FT8, RTTY, DSTAR
-	Power         int    // percent
-	FwdW, RefW    float64
-	SWR           float64
-	SMeterValid   bool
-	SMeterDB      float64 // dB relative to S9
-	Protection    bool
-	DigitalVoice  bool
-	Backend       string // sbitx, hamlib
+	ActiveProfile  int
+	TX             bool
+	FrequencyHz    uint32
+	Mode           string // LSB, USB, CW, FM, AM, DRM, FT8, RTTY, DSTAR
+	Power          int    // percent
+	FwdW, RefW     float64
+	SWR            float64
+	SMeterValid    bool
+	SMeterDB       float64 // dB relative to S9
+	Protection     bool
+	DigitalVoice   bool
+	NoiseReduction bool   // the active profile's
+	Backend        string // sbitx, hamlib
 }
 
 // Profile is one saved profile.
 type Profile struct {
-	Profile       int
-	FrequencyHz   uint32
-	Mode          string
-	Power         int
-	Volume        int
-	FilterWidthHz uint32 // 0: the rig's default
-	DigitalVoice  bool
+	Profile        int
+	FrequencyHz    uint32
+	Mode           string
+	Power          int
+	Volume         int
+	FilterWidthHz  uint32 // 0: the rig's default
+	DigitalVoice   bool
+	NoiseReduction bool // on the received audio people listen to
 }
 
 // Settings are what radiod keeps once for the station, not per profile.
@@ -171,6 +173,7 @@ type Radio interface {
 	SetVolume(profile int, percent int) error
 	SetFilterWidth(profile int, hz uint32) error
 	SetDigitalVoice(profile int, on bool) error
+	SetNoiseReduction(profile int, on bool) error
 	ResetProtection()
 	// PTT keys (on) or unkeys the transmitter for hermes.v1 connection conn,
 	// which then owns it; radiod unkeys when that connection closes. On:
@@ -217,6 +220,16 @@ type Radio interface {
 	// ErrNotSupported when the radio has no such spectrum or mercury is not
 	// running, ErrBusy when every slot is taken.
 	SpectrumSubscribe(conn int64, s Spectrum, on bool) error
+	// RTCOffer starts, or renegotiates, hermes.v1 connection conn's WebRTC
+	// audio from the browser's SDP offer (rx: the station's receive audio;
+	// tx: the browser's microphone, transmitted only while conn holds PTT)
+	// and returns the station's answer. ErrInvalid for an offer with no Opus
+	// audio section, ErrBusy with every session taken, ErrIO when
+	// negotiation fails, ErrNotSupported without WebRTC. The session ends
+	// with the connection.
+	RTCOffer(conn int64, sdp string, rx, tx bool) (string, error)
+	// RTCClose ends conn's WebRTC session, if it has one.
+	RTCClose(conn int64)
 
 	// Gps is the station's own position and fix, and its GPS settings.
 	Gps() Gps

@@ -21,6 +21,8 @@
  */
 
 #include <iniparser.h>
+#include <ctype.h>
+#include <math.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
@@ -31,6 +33,7 @@
 #include "cfg_utils.h"
 #include "cat_server.h"
 #include "radio.h"
+#include "dsp/rx_denoise.h"
 
 #include "radiod_log.h"
 
@@ -119,6 +122,84 @@ bool cfg_digi_param_valid(const char *key, long v)
     if (!strcmp(key, "rtty_mark"))  return v >= 300 && v <= 3000;
     if (!strcmp(key, "rtty_shift")) return v == 170 || v == 425 || v == 850;
     return true;
+}
+
+const char cfg_drm_param_ranges[] =
+    "drm_robustness A-D, drm_spectrum 0-5, drm_msc_qam 16/64, drm_protection 0-3, "
+    "drm_codec xHE-AAC/HE-AAC/AAC, drm_label 1-16 of A-Z a-z 0-9 space . _ - /";
+
+bool cfg_drm_param_is_key(const char *key)
+{
+    return key && (!strcmp(key, "drm_robustness") || !strcmp(key, "drm_spectrum") ||
+                   !strcmp(key, "drm_msc_qam") || !strcmp(key, "drm_protection") ||
+                   !strcmp(key, "drm_codec") || !strcmp(key, "drm_label"));
+}
+
+/* The values end up in the transmitter's Dream.ini, so the label is held to
+ * characters that can neither end its line nor open a section. */
+bool cfg_drm_param_valid(const char *key, const char *v)
+{
+    char *end;
+    long n;
+
+    if (!key || !v)
+        return false;
+    if (!strcmp(key, "drm_robustness"))
+        return toupper((unsigned char) v[0]) >= 'A' && toupper((unsigned char) v[0]) <= 'D' &&
+               v[1] == '\0';
+    if (!strcmp(key, "drm_codec"))
+        return !strcmp(v, "xHE-AAC") || !strcmp(v, "HE-AAC") || !strcmp(v, "AAC");
+    if (!strcmp(key, "drm_label")) {
+        size_t len = strlen(v);
+
+        if (len == 0 || len > 16)
+            return false;
+        for (size_t k = 0; k < len; k++) {
+            unsigned char c = (unsigned char) v[k];
+
+            if (!isalnum(c) && !strchr(" ._-/", c))
+                return false;
+        }
+        return true;
+    }
+    n = strtol(v, &end, 10);
+    if (end == v || *end != '\0')
+        return false;
+    if (!strcmp(key, "drm_spectrum"))   return n >= 0 && n <= 5;
+    if (!strcmp(key, "drm_msc_qam"))    return n == 16 || n == 64;
+    if (!strcmp(key, "drm_protection")) return n >= 0 && n <= 3;
+    return false;
+}
+
+bool cfg_drm_param_set(radio *radio_h, const char *key, const char *v)
+{
+    if (!cfg_drm_param_is_key(key) || !cfg_drm_param_valid(key, v))
+        return false;
+    if (!strcmp(key, "drm_robustness"))      radio_h->drm_robustness = (char) toupper((unsigned char) v[0]);
+    else if (!strcmp(key, "drm_spectrum"))   radio_h->drm_spectrum = atoi(v);
+    else if (!strcmp(key, "drm_msc_qam"))    radio_h->drm_msc_qam = atoi(v);
+    else if (!strcmp(key, "drm_protection")) radio_h->drm_protection = atoi(v);
+    else if (!strcmp(key, "drm_codec"))
+        snprintf(radio_h->drm_codec, sizeof(radio_h->drm_codec), "%s", v);
+    else
+        snprintf(radio_h->drm_label, sizeof(radio_h->drm_label), "%s", v);
+    return true;
+}
+
+/* One DRM setting from [main], checked like digi_config checks it; an
+ * invalid one is replaced by the default, loudly. */
+static void cfg_drm_param(radio *radio_h, dictionary *ini, const char *key, const char *def)
+{
+    char entry[64];
+    const char *v;
+
+    snprintf(entry, sizeof(entry), "main:%s", key);
+    v = iniparser_getstring(ini, entry, def);
+    if (!cfg_drm_param_set(radio_h, key, v)) {
+        HLOGI(LOG_C, "%s = %s is not valid (%s); using %s",
+                entry, v, cfg_drm_param_ranges, def);
+        cfg_drm_param_set(radio_h, key, def);
+    }
 }
 
 /* One digi parameter from [main], checked like digi_config checks it. An
@@ -464,6 +545,15 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     radio_h->api_v2_enable = (bool) b;
     s = iniparser_getstring(ini, "main:api_cors_origins", "*");
     snprintf(radio_h->api_cors_origins, sizeof(radio_h->api_cors_origins), "%s", s);
+    i = iniparser_getint(ini, "main:webrtc_max_sessions", 4);
+    radio_h->webrtc_max_sessions = i < 1 ? 1 : i;
+    i = iniparser_getint(ini, "main:webrtc_udp_min", 50000);
+    radio_h->webrtc_udp_min = (uint16_t) (i >= 1024 && i <= 65535 ? i : 50000);
+    i = iniparser_getint(ini, "main:webrtc_udp_max", 50099);
+    radio_h->webrtc_udp_max = (uint16_t) (i >= radio_h->webrtc_udp_min && i <= 65535 ?
+                                          i : radio_h->webrtc_udp_min + 99);
+    s = iniparser_getstring(ini, "main:webrtc_bind_address", "");
+    snprintf(radio_h->webrtc_bind_address, sizeof(radio_h->webrtc_bind_address), "%s", s);
 
     b = iniparser_getboolean(ini, "main:enable_mercury", 0);
     radio_h->enable_mercury = (bool) b;
@@ -551,6 +641,16 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     radio_h->dstar_verbose = (uint16_t) i;
     i = iniparser_getint(ini, "main:dstar_denoise", 1);
     radio_h->dstar_denoise = (uint16_t) i;
+    {
+        double v = iniparser_getdouble(ini, "main:rx_noise_reduction_db", RX_DENOISE_REDUCTION_DB);
+        if (!isfinite(v))       /* "nan" would start a new denoiser every block */
+            v = RX_DENOISE_REDUCTION_DB;
+        radio_h->rx_nr_reduction_db = (float) (v < 0.0 ? 0.0 : v > 40.0 ? 40.0 : v);
+        v = iniparser_getdouble(ini, "main:rx_noise_reduction_strength", RX_DENOISE_STRENGTH);
+        if (!isfinite(v))
+            v = RX_DENOISE_STRENGTH;
+        radio_h->rx_nr_strength = (float) (v < 0.0 ? 0.0 : v > 1.0 ? 1.0 : v);
+    }
     i = iniparser_getint(ini, "main:dstar_encrypt", 0);
     radio_h->dstar_encrypt = (uint16_t) i;
     i = iniparser_getint(ini, "main:rade_encrypt", 0);
@@ -594,6 +694,17 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
 
     s = iniparser_getstring(ini, "main:dream_path", "/usr/bin/dream");
     snprintf(radio_h->dream_path, sizeof(radio_h->dream_path), "%s", s);
+
+    cfg_drm_param(radio_h, ini, "drm_robustness", "B");
+    cfg_drm_param(radio_h, ini, "drm_spectrum", "3");
+    cfg_drm_param(radio_h, ini, "drm_msc_qam", "16");
+    cfg_drm_param(radio_h, ini, "drm_protection", "1");
+    cfg_drm_param(radio_h, ini, "drm_codec", "xHE-AAC");
+    cfg_drm_param(radio_h, ini, "drm_label", "HERMES");
+    {
+        double g = iniparser_getdouble(ini, "main:drm_tx_gain", 0.5);
+        radio_h->drm_tx_gain = (float) (isfinite(g) && g > 0.0 && g <= 4.0 ? g : 0.5);
+    }
 
     /* tx_band* sections — per-band TX power calibration (sbitx hardware) */
     {
@@ -690,8 +801,9 @@ bool init_config_user(radio *radio_h, const char *ini_name)
 
         snprintf(key, sizeof(key), "profile%d:compressor", k);
         s = iniparser_getstring(ini, key, "OFF");
+        /* ON, or 1 as the sBitx's controls save it */
         radio_h->profiles[k].compressor =
-            (!strcmp(s, "ON")) ? COMPRESSOR_ON : COMPRESSOR_OFF;
+            (!strcasecmp(s, "ON") || !strcmp(s, "1")) ? COMPRESSOR_ON : COMPRESSOR_OFF;
 
         snprintf(key, sizeof(key), "profile%d:digital_voice", k);
         int b2 = iniparser_getboolean(ini, key, 0);
@@ -746,7 +858,7 @@ bool init_config_user(radio *radio_h, const char *ini_name)
         snprintf(key, sizeof(key), "profile%d:noise_reduction", k);
         s = iniparser_getstring(ini, key, "OFF");
         radio_h->profiles[k].noise_reduction =
-            !strcasecmp(s, "ON") ? NOISE_REDUCTION_ON : NOISE_REDUCTION_OFF;
+            (!strcasecmp(s, "ON") || !strcmp(s, "1")) ? NOISE_REDUCTION_ON : NOISE_REDUCTION_OFF;
     }
 
     if (radio_h->profile_active_idx >= radio_h->profiles_count)

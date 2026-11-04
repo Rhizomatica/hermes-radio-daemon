@@ -45,6 +45,7 @@ typedef struct {
     double   s_meter_db;          /* dB relative to S9 */
     bool     protection;          /* high-SWR protection tripped */
     bool     digital_voice;
+    bool     noise_reduction;     /* the active profile's, on received audio */
     char     backend[8];          /* sbitx, hamlib */
 } radiod_api_state;
 
@@ -56,6 +57,7 @@ typedef struct {
     int      volume;              /* percent */
     uint32_t filter_width_hz;     /* 0: the rig's default */
     bool     digital_voice;
+    bool     noise_reduction;     /* on the received audio people listen to */
 } radiod_api_profile;
 
 /* What radiod keeps once for the station, not per profile (RadioSettings). */
@@ -80,6 +82,7 @@ int radiod_api_set_power(uint32_t profile, int percent);
 int radiod_api_set_volume(uint32_t profile, int percent);
 int radiod_api_set_filter_width(uint32_t profile, uint32_t hz);
 int radiod_api_set_digital_voice(uint32_t profile, bool on);
+int radiod_api_set_noise_reduction(uint32_t profile, bool on);
 
 /* Station-wide settings; each is saved to the configuration. */
 int radiod_api_set_default_profile(uint32_t profile);
@@ -163,6 +166,24 @@ enum radiod_api_spectrum
  * slot is taken. Mercury sends its spectrum only while its feed is on
  * (radiod_api_modem_set_waterfall). */
 int radiod_api_spectrum_subscribe(long conn_id, int spectrum, bool on);
+
+/* ── browser audio (hermes.v1 rtc.offer / rtc.close) ── */
+
+/* The longest answer SDP radiod writes. */
+#define RADIOD_API_SDP_MAX 16384
+
+/* Start, or renegotiate, hermes.v1 connection conn_id's WebRTC audio from
+ * the browser's SDP offer: rx for the station's receive audio, tx for the
+ * browser's microphone (transmitted only while conn_id holds PTT). The
+ * answer SDP, with the station's host candidates, goes into answer. 0;
+ * EINVAL for an offer with no Opus audio section, or neither rx nor tx;
+ * EBUSY with main:webrtc_max_sessions sessions up; EIO when negotiation
+ * fails; ENOTSUP when radiod was built without WebRTC or its audio rate is
+ * not one Opus takes. The session ends with the connection. */
+int radiod_api_rtc_offer(long conn_id, const char *sdp, bool rx, bool tx,
+                         char *answer, size_t answer_len);
+/* End conn_id's session, if it has one. */
+void radiod_api_rtc_close(long conn_id);
 
 /* ── recording ── */
 

@@ -3,8 +3,9 @@
 # CI jobs run this in a debian:trixie container, and it works the same on a
 # fresh station or a developer's machine.
 #
-#   Debian:      hamlib, iniparser, ALSA, FFTW, OpenSSL, i2c, libunixcw, ...
-#   HERMES repo: csdr (debian.hermes.radio, signing key pinned below)
+#   Debian:      hamlib, iniparser, ALSA, FFTW, OpenSSL, i2c, Opus, ...
+#   HERMES repo: csdr and libdatachannel (debian.hermes.radio, signing key
+#                pinned below)
 #   upstream:    libspecbleach and mbelib-neo, built at the commits the
 #                HERMES packages of them are made from
 #
@@ -30,9 +31,9 @@ apt-get update
 apt-get install -y --no-install-recommends \
     ca-certificates curl gnupg git build-essential pkg-config cmake \
     libhamlib-dev libiniparser-dev libasound2-dev libfftw3-dev libssl-dev \
-    libi2c-dev libsndfile1-dev libcw-dev
+    libi2c-dev libsndfile1-dev libopus-dev
 
-# csdr from the HERMES repository.  The key comes over plain http (the
+# csdr and libdatachannel (WebRTC audio) from the HERMES repository.  The key comes over plain http (the
 # server's TLS certificate does not verify), so it is accepted only if its
 # fingerprint is the one above.
 keyring=/usr/share/keyrings/hermes.gpg
@@ -46,7 +47,7 @@ fi
 gpg --batch --dearmor < "$tmp/hermes.key" > "$keyring"
 echo "deb [signed-by=$keyring] $HERMES_REPO trixie main" > /etc/apt/sources.list.d/hermes.list
 apt-get update
-apt-get install -y --no-install-recommends csdr
+apt-get install -y --no-install-recommends csdr libdatachannel-dev
 
 # Clone one commit of a repository into a directory.
 fetch_commit()

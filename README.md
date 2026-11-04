@@ -7,7 +7,7 @@ Radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-net)
 - **`hfsignals` backend** — embedded sBitx/zBitx DSP + ALSA path with all original hardware control (Si5351, GPIO, I2C, WM8731 codec)
 - **`hamlib` backend** — Hamlib CAT/PTT control for IC-7100, IC-7300, FT-710, TS-480 and every other rig Hamlib supports
 - **8 modulation modes**: LSB, USB, CW, **FM** (NBFM), **AM** (broadcast), **DRM** (Digital Radio Mondiale), **FT8**, **RTTY**, plus RADEv2 digital voice on top of USB
-- **Digital text modes**: FT8 (8-FSK), CW (Morse via unixcw), RTTY (Baudot FSK) with unified websocket API and a real outbound text queue (`digi_send`)
+- **Digital text modes**: FT8 (8-FSK), CW (Morse) and RTTY (Baudot FSK), CW and RTTY decoded as skimmers (every station in the passband), with unified websocket API and a real outbound text queue (`digi_send`)
 - **SSB voice DSP chain**: 3-band pre-EQ, wideband compressor, pre-emphasis, DC block, limiter
 - **RX voice DSP chain**: DC block, adaptive noise reduction (libspecbleach), AGC (SLOW/MEDIUM/FAST), soft limiter
 - **Audio bridge** for websocket RX/TX streaming, RX/TX spectrum waterfall, and `.wav` recording — on both backends, sharing the same audio rings. csdr-based polyphase resampler (`audio_bridge.c`) decouples the rig USB codec rate from the daemon ring rate.
@@ -70,7 +70,7 @@ hermes-radio-daemon/
 ├── vendor/ft8_lib/          Vendored ft8_lib (MIT)
 ├── vendor/minimodem/        Vendored minimodem FSK core (GPLv3)
 ├── vendor/hermes_shm/       Shared-memory rings, identical to mercury's copy
-├── config/                  Sample core.ini and user.ini
+├── config/                  Sample core.ini and user.ini, a nine-profile example
 └── tests/                   Unit tests: <module>/test_<unit>.c on Unity + fff (tests/tests.mk);
                              integration/: Go tests that drive the real radio_daemon
 ```
@@ -85,7 +85,7 @@ backend = one new file with a vtable.
 ```bash
 apt-get install libhamlib-dev libiniparser-dev libasound2-dev libfftw3-dev \
                 libssl-dev libi2c-dev csdr libspecbleach-dev \
-                libsndfile1-dev libcw-dev meson ninja-build pkg-config
+                libsndfile1-dev meson ninja-build pkg-config
 ```
 
 `libfftw3-dev` includes the single-precision `fftw3f` library. `csdr` (the
@@ -94,9 +94,12 @@ package repository.
 
 **libspecbleach** provides adaptive spectral noise reduction on RX.
 
-**libcsdr** provides FM/AM modulation/demodulation, AGC, DC blocking, resampling, and filter design.
+**libdatachannel** and **libopus** (optional: `libdatachannel-dev` from the
+HERMES package repository, with its `libjuice-dev`, and `libopus-dev`) carry
+the radio's audio to browsers over WebRTC. radiod builds with them when both
+are installed; without them `rtc.offer` answers `not_supported`.
 
-**libunixcw** (`-lcw`) provides the CW receiver state machine (mark/space → characters).
+**libcsdr** provides FM/AM modulation/demodulation, AGC, DC blocking, resampling, and filter design.
 
 **mbelib-neo** (`-lmbe-neo`) provides the D-STAR AMBE 3600x2400 codec, encoder included. Build it
 from upstream [arancormonk/mbelib-neo](https://github.com/arancormonk/mbelib-neo) `main` (the
@@ -109,10 +112,15 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
 sudo cmake --install build && sudo ldconfig
 ```
 
-**Dream** (optional, for DRM mode): build in console mode:
+**Dream** (optional, for DRM mode): its console build, from the `xhe-aac-tx`
+branch of `rafael2k/dream`, which reads and writes raw s16le on stdin and
+stdout and transmits xHE-AAC. `CONFIG+=vendored-fdk` builds the fdk-aac it
+carries, with xHE-AAC. `DEFINES+=USE_CONSOLEIO` builds the console receiver's
+`--status-file`, the report radiod shows (lock, SNR, mode, services); a Dream
+without it still works, with no report.
 ```bash
-cd dream                     # your checkout of Dream
-qmake "CONFIG+=console"
+cd dream                     # your checkout of Dream, branch xhe-aac-tx
+qmake6 CONFIG+=console CONFIG+=release CONFIG+=vendored-fdk DEFINES+=USE_CONSOLEIO dream.pro
 make
 sudo cp dream /usr/bin/dream
 ```
@@ -240,8 +248,7 @@ packages are at <http://debian.hermes.radio/sailfish/>.
    ```
 
    `pkcon` brings in the libraries the Sailfish repositories do not have:
-   Hamlib, fftw, iniparser, i2c-tools, csdr, libspecbleach, mbelib-neo,
-   unixcw.
+   Hamlib, fftw, iniparser, i2c-tools, csdr, libspecbleach, mbelib-neo.
 3. Plug in the rig and set it in `/etc/hermes/core.ini`. The rig's
    USB-serial chip is named by its USB ids and serial number;
    `cat /sys/bus/usb/devices/*/serial` lists them. An IC-7100 and an FT-710:
@@ -323,6 +330,17 @@ api_v2_enable = 0
 ; same-origin, so no page can use a user's login without its token. Empty:
 ; same-origin only.
 api_cors_origins = *
+; Browser audio over WebRTC (hermes.v1 rtc.offer; builds with libdatachannel
+; and libopus): at most webrtc_max_sessions at once, media on UDP ports
+; webrtc_udp_min..webrtc_udp_max, bound to webrtc_bind_address (empty: any;
+; set the Wi-Fi interface's address to keep media off other networks).
+; Browsers offer mDNS (.local) addresses until a page has microphone
+; permission; radiod resolves them through the system resolver, so install
+; libnss-mdns (and avahi-daemon).
+webrtc_max_sessions = 4
+webrtc_udp_min = 50000
+webrtc_udp_max = 50099
+webrtc_bind_address =
 
 ; Logging: mercury's hermes_log, so radiod's, the Go API's and mercury's
 ; lines are one stream in one format:
@@ -389,6 +407,12 @@ playback_device = default
 ; anything above, e.g. for an interface powered from DTR or a non-default
 ; CI-V address:
 ; hamlib_conf = dtr_state=ON,civaddr=0x94
+; A rig that stops answering CAT for 5 s (its USB reset or was unplugged,
+; or it was switched off) has its port closed and opened again, every 2 s
+; and then up to every 30 s, until it answers; it is unkeyed then. The audio
+; devices are reopened the same way. Name both so that they survive the
+; rig coming back as a new USB device: a usb: path by ids and serial, or
+; /dev/serial/by-id/..., and ALSA cards by name (hw:CARD=...), not number.
 
 ; Per-band TX power calibration (scale = multiplier):
 ; [tx_band0]
@@ -398,6 +422,11 @@ playback_device = default
 ```
 
 ### `/etc/hermes/user.ini` — profiles
+
+The `config/user.ini` radiod installs has a station's two profiles,
+profile0 for data and profile1 for voice.
+`config/user-profiles.example.ini` has those two and seven more, one for
+each kind of operation: FM, AM, DRM, digital voice, FT8, CW and RTTY.
 
 ```ini
 [main]
@@ -499,8 +528,8 @@ enable_ptt = 1
 freq = 6095000
 mode = DRM
 operating_mode = 0
-bpf_low = 100
-bpf_high = 6000
+bpf_low = 0
+bpf_high = 5200
 agc = OFF
 compressor = OFF
 tx_preemphasis = OFF
@@ -539,7 +568,7 @@ enable_ptt = 1
 | `agc` | `OFF`, `SLOW`, `MEDIUM`, `FAST` | RX automatic gain control |
 | `compressor` | `OFF`, `ON` | TX wideband speech compressor |
 | `tx_preemphasis` | `OFF`, `ON` | +6 dB/octave treble boost above 2 kHz |
-| `noise_reduction` | `OFF`, `ON` | libspecbleach adaptive spectral denoiser |
+| `noise_reduction` | `OFF`, `ON` | libspecbleach adaptive spectral denoiser on the received audio, on every backend: what the browser, the websocket stream and the speaker play, on a voice profile (`operating_mode = 0`) in USB, LSB, AM, FM and CW (the modem's profile is never denoised, and the digital-mode decoders get the audio as it is); `core.ini`'s `rx_noise_reduction_db` and `rx_noise_reduction_strength` set how much |
 | `digital_voice` | `0`, `1` | Digital voice, in the codec `main:digital_voice_codec` selects |
 | `dv_restore_mode` | a `mode` | Mode D-STAR digital voice returns to when switched off (kept by the daemon) |
 | `power_level_percentage` | 0–100 | TX RF power level |
@@ -555,7 +584,7 @@ enable_ptt = 1
 | SSB data | 50 | 3000 | 3.0 kHz |
 | FM (NBFM) | 100 | 7000 | 14 kHz (Carson rule: 2×5k dev + 2×2k audio) |
 | AM | 50 | 10000 | 20 kHz (broadcast audio) |
-| DRM | 100 | 6000 | 12 kHz (DRM mode B 10 kHz + margin) |
+| DRM | 0 | 5200 | the channel centred on the dial, +-bpf_high: 10.4 kHz for the 10 kHz channel |
 | FT8 | 50 | 3000 | 3.0 kHz (SSB-based) |
 | CW | 500 | 900 | ~400 Hz around pitch (700 Hz) |
 | RTTY | 1300 | 1700 | ~400 Hz around mark/space (1585/1415 Hz) |
@@ -578,12 +607,22 @@ Standard single-sideband with the full voice DSP chain:
 
 ### CW (Morse code)
 
-Uses `libunixcw` for the receiver state machine and a DDS tone generator for the transmitter:
-- **RX**: SSB USB → Goertzel single-bin tone detector → mark/space events → unixcw decoder → spool
-- **TX**: Text → Morse lookup → DDS sine + raised-cosine envelope → SSB TX
-- Configurable WPM (`cw_wpm`, default 20) and pitch (`cw_pitch`, default 700 Hz)
-- Narrow filter centred around the CW pitch
-- End-of-message: 3× word-space silence threshold
+The receiver is a skimmer (`dsp/sbitx_cw.c`): it decodes every CW station
+in the passband at once, each at its own pitch and speed, so the rig needs
+no CW filter and no tuning onto a station.
+- **RX**: USB audio at 12 kHz → `dsp/tone_scan.c` finds the keyed carriers
+  (narrow peaks well above the noise floor, over each second) → a channel
+  per station: a mixer to its pitch, a Hann-weighted envelope filter a dot
+  long, its own noise and peak levels → marks and gaps → its speed (a
+  2-means split of the recent marks into dots and dashes) → Morse → one
+  digi log entry per line, with the station's pitch as `offset_hz` and an
+  approximate SNR. A line ends at a 1.5 s pause or about 40 characters.
+- A new channel starts from the last 3 s of audio, so a station's first
+  characters (its CQ) are not lost while the scan finds it. Steady carriers,
+  voice and data tones on a channel are not Morse-timed and print nothing.
+- **TX**: Text → Morse lookup → DDS sine + raised-cosine envelope → SSB TX,
+  at `cw_wpm` (default 20, also each RX channel's first guess) and
+  `cw_pitch` (default 700 Hz)
 
 ### NBFM (Narrow Band FM)
 
@@ -601,16 +640,47 @@ Uses csdr `amdemod_cf` (envelope detection) and `add_dcoffset_cc`:
 
 ### DRM (Digital Radio Mondiale)
 
-Launches **Dream** as a subprocess via dual Unix pipes:
-- **Signal**: 48 kHz stereo S16_LE zero-IF I/Q (left=I, right=Q) → Dream stdin
-- **Audio**: 8 kHz stereo S16_LE decoded audio from Dream stdout → upsample 96k → speaker + loopback
+The DRM channel is centred on the dial, as broadcast DRM is: the 10 kHz HF
+channel is the dial +-5 kHz. **Dream** runs as a subprocess, its receiver and
+its transmitter each in a directory of its own under `recording_dir`
+(`drm-rx`, `drm-tx`), with the `Dream.ini` radiod writes there. Two threads
+move the samples (`dsp/dream_proc.c`), so the DSP never waits on a pipe.
 
-Dream is launched with:
-```
-dream --console -I - -O - --sigsrate 48000 --inchansel 6 --audsrate 8000
-```
+- **Receive**: the I/Q around the dial at 48 kHz, s16le stereo (I left, Q
+  right), into `dream -n -I - -c 6 -O -mono` (I/Q, 0 Hz IF); the decoded
+  audio back mono, upsampled to 96 kHz, to the speaker and loopback.
+- **Transmit** (sBitx): the microphone (or loopback) audio at 48 kHz into
+  `dream -n -t -I -mono -O -`, the profile's voice chain (compressor, EQ)
+  left out. Dream's I/Q leaves it at a 6 kHz IF (its band-pass is a real
+  filter around the IF, which folds at 0 Hz); radiod mixes it down onto the
+  dial and sends both halves of the spectrum, as AM. A transmission starts
+  Dream's transmitter, and receiving stops it.
 
-DRM TX is not implemented (use Dream's native transmitter if needed).
+- **The receiver's report**: radiod asks Dream's `--help` once, at start;
+  a Dream that has `--status-file` writes its receiver's status there
+  (`/dev/shm/radiod-drm-<pid>.json`) about once a second. In DRM, the state
+  frame carries it as `drm_rx`, checked to be one JSON object and no older
+  than 5 s (`null` otherwise): the sync flags (`io`, `time`, `frame`, `fac`,
+  `sdc`, `msc`: `O` ok, `*` data error, `X` CRC error), `signal`, `snr`, the
+  mode, and the services with label, codec and bitrate. The web page's
+  Control tab shows it in DRM, with the transmitter's settings.
+
+The transmission's parameters are `core.ini`'s `drm_*` keys: robustness,
+spectrum occupancy, MSC QAM, protection level, codec (xHE-AAC by default;
+HE-AAC, AAC with SBR on a 12 kHz core; or AAC) and label. `digi_config`
+sets them at run time (`{"cmd":"digi_config","key":"drm_codec","value":"HE-AAC"}`,
+refused while transmitting; the next over uses them) and `digi_get_config`
+reports them; the file and the command check them alike. xHE-AAC needs 12 kbit/s or more, which the 10 kHz channel gives in mode
+B: 14 kbit/s with 16-QAM (the default), 20 with 64-QAM, which needs some 6 dB
+more SNR (between two sBitx stations on 40 m, about 10 dB of SNR decoded with
+16-QAM and not with 64); the narrower channels (4.5 and 5 kHz) do not, and SSB rigs on
+Hamlib cannot pass a DRM channel centred on their dial, so DRM is the sBitx's.
+
+For testing, `RADIOD_DRM_DUMP=<prefix>` in radiod's environment writes the
+receiver's I/Q into Dream and audio out of it (`<prefix>.iq`, `.audio`) and
+the transmitter's audio in and I/Q out (`.txaudio`, `.txiq`), all s16le at
+48 kHz, to replay Dream on offline. The DSP thread writes them: put them on a
+RAM disk (`/dev/shm`), as an SD card stalls it.
 
 ### FT8 (Weak-signal digital mode)
 
@@ -635,12 +705,21 @@ Uses the vendored `ft8_lib` (`vendor/ft8_lib/`, MIT) in process:
 
 ### RTTY (Radio Teletype — 45.45 baud FSK)
 
-Uses vendored `minimodem` FSK core (FFT-based FSK detector + Baudot codec):
-- **TX**: Text → Baudot encoding (5-bit + start/1.5 stop) → FSK tone generator @ 96 kHz → SSB TX
-- **RX**: SSB USB → 12 kHz audio → `fsk_find_frame()` → Baudot decode → spool
-- Configurable baud, mark frequency, and shift
-- End-of-message: CR+LF or 3-second idle timeout
-- Vendored library at `vendor/minimodem/` (GPLv3-licensed)
+The receiver is a skimmer too (`dsp/sbitx_rtty.c`): every RTTY station of
+the configured baud and shift in the passband, wherever its tones are.
+- **RX**: USB audio at 12 kHz → `dsp/tone_scan.c` finds the FSK signals (two
+  narrow peaks a shift apart, with less between them) → a channel per
+  station: each tone mixed to DC and averaged over a bit, each against its
+  own recent peak (threshold correction for selective fading) → a UART per
+  polarity; the polarity whose frames check gives the text (so a station
+  sending reversed decodes too) → ITA2 with unshift-on-space → one digi log
+  entry per line, with the station's mark tone as `offset_hz`. A line ends
+  at CR/LF, 2 s without a character, or about 70 characters.
+- **TX**: Text → Baudot encoding (5-bit + start/1.5 stop, the vendored
+  `minimodem` codec, GPLv3) → FSK tone generator @ 96 kHz → SSB TX, at
+  `rtty_mark` and `rtty_shift`
+- `rtty_baud` (default 45) and `rtty_shift` (default 170) also set what RX
+  looks for; `rtty_mark` is for TX only
 
 ### Digital Voice (RADEv2)
 
@@ -954,6 +1033,22 @@ link: over `ws://` passwords and session tokens cross the network in the clear.
 (`gui_interface/web/spectrum.html`, installed with the web page): log in, and it subscribes
 to `radio.state` and `radio.spectrum.rx`/`.tx`; a click centres a signal, the wheel tunes.
 Served from elsewhere, it logs in to the station named in its login form (CORS).
+
+`https://<station>:8080/map.html` is who the station hears on FT8, on a world map
+(`gui_interface/web/map.html`): it subscribes to `digi`, `radio.state` and `gps`, reads the
+last six hours from `GET /digi/log`, and places each sender by the locator it sends,
+coloured by SNR and fading with age. With the station's GPS fix, or a locator typed in,
+it draws the paths and gives distance and bearing. **Listen** plays the receiver over
+WebRTC (`rtc.offer`, receive only). It works offline: the coastlines are Natural Earth's
+1:110m, in `map-world.js` (`utils/map_world.py` makes it).
+
+`https://<station>:8080/tune.html` tunes the receiver and plays it (`gui_interface/web/tune.html`):
+step or type a frequency, or **Next / Prev station** to seek: it steps through the broadcast bands
+(medium wave on its 9 kHz raster, short wave on 5 kHz), the amateur bands or 0.5-30 MHz with
+`radio.set`, and stops where `radio.state`'s S-meter rises a set margin above the noise it has
+seen. Stations found are listed to go back to. With `rtc.offer`, **Listen** plays the receiver
+(receive only); with `noise_reduction` in the state, a switch turns the profile's on and off.
+The main page links the three pages.
 
 A daemon built without Go answers `/api/v2` with 503 (`not_supported`).
 Errors are RFC 9457 `application/problem+json` with a stable `code`, and every

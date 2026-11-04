@@ -103,7 +103,11 @@ info:
       microphone permission, so the station resolves mDNS candidates. `getUserMedia`
       needs HTTPS, which the station serves.
     - **Limits.** At most `settings.webrtc.max_sessions` sessions at once (default 4, for
-      the 1 GB Pi); one more gets `busy`.
+      the 1 GB Pi); one more gets `busy`. A session takes 16 renegotiations; the next
+      gets `busy` (`rtc.close`, then a new offer).
+    - **Errors.** An offer without an Opus audio section, or with a data channel
+      (`m=application`), is `bad_request`; `tx` without
+      `operator` is `forbidden`; a station without WebRTC audio answers `not_supported`.
     - **Recording** (`recording.start`, `recording.stop`) is unchanged; it records on the
       station, not in the browser.
 
@@ -607,6 +611,7 @@ components:
         volume: { type: integer, minimum: 0, maximum: 100 }
         filter_width_hz: { type: integer }
         digital_voice: { type: boolean }
+        noise_reduction: { type: boolean }
     SelectProfileArgs:
       type: object
       title: radio.select_profile (operator)

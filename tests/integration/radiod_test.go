@@ -6,6 +6,7 @@
 package integration
 
 import (
+	"encoding/json/v2"
 	"os"
 	"regexp"
 	"strconv"
@@ -232,5 +233,92 @@ func TestShippedUserINI(t *testing.T) {
 	}
 	if !regexp.MustCompile(`(?m)^default_profile_fallback_timeout\s*=\s*-1\s*$`).Match(b) {
 		t.Error("the shipped user.ini falls back to the default profile; the fallback is off (-1)")
+	}
+}
+
+// The nine-profile example: radiod starts on it and every profile selects
+// with its frequency and mode.
+func TestExampleUserINI(t *testing.T) {
+	b, err := os.ReadFile("../../config/user-profiles.example.ini")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := startDaemon(t, daemonOpts{userINI: string(b)})
+	ws := dialRadiod(t, d)
+	re := regexp.MustCompile(`(?ms)^\[profile(\d)\]\nfreq = (\d+)\nmode = (\w+)$`)
+	profiles := re.FindAllSubmatch(b, -1)
+	if len(profiles) != 9 {
+		t.Fatalf("%d profiles in the example, want 9", len(profiles))
+	}
+	for _, m := range profiles {
+		n, _ := strconv.Atoi(string(m[1]))
+		freq, _ := strconv.ParseInt(string(m[2]), 10, 64)
+		if r := ws.call("set_profile", map[string]any{"profile": n}); !r.OK {
+			t.Fatalf("set_profile %d: %+v", n, r)
+		}
+		if got := ws.call("get_frequency", nil).Number(t); got != freq {
+			t.Errorf("profile %d frequency = %d, want %d", n, got, freq)
+		}
+		if got := ws.call("get_mode", nil).String(t); got != string(m[3]) {
+			t.Errorf("profile %d mode = %q, want %s", n, got, m[3])
+		}
+	}
+}
+
+// The DRM transmitter's settings through digi_config, as text and as numbers,
+// refused when they are not valid, and read back with digi_get_config.
+func TestDRMSettings(t *testing.T) {
+	d := startDaemon(t, daemonOpts{})
+	ws := dialRadiod(t, d)
+
+	for _, set := range []map[string]any{
+		{"key": "drm_label", "value": "B0AA RADIO"},
+		{"key": "drm_msc_qam", "value": 64},
+		{"key": "drm_codec", "value": "HE-AAC"},
+		{"key": "drm_robustness", "value": "a"},
+		{"key": "drm_protection", "value": "0"},
+	} {
+		if r := ws.call("digi_config", set); !r.OK {
+			t.Errorf("digi_config %v = %+v", set, r)
+		}
+	}
+	for _, bad := range []map[string]any{
+		{"key": "drm_codec", "value": "Opus"},
+		{"key": "drm_msc_qam", "value": 32},
+		{"key": "drm_label", "value": "X]\nmsc=CS_3_SM"},
+		{"key": "drm_spectrum", "value": "six"},
+	} {
+		if r := ws.call("digi_config", bad); r.OK {
+			t.Errorf("digi_config %v was accepted", bad)
+		}
+	}
+
+	b, _ := json.Marshal(map[string]any{"cmd": "digi_get_config"})
+	if err := ws.ws.writeFrame(opText, b); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		op, msg, err := ws.ws.readMessage(deadline)
+		if err != nil {
+			t.Fatalf("waiting for digi_get_config: %v", err)
+		}
+		var got struct {
+			Cmd        string `json:"cmd"`
+			Robustness string `json:"drm_robustness"`
+			Spectrum   int    `json:"drm_spectrum"`
+			QAM        int    `json:"drm_msc_qam"`
+			Protection int    `json:"drm_protection"`
+			Codec      string `json:"drm_codec"`
+			Label      string `json:"drm_label"`
+		}
+		if op != opText || json.Unmarshal(msg, &got) != nil || got.Cmd != "digi_get_config" {
+			continue
+		}
+		if got.Robustness != "A" || got.Spectrum != 3 || got.QAM != 64 || got.Protection != 0 ||
+			got.Codec != "HE-AAC" || got.Label != "B0AA RADIO" {
+			t.Errorf("digi_get_config = %s", msg)
+		}
+		return
 	}
 }

@@ -3,6 +3,7 @@ package radio
 import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,16 @@ type Stub struct {
 	recRX    bool
 	recTX    bool
 	spectrum map[[2]int64]bool
+	rtc      map[int64]RTCSession
+	// RTCMax is how many WebRTC sessions the stub takes (radiod's
+	// main:webrtc_max_sessions); 0 for none, as radiod without WebRTC.
+	RTCMax int
+}
+
+// RTCSession is what a stub WebRTC session was negotiated with.
+type RTCSession struct {
+	SDP    string
+	RX, TX bool
 }
 
 // NewStub returns a Stub tuned to 7.1 MHz USB.
@@ -127,6 +138,7 @@ func (s *Stub) State() State {
 	st := s.state
 	p := s.profiles[st.ActiveProfile]
 	st.FrequencyHz, st.Mode, st.Power, st.DigitalVoice = p.FrequencyHz, p.Mode, p.Power, p.DigitalVoice
+	st.NoiseReduction = p.NoiseReduction
 	return st
 }
 
@@ -217,6 +229,10 @@ func (s *Stub) SetDigitalVoice(n int, on bool) error {
 		return ErrBusy
 	}
 	return s.with(n, func(p *Profile) error { p.DigitalVoice = on; return nil })
+}
+
+func (s *Stub) SetNoiseReduction(n int, on bool) error {
+	return s.with(n, func(p *Profile) error { p.NoiseReduction = on; return nil })
 }
 
 func (s *Stub) ResetProtection() { s.mu.Lock(); s.state.Protection = false; s.mu.Unlock() }
@@ -494,6 +510,42 @@ func (s *Stub) Spectrum(conn int64, sp Spectrum) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.spectrum[[2]int64{conn, int64(sp)}]
+}
+
+// RTCOffer answers an offer that carries an audio section, as radiod
+// does, with every session up to RTCMax; the answer names the session.
+func (s *Stub) RTCOffer(conn int64, sdp string, rx, tx bool) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.RTCMax == 0 {
+		return "", ErrNotSupported
+	}
+	if (!rx && !tx) || !strings.Contains(sdp, "m=audio ") {
+		return "", ErrInvalid
+	}
+	if s.rtc == nil {
+		s.rtc = map[int64]RTCSession{}
+	}
+	if _, ok := s.rtc[conn]; !ok && len(s.rtc) >= s.RTCMax {
+		return "", ErrBusy
+	}
+	s.rtc[conn] = RTCSession{SDP: sdp, RX: rx, TX: tx}
+	return fmt.Sprintf("v=0\r\no=radiod %d 0 IN IP4 127.0.0.1\r\n", conn), nil
+}
+
+// RTCClose ends conn's session.
+func (s *Stub) RTCClose(conn int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.rtc, conn)
+}
+
+// RTC reports conn's session, if it has one.
+func (s *Stub) RTC(conn int64) (RTCSession, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.rtc[conn]
+	return r, ok
 }
 
 // Recording keeps which streams are on, as radiod does.
