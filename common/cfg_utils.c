@@ -616,6 +616,24 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     s = iniparser_getstring(ini, "main:dream_path", "/usr/bin/dream");
     snprintf(radio_h->dream_path, sizeof(radio_h->dream_path), "%s", s);
 
+    s = iniparser_getstring(ini, "main:drm_robustness", "B");
+    radio_h->drm_robustness = (s[0] >= 'A' && s[0] <= 'D') ? s[0]
+                            : (s[0] >= 'a' && s[0] <= 'd') ? (char) (s[0] - 'a' + 'A') : 'B';
+    i = iniparser_getint(ini, "main:drm_spectrum", 3);
+    radio_h->drm_spectrum = i >= 0 && i <= 5 ? i : 3;
+    i = iniparser_getint(ini, "main:drm_msc_qam", 16);
+    radio_h->drm_msc_qam = i == 64 ? 64 : 16;
+    i = iniparser_getint(ini, "main:drm_protection", 1);
+    radio_h->drm_protection = i >= 0 && i <= 3 ? i : 1;
+    s = iniparser_getstring(ini, "main:drm_codec", "xHE-AAC");
+    snprintf(radio_h->drm_codec, sizeof(radio_h->drm_codec), "%s", s);
+    s = iniparser_getstring(ini, "main:drm_label", "HERMES");
+    snprintf(radio_h->drm_label, sizeof(radio_h->drm_label), "%s", s);
+    {
+        double g = iniparser_getdouble(ini, "main:drm_tx_gain", 0.5);
+        radio_h->drm_tx_gain = (float) (isfinite(g) && g > 0.0 && g <= 4.0 ? g : 0.5);
+    }
+
     /* tx_band* sections — per-band TX power calibration (sbitx hardware) */
     {
         int sec_count = iniparser_getnsec(ini) - 1; /* minus [main] */

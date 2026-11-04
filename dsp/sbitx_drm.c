@@ -1,245 +1,316 @@
-/* sBitx DRM (Digital Radio Mondiale) support via Dream subprocess
+/* sBitx DRM (Digital Radio Mondiale) through Dream subprocesses
  *
- * Copyright (C) 2024-2025 Rhizomatica
+ * Copyright (C) 2024-2026 Rhizomatica
  * Author: Rafael Diniz <rafael@riseup.net>
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-#include <errno.h>
-#include <signal.h>
-#include <stdbool.h>
-#include <stdint.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
-#define USE_FFTW
-#define LIBCSDR_GPL
-#include <fft_fftw.h>
-#include <libcsdr.h>
-#include <libcsdr_gpl.h>
-
+#include "dream_proc.h"
 #include "sbitx_drm.h"
-#include "stream_resampler.h"
 
 #include "radiod_log.h"
 
 #define LOG_C "drm"
-static pid_t dream_pid = -1;
-static FILE *dream_in = NULL;
-static FILE *dream_out = NULL;
 
-/* Rate conversion with the state kept across blocks. csdr's
- * rational_resampler_ff() called per block with only that block dropped its
- * look-ahead tail every block, and the audio path read up to a whole block
- * of 8 kHz audio, upsampled it 12x and kept one block of it (11/12 lost). */
-static stream_resampler rs_i, rs_q;          /* 96k -> 48k signal */
-static stream_resampler rs_up;               /* 8k -> 96k audio */
-static bool rs_ready = false;
-static float audio_fifo[4096];
-static int audio_fifo_n = 0;
+/* 4 s of each stream: Dream's frames are 400 ms, its interleaver 2.4 s */
+#define DRM_RING (SBITX_DRM_RATE * 2 * 4)
 
-static float audio_8k[2048];
+static dream_proc *rx, *tx;
+static double tx_phase;
 
-static int dmode_audio_available = 0;
+/* Dream hands out its audio and its I/Q a 400 ms frame at a time, the DSP
+ * takes it 10 ms at a time: half a second is queued before any goes out,
+ * and again whenever the queue runs dry, so the frames do not leave gaps. */
+#define DRM_PRIME (SBITX_DRM_RATE / 2)
+static bool rx_primed, tx_primed;
 
-static void init_resamplers(void)
+/* Test hook: with RADIOD_DRM_DUMP set to a path prefix, what the receiver
+ * hands Dream (<prefix>.iq, s16le I/Q at 48 kHz) and what it gets back
+ * (<prefix>.audio, s16le mono at 48 kHz) are written there, and the
+ * transmitter's audio in (<prefix>.txaudio) and I/Q out, on the dial
+ * (<prefix>.txiq), to replay Dream on them offline. Put it on a RAM
+ * disk: these writes are the DSP thread's. */
+static FILE *dump_iq, *dump_audio, *dump_txaudio, *dump_txiq;
+
+static void dump_tx_open(void)
 {
-    if (rs_ready)
+    const char *p = getenv("RADIOD_DRM_DUMP");
+    char path[512];
+
+    if (!p || !p[0] || dump_txaudio)
         return;
-    rs_ready = stream_resampler_init(&rs_i, 1, 2, 0.05f) &&
-               stream_resampler_init(&rs_q, 1, 2, 0.05f) &&
-               stream_resampler_init(&rs_up, 12, 1, 0.01f);
-    audio_fifo_n = 0;
+    snprintf(path, sizeof(path), "%s.txaudio", p);
+    dump_txaudio = fopen(path, "wb");
+    snprintf(path, sizeof(path), "%s.txiq", p);
+    dump_txiq = fopen(path, "wb");
 }
 
-bool sbitx_drm_init(const char *dream_path, uint32_t sigsrate, uint32_t audsrate)
+static void dump_tx_close(void)
 {
-    char sigsrate_str[16], audsrate_str[16];
-    int pipe_stdin[2], pipe_stdout[2];
-
-    if (!dream_path || !dream_path[0])
-    {
-        HLOGW(LOG_C, "dream_path not set, DRM disabled");
-        return false;
-    }
-
-    if (pipe(pipe_stdin) < 0 || pipe(pipe_stdout) < 0)
-    {
-        HLOGE(LOG_C, "pipe failed: %s", strerror(errno));
-        return false;
-    }
-
-    dream_pid = fork();
-    if (dream_pid < 0)
-    {
-        HLOGE(LOG_C, "fork failed: %s", strerror(errno));
-        close(pipe_stdin[0]); close(pipe_stdin[1]);
-        close(pipe_stdout[0]); close(pipe_stdout[1]);
-        return false;
-    }
-
-    if (dream_pid == 0)
-    {
-        dup2(pipe_stdin[0], STDIN_FILENO);
-        dup2(pipe_stdout[1], STDOUT_FILENO);
-        close(pipe_stdin[0]); close(pipe_stdin[1]);
-        close(pipe_stdout[0]); close(pipe_stdout[1]);
-
-        for (int fd = 3; fd < 256; fd++)
-            close(fd);
-
-        snprintf(sigsrate_str, sizeof(sigsrate_str), "%u", sigsrate);
-        snprintf(audsrate_str, sizeof(audsrate_str), "%u", audsrate);
-
-        execlp(dream_path, dream_path,
-               "--console",
-               "-I", "-",
-               "-O", "-",
-               "--sigsrate", sigsrate_str,
-               "--inchansel", "6",
-               "--audsrate", audsrate_str,
-               (char *) NULL);
-
-        HLOGE(LOG_C, "exec dream failed: %s", strerror(errno));
-        _exit(1);
-    }
-
-    close(pipe_stdin[0]);
-    close(pipe_stdout[1]);
-
-    dream_in = fdopen(pipe_stdin[1], "w");
-    dream_out = fdopen(pipe_stdout[0], "r");
-    if (!dream_in || !dream_out)
-    {
-        HLOGE(LOG_C, "fdopen failed");
-        sbitx_drm_shutdown();
-        return false;
-    }
-
-    init_resamplers();
-
-    HLOGI(LOG_C, "Dream subprocess started (pid=%d, sig=%u aud=%u)",
-            dream_pid, sigsrate, audsrate);
-    return true;
+    if (dump_txaudio) { fclose(dump_txaudio); dump_txaudio = NULL; }
+    if (dump_txiq) { fclose(dump_txiq); dump_txiq = NULL; }
 }
 
-void sbitx_drm_shutdown(void)
+static void dump_open(void)
 {
-    if (dream_pid > 0)
-    {
-        kill(dream_pid, SIGTERM);
-        int status;
-        for (int i = 0; i < 20; i++)
-        {
-            if (waitpid(dream_pid, &status, WNOHANG) > 0)
-                break;
-            usleep(100000);
-        }
-        if (waitpid(dream_pid, &status, WNOHANG) == 0)
-        {
-            kill(dream_pid, SIGKILL);
-            waitpid(dream_pid, &status, 0);
-        }
-        dream_pid = -1;
-    }
+    const char *p = getenv("RADIOD_DRM_DUMP");
+    char path[512];
 
-    if (dream_in) { fclose(dream_in); dream_in = NULL; }
-    if (dream_out) { fclose(dream_out); dream_out = NULL; }
-
-    stream_resampler_free(&rs_i);
-    stream_resampler_free(&rs_q);
-    stream_resampler_free(&rs_up);
-    rs_ready = false;
-    audio_fifo_n = 0;
-
-    HLOGI(LOG_C, "shutdown complete");
-}
-
-void sbitx_drm_process(const float *iq_i, const float *iq_q, int n,
-                       float *audio_out, int *out_n)
-{
-    *out_n = 0;
-    if (!dream_in || !dream_out || !rs_ready)
+    if (!p || !p[0] || dump_iq)
         return;
+    snprintf(path, sizeof(path), "%s.iq", p);
+    dump_iq = fopen(path, "wb");
+    snprintf(path, sizeof(path), "%s.audio", p);
+    dump_audio = fopen(path, "wb");
+    HLOGI(LOG_C, "dumping the receiver's I/Q and audio to %s.*", p);
+}
 
-    size_t ni = stream_resampler_run(&rs_i, iq_i, (size_t) n);
-    size_t nq = stream_resampler_run(&rs_q, iq_q, (size_t) n);
-    int m = (int) (ni < nq ? ni : nq);
-    const float *i_48k = rs_i.out, *q_48k = rs_q.out;
+static void dump_close(void)
+{
+    if (dump_iq) { fclose(dump_iq); dump_iq = NULL; }
+    if (dump_audio) { fclose(dump_audio); dump_audio = NULL; }
+}
 
-    if (m > 0)
-    {
-        static int16_t s16_buf[4096];
-        if (m > (int) (sizeof(s16_buf) / sizeof(s16_buf[0]) / 2))
-            m = (int) (sizeof(s16_buf) / sizeof(s16_buf[0]) / 2);
-        for (int k = 0; k < m; k++)
-        {
-            float iv = i_48k[k] * 32767.0f;
-            float qv = q_48k[k] * 32767.0f;
-            if (iv > 32767.0f) iv = 32767.0f;
-            if (iv < -32768.0f) iv = -32768.0f;
-            if (qv > 32767.0f) qv = 32767.0f;
-            if (qv < -32768.0f) qv = -32768.0f;
-            s16_buf[k * 2] = (int16_t) iv;
-            s16_buf[k * 2 + 1] = (int16_t) qv;
+static int16_t to_s16(float v)
+{
+    v *= 32767.0f;
+    if (v > 32767.0f) v = 32767.0f;
+    if (v < -32768.0f) v = -32768.0f;
+    return (int16_t) lrintf(v);
+}
+
+/* ---- receive ---- */
+
+bool sbitx_drm_rx_start(const char *dream_path, const char *dir)
+{
+    /* "I/Q input positive, 0 Hz IF": the IQ is the dial's; audio out mono.
+     * An empty Dream.ini each time: what a previous run saved does not
+     * carry over. */
+    static const char *const args[] = {
+        "dream", "-n", "-I", "-", "-c", "6", "-O", "-mono", NULL
+    };
+
+    if (rx)
+        return true;
+    rx_primed = false;
+    dump_open();
+    rx = dream_proc_start(dream_path, dir, "", args, DRM_RING);
+    if (!rx)
+        HLOGE(LOG_C, "cannot start Dream's receiver (%s)", dream_path);
+    return rx != NULL;
+}
+
+void sbitx_drm_rx_stop(void)
+{
+    if (!rx)
+        return;
+    dream_proc_stop(rx);
+    rx = NULL;
+    dump_close();
+}
+
+bool sbitx_drm_rx_running(void)
+{
+    return rx && dream_proc_running(rx);
+}
+
+void sbitx_drm_rx_iq(const float *i, const float *q, size_t n)
+{
+    int16_t s[2048];
+
+    while (rx && n) {
+        size_t k = n < sizeof(s) / sizeof(s[0]) / 2 ? n : sizeof(s) / sizeof(s[0]) / 2;
+
+        for (size_t j = 0; j < k; j++) {
+            s[2 * j] = to_s16(i[j]);
+            s[2 * j + 1] = to_s16(q[j]);
         }
-
-        fwrite(s16_buf, sizeof(int16_t), (size_t)m * 2, dream_in);
+        dream_proc_write(rx, s, 2 * k);
+        if (dump_iq)
+            fwrite(s, sizeof(int16_t), 2 * k, dump_iq);
+        i += k;
+        q += k;
+        n -= k;
     }
+}
 
-    /* Read only the 8 kHz audio this block needs (~n/12), upsample it into
-     * the FIFO, and hand out up to n samples. */
-    clearerr(dream_out);
-    while (audio_fifo_n < n)
-    {
-        int want = (n - audio_fifo_n) / 12 + 2;
-        if (want > (int) (sizeof(audio_8k) / sizeof(audio_8k[0])))
-            want = (int) (sizeof(audio_8k) / sizeof(audio_8k[0]));
-        size_t got = fread(audio_8k, sizeof(float), (size_t) want, dream_out);
-        if (got == 0)
+size_t sbitx_drm_rx_audio(float *out, size_t n)
+{
+    int16_t s[2048];
+    size_t got = 0;
+
+    if (!rx)
+        return 0;
+    if (!rx_primed) {
+        if (dream_proc_readable(rx) < DRM_PRIME)
+            return 0;
+        rx_primed = true;
+    }
+    while (got < n) {
+        size_t want = n - got < sizeof(s) / sizeof(s[0]) ? n - got : sizeof(s) / sizeof(s[0]);
+        size_t k = dream_proc_read(rx, s, want);
+
+        if (!k) {
+            rx_primed = false;          /* ran dry: queue again */
             break;
-        for (size_t k = 0; k < got; k++)
-        {
-            float v = audio_8k[k];
-            if (v > 1.0f) v = 1.0f;
-            if (v < -1.0f) v = -1.0f;
-            audio_8k[k] = v;
         }
-        size_t up = stream_resampler_run(&rs_up, audio_8k, got);
-        if (up > sizeof(audio_fifo) / sizeof(audio_fifo[0]) - (size_t) audio_fifo_n)
-            up = sizeof(audio_fifo) / sizeof(audio_fifo[0]) - (size_t) audio_fifo_n;
-        memcpy(audio_fifo + audio_fifo_n, rs_up.out, up * sizeof(float));
-        audio_fifo_n += (int) up;
+        if (dump_audio)
+            fwrite(s, sizeof(int16_t), k, dump_audio);
+        for (size_t j = 0; j < k; j++)
+            out[got + j] = (float) s[j] / 32768.0f;
+        got += k;
     }
+    return got;
+}
 
-    if (audio_fifo_n > 0)
-    {
-        *out_n = audio_fifo_n < n ? audio_fifo_n : n;
-        memcpy(audio_out, audio_fifo, (size_t) *out_n * sizeof(float));
-        audio_fifo_n -= *out_n;
-        if (audio_fifo_n > 0)
-            memmove(audio_fifo, audio_fifo + *out_n, (size_t) audio_fifo_n * sizeof(float));
+/* ---- transmit ---- */
 
-        float max_amp = 0.01f;
-        for (int k = 0; k < *out_n; k++)
-        {
-            float a = audio_out[k] > 0 ? audio_out[k] : -audio_out[k];
-            if (a > max_amp) max_amp = a;
-        }
-        if (max_amp < 0.001f) max_amp = 0.001f;
-        float gain = 0.9f / max_amp;
-        for (int k = 0; k < *out_n; k++)
-            audio_out[k] *= gain;
+int sbitx_drm_tx_ini(const sbitx_drm_tx_config *c, char *buf, size_t len)
+{
+    char robustness = c->robustness >= 'A' && c->robustness <= 'D' ? c->robustness : 'B';
+    int spectrum = c->spectrum >= 0 && c->spectrum <= 5 ? c->spectrum : 3;
+    int protection = c->protection >= 0 && c->protection <= 3 ? c->protection : 1;
+    int n;
 
-        dmode_audio_available = 1;
+    /* the SDC in 4-QAM, as robust as it gets: it is what a receiver needs
+     * first, and its capacity is the least of the channel */
+    n = snprintf(buf, len,
+                 "[Transmitter]\n"
+                 "robustness=RM_ROBUSTNESS_MODE_%c\n"
+                 "spectocc=SO_%d\n"
+                 "msc=%s\n"
+                 "sdc=CS_1_SM\n"
+                 "protlevel=%d\n"
+                 "interleaver=SI_LONG\n"
+                 "ifformat=OF_IQ_POS\n"
+                 "iffreq=%d\n"
+                 "hqiq=1\n"
+                 "\n"
+                 "[Transmitter Service 1]\n"
+                 "codec=%s\n"
+                 "audiomode=mono\n"
+                 "label=%s\n"
+                 "id=1\n",
+                 robustness, spectrum, c->msc_qam == 64 ? "CS_3_SM" : "CS_2_SM",
+                 protection, (int) SBITX_DRM_TX_IF,
+                 c->codec[0] ? c->codec : "xHE-AAC",
+                 c->label[0] ? c->label : "HERMES");
+    return n > 0 && (size_t) n < len ? n : -1;
+}
+
+bool sbitx_drm_tx_start(const char *dream_path, const char *dir, const sbitx_drm_tx_config *cfg)
+{
+    /* audio in mono, I/Q out on the two channels */
+    static const char *const args[] = {
+        "dream", "-n", "-t", "-I", "-mono", "-O", "-", NULL
+    };
+    char ini[1024];
+
+    if (tx)
+        return true;
+    if (sbitx_drm_tx_ini(cfg, ini, sizeof(ini)) < 0)
+        return false;
+    tx = dream_proc_start(dream_path, dir, ini, args, DRM_RING);
+    if (!tx)
+        HLOGE(LOG_C, "cannot start Dream's transmitter (%s)", dream_path);
+    tx_phase = 0.0;
+    tx_primed = false;
+    dump_tx_open();
+    return tx != NULL;
+}
+
+void sbitx_drm_tx_stop(void)
+{
+    if (!tx)
+        return;
+    dream_proc_stop(tx);
+    tx = NULL;
+    dump_tx_close();
+}
+
+bool sbitx_drm_tx_running(void)
+{
+    return tx && dream_proc_running(tx);
+}
+
+void sbitx_drm_tx_audio(const float *in, size_t n)
+{
+    int16_t s[2048];
+
+    while (tx && n) {
+        size_t k = n < sizeof(s) / sizeof(s[0]) ? n : sizeof(s) / sizeof(s[0]);
+
+        for (size_t j = 0; j < k; j++)
+            s[j] = to_s16(in[j]);
+        dream_proc_write(tx, s, k);
+        if (dump_txaudio)
+            fwrite(s, sizeof(int16_t), k, dump_txaudio);
+        in += k;
+        n -= k;
     }
 }
 
-int sbitx_drm_audio_available(void)
+void sbitx_drm_mix(float *i, float *q, size_t n, double hz, double rate, double *phase)
 {
-    return dmode_audio_available;
+    const double step = 2.0 * M_PI * hz / rate;
+    double ph = *phase;
+
+    for (size_t j = 0; j < n; j++) {
+        double c = cos(ph), s = sin(ph);
+        double re = i[j], im = q[j];
+
+        /* (re + j im) * e^(-j ph) */
+        i[j] = (float) (re * c + im * s);
+        q[j] = (float) (im * c - re * s);
+        ph += step;
+        if (ph > M_PI)
+            ph -= 2.0 * M_PI;
+    }
+    *phase = ph;
+}
+
+size_t sbitx_drm_tx_iq(float *i, float *q, size_t n)
+{
+    int16_t s[2048];
+    size_t got = 0;
+
+    if (!tx)
+        return 0;
+    if (!tx_primed) {
+        if (dream_proc_readable(tx) < 2 * DRM_PRIME)
+            return 0;
+        tx_primed = true;
+    }
+    /* whole I/Q pairs only */
+    if (dream_proc_readable(tx) < 2)
+        tx_primed = false;              /* ran dry: queue again */
+    while (got < n && dream_proc_readable(tx) >= 2) {
+        size_t want = n - got < sizeof(s) / sizeof(s[0]) / 2 ? n - got : sizeof(s) / sizeof(s[0]) / 2;
+        size_t avail = dream_proc_readable(tx) / 2;
+        size_t k;
+
+        if (want > avail)
+            want = avail;
+        k = dream_proc_read(tx, s, 2 * want) / 2;
+        for (size_t j = 0; j < k; j++) {
+            i[got + j] = (float) s[2 * j] / 32768.0f;
+            q[got + j] = (float) s[2 * j + 1] / 32768.0f;
+        }
+        got += k;
+        if (!k)
+            break;
+    }
+    sbitx_drm_mix(i, q, got, SBITX_DRM_TX_IF, SBITX_DRM_RATE, &tx_phase);
+    for (size_t j = 0; dump_txiq && j < got; j++) {
+        int16_t p[2] = { to_s16(i[j]), to_s16(q[j]) };
+
+        fwrite(p, sizeof(int16_t), 2, dump_txiq);
+    }
+    return got;
 }

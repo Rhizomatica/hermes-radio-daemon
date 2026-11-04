@@ -115,6 +115,7 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              dsp/sbitx_radae.o \
              dsp/radae_vocoder.o \
              dsp/sbitx_drm.o \
+             dsp/dream_proc.o \
              dsp/sbitx_ft8.o \
              dsp/sbitx_cw.o \
              dsp/tone_scan.o \
