@@ -89,8 +89,10 @@ struct async_writer {
     spsc ring;
     pthread_t thread;
     pthread_mutex_t lock;           /* path and want, between non-real-time callers and the thread */
+    pthread_cond_t kick;            /* turned on, off, or to quit */
     char name[32], path[512], trigger[512];
     bool want, quit;
+    unsigned gen;                   /* bumped by every on: an off and on between two looks reopens */
     _Atomic bool on;                /* the real-time side writes only while on */
     atomic_uint_least64_t dropped;
 };
@@ -109,50 +111,74 @@ static void *writer_main(void *arg)
 {
     async_writer *w = arg;
     FILE *fp = NULL;
-    unsigned tick = 0;
+    unsigned tick = 0, open_gen = 0;
     bool failed = false;            /* until turned off and on again */
+    char open_path[512] = "";
 
     for (;;) {
         char path[512];
         bool want, quit;
+        unsigned gen;
 
         /* the trigger, every 250 ms */
-        if (w->trigger[0] && tick++ % 12 == 0) {
+        if (w->trigger[0] && (!fp || tick++ % 12 == 0)) {
             bool exists = access(w->trigger, F_OK) == 0;
 
             pthread_mutex_lock(&w->lock);
+            if (exists && !w->want)
+                w->gen++;
             w->want = exists;
             pthread_mutex_unlock(&w->lock);
         }
         pthread_mutex_lock(&w->lock);
         want = w->want;
         quit = w->quit;
+        gen = w->gen;
         snprintf(path, sizeof(path), "%s", w->path);
         pthread_mutex_unlock(&w->lock);
 
-        if (!want)
+        if (!want || gen != open_gen)
             failed = false;
-        if ((want && !quit) && !fp && !failed) {
+        /* off, quitting, or turned off and on since it was opened: close */
+        if (fp && (!want || quit || gen != open_gen)) {
+            atomic_store(&w->on, false);
+            writer_drain(w, fp);
+            fclose(fp);
+            fp = NULL;
+            HLOGI(LOG_C, "%s: closed %s", w->name, open_path);
+        }
+        if (quit)
+            break;
+        if (want && !fp && !failed) {
             spsc_discard(&w->ring);  /* what came after the last off */
+            open_gen = gen;
             if (!(fp = fopen(path, "wb"))) {
                 HLOGE(LOG_C, "%s: cannot open %s (%s)", w->name, path, strerror(errno));
                 failed = true;
             } else {
                 HLOGI(LOG_C, "%s: writing %s", w->name, path);
+                snprintf(open_path, sizeof(open_path), "%s", path);
                 atomic_store(&w->on, true);
             }
         }
-        if ((!want || quit) && fp) {
-            atomic_store(&w->on, false);
+        if (fp) {
             writer_drain(w, fp);
-            fclose(fp);
-            fp = NULL;
-            HLOGI(LOG_C, "%s: closed %s", w->name, path);
+            sleep_ms(20);
+        } else {
+            /* idle: until turned on, or the next look at the trigger */
+            struct timespec until;
+
+            clock_gettime(CLOCK_REALTIME, &until);
+            until.tv_nsec += 250 * 1000000L;
+            if (until.tv_nsec >= 1000000000L) {
+                until.tv_sec++;
+                until.tv_nsec -= 1000000000L;
+            }
+            pthread_mutex_lock(&w->lock);
+            if (w->gen == gen && w->want == want && !w->quit)
+                pthread_cond_timedwait(&w->kick, &w->lock, &until);
+            pthread_mutex_unlock(&w->lock);
         }
-        if (quit)
-            break;
-        writer_drain(w, fp);
-        sleep_ms(20);
     }
     return NULL;
 }
@@ -174,9 +200,11 @@ async_writer *async_writer_new(const char *name, size_t ring_bytes,
         snprintf(w->path, sizeof(w->path), "%s", path);
     }
     pthread_mutex_init(&w->lock, NULL);
+    pthread_cond_init(&w->kick, NULL);
     atomic_init(&w->on, false);
     atomic_init(&w->dropped, 0);
     if (pthread_create(&w->thread, NULL, writer_main, w) != 0) {
+        pthread_cond_destroy(&w->kick);
         pthread_mutex_destroy(&w->lock);
         free(w->ring.buf);
         free(w);
@@ -192,6 +220,8 @@ void async_writer_on(async_writer *w, const char *path)
     pthread_mutex_lock(&w->lock);
     snprintf(w->path, sizeof(w->path), "%s", path);
     w->want = true;
+    w->gen++;
+    pthread_cond_signal(&w->kick);
     pthread_mutex_unlock(&w->lock);
 }
 
@@ -201,6 +231,7 @@ void async_writer_off(async_writer *w)
         return;
     pthread_mutex_lock(&w->lock);
     w->want = false;
+    pthread_cond_signal(&w->kick);
     pthread_mutex_unlock(&w->lock);
 }
 
@@ -224,8 +255,10 @@ void async_writer_free(async_writer *w)
         return;
     pthread_mutex_lock(&w->lock);
     w->quit = true;
+    pthread_cond_signal(&w->kick);
     pthread_mutex_unlock(&w->lock);
     pthread_join(w->thread, NULL);
+    pthread_cond_destroy(&w->kick);
     pthread_mutex_destroy(&w->lock);
     free(w->ring.buf);
     free(w);
@@ -354,6 +387,14 @@ bool async_loop_read(async_loop *l, void *out, size_t n)
         return false;
     spsc_get(&l->ring, out, n);
     return true;
+}
+
+void async_loop_idle(async_loop *l)
+{
+    if (l && atomic_load_explicit(&l->flush, memory_order_acquire)) {
+        spsc_discard(&l->ring);
+        atomic_store_explicit(&l->flush, false, memory_order_release);
+    }
 }
 
 void async_loop_free(async_loop *l)

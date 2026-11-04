@@ -141,11 +141,14 @@ void radio_backend_set_frequency(radio *radio_h, uint32_t frequency, uint32_t pr
         ops->set_frequency(radio_h, frequency, profile);
 }
 
+static void ptt_check_ownerless(radio *radio_h);
+
 void radio_backend_set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
 {
     const radio_backend_ops *ops = radio_backend_ops_from_radio(radio_h);
     if (ops && ops->set_mode)
         ops->set_mode(radio_h, mode, profile);
+    ptt_check_ownerless(radio_h);
 }
 
 /* Serialises every PTT change with the owner bookkeeping, so a release can
@@ -242,6 +245,14 @@ bool radio_backend_unkey_ptt(radio *radio_h, ptt_source src, long id)
         ptt_apply(radio_h, IN_RX);
         unkeyed = true;
     }
+    else if (src != PTT_SRC_NONE && ptt_owner_src == PTT_SRC_NONE &&
+             radio_h->txrx_state == IN_TX)
+    {
+        /* a broadcast whose keyer went away: anyone may end it */
+        HLOGI(LOG_C, "PTT OFF by %s %ld (it had no owner)", ptt_source_name(src), id);
+        ptt_apply(radio_h, IN_RX);
+        unkeyed = true;
+    }
     pthread_mutex_unlock(&ptt_lock);
     return unkeyed;
 }
@@ -297,6 +308,20 @@ bool radio_backend_release_ptt(radio *radio_h, ptt_source src, long id,
     pthread_mutex_unlock(&ptt_lock);
 
     return released;
+}
+
+/* A transmission with no owner goes on only in AM and DRM: out of them (a
+ * mode or profile change), it ends. */
+static void ptt_check_ownerless(radio *radio_h)
+{
+    pthread_mutex_lock(&ptt_lock);
+    if (ptt_owner_src == PTT_SRC_NONE && radio_h->txrx_state == IN_TX &&
+        !ptt_survives_holder(radio_h))
+    {
+        HLOGI(LOG_C, "PTT OFF: it had no owner, and the mode is no longer AM or DRM");
+        ptt_apply(radio_h, IN_RX);
+    }
+    pthread_mutex_unlock(&ptt_lock);
 }
 
 void radio_backend_set_txrx_state(radio *radio_h, bool txrx_state)
@@ -481,6 +506,7 @@ void radio_backend_set_profile(radio *radio_h, uint32_t profile)
     const radio_backend_ops *ops = radio_backend_ops_from_radio(radio_h);
     if (ops && ops->set_profile)
         ops->set_profile(radio_h, profile);
+    ptt_check_ownerless(radio_h);
 }
 
 uint32_t radio_backend_get_fwd_power(radio *radio_h)
@@ -662,7 +688,9 @@ int radio_backend_set_mode_name(radio *radio_h, const char *mode, uint32_t width
 {
     BACKEND_OPS();
     if (!ops || !ops->set_mode_name) return RADIO_CTRL_ENOTSUP;
-    return ops->set_mode_name(radio_h, mode, width);
+    int rc = ops->set_mode_name(radio_h, mode, width);
+    ptt_check_ownerless(radio_h);
+    return rc;
 }
 
 int radio_backend_get_width(radio *radio_h, uint32_t *hz)

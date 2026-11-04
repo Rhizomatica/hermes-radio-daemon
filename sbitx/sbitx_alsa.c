@@ -1293,6 +1293,8 @@ void *control_thread(void *device_ptr)
                 signal_to_tx = buffer_mic_inject;
             else
                 signal_to_tx = buffer_mic_to_dsp;
+            if (radio_h_snd->txrx_state != IN_TX)
+                async_loop_idle(mic_inject);
         }
 
         if (radio_h_snd->txrx_state == IN_RX)

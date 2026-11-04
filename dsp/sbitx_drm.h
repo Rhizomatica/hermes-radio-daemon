@@ -63,6 +63,9 @@ bool   sbitx_drm_json_object(const char *s, size_t n);
 bool   sbitx_drm_tx_start(const char *dream_path, const char *dir,
                           const sbitx_drm_tx_config *cfg);
 void   sbitx_drm_tx_stop(void);
+/* Both stopped, waiting (up to 5 s) for the Dreams to exit; at the DSP's
+ * shutdown, when nothing else will ask for one. */
+void   sbitx_drm_shutdown(void);
 bool   sbitx_drm_tx_running(void);
 /* n samples of the audio to send (+-1.0) at 48 kHz */
 void   sbitx_drm_tx_audio(const float *in, size_t n);

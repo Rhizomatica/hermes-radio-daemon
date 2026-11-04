@@ -957,8 +957,10 @@ Text frames use compact JSON commands:
 goes away unkeys it: a closed websocket, a rigctl or CAT connection that
 ends, an `sbitx_client` that exits. That way a crashed UI can't leave the
 transmitter on. AM and DRM are the exception, being broadcast modes: there
-the transmission goes on until any client sends `ptt_off`, or SWR
-protection trips. The log says `PTT stays ON (AM)` or `(DRM)`.
+the transmission goes on, with no owner, until any client unkeys it
+(`ptt_off`, hermes.v1 `radio.ptt` off, rigctl `T 0`) or SWR protection
+trips. A mode or profile change out of AM and DRM also ends it. The log
+says `PTT stays ON (AM)` or `(DRM)`.
 
 Rig controls (levels, funcs, parms, split, RIT/XIT, filter width, antenna,
 tuner, …) have their own commands — see [Radio Controls](#radio-controls).

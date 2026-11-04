@@ -352,3 +352,30 @@ func TestPTTStaysOnInAMWhenKeyerDisconnects(t *testing.T) {
 		t.Errorf("no \"PTT stays ON (AM)\" in the log")
 	}
 }
+
+// A transmission left with no owner goes on only in AM and DRM: a mode
+// change out of them ends it.
+func TestOwnerlessPTTEndsOutOfAM(t *testing.T) {
+	d := startDaemon(t, daemonOpts{})
+	keyer := dialRadiod(t, d)
+	watcher := dialRadiod(t, d)
+
+	if r := watcher.call("set_mode", map[string]any{"value": "AM"}); !r.OK {
+		t.Fatalf("set_mode AM: %+v", r)
+	}
+	if r := keyer.call("ptt_on", nil); !r.OK {
+		t.Fatalf("ptt_on: %+v", r)
+	}
+	keyer.ws.conn.Close()
+	if !eventually(5*time.Second, func() bool {
+		return regexp.MustCompile(`PTT stays ON \(AM\)`).MatchString(d.Log())
+	}) {
+		t.Fatalf("no \"PTT stays ON (AM)\"\n--- daemon log ---\n%s", d.Log())
+	}
+	if r := watcher.call("set_mode", map[string]any{"value": "USB"}); !r.OK {
+		t.Fatalf("set_mode USB: %+v", r)
+	}
+	if got := watcher.call("get_txrx_status", nil).String(t); got != "INRX" {
+		t.Errorf("in USB with no owner: %s, want INRX\n--- daemon log ---\n%s", got, d.Log())
+	}
+}

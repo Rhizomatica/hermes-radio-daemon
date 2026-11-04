@@ -50,6 +50,8 @@ typedef struct {
 
 static pthread_mutex_t ctl_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t ctl_more = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t ctl_idle = PTHREAD_COND_INITIALIZER;     /* nothing to do, nothing under way */
+static bool ctl_busy;
 static pthread_once_t ctl_once = PTHREAD_ONCE_INIT;
 static drm_req rx_req, tx_req;
 static drm_stop to_stop[8];
@@ -147,7 +149,6 @@ static dream_proc *start_rx(const drm_req *r)
     p = dream_proc_start(r->path, r->dir, "", args, DRM_RING);
     if (!p)
         HLOGE(LOG_C, "cannot start Dream's receiver (%s)", r->path);
-    atomic_store(&status_live, p != NULL && atomic_load(&status_supported));
     return p;
 }
 
@@ -167,12 +168,9 @@ static dream_proc *start_tx(const drm_req *r)
     return p;
 }
 
-static void stop_one(const drm_stop *s)
+static void dumps_off(bool is_rx)
 {
-    dream_proc_stop(s->p);
-    if (s->is_rx) {
-        if (atomic_load(&status_supported))
-            unlink(status_path);
+    if (is_rx) {
         async_writer_off(dump_iq);
         async_writer_off(dump_audio);
     } else {
@@ -181,13 +179,25 @@ static void stop_one(const drm_stop *s)
     }
 }
 
+static void stop_one(const drm_stop *s)
+{
+    dream_proc_stop(s->p);
+    if (s->is_rx && atomic_load(&status_supported))
+        unlink(status_path);
+    dumps_off(s->is_rx);
+}
+
 static void *ctl_main(void *arg)
 {
     (void) arg;
     pthread_mutex_lock(&ctl_lock);
     for (;;) {
-        while (!rx_req.want && !tx_req.want && !n_to_stop)
+        while (!rx_req.want && !tx_req.want && !n_to_stop) {
+            ctl_busy = false;
+            pthread_cond_broadcast(&ctl_idle);
             pthread_cond_wait(&ctl_more, &ctl_lock);
+        }
+        ctl_busy = true;
 
         /* stops first: a Dream stopped and started again goes in that order */
         if (n_to_stop) {
@@ -211,8 +221,14 @@ static void *ctl_main(void *arg)
 
         /* still wanted (no stop or newer start meanwhile): it is the one */
         if (p && q->gen == r.gen && !atomic_load(slot)) {
+            if (is_rx)          /* a stop asked meanwhile would have bumped gen */
+                atomic_store(&status_live, atomic_load(&status_supported));
             atomic_store(slot, p);
-        } else if (p) {
+        } else if (!p) {
+            pthread_mutex_unlock(&ctl_lock);
+            dumps_off(is_rx);
+            pthread_mutex_lock(&ctl_lock);
+        } else {
             drm_stop st = { p, is_rx };
 
             pthread_mutex_unlock(&ctl_lock);
@@ -257,7 +273,10 @@ static void ctl_ask_stop(drm_req *q, atomic_bool *pending, _Atomic(dream_proc *)
 {
     dream_proc *p;
 
-    if (!atomic_load(slot) && !atomic_load(pending))
+    /* pending first: the control thread publishes the slot before it
+     * clears pending, so pending false and then an empty slot means
+     * nothing is running and nothing is under way */
+    if (!atomic_load(pending) && !atomic_load(slot))
         return;                         /* nothing running, nothing asked */
     p = atomic_exchange(slot, NULL);
     pthread_mutex_lock(&ctl_lock);
@@ -569,6 +588,30 @@ void sbitx_drm_tx_stop(void)
     ctl_ask_stop(&tx_req, &tx_pending, &tx, false);
 }
 
+void sbitx_drm_shutdown(void)
+{
+    struct timespec until;
+    bool idle = true;
+
+    sbitx_drm_rx_stop();
+    sbitx_drm_tx_stop();
+    clock_gettime(CLOCK_REALTIME, &until);
+    until.tv_sec += 5;                  /* two Dreams, up to 2 s each */
+    pthread_mutex_lock(&ctl_lock);
+    while (idle && (ctl_busy || n_to_stop || rx_req.want || tx_req.want))
+        idle = pthread_cond_timedwait(&ctl_idle, &ctl_lock, &until) == 0;
+    pthread_mutex_unlock(&ctl_lock);
+    if (!idle) {
+        HLOGW(LOG_C, "Dream still stopping at shutdown");
+        return;                         /* the dumps may still be written to */
+    }
+    async_writer_free(dump_iq);
+    async_writer_free(dump_audio);
+    async_writer_free(dump_txaudio);
+    async_writer_free(dump_txiq);
+    dump_iq = dump_audio = dump_txaudio = dump_txiq = NULL;
+}
+
 bool sbitx_drm_tx_running(void)
 {
     dream_proc *p = atomic_load(&tx);
@@ -647,10 +690,14 @@ size_t sbitx_drm_tx_iq(float *i, float *q, size_t n)
             break;
     }
     sbitx_drm_mix(i, q, got, SBITX_DRM_TX_IF, SBITX_DRM_RATE, &tx_phase);
-    for (size_t j = 0; dump_txiq && j < got; j++) {
-        int16_t pair[2] = { to_s16(i[j]), to_s16(q[j]) };
+    for (size_t j = 0; dump_txiq && j < got; ) {
+        size_t k = 0;
 
-        async_writer_write(dump_txiq, pair, sizeof(pair));
+        for (; j < got && k + 2 <= sizeof(s) / sizeof(s[0]); j++, k += 2) {
+            s[k] = to_s16(i[j]);
+            s[k + 1] = to_s16(q[j]);
+        }
+        async_writer_write(dump_txiq, s, k * sizeof(int16_t));
     }
     return got;
 }

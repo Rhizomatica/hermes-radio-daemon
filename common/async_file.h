@@ -54,6 +54,10 @@ async_loop *async_loop_new(const char *path, size_t ring_bytes);
  * nothing) when the file is not there or the ring is short of n. Never
  * blocks. */
 bool async_loop_read(async_loop *l, void *out, size_t n);
+/* From the real-time thread, in the periods it does not read: lets a file
+ * removed or replaced meanwhile be taken up before the next read. Never
+ * blocks. */
+void async_loop_idle(async_loop *l);
 void async_loop_free(async_loop *l);
 
 #endif /* ASYNC_FILE_H_ */
