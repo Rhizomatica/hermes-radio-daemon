@@ -263,6 +263,17 @@ static void append_legacy(const digi_log_entry *e)
         append_line("spool.log", line, (size_t) n < sizeof(line) ? (size_t) n : sizeof(line) - 1);
 }
 
+bool digi_log_files(char *out, size_t out_len)
+{
+    char old[320], cur[320];
+    pthread_mutex_lock(&g_file_lock);   /* file paths are read under it */
+    path_of(old, sizeof(old), "digi.jsonl.1");
+    path_of(cur, sizeof(cur), "digi.jsonl");
+    pthread_mutex_unlock(&g_file_lock);
+    int n = snprintf(out, out_len, "%s\n%s", old, cur);
+    return n > 0 && (size_t) n < out_len;
+}
+
 static void rotate_if_needed(void)
 {
     char path[320], old[320];

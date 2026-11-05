@@ -23,6 +23,7 @@ type Stub struct {
 	reads    int
 	digi     DigiSettings
 	log      []jsontext.Value
+	logFiles []string
 	modem    jsontext.Value
 	gps      Gps
 	listen   string // mercury's listen mode
@@ -569,6 +570,19 @@ func (s *Stub) DigiSent() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.digiSent...)
+}
+
+// SetDigiLogFiles sets what DigiLogFiles returns.
+func (s *Stub) SetDigiLogFiles(paths ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.logFiles = paths
+}
+
+func (s *Stub) DigiLogFiles() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.logFiles...)
 }
 
 func (s *Stub) DigiLog(after uint64, max int) []jsontext.Value {

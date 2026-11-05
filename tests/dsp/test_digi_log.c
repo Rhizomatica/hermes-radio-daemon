@@ -253,6 +253,17 @@ static void test_rotation(void)
     free(arr);
 }
 
+/* digi_log_files names the log's two files in the log's directory, the
+ * rotated one first; a buffer too small for both is refused. */
+static void test_files_named(void)
+{
+    char out[700], want[700];
+    snprintf(want, sizeof want, "%s/digi.jsonl.1\n%s/digi.jsonl", tmpdir, tmpdir);
+    TEST_ASSERT_TRUE(digi_log_files(out, sizeof out));
+    TEST_ASSERT_EQUAL_STRING(want, out);
+    TEST_ASSERT_FALSE(digi_log_files(out, 8));
+}
+
 /* digi_log_add refuses an unknown mode: nothing reaches the file or ring. */
 static void test_add_refuses_unknown_mode(void)
 {
@@ -457,6 +468,7 @@ int main(void)
     RUN_TEST(test_add_read_ring_and_legacy);
     RUN_TEST(test_add_refuses_unknown_mode);
     RUN_TEST(test_rotation);
+    RUN_TEST(test_files_named);
     RUN_TEST(test_tail_read_large_file);
     RUN_TEST(test_tail_fragment_on_brace);
     RUN_TEST(test_ids_continue_from_file);

@@ -583,6 +583,13 @@ int radiod_api_digi_log(uint64_t after, int max, char *out, size_t out_len)
     return copied;
 }
 
+bool radiod_api_digi_log_files(char *out, size_t out_len)
+{
+    if (!out || !out_len)
+        return false;
+    return digi_log_files(out, out_len);
+}
+
 /* ── modem ── */
 
 bool radiod_api_modem_status(char *out, size_t out_len)

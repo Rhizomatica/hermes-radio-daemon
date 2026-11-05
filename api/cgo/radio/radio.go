@@ -205,6 +205,10 @@ type Radio interface {
 	// DigiLog returns up to max entries after id `after`, oldest first,
 	// each one JSON object in digi_log's line format.
 	DigiLog(after uint64, max int) []jsontext.Value
+	// DigiLogFiles returns the log's files on disk, oldest first, each
+	// line one entry in the same format: the whole log, where DigiLog has
+	// only the in-memory ring's last entries. A file may not exist yet.
+	DigiLogFiles() []string
 	// DigiSend queues text for the active profile's digital text mode:
 	// ErrNotSupported when that is not FT8, CW or RTTY, ErrInvalid for FT8
 	// text the modulator cannot carry, ErrBusy with the queue full. The
