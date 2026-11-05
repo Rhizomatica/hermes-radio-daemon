@@ -1197,6 +1197,9 @@ A self-contained websocket client is provided at `gui_interface/web/index.html`.
 - **Mercury tab** (mercury linked in): its status, TX gain, waterfall and
   callsign controls, its spectrum (binary type 4), message history and its
   other events, all on the daemon's websocket
+- **FT8 Map tab**: band buttons that put the radio in FT8 on each band's usual
+  frequency, or on any frequency typed in, above the FT8 map (`map.html`, which
+  logs in to the station API by itself)
 - RX audio playback via Web Audio API (8 kHz mono S16_LE)
 
 No build step required — the daemon serves it directly when
