@@ -670,11 +670,26 @@ spectrum occupancy, MSC QAM, protection level, codec (xHE-AAC by default;
 HE-AAC, AAC with SBR on a 12 kHz core; or AAC) and label. `digi_config`
 sets them at run time (`{"cmd":"digi_config","key":"drm_codec","value":"HE-AAC"}`,
 refused while transmitting; the next over uses them) and `digi_get_config`
-reports them; the file and the command check them alike. xHE-AAC needs 12 kbit/s or more, which the 10 kHz channel gives in mode
-B: 14 kbit/s with 16-QAM (the default), 20 with 64-QAM, which needs some 6 dB
-more SNR (between two sBitx stations on 40 m, about 10 dB of SNR decoded with
-16-QAM and not with 64); the narrower channels (4.5 and 5 kHz) do not, and SSB rigs on
-Hamlib cannot pass a DRM channel centred on their dial, so DRM is the sBitx's.
+reports them; the file and the command check them alike.
+
+What each channel carries, in mode B with protection level 1:
+
+| Channel | MSC | Bitrate | Codecs |
+|---|---|---|---|
+| 10 kHz (`drm_spectrum = 3`) | 16-QAM (the default) | 14.56 kbit/s | xHE-AAC, HE-AAC, AAC |
+| 10 kHz | 64-QAM | about 21 kbit/s | the same, with some 6 dB more SNR |
+| 5 kHz (`1`) | 16-QAM | 6.90 kbit/s | HE-AAC; xHE-AAC from about 6 kbit/s |
+| 4.5 kHz (`0`) | 16-QAM | 4.8-6.0 kbit/s | HE-AAC only |
+
+Between two sBitx stations on 40 m, about 10 dB of SNR decoded the 10 kHz
+channel with 16-QAM and not with 64. In the 4.5 and 5 kHz channels the SDC
+is 16-QAM: a 4-QAM one has no room for the label, nor for xHE-AAC's audio
+entity, and Dream drops what does not fit. SSB rigs on Hamlib cannot pass a
+DRM channel centred on their dial, so DRM is the sBitx's.
+
+A ring with no room for what comes in drops it, and radiod logs that, at
+most every 10 s (`Dream's receiver: N samples dropped going in, M coming
+out`): a Dream that falls behind gets a broken stream.
 
 For testing, `RADIOD_DRM_DUMP=<prefix>` in radiod's environment writes the
 receiver's I/Q into Dream and audio out of it (`<prefix>.iq`, `.audio`) and
@@ -950,6 +965,15 @@ Text frames use compact JSON commands:
 {"cmd":"digi_messages","count":10}
 {"cmd":"digi_config","key":"cw_wpm","value":25}
 ```
+
+**PTT and the client that keyed it.** A client that keys the radio and then
+goes away unkeys it: a closed websocket, a rigctl or CAT connection that
+ends, an `sbitx_client` that exits. That way a crashed UI can't leave the
+transmitter on. AM and DRM are the exception, being broadcast modes: there
+the transmission goes on, with no owner, until any client unkeys it
+(`ptt_off`, hermes.v1 `radio.ptt` off, rigctl `T 0`) or SWR protection
+trips. A mode or profile change out of AM and DRM also ends it. The log
+says `PTT stays ON (AM)` or `(DRM)`.
 
 Rig controls (levels, funcs, parms, split, RIT/XIT, filter width, antenna,
 tuner, …) have their own commands — see [Radio Controls](#radio-controls).
