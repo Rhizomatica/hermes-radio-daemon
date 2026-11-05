@@ -390,6 +390,21 @@ static void test_ft8_log_once(void)
     TEST_ASSERT_EQUAL_INT64_MESSAGE(2, entries, test_msg("a repeat 15 s later should be logged: %d entries", entries));
     free(arr);
 
+    /* A hashed call named between two windows of one transmission is still
+     * that transmission. */
+    sbitx_ft8_decode_result h = r;
+    snprintf(h.text, sizeof h.text, "<...> PU2UIT GG66");
+    h.time_s = 4.0f;
+    sbitx_ft8_log_decodes(&h, 1, start + 30.0 - 4.0, 14074000);
+    snprintf(h.text, sizeof h.text, "<PJ2/PY2XYZ> PU2UIT GG66");
+    h.time_s = 2.0f;
+    sbitx_ft8_log_decodes(&h, 1, start + 30.0 - 2.0, 14074000);
+    arr = digi_log_last_json(10);
+    entries = 0;
+    for (const char *p = arr; p && (p = strstr(p, "\"id\":")); p++) entries++;
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(3, entries, test_msg("a hashed call named between windows: %d entries", entries));
+    free(arr);
+
     char cmd[300];
     snprintf(cmd, sizeof cmd, "rm -rf '%s'", dir);
     if (system(cmd) != 0) { }

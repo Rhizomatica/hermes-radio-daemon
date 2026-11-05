@@ -146,21 +146,54 @@ void ft8_waveform(const uint8_t tones[79], float freq_hz, float *out)
     free(dphi);
 }
 
+/* About 2 MB of work space, made once per thread that subtracts (the FT8
+ * decoder's), not once per signal: a busy window subtracts dozens. */
+static _Thread_local struct {
+    float complex  *bb, *amp, *wgt, *y, *r;
+    float          *dphi;
+    double complex *acc;
+} scratch;
+
+static bool scratch_ready(void)
+{
+    if (scratch.bb)
+        return true;
+    scratch.bb   = malloc(NSIG * sizeof(*scratch.bb));
+    scratch.dphi = malloc(NSIG * sizeof(*scratch.dphi));
+    scratch.amp  = malloc(NSIG_D * sizeof(*scratch.amp));
+    scratch.wgt  = malloc(NSIG_D * sizeof(*scratch.wgt));
+    scratch.acc  = malloc((NSIG_D + 1) * sizeof(*scratch.acc));
+    scratch.y    = malloc((NSIG_D + LAGS) * sizeof(*scratch.y));
+    scratch.r    = malloc(NSIG_D * sizeof(*scratch.r));
+    if (scratch.bb && scratch.dphi && scratch.amp && scratch.wgt && scratch.acc &&
+        scratch.y && scratch.r)
+        return true;
+    free(scratch.bb);
+    free(scratch.dphi);
+    free(scratch.amp);
+    free(scratch.wgt);
+    free(scratch.acc);
+    free(scratch.y);
+    free(scratch.r);
+    memset(&scratch, 0, sizeof(scratch));
+    return false;
+}
+
 bool ft8_subtract(float *audio, int n, const uint8_t tones[79], float freq_hz, float time_s)
 {
     pthread_once(&pulse_once, pulse_init);
 
-    float complex  *bb   = malloc(NSIG * sizeof(*bb));
-    float          *dphi = malloc(NSIG * sizeof(*dphi));
-    float complex  *amp  = malloc(NSIG_D * sizeof(*amp));
-    float complex  *wgt  = malloc(NSIG_D * sizeof(*wgt));
-    double complex *acc  = malloc((NSIG_D + 1) * sizeof(*acc));
-    float complex  *y    = malloc((NSIG_D + LAGS) * sizeof(*y));
-    float complex  *r    = malloc(NSIG_D * sizeof(*r));
-    bool ok = false;
+    if (!scratch_ready())
+        return false;
 
-    if (!bb || !dphi || !amp || !wgt || !acc || !y || !r)
-        goto out;
+    float complex  *bb   = scratch.bb;
+    float          *dphi = scratch.dphi;
+    float complex  *amp  = scratch.amp;
+    float complex  *wgt  = scratch.wgt;
+    double complex *acc  = scratch.acc;
+    float complex  *y    = scratch.y;
+    float complex  *r    = scratch.r;
+    bool ok = false;
 
     baseband(tones, bb, dphi);
     for (int m = 0; m < NSIG_D; m++) {
@@ -268,12 +301,5 @@ bool ft8_subtract(float *audio, int n, const uint8_t tones[79], float freq_hz, f
     ok = true;
 
 out:
-    free(bb);
-    free(dphi);
-    free(amp);
-    free(wgt);
-    free(acc);
-    free(y);
-    free(r);
     return ok;
 }
