@@ -29,8 +29,6 @@
 #include "sbitx_ft8.h"
 #include "digi_log.h"
 
-#define FT8_SYMBOL_PERIOD 0.160f
-
 /* ft8_lib's candidate time runs late by a constant: its monitor's FFT
  * covers two symbols. Measured 0.20-0.24 s (its 0.08 s resolution) for
  * signals placed from 0 to 2 s into the window. */
@@ -485,13 +483,33 @@ static pthread_mutex_t ft8_recent_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct { char text[48]; double start; float offset_hz; } ft8_recent[FT8_RECENT];
 static int ft8_recent_next;
 
+/* The same message, a hashed call aside: "<...>" before the full call has
+ * been heard and "<PJ2/PY2XYZ>" after it are one transmission, decoded in
+ * two of the overlapping windows. */
+static bool ft8_same_text(const char *a, const char *b)
+{
+    while (*a && *b) {
+        if (*a == '<' && *b == '<') {
+            const char *ea = strchr(a, '>'), *eb = strchr(b, '>');
+            if (!ea || !eb)
+                return !strcmp(a, b);
+            a = ea + 1;
+            b = eb + 1;
+            continue;
+        }
+        if (*a++ != *b++)
+            return false;
+    }
+    return *a == *b;
+}
+
 static bool ft8_seen_recently(const char *text, double start, float offset_hz)
 {
     for (int i = 0; i < FT8_RECENT; i++)
         if (ft8_recent[i].text[0] &&
             fabs(ft8_recent[i].start - start) < FT8_SAME_START_S &&
             fabsf(ft8_recent[i].offset_hz - offset_hz) < FT8_SAME_OFFSET_HZ &&
-            !strcmp(ft8_recent[i].text, text))
+            ft8_same_text(ft8_recent[i].text, text))
             return true;
     snprintf(ft8_recent[ft8_recent_next].text, sizeof(ft8_recent[0].text), "%s", text);
     ft8_recent[ft8_recent_next].start = start;

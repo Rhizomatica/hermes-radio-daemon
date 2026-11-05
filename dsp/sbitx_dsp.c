@@ -35,6 +35,7 @@
 #include <fftw3.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <sched.h>
 #include <string.h>
 #include <time.h>
@@ -53,6 +54,7 @@
 
 
 #include "sbitx_dsp.h"
+#include "radiod_cpus.h"
 #include "sbitx_core.h"
 #include "sbitx_alsa.h"
 #include "sbitx_buffer.h"
@@ -1143,42 +1145,55 @@ bool dsp_digi_tx_busy(void)
 
 /* FT8 decodes run here, not on the DSP thread: a decode takes a few hundred
  * ms on a Pi 4 (more with ft8_js8's passes), and the DSP thread has ~21 ms
- * of codec buffer. The DSP thread hands over a copy of the window; if the
- * last one is still decoding it skips this one, which the next window,
- * 2 s later, overlaps anyway. The worker runs at normal priority on the
- * CPUs other than the DSP thread's. */
+ * of codec buffer. The DSP thread copies each window into post; the worker
+ * swaps it for work and decodes that. A window posted while the last one
+ * is still waiting replaces it: when the decoder falls behind, the newest
+ * window is the one decoded (the windows overlap by 13 s), and the skips
+ * are logged. The DSP thread never waits for the lock: if the worker
+ * holds it (only to swap), the window is skipped too. The worker runs at
+ * normal priority on the CPUs radiod had before -c, but the DSP thread's. */
 static struct {
     pthread_mutex_t lock;
     pthread_cond_t  wake;
-    bool            started, pending, busy;
-    float          *buf;
+    bool            tried, started, pending;
+    float          *post, *work;
     int             n;
     double          window_start;
     uint64_t        freq_hz;
-} g_ft8w = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, false, false, false, NULL, 0, 0.0, 0 };
+    atomic_uint     skipped;            /* windows not decoded */
+} g_ft8w = { .lock = PTHREAD_MUTEX_INITIALIZER, .wake = PTHREAD_COND_INITIALIZER };
 
 static void *ft8_worker(void *arg)
 {
     (void) arg;
     static sbitx_ft8_decode_result res[50];
+    unsigned logged = 0;
+    time_t last_log = 0;
 
     for (;;) {
         pthread_mutex_lock(&g_ft8w.lock);
         while (!g_ft8w.pending)
             pthread_cond_wait(&g_ft8w.wake, &g_ft8w.lock);
+        float *buf = g_ft8w.post;
+        g_ft8w.post = g_ft8w.work;
+        g_ft8w.work = buf;
         g_ft8w.pending = false;
-        g_ft8w.busy = true;
         double start = g_ft8w.window_start;
         uint64_t freq = g_ft8w.freq_hz;
         int n = g_ft8w.n;
         pthread_mutex_unlock(&g_ft8w.lock);
 
-        int nres = sbitx_ft8_decode_at(g_ft8w.buf, n, start, res, 50);
+        int nres = sbitx_ft8_decode_at(buf, n, start, res, 50);
         sbitx_ft8_log_decodes(res, nres, start, freq);
 
-        pthread_mutex_lock(&g_ft8w.lock);
-        g_ft8w.busy = false;
-        pthread_mutex_unlock(&g_ft8w.lock);
+        unsigned skipped = atomic_load(&g_ft8w.skipped);
+        time_t now = time(NULL);
+        if (skipped != logged && now - last_log >= 60) {
+            HLOGW(LOG_C, "FT8: %u windows not decoded, the decoder is behind (%u in all)",
+                  skipped - logged, skipped);
+            logged = skipped;
+            last_log = now;
+        }
     }
     return NULL;
 }
@@ -1188,52 +1203,60 @@ static bool ft8_worker_start(int samples)
     pthread_attr_t attr;
     struct sched_param sp = { 0 };
     cpu_set_t cpus;
-    int dsp_cpu = sched_getcpu(), ncpu = (int) sysconf(_SC_NPROCESSORS_ONLN), others = 0;
+    int dsp_cpu = sched_getcpu();
     pthread_t t;
 
-    g_ft8w.buf = calloc((size_t) samples, sizeof(float));
-    if (!g_ft8w.buf)
+    g_ft8w.post = calloc((size_t) samples, sizeof(float));
+    g_ft8w.work = calloc((size_t) samples, sizeof(float));
+    if (!g_ft8w.post || !g_ft8w.work) {
+        free(g_ft8w.post);
+        free(g_ft8w.work);
+        g_ft8w.post = g_ft8w.work = NULL;
         return false;
+    }
 
     pthread_attr_init(&attr);
     pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
     pthread_attr_setschedpolicy(&attr, SCHED_OTHER);
     pthread_attr_setschedparam(&attr, &sp);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    CPU_ZERO(&cpus);
-    for (int c = 0; c < ncpu && c < CPU_SETSIZE; c++)
-        if (c != dsp_cpu) { CPU_SET(c, &cpus); others++; }
-    if (others)
-        pthread_attr_setaffinity_np(&attr, sizeof(cpus), &cpus);
+    /* off the DSP core, on what radiod may use; if that leaves nothing,
+     * wherever the thread is let run */
+    if (radiod_unpinned_cpus(&cpus)) {
+        if (dsp_cpu >= 0)
+            CPU_CLR(dsp_cpu, &cpus);
+        if (CPU_COUNT(&cpus) > 0)
+            pthread_attr_setaffinity_np(&attr, sizeof(cpus), &cpus);
+    }
 
     bool ok = pthread_create(&t, &attr, ft8_worker, NULL) == 0;
     pthread_attr_destroy(&attr);
     if (!ok) {
-        free(g_ft8w.buf);
-        g_ft8w.buf = NULL;
+        free(g_ft8w.post);
+        free(g_ft8w.work);
+        g_ft8w.post = g_ft8w.work = NULL;
         return false;
     }
     HLOGI(LOG_C, "FT8 decodes on their own thread, off CPU %d", dsp_cpu);
     return true;
 }
 
-/* Hand a window to the worker; false if it is still busy with the last. */
-static bool ft8_worker_post(const float *slot, int n, double window_start, uint64_t freq_hz)
+/* Hand a window to the worker: the DSP thread copies it and goes on. */
+static void ft8_worker_post(const float *slot, int n, double window_start, uint64_t freq_hz)
 {
-    bool posted = false;
-
-    pthread_mutex_lock(&g_ft8w.lock);
-    if (!g_ft8w.busy && !g_ft8w.pending) {
-        memcpy(g_ft8w.buf, slot, (size_t) n * sizeof(float));
-        g_ft8w.n = n;
-        g_ft8w.window_start = window_start;
-        g_ft8w.freq_hz = freq_hz;
-        g_ft8w.pending = true;
-        pthread_cond_signal(&g_ft8w.wake);
-        posted = true;
+    if (pthread_mutex_trylock(&g_ft8w.lock) != 0) {
+        atomic_fetch_add(&g_ft8w.skipped, 1);
+        return;
     }
+    if (g_ft8w.pending)                 /* the last is still waiting: this one replaces it */
+        atomic_fetch_add(&g_ft8w.skipped, 1);
+    memcpy(g_ft8w.post, slot, (size_t) n * sizeof(float));
+    g_ft8w.n = n;
+    g_ft8w.window_start = window_start;
+    g_ft8w.freq_hz = freq_hz;
+    g_ft8w.pending = true;
+    pthread_cond_signal(&g_ft8w.wake);
     pthread_mutex_unlock(&g_ft8w.lock);
-    return posted;
 }
 
 static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, int freq_khz)
@@ -1284,8 +1307,10 @@ static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, in
              * it twice. Overlapping windows decode the same transmission
              * more than once; sbitx_ft8_log_decodes() keeps one entry. */
             const double window_start = digi_log_now() - (double) slotn / DIGI_RX_RATE;
-            if (!g_ft8w.started)
+            if (!g_ft8w.tried) {        /* once: not a thread start every 2 s */
+                g_ft8w.tried = true;
                 g_ft8w.started = ft8_worker_start(slot_samples);
+            }
             if (g_ft8w.started) {
                 ft8_worker_post(slot, slot_samples, window_start, (uint64_t) freq_khz * 1000);
             } else {                    /* no thread: decode here, as before */

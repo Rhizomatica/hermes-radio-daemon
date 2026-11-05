@@ -23,6 +23,7 @@
 #include "radiod_log.h"
 #include "radio_backend.h"
 #include "radio_daemon_core.h"
+#include "radiod_cpus.h"
 #include "radio_media.h"
 #include "radio_pipeline.h"
 #include "radio_shm.h"
@@ -105,6 +106,17 @@ static void install_signal_handlers(void)
     sigaction(SIGPIPE, &ign, NULL);
 }
 
+static cpu_set_t s_unpinned_cpus;
+static bool s_have_unpinned_cpus;
+
+bool radiod_unpinned_cpus(cpu_set_t *out)
+{
+    if (!s_have_unpinned_cpus)
+        return false;
+    *out = s_unpinned_cpus;
+    return true;
+}
+
 static void maybe_pin_cpu(int cpu_nr)
 {
     if (cpu_nr < 0)
@@ -155,6 +167,8 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
      * thread it starts) to one CPU: mercury runs on this, off the DSP core. */
     CPU_ZERO(&unpinned_cpus);
     sched_getaffinity(0, sizeof(unpinned_cpus), &unpinned_cpus);
+    s_unpinned_cpus = unpinned_cpus;
+    s_have_unpinned_cpus = true;
     maybe_pin_cpu(runtime->cpu_nr);
 
     if (!cfg_init(&radio_h, runtime->cfg_radio_path, runtime->cfg_user_path, &cfg_tid))

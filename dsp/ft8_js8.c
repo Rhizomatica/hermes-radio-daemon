@@ -39,15 +39,15 @@ int ft8_js8_feedback_rounds = 2;
  * have run (JS8 allows 8: on real 40 m audio, 2 decode all but one of
  * what 8 do at a third of the time).  0: not decoded,
  * 1: decoded as it was, 2: decoded after feedback. */
-static int decode_with_feedback(float llr[FTX_LDPC_N], int iters, bool feedback,
-                                ftx_message_t *msg, ftx_decode_status_t *st)
+static int decode_with_feedback(float llr[FTX_LDPC_N], int iters, ftx_protocol_t protocol,
+                                bool feedback, ftx_message_t *msg, ftx_decode_status_t *st)
 {
     uint8_t plain[FTX_LDPC_N];
     float work[FTX_LDPC_N];
 
     memcpy(work, llr, sizeof(work));
 
-    if (ftx_decode_llr(work, iters, FTX_PROTOCOL_FT8, msg, st, plain))
+    if (ftx_decode_llr(work, iters, protocol, msg, st, plain))
         return 1;
     if (!feedback)
         return 0;
@@ -76,7 +76,7 @@ static int decode_with_feedback(float llr[FTX_LDPC_N], int iters, bool feedback,
             return 0;
         float again[FTX_LDPC_N];
         memcpy(again, work, sizeof(again));
-        if (ftx_decode_llr(again, iters, FTX_PROTOCOL_FT8, msg, st, plain))
+        if (ftx_decode_llr(again, iters, protocol, msg, st, plain))
             return 2;
     }
 
@@ -172,10 +172,14 @@ static bool whitened(const ftx_waterfall_t *wf, const ftx_candidate_t *cand, boo
 
 /* ---- soft combining ---- */
 
-#define COMBINE_MAX     2048    /* a window brings up to 140 failed candidates */
+/* Noise candidates never match and each takes an entry, so on a busy band
+ * the store is full in about 30 s and the oldest go; measured on 10 min of
+ * a busy 40 m, 8192 entries decode exactly what 2048 do. */
+#define COMBINE_MAX     2048
 #define COMBINE_TTL     95.0    /* s: up to 6 periods, 3 receptions apart */
 #define COMBINE_HZ      3.125f  /* frequency bin */
 #define COMBINE_DT      0.1     /* s: time-in-slot bin */
+#define COMBINE_DT_BINS 150     /* in the 15 s slot: bin 149 and bin 0 are neighbours */
 #define COMBINE_CORR    0.12f   /* least correlation of the same message's receptions */
 
 typedef struct {
@@ -233,7 +237,10 @@ static entry *find(int fbin, int dtbin, const float llr[FTX_LDPC_N], double now)
             e->used = false;
             continue;
         }
-        if (abs(e->fbin - fbin) > 1 || abs(e->dtbin - dtbin) > 1)
+        int ddt = abs(e->dtbin - dtbin);
+        if (ddt > COMBINE_DT_BINS / 2)
+            ddt = COMBINE_DT_BINS - ddt;
+        if (abs(e->fbin - fbin) > 1 || ddt > 1)
             continue;
         float c = correlation(e->cur, llr);
         if (c > best_corr) {
@@ -249,11 +256,11 @@ static entry *find(int fbin, int dtbin, const float llr[FTX_LDPC_N], double now)
  * the same transmission seen in another (overlapping) window, not a new one:
  * it replaces the newest if it is stronger, and is never added to it. */
 static bool combine(const float llr[FTX_LDPC_N], double start_s, float freq_hz, int iters,
-                    ftx_message_t *msg, ftx_decode_status_t *st, int *receptions)
+                    ftx_protocol_t protocol, ftx_message_t *msg, ftx_decode_status_t *st, int *receptions)
 {
     int fbin = (int) lroundf(freq_hz / COMBINE_HZ);
     double slot = fmod(start_s, 15.0);
-    int dtbin = (int) lround(slot / COMBINE_DT);
+    int dtbin = (int) lround(slot / COMBINE_DT) % COMBINE_DT_BINS;
     entry *e = find(fbin, dtbin, llr, start_s);
 
     if (!e) {
@@ -299,7 +306,8 @@ static bool combine(const float llr[FTX_LDPC_N], double start_s, float freq_hz, 
         both[i] = e->sum[i] + e->cur[i];
     ftx_normalize_llr(both);
 
-    bool ok = decode_with_feedback(both, iters, (ft8_js8_passes & FT8_JS8_FEEDBACK) != 0, msg, st) != 0;
+    bool ok = decode_with_feedback(both, iters, protocol, (ft8_js8_passes & FT8_JS8_FEEDBACK) != 0,
+                                   msg, st) != 0;
     if (ok) {
         *receptions = e->receptions;
         e->used = false;                /* decoded: start over */
@@ -319,7 +327,7 @@ bool ft8_js8_decode(const ftx_waterfall_t *wf, const ftx_candidate_t *cand, int 
 
     ftx_candidate_llr(wf, cand, llr);
 
-    int r = decode_with_feedback(llr, max_iterations, feedback, message, status);
+    int r = decode_with_feedback(llr, max_iterations, wf->protocol, feedback, message, status);
     if (r) {
         h.pass = r == 2 ? FT8_JS8_FEEDBACK : 0;
         goto done;
@@ -328,18 +336,18 @@ bool ft8_js8_decode(const ftx_waterfall_t *wf, const ftx_candidate_t *cand, int 
     if (wf->protocol == FTX_PROTOCOL_FT8) {
         h.pass = FT8_JS8_WHITEN;
         if ((ft8_js8_passes & FT8_JS8_WHITEN) && whitened(wf, cand, true, alt) &&
-            decode_with_feedback(alt, max_iterations, feedback, message, status))
+            decode_with_feedback(alt, max_iterations, wf->protocol, feedback, message, status))
             goto done;
 
         h.pass = FT8_JS8_LINEAR;
         if ((ft8_js8_passes & FT8_JS8_LINEAR) && whitened(wf, cand, false, alt) &&
-            decode_with_feedback(alt, max_iterations, feedback, message, status))
+            decode_with_feedback(alt, max_iterations, wf->protocol, feedback, message, status))
             goto done;
     }
 
     h.pass = FT8_JS8_COMBINE;
     if ((ft8_js8_passes & FT8_JS8_COMBINE) && start_s >= 0.0 &&
-        combine(llr, start_s, freq_hz, max_iterations, message, status, &h.receptions))
+        combine(llr, start_s, freq_hz, max_iterations, wf->protocol, message, status, &h.receptions))
         goto done;
 
     return false;
