@@ -69,6 +69,10 @@ label { color: #080; }
 #drm-service { color: #cfe; }
 #drm-text { color: #8cf; white-space: pre-wrap; }
 #pages a { color: #8cf; margin-left: 10px; }
+#map-bar { flex-wrap: wrap; gap: 4px; }
+#map-bar button.on { color: #0f0; border-color: #2a5; background: #0d1f0d; }
+#map-dial { font: 14px monospace; color: #cfe; margin: 0 8px; }
+#map-frame { display: block; width: 100%; height: 75vh; border: 1px solid #333; background: #0b1016; }
 </style>
 </head>
 <body>
@@ -102,6 +106,7 @@ label { color: #080; }
   <span class="tab" onclick="show_tab('rig', this)">Rig Controls</span>
   <span class="tab" onclick="show_tab('spectrum-tab', this)">Spectrum</span>
   <span class="tab" onclick="show_tab('mercury', this)">Mercury</span>
+  <span class="tab" onclick="show_tab('map', this)">FT8 Map</span>
 </div>
 
 <!-- Control tab -->
@@ -384,6 +389,20 @@ label { color: #080; }
   </div>
 </div>
 
+<!-- FT8 map tab: the band buttons tune on this socket; below them map.html,
+     which talks to the station API and asks for its own login. -->
+<div id="tab-map" class="tab-content">
+  <div class="panel row" id="map-bar">
+    <label>FT8:</label>
+    <span id="map-bands"></span>
+    <span id="map-dial">-</span>
+    <input type="text" id="map-freq" size="10" placeholder="Hz"
+           onkeydown="if (event.key === 'Enter') map_set_freq()">
+    <button onclick="map_set_freq()">Set</button>
+  </div>
+  <iframe id="map-frame" title="FT8 map"></iframe>
+</div>
+
 <script>
 var ws = null;
 var audio_ctx = null;
@@ -423,6 +442,7 @@ function show_tab(name, tab) {
   var content = $('tab-' + name);
   if (content) content.classList.add('active');
   if (name === 'spectrum-tab') start_spectrum();
+  if (name === 'map' && !$('map-frame').src) $('map-frame').src = 'map.html';
 }
 
 function ws_connect() {
@@ -475,7 +495,7 @@ function handle_text(data) {
         dial_render();
       }
       if (j.profile !== undefined) { g_profile = j.profile; $('profile').value = j.profile; }
-      if (j.mode) { g_mode = j.mode; $('mode').value = j.mode; }
+      if (j.mode) { g_mode = j.mode; $('mode').value = j.mode; map_bar_render(); }
       if (j.txrx_state !== undefined) g_tx = (j.txrx_state === 1);
       audio_rate_from_state(j);
       show_active();
@@ -889,6 +909,42 @@ function dial_render() {
     if (place === 6 || place === 3) html += '<span class="sep">.</span>';
   }
   el.innerHTML = html;
+  map_bar_render();
+}
+
+// ---- the FT8 map tab's band buttons: FT8 on the band's usual dial ----
+var FT8_BANDS = [['160m', 1840000], ['80m', 3573000], ['60m', 5357000], ['40m', 7074000],
+                 ['30m', 10136000], ['20m', 14074000], ['17m', 18100000], ['15m', 21074000],
+                 ['12m', 24915000], ['10m', 28074000], ['6m', 50313000]];
+
+function map_bar_build() {
+  var box = $('map-bands');
+  FT8_BANDS.forEach(function(b) {
+    var btn = document.createElement('button');
+    btn.textContent = b[0];
+    btn.title = (b[1] / 1000) + ' kHz';
+    btn.onclick = function() { ft8_tune(b[1]); };
+    box.appendChild(btn);
+  });
+}
+
+function ft8_tune(f) {
+  if (g_mode !== 'FT8') send_cmd('set_mode', 'value', 'FT8');
+  tune_to(f);
+}
+
+function map_set_freq() {
+  var f = parseInt($('map-freq').value);
+  $('map-freq').blur();
+  if (f > 0) ft8_tune(f);
+}
+
+function map_bar_render() {
+  var f = Math.round(g_freq);
+  $('map-dial').textContent = f > 0 ? (f / 1000).toFixed(3) + ' kHz ' + (g_mode || '') : '-';
+  var btns = $('map-bands').children;
+  for (var i = 0; i < btns.length; i++)
+    btns[i].classList.toggle('on', FT8_BANDS[i][1] === f);
 }
 
 // Tune now on the page; send the latest frequency to the radio at most
@@ -1231,6 +1287,7 @@ function draw_spectrum(data) {
     ' | span ' + Math.round(total) + ' Hz | ' + bins + ' bins @ ' + bin_hz.toFixed(1) + ' Hz/bin' +
     ' | floor ' + wf_min + ' / ceil ' + wf_max + ' dB';
 }
+map_bar_build();
 dial_init();
 </script>
 </body>
