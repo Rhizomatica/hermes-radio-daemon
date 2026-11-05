@@ -199,6 +199,10 @@ int radiod_api_set_voice_codec(const char *name);
  * in out (NUL-terminated).  Returns how many. */
 int radiod_api_digi_log(uint64_t after, int max, char *out, size_t out_len);
 
+/* The digi log's files on disk, oldest first, separated by '\n' (either may
+ * not exist yet); false when out is too small. */
+bool radiod_api_digi_log_files(char *out, size_t out_len);
+
 /* ── modem (mercury linked in) ── */
 
 /* Mercury's last status JSON (its websocket's {"type":"status",...}) into

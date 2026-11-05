@@ -94,6 +94,11 @@ char *digi_log_last_json(int count);
 int digi_log_since(uint64_t after, char lines[][DIGI_LOG_LINE_MAX],
                    uint64_t *ids, int max);
 
+/* The log's files on disk, oldest first ("<dir>/digi.jsonl.1\n<dir>/digi.jsonl"),
+ * into out; the whole log, where the ring keeps only the last entries.
+ * Either file may not exist. Returns false when out is too small. */
+bool digi_log_files(char *out, size_t out_len);
+
 /* The id of the newest entry, 0 if none since start. */
 uint64_t digi_log_latest_id(void);
 

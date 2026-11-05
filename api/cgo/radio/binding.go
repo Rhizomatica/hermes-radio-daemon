@@ -206,6 +206,14 @@ func (binding) SetVoiceCodec(name string) error {
 	return codeErr(int(C.radiod_api_set_voice_codec(cs)))
 }
 
+func (binding) DigiLogFiles() []string {
+	var buf [1024]C.char
+	if !C.radiod_api_digi_log_files(&buf[0], C.size_t(len(buf))) {
+		return nil
+	}
+	return strings.Split(C.GoString(&buf[0]), "\n")
+}
+
 func (binding) DigiLog(after uint64, max int) []jsontext.Value {
 	if max <= 0 {
 		return nil

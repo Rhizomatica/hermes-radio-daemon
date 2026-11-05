@@ -4,10 +4,12 @@
 package digi
 
 import (
+	"bytes"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -29,6 +31,25 @@ type handlers struct{ r rad.Radio }
 
 // ringMax bounds how much of digi_log's in-memory ring one request reads.
 const ringMax = 1000
+
+// lines is the whole log, oldest first: its files on disk, then the
+// in-memory ring, which repeats their last entries (and is all there is
+// when the files cannot be read).
+func (h handlers) lines() []jsontext.Value {
+	var out []jsontext.Value
+	for _, p := range h.r.DigiLogFiles() {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		for _, l := range bytes.Split(b, []byte{'\n'}) {
+			if len(l) > 0 {
+				out = append(out, jsontext.Value(l))
+			}
+		}
+	}
+	return append(out, h.r.DigiLog(0, ringMax)...)
+}
 
 // entryHead is what the filters need of a digi_log line; the line itself
 // already has DigiEntry's fields and goes out as is.
@@ -79,11 +100,13 @@ func (h handlers) getLog(w http.ResponseWriter, r *http.Request) {
 
 	var picked []jsontext.Value
 	var ids []uint64
-	for _, line := range h.r.DigiLog(0, ringMax) {
+	seen := map[uint64]bool{}
+	for _, line := range h.lines() {
 		var e entryHead
-		if json.Unmarshal(line, &e, rad.FromC) != nil {
-			continue
+		if json.Unmarshal(line, &e, rad.FromC) != nil || seen[e.ID] {
+			continue // a line cut short, or the ring repeating the file
 		}
+		seen[e.ID] = true
 		if before != 0 && e.ID >= before {
 			continue
 		}
