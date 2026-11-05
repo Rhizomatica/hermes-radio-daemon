@@ -207,10 +207,12 @@ static void *tx_thread(void *arg)
                 usleep(20000);
             continue;
         }
-        /* While a modem holds PTT (modem_audio) it feeds the playback
-         * ring itself; pushing the loopback's silence as well would
-         * interleave the two. Keep draining the device either way. */
-        if (modem_audio_tx_active())
+        /* While a modem holds PTT (modem_audio), or radiod sends typed
+         * text (FT8, CW, RTTY), that feeds the playback ring itself;
+         * pushing the loopback's silence as well would interleave the two.
+         * Keep draining the device either way. */
+        if (modem_audio_tx_active() ||
+            radio_profile_tx_is_text(&s_radio->profiles[s_radio->profile_active_idx]))
             continue;
         for (snd_pcm_sframes_t i = 0; i < got; i++)
             out[i] = (int16_t) (in[i * LOOP_CHANNELS] >> 16);
