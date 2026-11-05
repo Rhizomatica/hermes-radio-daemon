@@ -683,6 +683,41 @@ func TestHermesV1PTT(t *testing.T) {
 	}
 }
 
+// An AM broadcast whose keyer went away has no owner: a hermes.v1 client
+// ends it with radio.ptt off.
+func TestHermesV1EndsOwnerlessBroadcast(t *testing.T) {
+	needGoAPI(t)
+	d := startAPIDaemon(t)
+	token := setupAPI(t, d)
+	rig := dialRigctl(t, d)
+	keyer := dialRadiod(t, d)
+
+	if r := keyer.call("set_mode", map[string]any{"value": "AM"}); !r.OK {
+		t.Fatalf("set_mode AM: %+v", r)
+	}
+	if r := keyer.call("ptt_on", nil); !r.OK {
+		t.Fatalf("ptt_on: %+v", r)
+	}
+	keyer.ws.conn.Close()
+	if !eventually(5*time.Second, func() bool {
+		return regexp.MustCompile(`PTT stays ON \(AM\)`).MatchString(d.Log())
+	}) || rig.cmd("t") != "1" {
+		t.Fatalf("the broadcast did not go on\n--- daemon log ---\n%s", d.Log())
+	}
+
+	ws, _, err := wsDialAuth(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1", token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	if r := v1cmd(t, ws, "1", `{"type":"cmd","id":"1","cmd":"radio.ptt","args":{"on":false}}`); r["ok"] != true {
+		t.Fatalf("radio.ptt off = %v\n--- daemon log ---\n%s", r, d.Log())
+	}
+	if got := rig.cmd("t"); got != "0" {
+		t.Errorf("after radio.ptt off, rigctl t = %q", got)
+	}
+}
+
 // digi.send through the real daemon: refused outside a digital mode, FT8
 // text radiod's modulator can't carry refused by its own check, and a CW
 // line queued.

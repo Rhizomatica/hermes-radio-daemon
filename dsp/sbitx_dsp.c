@@ -3044,8 +3044,7 @@ void dsp_free(radio *radio_h)
         loop_up_ready = false;
     }
 
-    sbitx_drm_rx_stop();
-    sbitx_drm_tx_stop();
+    sbitx_drm_shutdown();
     if (drm_rs_ready)
     {
         stream_resampler_free(&drm_rx_down_i);

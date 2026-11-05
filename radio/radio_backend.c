@@ -141,11 +141,14 @@ void radio_backend_set_frequency(radio *radio_h, uint32_t frequency, uint32_t pr
         ops->set_frequency(radio_h, frequency, profile);
 }
 
+static void ptt_check_ownerless(radio *radio_h);
+
 void radio_backend_set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
 {
     const radio_backend_ops *ops = radio_backend_ops_from_radio(radio_h);
     if (ops && ops->set_mode)
         ops->set_mode(radio_h, mode, profile);
+    ptt_check_ownerless(radio_h);
 }
 
 /* Serialises every PTT change with the owner bookkeeping, so a release can
@@ -242,6 +245,14 @@ bool radio_backend_unkey_ptt(radio *radio_h, ptt_source src, long id)
         ptt_apply(radio_h, IN_RX);
         unkeyed = true;
     }
+    else if (src != PTT_SRC_NONE && ptt_owner_src == PTT_SRC_NONE &&
+             radio_h->txrx_state == IN_TX)
+    {
+        /* a broadcast whose keyer went away: anyone may end it */
+        HLOGI(LOG_C, "PTT OFF by %s %ld (it had no owner)", ptt_source_name(src), id);
+        ptt_apply(radio_h, IN_RX);
+        unkeyed = true;
+    }
     pthread_mutex_unlock(&ptt_lock);
     return unkeyed;
 }
@@ -255,6 +266,19 @@ bool radio_backend_holds_ptt(radio *radio_h, ptt_source src, long id)
     return holds;
 }
 
+/* AM and DRM are broadcast modes: a transmission goes on until someone
+ * sends ptt_off (or SWR protection trips), not only while the client that
+ * keyed it stays connected. */
+static bool ptt_survives_holder(const radio *radio_h)
+{
+    uint16_t mode;
+
+    if (radio_h->profile_active_idx >= radio_h->profiles_count)
+        return false;
+    mode = radio_h->profiles[radio_h->profile_active_idx].mode;
+    return mode == MODE_AM || mode == MODE_DRM;
+}
+
 bool radio_backend_release_ptt(radio *radio_h, ptt_source src, long id,
                                const char *why)
 {
@@ -263,16 +287,41 @@ bool radio_backend_release_ptt(radio *radio_h, ptt_source src, long id,
     pthread_mutex_lock(&ptt_lock);
     if (src != PTT_SRC_NONE && ptt_owner_src == src && ptt_owner_id == id)
     {
+        /* no owner from here on: any client's ptt_off ends it, and no
+         * modem can claim the transmission */
         ptt_owner_src = PTT_SRC_NONE;
         ptt_owner_id = 0;
-        HLOGI(LOG_C, "PTT OFF, %s %ld %s while keyed",
-               ptt_source_name(src), id, why);
-        ptt_apply(radio_h, IN_RX);
-        released = true;
+        if (ptt_survives_holder(radio_h) && radio_h->txrx_state == IN_TX)
+        {
+            HLOGI(LOG_C, "PTT stays ON (%s): %s %ld %s while keyed",
+                   radio_h->profiles[radio_h->profile_active_idx].mode == MODE_AM ? "AM" : "DRM",
+                   ptt_source_name(src), id, why);
+        }
+        else
+        {
+            HLOGI(LOG_C, "PTT OFF, %s %ld %s while keyed",
+                   ptt_source_name(src), id, why);
+            ptt_apply(radio_h, IN_RX);
+            released = true;
+        }
     }
     pthread_mutex_unlock(&ptt_lock);
 
     return released;
+}
+
+/* A transmission with no owner goes on only in AM and DRM: out of them (a
+ * mode or profile change), it ends. */
+static void ptt_check_ownerless(radio *radio_h)
+{
+    pthread_mutex_lock(&ptt_lock);
+    if (ptt_owner_src == PTT_SRC_NONE && radio_h->txrx_state == IN_TX &&
+        !ptt_survives_holder(radio_h))
+    {
+        HLOGI(LOG_C, "PTT OFF: it had no owner, and the mode is no longer AM or DRM");
+        ptt_apply(radio_h, IN_RX);
+    }
+    pthread_mutex_unlock(&ptt_lock);
 }
 
 void radio_backend_set_txrx_state(radio *radio_h, bool txrx_state)
@@ -457,6 +506,7 @@ void radio_backend_set_profile(radio *radio_h, uint32_t profile)
     const radio_backend_ops *ops = radio_backend_ops_from_radio(radio_h);
     if (ops && ops->set_profile)
         ops->set_profile(radio_h, profile);
+    ptt_check_ownerless(radio_h);
 }
 
 uint32_t radio_backend_get_fwd_power(radio *radio_h)
@@ -638,7 +688,9 @@ int radio_backend_set_mode_name(radio *radio_h, const char *mode, uint32_t width
 {
     BACKEND_OPS();
     if (!ops || !ops->set_mode_name) return RADIO_CTRL_ENOTSUP;
-    return ops->set_mode_name(radio_h, mode, width);
+    int rc = ops->set_mode_name(radio_h, mode, width);
+    ptt_check_ownerless(radio_h);
+    return rc;
 }
 
 int radio_backend_get_width(radio *radio_h, uint32_t *hz)

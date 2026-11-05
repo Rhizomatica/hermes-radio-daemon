@@ -1346,6 +1346,11 @@ static void *radio_io_thread(void *radio_h_v)
         /* Profile auto-return timer */
         static time_t last_time = 0;
 
+        /* a transmission is activity: a broadcast on another profile is
+         * not switched to the default one under it */
+        if (radio_h->txrx_state == IN_TX)
+            timer_reset = true;
+
         if (radio_h->profile_default_idx != radio_h->profile_active_idx &&
             radio_h->profile_timeout >= 0)
         {
