@@ -257,6 +257,17 @@ static inline bool radio_profile_denoised(const radio_profile *p)
            (m == MODE_USB || m == MODE_LSB || m == MODE_AM || m == MODE_FM || m == MODE_CW);
 }
 
+/* Whether radiod makes the profile's whole transmission itself: FT8, CW and
+ * RTTY are typed text, sent as tones into tx_audio_ring. Audio from outside
+ * (the ALSA loopback) must stay out of that ring then, or it interleaves
+ * with the tones: the codec played FT8 cut up with the loopback's silence,
+ * four times too long, and nothing decoded it. */
+static inline bool radio_profile_tx_is_text(const radio_profile *p)
+{
+    uint16_t m = p->mode;
+    return m == MODE_FT8 || m == MODE_CW || m == MODE_RTTY;
+}
+
 /* Main radio handle. One instance per process; passed to every backend
  * vtable function. Backend-specific fields (rig handle, encoders, hw GPIO
  * mutex) coexist; each backend uses what it needs. */
