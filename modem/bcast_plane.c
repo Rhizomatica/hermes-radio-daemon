@@ -9,6 +9,7 @@
 #include "bcast_link.h"
 #include "bcast_spool.h"
 #include "beacon_tx.h"
+#include "mercury_link.h"
 #include "radiod_log.h"
 
 #define LOG_C "bcast"
@@ -31,6 +32,8 @@ bool bcast_plane_start(radio *radio_h)
     lc.port = radio_h->broadcast_port;
     lc.mode = radio_h->broadcast_mode;
     bcast_spool_incoming_dir(&sc, lc.incoming_dir, sizeof lc.incoming_dir);
+    /* Mercury inside radiod: direct calls, not its KISS port */
+    lc.in_process = radio_h->enable_mercury ? mercury_link_bcast_host() : NULL;
 
     beacon_config bc = {0};
     bc.enabled = radio_h->beacon_enable;

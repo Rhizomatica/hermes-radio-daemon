@@ -791,14 +791,23 @@ RTTY tx 14.080: CQ CQ DE HERMES TEST
 
 ## Broadcast Plane and Position Beacons
 
-With `broadcast_enable = 1` in `[main]`, radiod is the client on Mercury's
-KISS broadcast port (`broadcast_host:broadcast_port`, 127.0.0.1:8100), the
-role hermes-broadcast's `broadcast_daemon` used to have. Mercury runs as its
-own process (`modem.service`); radiod reconnects whenever it restarts.
+With `broadcast_enable = 1` in `[main]`, radiod is Mercury's broadcast
+client, the role hermes-broadcast's `broadcast_daemon` used to have, with the
+same features either way Mercury runs:
+
+- **Mercury as its own process** (`modem.service`): radiod is the client on
+  Mercury's KISS broadcast port (`broadcast_host:broadcast_port`,
+  127.0.0.1:8100) and reconnects whenever Mercury restarts. It encodes the
+  carousel itself, at `broadcast_mode`.
+- **Mercury inside radiod** (`enable_mercury = 1`): direct calls
+  (`modem/mercury_link.c`), no port. Mercury runs the carousel itself, at its
+  listen mode, and hands up what it receives; `broadcast_host`,
+  `broadcast_port` and `broadcast_mode` are not used. An ARQ session stops a
+  file on the air, and the spool sends it again afterwards.
 
 - **Sending files** (`modem/bcast_spool.c`):
   - the oldest file in `broadcast_tx_dir` goes out as a RaptorQ carousel, in
-    Mercury's listen mode `broadcast_mode`;
+    Mercury's listen mode (`broadcast_mode` over the KISS port);
   - `<name>-<N>_frames.<ext>` sends N frames and then removes the file, and a
     file without that runs until it is removed;
   - receivers file it under `<name>.<ext>`.

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -286,5 +287,72 @@ func TestBroadcastPlaneOff(t *testing.T) {
 	if ini["main:beacon_enable"] != "1" || ini["main:beacon_interval_s"] != "600" {
 		t.Errorf("core.ini beacon_enable = %q, beacon_interval_s = %q",
 			ini["main:beacon_enable"], ini["main:beacon_interval_s"])
+	}
+}
+
+// logWaitTimeout is how long the in-process test waits for a log line.
+const logWaitTimeout = 15 * time.Second
+
+// waitLog waits for the daemon's log to contain want.
+func waitLog(t *testing.T, d *Daemon, want string) bool {
+	t.Helper()
+	for deadline := time.Now().Add(logWaitTimeout); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		if strings.Contains(d.Log(), want) {
+			return true
+		}
+	}
+	return false
+}
+
+// The broadcast plane with Mercury inside radiod (main:enable_mercury):
+// direct calls, not the KISS port. The plane comes up connected at
+// Mercury's listen mode, a beacon goes to Mercury's station-message queue,
+// and a file goes out as Mercury's own carousel and is taken off the air.
+func TestBroadcastPlaneInProcess(t *testing.T) {
+	needGoAPI(t)
+	spool := t.TempDir()
+	d, _ := startMercuryDaemon(t,
+		"api_v2_enable = 1",
+		"broadcast_enable = 1",
+		"broadcast_tx_dir = "+filepath.Join(spool, "tx"),
+		"broadcast_rx_dir = "+filepath.Join(spool, "rx"),
+		"callsign = N0CALL",
+		"station_latitude = 51.4779",
+		"station_longitude = -0.0015")
+	admin := setupAPI(t, d)
+	base := apiBase(d)
+
+	var r httpResult
+	for deadline := time.Now().Add(logWaitTimeout); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		if r = callAuth(t, "GET", base+"/broadcasts", "", admin); r.body["connected"] == true {
+			break
+		}
+	}
+	if r.status != 200 || r.body["running"] != true || r.body["connected"] != true || r.body["mode"] == "" {
+		t.Fatalf("GET /broadcasts = %d %s\n%s", r.status, r.raw, d.Log())
+	}
+	if !strings.Contains(d.Log(), "broadcast plane on Mercury inside radiod") {
+		t.Errorf("the plane did not take the in-process backend\n%s", d.Log())
+	}
+
+	if r := callAuth(t, "POST", base+"/gps/beacon/send", "", admin); r.status != 202 {
+		t.Fatalf("POST /gps/beacon/send = %d %s", r.status, r.raw)
+	}
+	if !waitLog(t, d, "Station message queued for DATAC16") {
+		t.Errorf("Mercury did not queue the beacon\n%s", d.Log())
+	}
+
+	// A file without a budget goes out until it is taken out.
+	if err := os.WriteFile(filepath.Join(spool, "tx", "bulletin.txt"), bytes.Repeat([]byte("hermes "), 100), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !waitLog(t, d, "sending 'bulletin.txt'") {
+		t.Fatalf("Mercury's carousel did not start\n%s", d.Log())
+	}
+	if r := callAuth(t, "DELETE", base+"/broadcasts/bulletin.txt", "", admin); r.status != 204 {
+		t.Fatalf("DELETE = %d %s", r.status, r.raw)
+	}
+	if !waitLog(t, d, "stopped \"bulletin.txt\"") {
+		t.Errorf("the carousel was not stopped\n%s", d.Log())
 	}
 }

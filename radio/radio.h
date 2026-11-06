@@ -433,11 +433,12 @@ typedef struct {
      * name the API last set, user.ini's main:mercury_listen_mode, applied
      * once mercury is up; "" leaves mercury's own (-m in mercury_args). */
     char mercury_listen_mode[16];
-    /* The broadcast plane, with Mercury as its own process
-     * (modem/bcast_link.h, bcast_spool.h): main:broadcast_enable makes radiod
-     * Mercury's broadcast client on main:broadcast_host:broadcast_port, in
-     * Mercury's listen mode main:broadcast_mode, sending from
-     * main:broadcast_tx_dir and receiving into main:broadcast_rx_dir. */
+    /* The broadcast plane (modem/bcast_link.h, bcast_spool.h):
+     * main:broadcast_enable makes radiod Mercury's broadcast client, sending
+     * from main:broadcast_tx_dir and receiving into main:broadcast_rx_dir.
+     * With Mercury as its own process, on main:broadcast_host:broadcast_port
+     * in Mercury's listen mode main:broadcast_mode; with main:enable_mercury,
+     * by direct calls at Mercury's own listen mode. */
     bool broadcast_enable;
     char broadcast_host[64];
     int  broadcast_port;

@@ -629,7 +629,7 @@ int radiod_api_broadcast_get(radiod_api_broadcast *out)
 #ifdef HAVE_MERCURY
     memset(out, 0, sizeof *out);
     out->running = bcast_plane_running();
-    out->mode = s_radio->broadcast_mode;
+    out->mode = bcast_link_mode(s_radio->broadcast_mode);   /* Mercury's listen mode in process */
     snprintf(out->mode_name, sizeof out->mode_name, "%s", bcast_link_mode_name(out->mode));
     snprintf(out->tx_dir, sizeof out->tx_dir, "%s", s_radio->broadcast_tx_dir);
     snprintf(out->rx_dir, sizeof out->rx_dir, "%s", s_radio->broadcast_rx_dir);
@@ -656,7 +656,7 @@ int radiod_api_broadcast_get(radiod_api_broadcast *out)
 int64_t radiod_api_broadcast_frames_per_pass(const char *name, uint64_t len)
 {
 #ifdef HAVE_MERCURY
-    return s_radio && name ? bcast_link_frames_per_pass(s_radio->broadcast_mode, name, (size_t) len) : 0;
+    return s_radio && name ? bcast_link_frames_per_pass(bcast_link_mode(s_radio->broadcast_mode), name, (size_t) len) : 0;
 #else
     (void) name; (void) len;
     return 0;
