@@ -22,8 +22,8 @@ the file bundle of `BROADCAST-WIRE-FORMAT.md`.
 - A beacon describes itself, so Mercury delivers it from whichever decoder
   hears it, at any frame size, not only at the station's listen mode.
 
-The mode to send in is a station setting (§6). The layout follows from the
-mode's frame size. Who hears a beacon follows from the decoders a station's
+The mode to send in is a station setting (§6), DATAC16 by default: the one
+every running Mercury hears. The layout follows from the mode's frame size. Who hears a beacon follows from the decoders a station's
 Mercury already runs:
 - DATAC16, the control decoder, always;
 - MFSK and MFSK500, the call listeners, while the station listens for calls
@@ -158,7 +158,7 @@ These station settings live in `core.ini` and are reachable over the API:
 | Setting | Meaning |
 |---|---|
 | `beacon_enable` | send beacons (default off) |
-| `beacon_mode` | the broadcast frame mode, from §1's table |
+| `beacon_mode` | the broadcast frame mode, from §1's table; DATAC16 (Mercury's mode index 8) by default |
 | `beacon_interval_s` | seconds between beacons; mind the mode's airtime (§1): a beacon holds the channel for 3 s on DATAC16 and 26 s on MFSK500 |
 | `beacon_emergency_interval_s` | seconds between beacons while an emergency code is set (shorter) |
 
@@ -209,7 +209,8 @@ beacon setting: `beacon_mode` is radiod's. Mercury's framer names packet type
   - On the control port:
     - `BEACONMODE <index>` sets the mode for the frames of type `0x07` the
       broadcast socket sends, answering `OK` or `WRONG`;
-    - `BEACONMODE -1`, the default, sends them at the listen mode;
+    - by default they go on DATAC16; `BEACONMODE -1` sends them at the
+      listen mode instead;
     - `BEACONMODE` alone answers with the current one, e.g. `BEACONMODE 8 DATAC16`
       or `BEACONMODE -1 LISTEN`.
   - When 4 beacons are waiting, the socket's reader waits instead of dropping
@@ -288,5 +289,7 @@ c5 ff ff 2e 00 84 01 07 00 00
 - **To decide:**
   - the emergency code list (§7);
   - whether stations relay emergency beacons, and how far;
-  - on stations where Mercury is its own process, radiod would take Mercury's
-    one broadcast client connection.
+  - on stations where Mercury is its own process, Mercury takes one client on
+    its broadcast port, and hermes-broadcast's `broadcast_daemon` may already
+    hold it. Beacons then need `broadcast_daemon` to carry them, a second
+    broadcast client in Mercury, or Mercury inside radiod (the host API).
