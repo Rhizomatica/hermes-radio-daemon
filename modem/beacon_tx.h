@@ -30,12 +30,6 @@
 
 #define BEACON_STATIONS_MAX 256
 
-/* main:beacon_emergency_interval_s: the default and the shortest allowed */
-#define BEACON_EMERGENCY_INTERVAL_DEFAULT_S 120
-#define BEACON_EMERGENCY_INTERVAL_MIN_S     30
-
-#define BEACON_LAT_MAX_DEG 90.0
-#define BEACON_LON_MAX_DEG 180.0
 
 typedef struct {
     char   callsign[BEACON_CALL_MAX + 1];
@@ -68,6 +62,11 @@ typedef struct {
 /* Start the sender (its thread) and load the stations heard before. */
 bool beacon_service_start(radio *radio_h, const beacon_config *cfg);
 void beacon_service_stop(void);
+
+/* Change the callsign, the fixed position or the emergency interval while
+ * the service runs (the API does). */
+void beacon_reconfigure(const beacon_config *cfg);
+bool beacon_service_running(void);
 
 /* bcast_link's on_station_frame. */
 void beacon_on_station_frame(const uint8_t *frame, size_t len, void *user);

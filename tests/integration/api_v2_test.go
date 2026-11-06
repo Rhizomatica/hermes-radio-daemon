@@ -87,9 +87,6 @@ func startAPIDaemon(t *testing.T, extra ...string) *Daemon {
 	return startDaemon(t, daemonOpts{core: append([]string{"api_v2_enable = 1"}, extra...)})
 }
 
-// setupAPI runs first-boot setup on a freshly started daemon and returns the
-// new admin's session token. startDaemon points the daemon at a temp database
-// and a known setup code (SETUP_CODE_PATH), so this is deterministic.
 // The admin a station starts with (api/internal/setup/default_admin.go).
 const (
 	defaultAdminUser = "root"

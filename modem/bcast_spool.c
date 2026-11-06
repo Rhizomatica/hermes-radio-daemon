@@ -29,6 +29,25 @@
 #define US_PER_MS       1000
 
 static bcast_spool_config g_cfg;
+
+/* The file on the air, for the API (bcast_spool_current). */
+static pthread_mutex_t g_cur_lock = PTHREAD_MUTEX_INITIALIZER;
+static char g_current[1024];
+
+static void set_current(const char *path)
+{
+    pthread_mutex_lock(&g_cur_lock);
+    snprintf(g_current, sizeof g_current, "%s", path ? path : "");
+    pthread_mutex_unlock(&g_cur_lock);
+}
+
+bool bcast_spool_current(char *out, size_t cap)
+{
+    pthread_mutex_lock(&g_cur_lock);
+    snprintf(out, cap, "%s", g_current);
+    pthread_mutex_unlock(&g_cur_lock);
+    return out[0] != '\0';
+}
 static pthread_t   g_tid;
 static atomic_bool g_running;
 static bool        g_started;
@@ -241,6 +260,7 @@ static void *spool_thread(void *arg)
                     {
                         snprintf(current, sizeof current, "%s", path);
                         current_mtime = mtime;
+                        set_current(current);
                     }
                     else if (rc == EINVAL)
                         set_aside(path, err);
@@ -249,6 +269,8 @@ static void *spool_thread(void *arg)
             }
         }
 
+        if (!current[0])
+            set_current(NULL);
         for (int i = 0; i < SPOOL_POLL_MS / SPOOL_TICK_MS && atomic_load(&g_running); i++)
             usleep(SPOOL_TICK_MS * US_PER_MS);
     }

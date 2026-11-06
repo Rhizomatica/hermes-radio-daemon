@@ -17,5 +17,6 @@
  * could not start (the daemon runs on without it). */
 bool bcast_plane_start(radio *radio_h);
 void bcast_plane_stop(void);
+bool bcast_plane_running(void);
 
 #endif /* BCAST_PLANE_H */

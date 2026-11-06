@@ -36,10 +36,19 @@
 #include <unistd.h>
 
 static radio        *g_radio;
-static beacon_config g_cfg;
+static pthread_mutex_t g_cfg_lock = PTHREAD_MUTEX_INITIALIZER;
+static beacon_config g_cfg;          /* under g_cfg_lock: the API changes it */
+
+static beacon_config cfg_now(void)
+{
+    pthread_mutex_lock(&g_cfg_lock);
+    beacon_config c = g_cfg;
+    pthread_mutex_unlock(&g_cfg_lock);
+    return c;
+}
 static pthread_t     g_tid;
 static atomic_bool   g_running;
-static bool          g_started;
+static atomic_bool   g_started;
 
 static atomic_int    g_emergency;
 static atomic_bool   g_send_now;
@@ -229,7 +238,8 @@ bool beacon_stations_load(const char *path)
 
 static void stations_path(char *out, size_t cap)
 {
-    snprintf(out, cap, "%s/beacon-stations.tsv", g_cfg.state_dir);
+    beacon_config c = cfg_now();
+    snprintf(out, cap, "%s/beacon-stations.tsv", c.state_dir);
 }
 
 /* ── the log ──────────────────────────────────────────────────── */
@@ -291,6 +301,7 @@ int beacon_set_emergency(int code)
         char v[8];
         snprintf(v, sizeof v, "%d", code);
         cfg_set(g_radio, g_radio->cfg_radio, "main:beacon_emergency", v);
+        g_radio->cfg_radio_dirty = true;   /* written to core.ini by the config thread */
     }
     if (code == 0 && was != 0)
         atomic_store(&g_send_over, true);
@@ -314,9 +325,10 @@ static bool send_one(int code, uint8_t seq)
 {
     radiod_api_gps g;
     gps_latest(&g);
-    beacon_position pos = beacon_pick_position(&g.fix, &g_cfg);
+    beacon_config cfg = cfg_now();
+    beacon_position pos = beacon_pick_position(&g.fix, &cfg);
     static bool said_no_position, said_no_call;
-    if (!g_cfg.callsign[0])
+    if (!cfg.callsign[0])
     {
         if (!said_no_call)
             HLOGW(LOG_C, "no main:callsign; no beacons");
@@ -333,7 +345,7 @@ static bool send_one(int code, uint8_t seq)
     said_no_position = false;
 
     uint8_t frame[BEACON_COMPACT_BYTES];
-    int n = beacon_build_frame(&g_cfg, &pos, code, seq, frame, sizeof frame);
+    int n = beacon_build_frame(&cfg, &pos, code, seq, frame, sizeof frame);
     if (n < 0)
     {
         HLOGW(LOG_C, "cannot build a beacon (error %d)", n);
@@ -365,7 +377,7 @@ static void *beacon_thread(void *arg)
         gps_latest(&g);
         int code = atomic_load(&g_emergency);
         int every = beacon_interval_s(g.settings.report_enabled, g.settings.report_interval_s,
-                                      code, g_cfg.emergency_interval_s);
+                                      code, cfg_now().emergency_interval_s);
         double now = digi_log_now();
 
         if (atomic_exchange(&g_send_over, false))
@@ -395,10 +407,12 @@ static void *beacon_thread(void *arg)
 
 bool beacon_service_start(radio *radio_h, const beacon_config *cfg)
 {
-    if (g_started)
+    if (atomic_load(&g_started))
         return true;
     g_radio = radio_h;
+    pthread_mutex_lock(&g_cfg_lock);
     g_cfg = *cfg;
+    pthread_mutex_unlock(&g_cfg_lock);
     int code = radio_h ? iniparser_getint(radio_h->cfg_radio, "main:beacon_emergency", 0) : 0;
     atomic_store(&g_emergency, code > 0 && code < BEACON_EMERGENCY_OVER ? code : 0);
 
@@ -412,20 +426,36 @@ bool beacon_service_start(radio *radio_h, const beacon_config *cfg)
         atomic_store(&g_running, false);
         return false;
     }
-    g_started = true;
-    HLOGI(LOG_C, "beacons as %s%s", g_cfg.callsign[0] ? g_cfg.callsign : "(no callsign)",
+    atomic_store(&g_started, true);
+    HLOGI(LOG_C, "beacons as %s%s", cfg->callsign[0] ? cfg->callsign : "(no callsign)",
           atomic_load(&g_emergency) ? ", emergency set" : "");
     return true;
 }
 
 void beacon_service_stop(void)
 {
-    if (!g_started)
+    if (!atomic_load(&g_started))
         return;
     atomic_store(&g_running, false);
     pthread_join(g_tid, NULL);
     char path[600];
     stations_path(path, sizeof path);
     beacon_stations_save(path);
-    g_started = false;
+    atomic_store(&g_started, false);
+}
+
+void beacon_reconfigure(const beacon_config *cfg)
+{
+    pthread_mutex_lock(&g_cfg_lock);
+    char dir[sizeof g_cfg.state_dir];
+    memcpy(dir, g_cfg.state_dir, sizeof dir);
+    g_cfg = *cfg;
+    if (atomic_load(&g_started))
+        memcpy(g_cfg.state_dir, dir, sizeof dir);   /* the table stays where it was loaded from */
+    pthread_mutex_unlock(&g_cfg_lock);
+}
+
+bool beacon_service_running(void)
+{
+    return atomic_load(&g_started);
 }

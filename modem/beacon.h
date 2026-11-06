@@ -30,6 +30,13 @@
 
 #define BEACON_CALL_MAX       9     /* characters, SSID included */
 
+#define BEACON_LAT_MAX_DEG    90.0
+#define BEACON_LON_MAX_DEG    180.0
+
+/* main:beacon_emergency_interval_s: the default and the shortest allowed */
+#define BEACON_EMERGENCY_INTERVAL_DEFAULT_S 120
+#define BEACON_EMERGENCY_INTERVAL_MIN_S     30
+
 /* Fix types (full layout) */
 #define BEACON_FIX_NONE       0     /* the position is the last known one */
 #define BEACON_FIX_2D         1

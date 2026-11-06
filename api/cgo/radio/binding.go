@@ -403,3 +403,101 @@ func (binding) CORSOrigins() string { return C.GoString(C.radiod_api_cors_origin
 func (binding) Log(level LogLevel, component, message string) {
 	hermeslog.Log(hermeslog.Level(level), component, message)
 }
+
+// ── the broadcast plane and beacons ──
+
+func (binding) Broadcast() (Broadcast, error) {
+	var b C.radiod_api_broadcast
+	if err := codeErr(int(C.radiod_api_broadcast_get(&b))); err != nil {
+		return Broadcast{}, err
+	}
+	return Broadcast{
+		Running: bool(b.running), Connected: bool(b.connected),
+		Mode: int(b.mode), ModeName: cstr(b.mode_name[:]),
+		TxDir: cstr(b.tx_dir[:]), RxDir: cstr(b.rx_dir[:]),
+		State: BroadcastState(b.state), Path: cstr(b.path[:]), Name: cstr(b.name[:]),
+		Bytes: uint64(b.bytes), Pass: int(b.pass), Passes: int(b.passes),
+		FramesPerPass: int64(b.frames_per_pass), FramesLimit: int64(b.frames_limit),
+		FramesSent: uint64(b.frames_sent),
+	}, nil
+}
+
+func (binding) BroadcastFramesPerPass(name string, n uint64) int64 {
+	cs := C.CString(name)
+	defer C.free(unsafe.Pointer(cs))
+	return int64(C.radiod_api_broadcast_frames_per_pass(cs, C.uint64_t(n)))
+}
+
+func (binding) Beacon() Beacon {
+	var b C.radiod_api_beacon
+	C.radiod_api_beacon_get(&b)
+	out := Beacon{
+		Callsign: cstr(b.callsign[:]), EmergencyIntervalS: int(b.emergency_interval_s),
+		Emergency: int(b.emergency), Running: bool(b.running),
+	}
+	if bool(b.has_station_position) {
+		lat, lon := float64(b.station_latitude), float64(b.station_longitude)
+		out.StationLatitude, out.StationLongitude = &lat, &lon
+	}
+	return out
+}
+
+func (binding) SetBeacon(in Beacon) error {
+	var b C.radiod_api_beacon
+	if len(in.Callsign) >= len(b.callsign) {
+		return ErrInvalid
+	}
+	// b is zero-initialised, so the rest of the buffer stays NUL.
+	for i := 0; i < len(in.Callsign); i++ {
+		b.callsign[i] = C.char(in.Callsign[i])
+	}
+	if in.StationLatitude != nil && in.StationLongitude != nil {
+		b.has_station_position = true
+		b.station_latitude = C.double(*in.StationLatitude)
+		b.station_longitude = C.double(*in.StationLongitude)
+	}
+	b.emergency_interval_s = C.int(in.EmergencyIntervalS)
+	return codeErr(int(C.radiod_api_beacon_set(&b)))
+}
+
+func (binding) SetBeaconEmergency(code int) error {
+	return codeErr(int(C.radiod_api_beacon_set_emergency(C.int(code))))
+}
+
+func (binding) BeaconSendNow() error {
+	return codeErr(int(C.radiod_api_beacon_send_now()))
+}
+
+// beaconStationsMax is BEACON_STATIONS_MAX (modem/beacon_tx.h).
+const beaconStationsMax = 256
+
+func (binding) BeaconStations() []BeaconStation {
+	var st [beaconStationsMax]C.radiod_api_beacon_station
+	n := int(C.radiod_api_beacon_stations(&st[0], C.int(len(st))))
+	out := make([]BeaconStation, 0, n)
+	for i := 0; i < n; i++ {
+		s := st[i]
+		b := BeaconStation{
+			Callsign: cstr(s.callsign[:]), Latitude: float64(s.latitude), Longitude: float64(s.longitude),
+			Emergency: int(s.emergency), Fix: int(s.fix), HeardAt: isoTime(float64(s.heard_at)),
+		}
+		if bool(s.has_altitude) {
+			a := int(s.altitude_m)
+			b.AltitudeM = &a
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
+// broadcastNameMax is bcast_spool's name buffer.
+const broadcastNameMax = 256
+
+func (binding) BroadcastFileInfo(file string) (string, int64) {
+	cs := C.CString(file)
+	defer C.free(unsafe.Pointer(cs))
+	var name [broadcastNameMax]C.char
+	var limit C.int64_t
+	C.radiod_api_broadcast_file_info(cs, &name[0], C.size_t(len(name)), &limit)
+	return cstr(name[:]), int64(limit)
+}

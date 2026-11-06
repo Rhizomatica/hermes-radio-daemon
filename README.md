@@ -1134,6 +1134,20 @@ curl -X PATCH -H 'Content-Type: application/json' \
 | `getModemStatus` | `GET /api/v2/modem` (mercury's last status, its listen mode and broadcast plane; 503 without mercury) | readonly |
 | `getModemConfig` | `GET /api/v2/modem/config` (TX gain, waterfall, listen mode) | operator |
 | `updateModemConfig` | `PATCH /api/v2/modem/config`; the listen mode is saved in user.ini (`main:mercury_listen_mode`), 409 `busy` while an ARQ link or a broadcast holds the modem | admin |
+| `listBroadcasts` | `GET /api/v2/broadcasts`: the broadcast plane and its queue, the file on the air first, with its frames and pass; 503 `not_running` without `broadcast_enable` | readonly |
+| `createBroadcast` | `POST /api/v2/broadcasts?name=<file>&passes=<1-16>`, the body is the file (`application/octet-stream`, at most 1440 KiB); it goes out for its passes and leaves the queue; 6 an hour per user | user |
+| `getBroadcast` | `GET /api/v2/broadcasts/{broadcast_id}` | readonly |
+| `cancelBroadcast` | `DELETE /api/v2/broadcasts/{broadcast_id}`: out of the queue, the one on the air stops | operator |
+| `listReceivedBroadcasts` | `GET /api/v2/broadcasts/received`, newest first | readonly |
+| `downloadReceivedBroadcast` | `GET /api/v2/broadcasts/received/{name}` | readonly |
+| `deleteReceivedBroadcast` | `DELETE /api/v2/broadcasts/received/{name}` | operator |
+| `getBeacon` | `GET /api/v2/gps/beacon`: callsign, fixed position, emergency interval and code | readonly |
+| `updateBeacon` | `PATCH /api/v2/gps/beacon` (saved in core.ini); when beacons go out is `PATCH /gps/settings`'s `report` | operator |
+| `sendBeacon` | `POST /api/v2/gps/beacon/send`: one beacon now | user |
+| `sendSos` | `POST /api/v2/gps/sos` `{"code":1}`: beacons carry the emergency code, at the emergency interval | user |
+| `clearSos` | `DELETE /api/v2/gps/sos`: one beacon says the emergency is over | user |
+| `listBeacons` | `GET /api/v2/gps/beacons`: every station heard by its beacons, newest first | readonly |
+| `listStationPositions` | `GET /api/v2/gps/stations`: the UUCP stations, with their last beacon's position | readonly |
 
 `hermes.v1` at `/api/v2/ws` (the WebSocket subprotocol `hermes.v1` is required;
 426 without it): a `hello` (protocol, version, role, the commands the role may
