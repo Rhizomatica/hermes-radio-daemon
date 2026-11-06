@@ -201,12 +201,9 @@ later.
 - **Duplicates:** two beacons from the same callsign with the same sequence
   number within a minute are one beacon.
 
-**A beacon is a claim, not an identity.** Anyone can send a frame with any
-callsign and any position, as with every other text that arrives over the air
-(the rule for attacker-controlled text in [api-design/README.md](api-design/README.md)). A received beacon is
-shown as reported, and nothing acts on it automatically beyond the alert.
-Signed beacons, on the modes with room for a signature, are left for a later
-version.
+Version 1 beacons are not authenticated: the callsign and position are as the
+sender reports them. A receiver shows them as reported. Signed beacons, on the
+modes with room for a signature, are left for a later version.
 
 ## 9. Worked examples
 
