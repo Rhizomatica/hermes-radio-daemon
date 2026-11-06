@@ -54,6 +54,12 @@ func HermesInit() {
 		slog.Error("cannot open the API database; /api/v2 serves without sessions", "error", err)
 		router = station.NewRouter(r)
 	} else {
+		if made, err := setup.EnsureDefaultAdmin(context.Background(), st); err != nil {
+			slog.Error("cannot create the default admin", "error", err)
+		} else if made {
+			slog.Warn("no users: created the default admin; change its password",
+				"username", setup.DefaultAdminUsername)
+		}
 		router = station.NewAuthenticatedRouter(r, st, setup.Config{SetupCodePath: cfg.SetupCodePath})
 	}
 	slog.SetDefault(router.Log) // any slog use in the layer goes to radiod's logger
