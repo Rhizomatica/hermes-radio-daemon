@@ -158,10 +158,24 @@ static int start_link(void)
     return fd;
 }
 
+/* A test that closes its end before tearDown stops the link sees the link
+ * reconnect at once, as it should: that connection waits in the listen
+ * queue, and the next test must not take it for its own link's. */
+static void flush_listen_queue(void)
+{
+    int fl = fcntl(g_listen, F_GETFL);
+    fcntl(g_listen, F_SETFL, fl | O_NONBLOCK);
+    int fd;
+    while ((fd = accept(g_listen, NULL, NULL)) >= 0)
+        close(fd);
+    fcntl(g_listen, F_SETFL, fl);
+}
+
 void setUp(void)
 {
     atomic_store(&g_station_n, 0);
     atomic_store(&g_obj_n, 0);
+    flush_listen_queue();
 }
 
 void tearDown(void)
