@@ -32,10 +32,10 @@ HERMES station already runs:
 | Mode | Payload bytes | Layout | Heard by | Airtime |
 |---|---|---|---|---|
 | DATAC16 | 14 | compact (§3) | every listening station | about 3 s |
-| MFSK | 98 | full (§4) | every listening station | about 13.5 s |
+| MFSK | 98 | full (§4) | every listening station | about 13 s |
 | MFSK500 | 98 | full | every listening station | about 26 s |
 | DATAC15 | 30 | full | stations listening on that mode | about 3.7 s |
-| DATAC4, DATAC3, DATAC1, DATAC17, QAM16C2 | 54 to 1213 | full | stations listening on that mode | 3.2 to 6.7 s |
+| DATAC4, DATAC3, DATAC1, DATAC17, QAM16C2 | 54 to 1213 | full | stations listening on that mode | 3.1 to 6.7 s |
 
 - **Robustness:**
   - MFSK500 decodes 90 % of frames at −14.1 dB AWGN;
@@ -144,8 +144,11 @@ The callsign is packed in base 40, as M17 does it, into 48 bits, little-endian.
 - **Length:** up to 9 characters, including an SSID such as `-2`.
   40⁹ = 2.6 × 10¹⁴ fits in 48 bits (2.8 × 10¹⁴).
 - **Lower case** is upper-cased before packing.
-- **Invalid:** a value of 0 (no callsign), or one that unpacks to characters
-  outside the alphabet.
+- **No spaces:** a callsign has none. A sender refuses one with a space.
+- **Invalid:** a receiver drops a callsign that is:
+  - 0 (no callsign);
+  - 40⁹ or more (more than 9 characters);
+  - one that unpacks with a space (index 0) before its last character.
 
 ## 6. Sending
 
