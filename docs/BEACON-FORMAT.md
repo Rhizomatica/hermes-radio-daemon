@@ -22,18 +22,19 @@ the file bundle of `BROADCAST-WIRE-FORMAT.md`.
 - A beacon describes itself, so Mercury delivers it from whichever decoder
   hears it, at any frame size, not only at the station's listen mode.
 
-The mode to send in is a station setting (§6). The layout follows from the
-mode's frame size. Who hears a beacon follows from the decoders a listening
-HERMES station already runs:
+The mode to send in is a station setting (§6), DATAC16 by default: the one
+every running Mercury hears. The layout follows from the mode's frame size. Who hears a beacon follows from the decoders a station's
+Mercury already runs:
 - DATAC16, the control decoder, always;
-- MFSK and MFSK500, the call listeners;
+- MFSK and MFSK500, the call listeners, while the station listens for calls
+  (`LISTEN ON`, as HERMES stations keep it);
 - the listen mode.
 
 | Mode | Payload bytes | Layout | Heard by | Airtime |
 |---|---|---|---|---|
-| DATAC16 | 14 | compact (§3) | every listening station | about 3 s |
-| MFSK | 98 | full (§4) | every listening station | about 13 s |
-| MFSK500 | 98 | full | every listening station | about 26 s |
+| DATAC16 | 14 | compact (§3) | every station running Mercury | about 3 s |
+| MFSK | 98 | full (§4) | every station listening for calls | about 13 s |
+| MFSK500 | 98 | full | every station listening for calls | about 26 s |
 | DATAC15 | 30 | full | stations listening on that mode | about 3.7 s |
 | DATAC4, DATAC3, DATAC1, DATAC17, QAM16C2 | 54 to 1213 | full | stations listening on that mode | 3.1 to 6.7 s |
 
@@ -157,7 +158,7 @@ These station settings live in `core.ini` and are reachable over the API:
 | Setting | Meaning |
 |---|---|
 | `beacon_enable` | send beacons (default off) |
-| `beacon_mode` | the broadcast frame mode, from §1's table |
+| `beacon_mode` | the broadcast frame mode, from §1's table; DATAC16 (Mercury's mode index 8) by default |
 | `beacon_interval_s` | seconds between beacons; mind the mode's airtime (§1): a beacon holds the channel for 3 s on DATAC16 and 26 s on MFSK500 |
 | `beacon_emergency_interval_s` | seconds between beacons while an emergency code is set (shorter) |
 
@@ -179,23 +180,45 @@ These station settings live in `core.ini` and are reachable over the API:
 
 The beacon mode is usually not the listen mode, and DATAC16 can't be one.
 Retuning the listen mode for each beacon would change what the station
-hears, so Mercury sends a beacon on the mode it's given and then goes back
-to the listen mode. Mercury stores no beacon setting: `beacon_mode` is
-radiod's.
+hears, so Mercury sends each beacon on the mode it's given. Mercury stores no
+beacon setting: `beacon_mode` is radiod's. Mercury's framer names packet type
+`0x07` `PACKET_TYPE_STATION`.
 
+- **Sending, both interfaces:**
+  - The modes accepted, by Mercury's mode index:
+    - 8 DATAC16, 7 DATAC15, 3 DATAC4, 1 DATAC3, 0 DATAC1;
+    - 9 DATAC17, 10 QAM16C2, 11 MFSK, 12 MFSK500.
+  - The frame must be type `0x07` and no longer than the mode's frame. Mercury
+    zero-pads it.
+  - Mercury holds a beacon while an ARQ session is up (calling, accepting,
+    connected or disconnecting) or a carousel sends, and sends it after.
+  - It keys when no decoder is on a frame, or after about 10 s of a busy
+    channel.
+  - Up to 4 beacons wait their turn.
 - **Mercury inside radiod (host API):**
   - `int mercury_host_beacon_send(const uint8_t *frame, size_t len, int mode_index)`
-    zero-pads the frame to the mode's size and keys it on that mode.
-  - The modes accepted are DATAC16, DATAC15, DATAC4, DATAC3, DATAC1, DATAC17,
-    QAM16C2, MFSK and MFSK500.
-  - It returns `MERCURY_HOST_BAD` for another mode, a frame longer than the
-    mode's size, or a header that isn't type `0x07`.
-  - Received frames come through the host's `on_frame` callback: the whole
-    frame, header included and padded, with its mode and SNR.
+    returns:
+    - `MERCURY_HOST_OK`;
+    - `MERCURY_HOST_FULL` when 4 are already waiting (try again later);
+    - `MERCURY_HOST_BAD` for a mode, header or size it refuses.
+  - Received frames come through the host's `on_frame` callback, with
+    Mercury's own mode number and the SNR. The mode number is FreeDV's for
+    the OFDM modes (23 for DATAC16), 100 for MFSK and 103 for MFSK500.
 - **Mercury as its own process (the KISS broadcast socket):**
-  - A frame goes both ways as `CMD_MODEM_FRAME` (`0x03`).
-  - Sent that way, it goes out at the listen mode. Choosing the mode needs a
-    command on Mercury's control port, still to be added.
+  - A frame goes both ways as KISS `CMD_MODEM_FRAME` (`0x03`).
+  - On the control port:
+    - `BEACONMODE <index>` sets the mode for the frames of type `0x07` the
+      broadcast socket sends, answering `OK` or `WRONG`;
+    - by default they go on DATAC16; `BEACONMODE -1` sends them at the
+      listen mode instead;
+    - `BEACONMODE` alone answers with the current one, e.g. `BEACONMODE 8 DATAC16`
+      or `BEACONMODE -1 LISTEN`.
+  - When 4 beacons are waiting, the socket's reader waits instead of dropping
+    one.
+- **Receiving, both interfaces:**
+  - A beacon arrives whole, header included, padded with zeros to the mode's
+    frame size (14 or 98 bytes, for example).
+  - It never goes into Mercury's chat store.
 
 ## 7. Emergency codes
 
@@ -261,12 +284,12 @@ c5 ff ff 2e 00 84 01 07 00 00
 
 ## 10. Open points
 
-- **Mercury:**
-  - deliver type-`0x07` frames from every decoder at any size, through
-    `on_frame` and the KISS socket. Today they're dropped as an unknown type,
-    with one warning each;
-  - add `mercury_host_beacon_send`, and a control-port command to choose the
-    mode over KISS.
+- **Mercury:** the sending and receiving above are written, on a branch not
+  yet published.
 - **To decide:**
   - the emergency code list (§7);
-  - whether stations relay emergency beacons, and how far.
+  - whether stations relay emergency beacons, and how far;
+  - on stations where Mercury is its own process, Mercury takes one client on
+    its broadcast port, and hermes-broadcast's `broadcast_daemon` may already
+    hold it. Beacons then need `broadcast_daemon` to carry them, a second
+    broadcast client in Mercury, or Mercury inside radiod (the host API).
