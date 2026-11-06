@@ -79,6 +79,7 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   audioio/audio_bridge.o \
                   dsp/stream_resampler.o \
                   dsp/digi_log.o \
+                  modem/beacon.o \
                   audioio/audio_headset.o \
                   modem/shm_audio.o \
                   modem/loop_audio.o \
@@ -153,7 +154,7 @@ modem/mercury_link.o: EXTRA_CPPFLAGS += -I$(MERCURY_DIR)/host
 # The broadcast plane, as Mercury's broadcast client: the carousel is
 # Mercury's own codec (datalink_broadcast/bcast_file.h, in libmercury_host.a).
 DAEMON_TOP_OBJS += modem/bcast_link.o modem/bcast_spool.o modem/bcast_plane.o \
-                   modem/beacon_tx.o modem/beacon.o
+                   modem/beacon_tx.o
 modem/bcast_link.o: EXTRA_CPPFLAGS += -I$(MERCURY_DIR)/datalink_broadcast
 api/radiod_api.o: EXTRA_CPPFLAGS += -I$(MERCURY_DIR)/host
 # One kiss_fft in the binary: freedv's (same structs, MAXFACTORS and float

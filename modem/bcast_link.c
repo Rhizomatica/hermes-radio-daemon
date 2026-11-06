@@ -402,6 +402,11 @@ void bcast_link_stop(void)
     g_rx = NULL;
 }
 
+const char *bcast_link_mode_name(int mode)
+{
+    return bcast_file_mode_name(mode);
+}
+
 int64_t bcast_link_frames_per_pass(int mode, const char *name, size_t len)
 {
     int per_frame = bcast_file_mode_symbols(mode);

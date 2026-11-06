@@ -13,9 +13,11 @@
 
 #define LOG_C "bcast"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 
+static atomic_bool g_running;
 static bool g_link, g_spool, g_beacon;
 
 bool bcast_plane_start(radio *radio_h)
@@ -52,11 +54,18 @@ bool bcast_plane_start(radio *radio_h)
         bcast_plane_stop();
         return false;
     }
+    atomic_store(&g_running, true);
     return true;
+}
+
+bool bcast_plane_running(void)
+{
+    return atomic_load(&g_running);
 }
 
 void bcast_plane_stop(void)
 {
+    atomic_store(&g_running, false);
     if (g_link)
         bcast_link_stop();
     if (g_beacon)

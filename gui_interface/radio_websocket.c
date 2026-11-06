@@ -56,6 +56,10 @@
 
 #include "radiod_log.h"
 
+/* A request body's cap: a broadcast upload (POST /broadcasts) is at most
+ * Mercury's 1.44 MB carousel object, so 2 MiB. */
+#define RADIOD_HTTP_BODY_MAX (2u * 1024u * 1024u)
+
 #define LOG_C "ws"
 extern _Atomic bool shutdown_;
 
@@ -1823,6 +1827,7 @@ bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid)
     opts.on_message = on_ws_message;
     opts.on_close = on_ws_close;
     opts.on_http = on_ws_http;
+    opts.max_http_body = RADIOD_HTTP_BODY_MAX;
     opts.on_upgrade = on_ws_upgrade;
     opts.user_data = &ws_ctx;
 

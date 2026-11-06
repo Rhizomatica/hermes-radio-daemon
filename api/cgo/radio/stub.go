@@ -4,6 +4,8 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,22 +27,28 @@ type Stub struct {
 	log      []jsontext.Value
 	logFiles []string
 	modem    jsontext.Value
-	gps      Gps
-	listen   string // mercury's listen mode
-	busy     string // "arq", "broadcast" or ""
-	link     bool   // an ARQ session up
-	chat     []ChatLine
-	gainDB   float64
-	wfall    bool
-	logs     []string
-	Sent     map[int64][][]byte // frames by connection; 0 = broadcast
-	closed   map[int64]WSCloseFrame
-	pttOwner int64 // the hermes.v1 connection holding PTT, 0 for none
-	digiSent []string
-	recRX    bool
-	recTX    bool
-	spectrum map[[2]int64]bool
-	rtc      map[int64]RTCSession
+	// the broadcast plane and beacons: off until SetBroadcast
+	bcast       Broadcast
+	bcastErr    error
+	beacon      Beacon
+	stations    []BeaconStation
+	beaconSends int
+	gps         Gps
+	listen      string // mercury's listen mode
+	busy        string // "arq", "broadcast" or ""
+	link        bool   // an ARQ session up
+	chat        []ChatLine
+	gainDB      float64
+	wfall       bool
+	logs        []string
+	Sent        map[int64][][]byte // frames by connection; 0 = broadcast
+	closed      map[int64]WSCloseFrame
+	pttOwner    int64 // the hermes.v1 connection holding PTT, 0 for none
+	digiSent    []string
+	recRX       bool
+	recTX       bool
+	spectrum    map[[2]int64]bool
+	rtc         map[int64]RTCSession
 	// RTCMax is how many WebRTC sessions the stub takes (radiod's
 	// main:webrtc_max_sessions); 0 for none, as radiod without WebRTC.
 	RTCMax int
@@ -802,4 +810,131 @@ func (s *Stub) Logs() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.logs...)
+}
+
+// ── the broadcast plane and beacons ──
+
+// stubSymbolBytes and stubSymbolsPerFrame mirror Mercury's fixed 41-byte
+// symbols and a DATAC3 frame's two, so the stub's frame counts look real.
+const (
+	stubSymbolBytes     = 41
+	stubSymbolsPerFrame = 2
+	stubBundleOverhead  = 5 // a size word and the name's newline
+)
+
+// SetBroadcast puts the stub's broadcast plane (running with these spool
+// dirs, the file on the air, ...); err makes Broadcast fail with it.
+func (s *Stub) SetBroadcast(b Broadcast, err error) {
+	s.mu.Lock()
+	s.bcast, s.bcastErr = b, err
+	s.beacon.Running = b.Running
+	s.mu.Unlock()
+}
+
+func (s *Stub) Broadcast() (Broadcast, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.bcast, s.bcastErr
+}
+
+func (s *Stub) BroadcastFramesPerPass(name string, n uint64) int64 {
+	symbols := (int64(n) + int64(len(name)) + stubBundleOverhead + stubSymbolBytes - 1) / stubSymbolBytes
+	return (symbols + stubSymbolsPerFrame - 1) / stubSymbolsPerFrame
+}
+
+func (s *Stub) Beacon() Beacon {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b := s.beacon
+	if b.EmergencyIntervalS == 0 {
+		b.EmergencyIntervalS = stubEmergencyIntervalDefault
+	}
+	return b
+}
+
+// The ranges radiod_api_beacon_set checks.
+const (
+	stubCallsignMax              = 9
+	stubEmergencyIntervalMin     = 30
+	stubEmergencyIntervalDefault = 120
+	stubLatMaxDeg                = 90
+	stubLonMaxDeg                = 180
+)
+
+func (s *Stub) SetBeacon(b Beacon) error {
+	if len(b.Callsign) > stubCallsignMax || b.EmergencyIntervalS < stubEmergencyIntervalMin {
+		return ErrInvalid
+	}
+	if (b.StationLatitude == nil) != (b.StationLongitude == nil) ||
+		(b.StationLatitude != nil && (*b.StationLatitude < -stubLatMaxDeg || *b.StationLatitude > stubLatMaxDeg ||
+			*b.StationLongitude < -stubLonMaxDeg || *b.StationLongitude > stubLonMaxDeg)) {
+		return ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b.Emergency, b.Running = s.beacon.Emergency, s.beacon.Running
+	s.beacon = b
+	return nil
+}
+
+// stubEmergencyOver is the code a cleared emergency goes out with.
+const stubEmergencyOver = 31
+
+func (s *Stub) SetBeaconEmergency(code int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.beacon.Running {
+		return ErrDown
+	}
+	if code < 0 || code >= stubEmergencyOver {
+		return ErrInvalid
+	}
+	s.beacon.Emergency = code
+	s.beaconSends++
+	return nil
+}
+
+func (s *Stub) BeaconSendNow() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.beacon.Running {
+		return ErrDown
+	}
+	s.beaconSends++
+	return nil
+}
+
+// BeaconSends is how many beacons the stub was asked to send.
+func (s *Stub) BeaconSends() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.beaconSends
+}
+
+// SetBeaconStations puts the stations the stub has heard (newest first).
+func (s *Stub) SetBeaconStations(st []BeaconStation) {
+	s.mu.Lock()
+	s.stations = append([]BeaconStation(nil), st...)
+	s.mu.Unlock()
+}
+
+func (s *Stub) BeaconStations() []BeaconStation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]BeaconStation(nil), s.stations...)
+}
+
+// stubBudget is the spool's "<name>-<N>_frames.<ext>" (bcast_spool.c).
+var stubBudget = regexp.MustCompile(`^(.+)-([0-9]+)_frames(.*)$`)
+
+func (s *Stub) BroadcastFileInfo(file string) (string, int64) {
+	m := stubBudget.FindStringSubmatch(file)
+	if m == nil {
+		return file, -1
+	}
+	n, err := strconv.ParseInt(m[2], 10, 64)
+	if err != nil || n <= 0 {
+		return file, -1
+	}
+	return m[1] + m[3], n
 }

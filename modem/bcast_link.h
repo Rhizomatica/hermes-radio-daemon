@@ -85,6 +85,9 @@ void bcast_link_stop(void);
 int  bcast_link_send_object(const char *name, const uint8_t *data, size_t len,
                             int passes, int64_t frames_limit, char *err, size_t errlen);
 
+/* The mode's name as `mercury -l` reports it ("DATAC3"), "" out of range. */
+const char *bcast_link_mode_name(int mode);
+
 /* Frames one pass of an object of len bytes filed under name takes at the
  * mode, 0 for a mode that cannot carry files. */
 int64_t bcast_link_frames_per_pass(int mode, const char *name, size_t len);

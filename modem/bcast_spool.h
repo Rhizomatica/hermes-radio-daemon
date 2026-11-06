@@ -41,6 +41,9 @@ typedef struct {
 bool bcast_spool_start(const bcast_spool_config *cfg);
 void bcast_spool_stop(void);
 
+/* The file on the air (its path in tx) into out; false when none. */
+bool bcast_spool_current(char *out, size_t cap);
+
 /* bcast_link's on_object: move a completed file into rx. */
 void bcast_spool_on_object(const char *path, const char *name, void *user);
 

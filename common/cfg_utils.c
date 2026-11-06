@@ -36,6 +36,7 @@
 #include "bcast_link.h"
 #include "bcast_spool.h"
 #include "beacon_tx.h"
+#include "beacon.h"
 #include "dsp/rx_denoise.h"
 
 #include "radiod_log.h"
