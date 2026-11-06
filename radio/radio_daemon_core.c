@@ -35,6 +35,7 @@
 #include "modem_audio.h"
 #ifdef HAVE_MERCURY
 #include "mercury_link.h"
+#include "bcast_plane.h"
 #endif
 #include "voice_crypto.h"
 #include "gps.h"
@@ -150,6 +151,7 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     bool rtp_audio_started = false;
 #ifdef HAVE_MERCURY
     bool mercury_started = false;
+    bool bcast_started = false;
 #endif
     cpu_set_t unpinned_cpus;
     bool websocket_started = false;
@@ -241,6 +243,22 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
      * and the over-the-air position reports need it too. */
     gps_init(&radio_h);
 
+    /* The broadcast plane (files, received broadcasts, beacons) as Mercury's
+     * broadcast client, with Mercury as its own process. */
+    if (radio_h.broadcast_enable)
+    {
+#ifdef HAVE_MERCURY
+        if (radio_h.enable_mercury)
+            HLOGW(LOG_C, "main:broadcast_enable is for Mercury as its own process; "
+                         "with main:enable_mercury the broadcast plane is not running yet");
+        else
+            bcast_started = bcast_plane_start(&radio_h);
+#else
+        HLOGE(LOG_C, "main:broadcast_enable is set, but this radio_daemon was built "
+                     "without mercury (its broadcast codec); running without the broadcast plane");
+#endif
+    }
+
     if (!radio_websocket_init(&radio_h, &websocket_tid))
     {
         HLOGE(LOG_C, "cannot start the websocket service; exiting");
@@ -302,6 +320,8 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     if (rtp_audio_started)
         rtp_audio_shutdown();
 #ifdef HAVE_MERCURY
+    if (bcast_started)
+        bcast_plane_stop();
     if (mercury_started)
         mercury_link_stop();
 #endif
@@ -334,6 +354,8 @@ fail:
     if (rtp_audio_started)
         rtp_audio_shutdown();
 #ifdef HAVE_MERCURY
+    if (bcast_started)
+        bcast_plane_stop();
     if (mercury_started)
         mercury_link_stop();
 #endif

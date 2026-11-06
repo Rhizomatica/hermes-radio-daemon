@@ -50,12 +50,19 @@ TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
             tests/gui_interface/test_ui_hub tests/gui_interface/test_ws_server \
             tests/gui_interface/test_webrtc_sdp \
             tests/modem/test_rtp_audio tests/modem/test_modem_audio tests/modem/test_beacon \
+            tests/modem/test_beacon_tx \
             tests/audioio/test_audio_bridge \
             tests/dsp/test_upsample2 tests/dsp/test_stream_resampler tests/dsp/test_mic_filter \
             tests/dsp/test_digi_modes tests/dsp/test_digi_log tests/dsp/test_dstar_voice \
             tests/dsp/test_rade_voice tests/dsp/test_radae_vocoder tests/dsp/test_drm \
             tests/sbitx/test_sbitx_buffer \
             tests/common/test_radiod_log tests/common/test_async_file
+# The broadcast plane uses Mercury's codec (libmercury_host.a), so its tests
+# need the submodule.  Added here: the test rule reads TEST_BINS as it is
+# parsed.
+ifeq ($(HAVE_MERCURY),1)
+TEST_BINS += tests/modem/test_bcast_link tests/modem/test_bcast_spool
+endif
 # Browser audio end to end, against a real libdatachannel peer: only where
 # radiod itself builds with WebRTC.
 ifeq ($(HAVE_WEBRTC),1)
@@ -163,6 +170,20 @@ tests/gui_interface/test_ws_server: tests/gui_interface/test_ws_server.c $(WS_SE
 	      -o $@ -lssl -lcrypto -lpthread
 
 # ── modem/ ──────────────────────────────────────────────────────
+BCAST_TEST_FLAGS = -I$(MERCURY_DIR)/datalink_broadcast
+tests/modem/test_bcast_link: tests/modem/test_bcast_link.c modem/bcast_link.c modem/bcast_link.h \
+                             modem/beacon.c modem/beacon.h $(MERCURY_LIBS)
+	$(CC) $(TEST_CFLAGS) $(BCAST_TEST_FLAGS) $< modem/bcast_link.c modem/beacon.c $(UNITY_SRC) \
+	      $(HERMES_LOG_SRC) $(MERCURY_LIBS) -o $@ -lpthread -lm
+tests/modem/test_bcast_spool: tests/modem/test_bcast_spool.c modem/bcast_spool.c modem/bcast_spool.h \
+                              modem/bcast_link.c modem/bcast_link.h $(MERCURY_LIBS)
+	$(CC) $(TEST_CFLAGS) $(BCAST_TEST_FLAGS) $< modem/bcast_spool.c modem/bcast_link.c $(UNITY_SRC) \
+	      $(HERMES_LOG_SRC) $(MERCURY_LIBS) -o $@ -lpthread -lm
+tests/modem/test_beacon_tx: tests/modem/test_beacon_tx.c modem/beacon_tx.c modem/beacon_tx.h \
+                            modem/beacon.c modem/beacon.h dsp/digi_log.c dsp/digi_log.h
+	$(CC) $(TEST_CFLAGS) -Idsp $< modem/beacon_tx.c modem/beacon.c dsp/digi_log.c $(UNITY_SRC) \
+	      $(HERMES_LOG_SRC) -o $@ -lpthread -lm -liniparser
+
 tests/modem/test_beacon: tests/modem/test_beacon.c modem/beacon.c modem/beacon.h
 	$(CC) $(TEST_CFLAGS) $< modem/beacon.c $(UNITY_SRC) -o $@
 

@@ -433,6 +433,24 @@ typedef struct {
      * name the API last set, user.ini's main:mercury_listen_mode, applied
      * once mercury is up; "" leaves mercury's own (-m in mercury_args). */
     char mercury_listen_mode[16];
+    /* The broadcast plane, with Mercury as its own process
+     * (modem/bcast_link.h, bcast_spool.h): main:broadcast_enable makes radiod
+     * Mercury's broadcast client on main:broadcast_host:broadcast_port, in
+     * Mercury's listen mode main:broadcast_mode, sending from
+     * main:broadcast_tx_dir and receiving into main:broadcast_rx_dir. */
+    bool broadcast_enable;
+    char broadcast_host[64];
+    int  broadcast_port;
+    int  broadcast_mode;
+    char broadcast_tx_dir[256];
+    char broadcast_rx_dir[256];
+    /* Position beacons (modem/beacon_tx.h): the station's callsign, its
+     * fixed position for when there is no GPS fix, and the beacon interval
+     * while an emergency code is set. */
+    char   callsign[16];
+    bool   has_station_position;
+    double station_latitude, station_longitude;
+    int    beacon_emergency_interval_s;
     /* Logging (common/radiod_log.c, mercury's hermes_log): main:log_level,
      * main:log_component_levels ("hamlib=debug, ws=warn"), main:log_file
      * ("" for none), main:log_jsonl for the file's format and main:log_utc

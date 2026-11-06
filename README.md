@@ -18,6 +18,7 @@ Radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-net)
 - **Single in-tree websocket server** speaking one JSON dialect for both backends, with `ws://` and `wss://` (TLS) support out of the box (no Mongoose dependency)
 - **Station API** (`/api/v2` REST and the `hermes.v1` WebSocket, as specified in `api/spec/`): handlers written in Go (`api/`), linked into the daemon; the daemon's C code owns every socket. Off by default; see [Station API](#station-api-apiv2-hermesv1)
 - **Mercury HF modem inside the daemon** (`enable_mercury`): keyed and fed audio by the daemon directly, its UI traffic on the daemon's websocket
+- **Broadcast plane and position beacons** (`broadcast_enable`): radiod is Mercury's broadcast client, sending files as a RaptorQ carousel from a spool directory, filing the ones it receives, and sending and receiving the HERMES position beacon ([docs/BEACON-FORMAT.md](docs/BEACON-FORMAT.md)); see [Broadcast Plane and Position Beacons](#broadcast-plane-and-position-beacons)
 - WAV recording with remote start/stop on both backends
 - INI configuration at `/etc/hermes/core.ini` and `/etc/hermes/user.ini`
 - Optional CPU affinity pinning
@@ -787,6 +788,34 @@ FT8 rx 14.074: CQ YL3JG KO26
 CW rx 14.025: CQ DE CALLSIGN K
 RTTY tx 14.080: CQ CQ DE HERMES TEST
 ```
+
+## Broadcast Plane and Position Beacons
+
+With `broadcast_enable = 1` in `[main]`, radiod is the client on Mercury's
+KISS broadcast port (`broadcast_host:broadcast_port`, 127.0.0.1:8100), the
+role hermes-broadcast's `broadcast_daemon` used to have. Mercury runs as its
+own process (`modem.service`); radiod reconnects whenever it restarts.
+
+- **Sending files** (`modem/bcast_spool.c`):
+  - the oldest file in `broadcast_tx_dir` goes out as a RaptorQ carousel, in
+    Mercury's listen mode `broadcast_mode`;
+  - `<name>-<N>_frames.<ext>` sends N frames and then removes the file, and a
+    file without that runs until it is removed;
+  - receivers file it under `<name>.<ext>`.
+  - The carousel is Mercury's own codec (`datalink_broadcast/bcast_file.h`), so
+    it interoperates with every Mercury station.
+- **Receiving files:** each file a carousel completes appears whole in
+  `broadcast_rx_dir` under the name it was sent with. The installer's
+  `hermes-broadcast-send` and `hermes-broadcast-rx` (NNCP over the broadcast
+  plane) use these two directories.
+- **Beacons** (`modem/beacon_tx.c`):
+  - with `gps_report_enabled`, a beacon goes out every `gps_report_interval_s`,
+    and every `beacon_emergency_interval_s` while an emergency code is set;
+  - it carries `callsign` and the GPS fix, or the fixed
+    `station_latitude`/`station_longitude`;
+  - received beacons go into the digital-message log (mode `BEACON`) and
+    become their callsign's last-known position, kept in `recording_dir`.
+  - The format is [docs/BEACON-FORMAT.md](docs/BEACON-FORMAT.md).
 
 ## Audio Bridge
 
