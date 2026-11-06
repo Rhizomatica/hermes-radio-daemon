@@ -1,7 +1,7 @@
 # Store and forward: UUCP and NNCP behind one layer
 
-> **Proposal, 2026-11-06.** Nothing here is implemented yet. The decisions asked of the
-> team are at the end.
+> **Proposal, 2026-11-06; its three decisions taken the same day (at the end).** Nothing
+> here is implemented yet.
 
 Stations exchange files, commands and email in store-and-forward jobs: a job waits in a
 queue until the station calls, or is called by, the station it is for. HERMES stations do
@@ -48,7 +48,7 @@ messages, the SOS, the queue endpoints, the station list.
 | `Self()` | This station's name |
 | `SendFile(dest, name, data)` | A file into the other station's inbox |
 | `Exec(dest, handler, args, payload)` | Run an allowed handler at the other station, the payload on its standard input |
-| `Area(area, ...)` | The same two to every station of an area (NNCP only) |
+| `Area(area, ...)` | An NNCP area packet to every station of an area (NNCP only; see "Area messages") |
 | `Call(dest)` | Call the station now instead of at the next scheduled call |
 | `Queue()`, `Cancel(job)` | The jobs waiting, and removing one |
 | `Capabilities(dest)` | What the transport to `dest` can do: areas, end-to-end encryption |
@@ -63,17 +63,25 @@ messages, the SOS, the queue endpoints, the station list.
 
 ### Which transport reaches a station
 
-The proposal: **per station reached**, not per station sending. A station listed in
+**Per station reached**, not per station sending (decision 1). A station listed in
 `/etc/nncp/neigh` is reached over NNCP; one listed only in `/etc/uucp/sys`, over UUCP.
 A network can then move from UUCP to NNCP one station at a time. Where a station is
-listed in both, a setting picks which one wins (decision 1).
+listed in both, a setting picks which one wins.
+
+### Area messages
+
+An area message is not a UUCP or NNCP job to each station (decision 3). It is a file,
+most likely a tar.gz of the message, sent once on Mercury's broadcast plane, which every
+station of the area hears ([broadcast.md](broadcast.md)). radiod puts it in the
+broadcast spool like any other file; the transport the stations use doesn't matter.
+NNCP's own area packets (`Area`) stay available where NNCP is, as a capability.
 
 ## Receiving
 
 Every station runs the same small handlers, allowed on both transports. Each takes its
 payload on standard input and hands it to radiod through a drop directory
-(`/var/spool/hermes/in/<handler>/`, writable by the `uucp` and `nncp` groups). The
-handler stays small, and a job that arrives while radiod is down waits there.
+(`/var/spool/hermes/in/<handler>/`, writable by the `uucp` and `nncp` groups; decision
+2). The handler stays small, and a job that arrives while radiod is down waits there.
 
 | Handler | Carries | radiod does |
 |---|---|---|
@@ -116,11 +124,11 @@ as notifications.
 4. radiod: messages (`/messages/{id}/send`) on the layer, and the incoming watch that
    replaces `iwatch`.
 
-## Decisions asked
+## Decisions (2026-11-06)
 
-1. **Which transport reaches a station:** per station reached, as proposed, or one for
-   the whole station, as hermes-api does now. Where both list a station, which wins.
-2. **The drop directory:** one per handler under `/var/spool/hermes/in/`, as proposed, or
-   handlers that talk to radiod directly (a local socket).
-3. **Area messages over UUCP stations:** answered `not_supported`, as proposed, or
-   expanded into one job per station of the area.
+1. **Which transport reaches a station:** per station reached, not one for the whole
+   station.
+2. **Handlers hand their payload to radiod** through one drop directory per handler
+   under `/var/spool/hermes/in/`, not a local socket.
+3. **Area messages** are a file (a tar.gz) on the broadcast plane, not UUCP or NNCP jobs
+   to each station.
