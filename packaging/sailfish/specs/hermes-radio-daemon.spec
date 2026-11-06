@@ -1,11 +1,14 @@
-%global commit 2152e55
-%global gitdate 20261031
+%global commit c99915f
+%global gitdate 20261105
+# git rev-list --count %{commit}: it grows along the branch, so a later
+# commit always sorts newer, even on the same day (the hash alone may not)
+%global gitcount 481
 # The Go API layer (/api/v2, hermes.v1: what the browser pages and WebRTC
 # audio use) when a Go of api/go.mod's version or later is on the PATH;
 # --define 'have_go 0' or 1 decides it outright.
 %{!?have_go:%global have_go %(command -v go >/dev/null 2>&1 && echo 1 || echo 0)}
 Name:           hermes-radio-daemon
-Version:        0~git%{gitdate}.%{commit}
+Version:        0~git%{gitdate}.%{gitcount}.%{commit}
 Release:        1
 Summary:        HERMES radio controller daemon (radiod), with the mercury modem
 License:        GPL-3.0-or-later
