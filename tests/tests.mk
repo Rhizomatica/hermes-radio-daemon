@@ -49,7 +49,7 @@ TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
             tests/control_interfaces/test_rig_server \
             tests/gui_interface/test_ui_hub tests/gui_interface/test_ws_server \
             tests/gui_interface/test_webrtc_sdp \
-            tests/modem/test_rtp_audio tests/modem/test_modem_audio \
+            tests/modem/test_rtp_audio tests/modem/test_modem_audio tests/modem/test_beacon \
             tests/audioio/test_audio_bridge \
             tests/dsp/test_upsample2 tests/dsp/test_stream_resampler tests/dsp/test_mic_filter \
             tests/dsp/test_digi_modes tests/dsp/test_digi_log tests/dsp/test_dstar_voice \
@@ -163,6 +163,9 @@ tests/gui_interface/test_ws_server: tests/gui_interface/test_ws_server.c $(WS_SE
 	      -o $@ -lssl -lcrypto -lpthread
 
 # ── modem/ ──────────────────────────────────────────────────────
+tests/modem/test_beacon: tests/modem/test_beacon.c modem/beacon.c modem/beacon.h
+	$(CC) $(TEST_CFLAGS) $< modem/beacon.c $(UNITY_SRC) -o $@
+
 tests/modem/test_rtp_audio: tests/modem/test_rtp_audio.c modem/rtp_audio.c modem/rtp_audio.h \
                             modem/modem_audio.c modem/modem_audio.h radio/radio.h
 	$(CC) $(TEST_CFLAGS) $< modem/rtp_audio.c modem/modem_audio.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread -lm
