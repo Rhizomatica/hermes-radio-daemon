@@ -152,22 +152,34 @@ The callsign is packed in base 40, as M17 does it, into 48 bits, little-endian.
 
 ## 6. Sending
 
-These station settings live in `core.ini` and are reachable over the API:
+These station settings live in `core.ini` (`[main]`). The GPS ones are also
+`GpsSettings` in the API (`PATCH /gps/settings`):
 
 | Setting | Meaning |
 |---|---|
-| `beacon_enable` | send beacons (default off) |
-| `beacon_mode` | the broadcast frame mode, from §1's table |
-| `beacon_interval_s` | seconds between beacons; mind the mode's airtime (§1): a beacon holds the channel for 3 s on DATAC16 and 26 s on MFSK500 |
-| `beacon_emergency_interval_s` | seconds between beacons while an emergency code is set (shorter) |
+| `gps_report_enabled` | send beacons (default off) |
+| `gps_report_interval_s` | seconds between beacons (at least 60, default 900); mind the mode's airtime (§1): a beacon holds the channel for 3 s on DATAC16 and 26 s on MFSK500 |
+| `beacon_emergency_interval_s` | seconds between beacons while an emergency code is set (at least 30, default 120) |
+| `beacon_emergency` | the emergency code set, 0 for none (set over the API) |
+| `callsign` | the station's callsign, sent in each beacon; without it no beacon goes out |
+| `station_latitude`, `station_longitude` | the station's fixed position, in degrees, for when there is no GPS fix |
+| `beacon_mode` | the broadcast frame mode, from §1's table, DATAC16 by default |
+
+With Mercury as its own process, radiod reaches Mercury through its broadcast
+port only (`broadcast_enable`, `broadcast_host`, `broadcast_port`). Mercury
+sends a beacon from that port on DATAC16, so radiod sends the compact layout
+there, and `beacon_mode` takes effect with Mercury inside radiod.
 
 - **Layout:** the compact one in a 14-byte mode, the full one in every larger
   mode.
 - **Position:** the one radiod already reads from gpsd (`GET /gps`), or the
-  station's fixed position when it has no GPS.
+  station's fixed position when it has no GPS fix. With neither, no beacon
+  goes out.
 - **Emergency:** `POST /gps/sos` sets the emergency code. The station then
-  beacons at the emergency interval until the code is cleared. It still also
-  sends the SOS message to `settings.sos_recipients`, as `api-rest.yaml` says.
+  beacons at the emergency interval, whether reports are on or not, until the
+  code is cleared. Clearing it sends one beacon with code 31 (emergency over).
+  The station still also sends the SOS message to `settings.sos_recipients`,
+  as `api-rest.yaml` says.
 - **Transmitter access:** a beacon goes out only when the radio is free.
   - It never interrupts a transmission, an ARQ session or a carousel. It
     waits for them to end, and for the channel to be clear like any other

@@ -33,6 +33,9 @@
 #include "cfg_utils.h"
 #include "cat_server.h"
 #include "radio.h"
+#include "bcast_link.h"
+#include "bcast_spool.h"
+#include "beacon_tx.h"
 #include "dsp/rx_denoise.h"
 
 #include "radiod_log.h"
@@ -561,6 +564,31 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     snprintf(radio_h->mercury_config, sizeof(radio_h->mercury_config), "%s", s);
     s = iniparser_getstring(ini, "main:mercury_args", "");
     snprintf(radio_h->mercury_args, sizeof(radio_h->mercury_args), "%s", s);
+
+    radio_h->broadcast_enable = iniparser_getboolean(ini, "main:broadcast_enable", 0) != 0;
+    s = iniparser_getstring(ini, "main:broadcast_host", BCAST_LINK_DEFAULT_HOST);
+    snprintf(radio_h->broadcast_host, sizeof(radio_h->broadcast_host), "%s", s);
+    radio_h->broadcast_port = iniparser_getint(ini, "main:broadcast_port", BCAST_LINK_DEFAULT_PORT);
+    radio_h->broadcast_mode = iniparser_getint(ini, "main:broadcast_mode", BCAST_LINK_DEFAULT_MODE);
+    s = iniparser_getstring(ini, "main:broadcast_tx_dir", BCAST_SPOOL_DEFAULT_TX_DIR);
+    snprintf(radio_h->broadcast_tx_dir, sizeof(radio_h->broadcast_tx_dir), "%s", s);
+    s = iniparser_getstring(ini, "main:broadcast_rx_dir", BCAST_SPOOL_DEFAULT_RX_DIR);
+    snprintf(radio_h->broadcast_rx_dir, sizeof(radio_h->broadcast_rx_dir), "%s", s);
+
+    s = iniparser_getstring(ini, "main:callsign", "");
+    snprintf(radio_h->callsign, sizeof(radio_h->callsign), "%s", s);
+    {
+        const char *lat = iniparser_getstring(ini, "main:station_latitude", "");
+        const char *lon = iniparser_getstring(ini, "main:station_longitude", "");
+        char *end1 = NULL, *end2 = NULL;
+        double la = strtod(lat, &end1), lo = strtod(lon, &end2);
+        radio_h->has_station_position = lat[0] && lon[0] && end1 && !*end1 && end2 && !*end2 &&
+                                        fabs(la) <= BEACON_LAT_MAX_DEG && fabs(lo) <= BEACON_LON_MAX_DEG;
+        radio_h->station_latitude = radio_h->has_station_position ? la : 0;
+        radio_h->station_longitude = radio_h->has_station_position ? lo : 0;
+    }
+    i = iniparser_getint(ini, "main:beacon_emergency_interval_s", BEACON_EMERGENCY_INTERVAL_DEFAULT_S);
+    radio_h->beacon_emergency_interval_s = i >= BEACON_EMERGENCY_INTERVAL_MIN_S ? i : BEACON_EMERGENCY_INTERVAL_MIN_S;
 
     s = iniparser_getstring(ini, "main:log_level", "info");
     snprintf(radio_h->log_level, sizeof(radio_h->log_level), "%s", s);

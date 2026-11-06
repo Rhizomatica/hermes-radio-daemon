@@ -3005,11 +3005,12 @@ Type: one of `auto`, `vvc`, `lpcnet`, `none`
 | `grid` | string or null |  | FT8: Maidenhead locator, when sent; pattern `^[A-R]{2}[0-9]{2}([a-x]{2})?$` |
 | `user_id` | integer or null (int64) |  | For `tx`, the user who sent it |
 | `dstar` | object or null |  | D-STAR header, for `mode` = `DSTAR` |
+| `beacon` | object or null |  | A position beacon (docs/BEACON-FORMAT.md), for `mode` = `BEACON`; `from` is its callsign. Version 1 beacons are not authenticated: the position is as the sender reports it |
 
 <a id="schema-digimode"></a>
 ### DigiMode
 
-Type: one of `FT8`, `CW`, `RTTY`, `DSTAR`
+Type: one of `FT8`, `CW`, `RTTY`, `DSTAR`, `BEACON`
 
 <a id="schema-digisettings"></a>
 ### DigiSettings

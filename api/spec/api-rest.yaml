@@ -3469,7 +3469,7 @@ components:
 
     DigiMode:
       type: string
-      enum: [FT8, CW, RTTY, DSTAR]
+      enum: [FT8, CW, RTTY, DSTAR, BEACON]
     DigiEntry:
       type: object
       required: [id, at, mode, dir, frequency_hz]
@@ -3509,6 +3509,21 @@ components:
             rpt2: {type: string, maxLength: 8}
             encrypted: {type: boolean}
             crc_ok: {type: boolean}
+        beacon:
+          type: [object, "null"]
+          description: |
+            A position beacon (docs/BEACON-FORMAT.md), for `mode` = `BEACON`; `from` is its
+            callsign. Version 1 beacons are not authenticated: the position is as the sender
+            reports it.
+          properties:
+            latitude: {type: number, minimum: -90, maximum: 90}
+            longitude: {type: number, minimum: -180, maximum: 180}
+            emergency: {type: integer, minimum: 0, maximum: 255, description: "0 none; the codes are docs/BEACON-FORMAT.md §7."}
+            fix: {type: integer, enum: [0, 1, 2, 3], description: "0 no fix, 1 2-D, 2 3-D, 3 set by hand."}
+            altitude_m: {type: [integer, "null"]}
+            accuracy_m: {type: integer, minimum: 0, maximum: 63, description: "0 unknown, 63 worse than 62 m."}
+            layout: {type: string, enum: [compact, full]}
+            radio_mode: {type: [string, "null"], description: "The frame's Mercury mode, e.g. DATAC16, when known."}
     DigiSettings:
       type: object
       properties:

@@ -150,6 +150,11 @@ MERCURY_LIBS ?= $(MERCURY_DIR)/libmercury_host.a $(MERCURY_DIR)/modem/freedv/lib
 CFLAGS          += -DHAVE_MERCURY=1
 DAEMON_TOP_OBJS += modem/mercury_link.o
 modem/mercury_link.o: EXTRA_CPPFLAGS += -I$(MERCURY_DIR)/host
+# The broadcast plane, as Mercury's broadcast client: the carousel is
+# Mercury's own codec (datalink_broadcast/bcast_file.h, in libmercury_host.a).
+DAEMON_TOP_OBJS += modem/bcast_link.o modem/bcast_spool.o modem/bcast_plane.o \
+                   modem/beacon_tx.o modem/beacon.o
+modem/bcast_link.o: EXTRA_CPPFLAGS += -I$(MERCURY_DIR)/datalink_broadcast
 api/radiod_api.o: EXTRA_CPPFLAGS += -I$(MERCURY_DIR)/host
 # One kiss_fft in the binary: freedv's (same structs, MAXFACTORS and float
 # scalar as ft8_lib's).  The FT8 test links the same copy.
