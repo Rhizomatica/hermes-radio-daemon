@@ -87,21 +87,30 @@ func startAPIDaemon(t *testing.T, extra ...string) *Daemon {
 	return startDaemon(t, daemonOpts{core: append([]string{"api_v2_enable = 1"}, extra...)})
 }
 
-// setupAPI runs first-boot setup on a freshly started daemon and returns the
-// new admin's session token. startDaemon points the daemon at a temp database
-// and a known setup code (SETUP_CODE_PATH), so this is deterministic.
+// The admin a station starts with (api/internal/setup/default_admin.go).
+const (
+	defaultAdminUser = "root"
+	defaultAdminPass = "caduceu"
+)
+
+// setupAPI logs in as the station's default admin and makes the tests' own
+// admin ("admin" / "password1"), returning that admin's token.
 func setupAPI(t *testing.T, d *Daemon) string {
 	t.Helper()
-	r := call(t, "POST", apiBase(d)+"/setup",
-		`{"setup_code":"`+apiSetupCode+`","station_name":"Test Station","callsign":"TEST1",`+
-			`"country":"BR","language":"en","timezone":"America/Sao_Paulo",`+
-			`"admin":{"username":"admin","password":"password1","display_name":"Admin"}}`)
+	r := login(t, d, defaultAdminUser, defaultAdminPass)
 	if r.status != 201 {
-		t.Fatalf("POST /setup = %d %s\n--- daemon log ---\n%s", r.status, r.raw, d.Log())
+		t.Fatalf("login as the default admin = %d %s\n--- daemon log ---\n%s", r.status, r.raw, d.Log())
 	}
+	root, _ := r.body["token"].(string)
+	r = callAuth(t, "POST", apiBase(d)+"/users",
+		`{"username":"admin","password":"password1","display_name":"Admin","role":"admin"}`, root)
+	if r.status != 201 {
+		t.Fatalf("POST /users admin = %d %s", r.status, r.raw)
+	}
+	r = login(t, d, "admin", "password1")
 	token, _ := r.body["token"].(string)
-	if token == "" {
-		t.Fatalf("POST /setup returned no token: %s", r.raw)
+	if r.status != 201 || token == "" {
+		t.Fatalf("login as admin = %d %s", r.status, r.raw)
 	}
 	return token
 }
@@ -680,6 +689,41 @@ func TestHermesV1PTT(t *testing.T) {
 	}
 	if r := v1cmd(t, b, "5", `{"type":"cmd","id":"5","cmd":"radio.ptt","args":{"on":false}}`); r["ok"] != true || rig.cmd("t") != "0" {
 		t.Fatalf("unkey = %v", r)
+	}
+}
+
+// An AM broadcast whose keyer went away has no owner: a hermes.v1 client
+// ends it with radio.ptt off.
+func TestHermesV1EndsOwnerlessBroadcast(t *testing.T) {
+	needGoAPI(t)
+	d := startAPIDaemon(t)
+	token := setupAPI(t, d)
+	rig := dialRigctl(t, d)
+	keyer := dialRadiod(t, d)
+
+	if r := keyer.call("set_mode", map[string]any{"value": "AM"}); !r.OK {
+		t.Fatalf("set_mode AM: %+v", r)
+	}
+	if r := keyer.call("ptt_on", nil); !r.OK {
+		t.Fatalf("ptt_on: %+v", r)
+	}
+	keyer.ws.conn.Close()
+	if !eventually(5*time.Second, func() bool {
+		return regexp.MustCompile(`PTT stays ON \(AM\)`).MatchString(d.Log())
+	}) || rig.cmd("t") != "1" {
+		t.Fatalf("the broadcast did not go on\n--- daemon log ---\n%s", d.Log())
+	}
+
+	ws, _, err := wsDialAuth(strings.TrimSuffix(d.WSURL, "/")+"/api/v2/ws", "hermes.v1", token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	if r := v1cmd(t, ws, "1", `{"type":"cmd","id":"1","cmd":"radio.ptt","args":{"on":false}}`); r["ok"] != true {
+		t.Fatalf("radio.ptt off = %v\n--- daemon log ---\n%s", r, d.Log())
+	}
+	if got := rig.cmd("t"); got != "0" {
+		t.Errorf("after radio.ptt off, rigctl t = %q", got)
 	}
 }
 

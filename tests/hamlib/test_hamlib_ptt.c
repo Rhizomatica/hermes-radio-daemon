@@ -15,7 +15,10 @@
  *   - a digital-text profile (FT8/CW/RTTY) puts the rig in PKTUSB, so the
  *     tones from the data port go out whatever mode the rig was left in;
  *   - a CAT link that stops answering (the radio's USB went away and came
- *     back) is reopened, and the rig unkeyed, once it answers again.
+ *     back) is reopened, and the rig unkeyed, once it answers again;
+ *   - a frequency in another band, where the rig's band memory brings back
+ *     another mode, keeps the profile's mode;
+ *   - a digital-text profile keeps its mode across a start.
  *
  * Copyright (C) 2026 Rhizomatica
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -257,6 +260,56 @@ static void test_reopens_a_dead_cat_link(void)
     printf("  a dead CAT link is reopened .......... ok\n");
 }
 
+/* The FT-710 restores a band's last mode when the frequency moves into
+ * it; Hamlib's dummy rig does not, so the test changes the mode behind
+ * radiod's back, as the band memory would, and moves the frequency. */
+static void test_band_change_keeps_the_mode(void)
+{
+    radio local;
+    init_local(&local);
+    local.hamlib_model = RIG_MODEL_DUMMY;
+    local.rig_pathname[0] = '\0';
+    local.profiles_count = 1;
+    local.profiles[0].mode = MODE_USB;
+    local.profiles[0].freq = 7100000;
+    TEST_ASSERT_TRUE(radio_hamlib_init(&local));
+    RIG *rig = (RIG *) local.rig;
+    rmode_t m;
+    pbwidth_t w;
+    freq_t f;
+
+    TEST_ASSERT_EQUAL_INT(RIG_OK, rig_set_mode(rig, RIG_VFO_CURR, RIG_MODE_LSB, RIG_PASSBAND_NOCHANGE));
+    set_frequency(&local, 3600000, 0);
+    TEST_ASSERT_EQUAL_INT(RIG_OK, rig_get_mode(rig, RIG_VFO_CURR, &m, &w));
+    TEST_ASSERT_EQUAL_STRING("USB", rig_strrmode(m));
+    TEST_ASSERT_EQUAL_INT(RIG_OK, rig_get_freq(rig, RIG_VFO_CURR, &f));
+    TEST_ASSERT_EQUAL_DOUBLE(3600000.0, f);
+
+    radio_hamlib_shutdown(&local);
+    printf("  a band change keeps the mode ......... ok\n");
+}
+
+/* At start radiod mirrors the rig's state into the active profile; the
+ * rig's PKTUSB reads back as USB, which an FT8 profile must not become. */
+static void test_start_keeps_a_digital_mode(void)
+{
+    static const uint16_t modes[] = { MODE_FT8, MODE_CW, MODE_RTTY };
+    for (int i = 0; i < 3; i++) {
+        radio local;
+        init_local(&local);
+        local.hamlib_model = RIG_MODEL_DUMMY;
+        local.rig_pathname[0] = '\0';
+        local.profiles_count = 1;
+        local.profiles[0].mode = modes[i];
+        local.profiles[0].operating_mode = OPERATING_MODE_FULL_LOOPBACK;
+        local.profiles[0].freq = 7074000;
+        TEST_ASSERT_TRUE(radio_hamlib_init(&local));
+        TEST_ASSERT_EQUAL_STRING(mode_to_string(modes[i]), mode_to_string(local.profiles[0].mode));
+        radio_hamlib_shutdown(&local);
+    }
+    printf("  a start keeps a digital mode ......... ok\n");
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -272,6 +325,8 @@ int main(void)
     RUN_TEST(test_shutdown_unkeys_whatever_the_cache);
     RUN_TEST(test_force_ptt_off);
     RUN_TEST(test_reopens_a_dead_cat_link);
+    RUN_TEST(test_band_change_keeps_the_mode);
+    RUN_TEST(test_start_keeps_a_digital_mode);
     int failed = UNITY_END();
 
     rig_server_stop();

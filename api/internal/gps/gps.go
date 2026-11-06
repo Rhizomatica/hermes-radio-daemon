@@ -6,20 +6,23 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 
 	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/logging"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/spec"
 )
 
 // Register adds the GPS operations and the gps topic.
 func Register(rt *api.Router) {
-	h := handlers{r: rt.Radio(), mu: &sync.Mutex{}}
+	h := handlers{r: rt.Radio(), mu: &sync.Mutex{}, log: logging.New(rt.Radio(), "api.tx")}
 	rt.Op("getGps", h.getGps)
 	rt.Op("updateGpsSettings", h.updateSettings)
+	registerBeacon(rt, h)
 
 	// The station's own Gps, pushed as it changes (change: self). Other
 	// stations' positions (change: peers) are not there yet.
@@ -29,8 +32,9 @@ func Register(rt *api.Router) {
 }
 
 type handlers struct {
-	r  rad.Radio
-	mu *sync.Mutex
+	r   rad.Radio
+	mu  *sync.Mutex
+	log *slog.Logger
 }
 
 // ── response schemas (api-rest.yaml components) ──

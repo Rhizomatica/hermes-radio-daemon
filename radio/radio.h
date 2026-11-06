@@ -245,6 +245,29 @@ typedef struct {
     _Atomic uint16_t dv_restore_mode;
 } radio_profile;
 
+/* Whether the profile's received audio is noise-reduced: noise_reduction ON
+ * on a voice profile (operating_mode 0), in a mode people listen to. The
+ * modem's profile, FT8, RTTY, DRM and digital voice are tones and data,
+ * which the denoiser would only smear. The same on every backend. */
+static inline bool radio_profile_denoised(const radio_profile *p)
+{
+    uint16_t m = p->mode;
+    return p->noise_reduction == NOISE_REDUCTION_ON && !p->digital_voice &&
+           p->operating_mode == OPERATING_MODE_FULL_VOICE &&
+           (m == MODE_USB || m == MODE_LSB || m == MODE_AM || m == MODE_FM || m == MODE_CW);
+}
+
+/* Whether radiod makes the profile's whole transmission itself: FT8, CW and
+ * RTTY are typed text, sent as tones into tx_audio_ring. Audio from outside
+ * (the ALSA loopback) must stay out of that ring then, or it interleaves
+ * with the tones: the codec played FT8 cut up with the loopback's silence,
+ * four times too long, and nothing decoded it. */
+static inline bool radio_profile_tx_is_text(const radio_profile *p)
+{
+    uint16_t m = p->mode;
+    return m == MODE_FT8 || m == MODE_CW || m == MODE_RTTY;
+}
+
 /* Main radio handle. One instance per process; passed to every backend
  * vtable function. Backend-specific fields (rig handle, encoders, hw GPIO
  * mutex) coexist; each backend uses what it needs. */
@@ -266,6 +289,15 @@ typedef struct {
     /* ── sbitx hardware backend ──────────────────────────────────── */
     char i2c_device[64];
     char dream_path[256];
+    /* DRM transmission (Dream, dsp/sbitx_drm.h): robustness mode 'A'..'D',
+     * spectrum occupancy 0..5 (3: the 10 kHz HF channel), MSC 16 or
+     * 64-QAM, protection level 0..3, the service's codec and label, and the
+     * I/Q's level into the transmitter */
+    char  drm_robustness;
+    int   drm_spectrum, drm_msc_qam, drm_protection;
+    char  drm_codec[16];
+    char  drm_label[17];
+    float drm_tx_gain;
     int  i2c_bus;
     pthread_mutex_t i2c_mutex;
     pthread_mutex_t gpio_mutex;
@@ -401,6 +433,24 @@ typedef struct {
      * name the API last set, user.ini's main:mercury_listen_mode, applied
      * once mercury is up; "" leaves mercury's own (-m in mercury_args). */
     char mercury_listen_mode[16];
+    /* The broadcast plane, with Mercury as its own process
+     * (modem/bcast_link.h, bcast_spool.h): main:broadcast_enable makes radiod
+     * Mercury's broadcast client on main:broadcast_host:broadcast_port, in
+     * Mercury's listen mode main:broadcast_mode, sending from
+     * main:broadcast_tx_dir and receiving into main:broadcast_rx_dir. */
+    bool broadcast_enable;
+    char broadcast_host[64];
+    int  broadcast_port;
+    int  broadcast_mode;
+    char broadcast_tx_dir[256];
+    char broadcast_rx_dir[256];
+    /* Position beacons (modem/beacon_tx.h): the station's callsign, its
+     * fixed position for when there is no GPS fix, and the beacon interval
+     * while an emergency code is set. */
+    char   callsign[16];
+    bool   has_station_position;
+    double station_latitude, station_longitude;
+    int    beacon_emergency_interval_s;
     /* Logging (common/radiod_log.c, mercury's hermes_log): main:log_level,
      * main:log_component_levels ("hamlib=debug, ws=warn"), main:log_file
      * ("" for none), main:log_jsonl for the file's format and main:log_utc
@@ -472,6 +522,11 @@ typedef struct {
     /* Run-time tunable: enable the specbleach denoise front-end on the
      * D-STAR TX mic path (1 on, 0 off). */
     _Atomic uint16_t dstar_denoise;
+    /* A Hamlib rig's listening audio, on a profile with noise_reduction ON
+     * (dsp/rx_denoise.h): how far the noise comes down (dB) and how hard
+     * noise is told from signal (0-1). */
+    float rx_nr_reduction_db;
+    float rx_nr_strength;
     /* Opt-in D-STAR voice encryption (dsp/dstar_voice.h): 1 encrypts every
      * over this station sends, with the key from voice_key_file. Receiving
      * decrypts whenever a key is loaded, whatever this is set to. */

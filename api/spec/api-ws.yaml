@@ -611,6 +611,7 @@ components:
         volume: { type: integer, minimum: 0, maximum: 100 }
         filter_width_hz: { type: integer }
         digital_voice: { type: boolean }
+        noise_reduction: { type: boolean }
     SelectProfileArgs:
       type: object
       title: radio.select_profile (operator)

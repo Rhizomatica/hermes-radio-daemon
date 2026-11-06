@@ -1,7 +1,10 @@
 %global commit a8e56d7
 %global gitdate 20261031
+# git rev-list --count %{commit}: it grows along the branch, so a later
+# commit always sorts newer, even on the same day (the hash alone may not)
+%global gitcount 229
 Name:           mbelib-neo
-Version:        2.6.5~git%{gitdate}.%{commit}
+Version:        2.6.5~git%{gitdate}.%{gitcount}.%{commit}
 Release:        1
 Summary:        AMBE and IMBE vocoder library
 License:        ISC and GPL-2.0-or-later

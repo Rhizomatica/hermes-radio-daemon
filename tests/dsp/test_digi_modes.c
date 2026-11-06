@@ -7,6 +7,8 @@
  * the CW keyer sent no gaps between elements and its detector never
  * triggered on normalized audio, and RTTY looked for frames only at fixed
  * block starts, read the stop/start bits as data and sent 1 as space.
+ * Then both listened only at cw_pitch / rtty_mark; they are skimmers now,
+ * and two stations at once, away from those, must decode.
  */
 #include <math.h>
 #include <stdio.h>
@@ -17,6 +19,10 @@
 #include "dsp/sbitx_cw.h"
 #include "dsp/sbitx_rtty.h"
 #include "dsp/sbitx_ft8.h"
+#include "dsp/ft8_js8.h"
+#include "dsp/ft8_subtract.h"
+#include "ft8/encode.h"
+#include "ft8/message.h"
 #include "dsp/digi_log.h"
 #include <unistd.h>
 #include "unity.h"
@@ -51,43 +57,84 @@ static int to12k(const float *x96, int n, float noise_rms, float *y)
     return m;
 }
 
-static char rx_text[512];
-static int  rx_len;
-static void rtty_cb(char c)
+/* What the skimmers gave out: every line's text joined by spaces, and the
+ * lines one by one with their tone, to check a station at a time. */
+#define MAX_LINES 32
+static char  rx_text[1024];
+static int   rx_len;
+static struct { char text[128]; float hz; bool reversed; } rx_lines[MAX_LINES];
+static int   rx_nlines;
+
+static void rx_add(const char *text, float hz, bool reversed)
 {
-    if (c != '\r' && c != '\n' && rx_len < (int) sizeof(rx_text) - 1)
-        rx_text[rx_len++] = c;
+    if (rx_len > 0 && rx_len < (int) sizeof rx_text - 1)
+        rx_text[rx_len++] = ' ';
+    for (const char *p = text; *p && rx_len < (int) sizeof rx_text - 1; p++)
+        rx_text[rx_len++] = *p;
     rx_text[rx_len] = '\0';
+    if (rx_nlines < MAX_LINES) {
+        snprintf(rx_lines[rx_nlines].text, sizeof rx_lines[0].text, "%s", text);
+        rx_lines[rx_nlines].hz = hz;
+        rx_lines[rx_nlines].reversed = reversed;
+        rx_nlines++;
+    }
 }
 
+static void rx_clear(void)
+{
+    rx_len = 0;
+    rx_text[0] = '\0';
+    rx_nlines = 0;
+}
+
+static void cw_cb(const sbitx_cw_rx_line *l, void *user)
+{
+    (void) user;
+    rx_add(l->text, l->pitch_hz, false);
+}
+
+static void rtty_cb(const sbitx_rtty_rx_line *l, void *user)
+{
+    (void) user;
+    rx_add(l->text, l->mark_hz, l->reversed);
+}
+
+/* In DSP-sized blocks, as the RX paths feed them. */
 static const char *cw_decode(const float *y, int m)
 {
-    rx_len = 0; rx_text[0] = '\0';
+    rx_clear();
     sbitx_cw_init(20, 700);
-    int blk = sbitx_cw_rx_samples_per_block();
-    for (int p = 0; p + blk <= m; p += blk) {
-        char d[64];
-        int g = sbitx_cw_rx_process(y + p, blk, d, sizeof d, 20, 700);
-        for (int i = 0; i < g && rx_len < (int) sizeof(rx_text) - 1; i++)
-            rx_text[rx_len++] = d[i];
-    }
-    rx_text[rx_len] = '\0';
-    while (rx_len > 0 && rx_text[rx_len - 1] == ' ')
-        rx_text[--rx_len] = '\0';
+    for (int p = 0; p < m; p += 600)
+        sbitx_cw_rx_feed(y + p, m - p < 600 ? m - p : 600, cw_cb, NULL);
+    sbitx_cw_rx_flush(cw_cb, NULL);
     return rx_text;
 }
 
 static const char *rtty_decode(const float *y, int m)
 {
-    rx_len = 0; rx_text[0] = '\0';
+    rx_clear();
     sbitx_rtty_init(45, 1585, 170);
-    int blk = sbitx_rtty_rx_samples_per_block();
-    for (int p = 0; p + blk <= m; p += blk)
-        sbitx_rtty_rx_process(y + p, blk, 45, 1585, 170, rtty_cb);
+    for (int p = 0; p < m; p += 600)
+        sbitx_rtty_rx_feed(y + p, m - p < 600 ? m - p : 600, 45, 170, rtty_cb, NULL);
+    sbitx_rtty_rx_flush(rtty_cb, NULL);
     return rx_text;
 }
 
-/* Signal amplitudes: CW 1.0, RTTY 0.4 (the encoders'). Noise RMS is over
+/* The line nearest hz, or "". */
+static const char *rx_line_at(float hz, float *got_hz)
+{
+    const char *best = "";
+    float d = 1e9f;
+    for (int i = 0; i < rx_nlines; i++)
+        if (fabsf(rx_lines[i].hz - hz) < d) {
+            d = fabsf(rx_lines[i].hz - hz);
+            best = rx_lines[i].text;
+            *got_hz = rx_lines[i].hz;
+        }
+    return best;
+}
+
+/* Signal amplitudes: CW and RTTY 0.4 (the encoders'). Noise RMS is over
  * the full 48 kHz band at 96 kHz; the decoders see ~1/16 of it (3 kHz). */
 static void check_cw(float noise_rms)
 {
@@ -114,6 +161,149 @@ static void check_rtty(float noise_rms)
     const char *got = rtty_decode(y, m);
     printf("RTTY noise %.3f: [%s]\n", noise_rms, got);
     TEST_ASSERT_EQUAL_STRING_MESSAGE("RYRY HERMES TEST RTTY 73", got, test_msg("RTTY at noise %.3f decoded [%s]", noise_rms, got));
+}
+
+/* Two CW stations at once, at their own pitches and speeds, neither at
+ * cw_pitch: the old receiver heard neither. */
+static void test_cw_two_stations(void)
+{
+    static float x[96000 * 14], y[12000 * 14];
+    static float a[96000 * 12];
+    memset(x, 0, sizeof x);
+    int na = sbitx_cw_encode("CQ DE PY2ABC K", a, 96000 * 12, 16, 560);
+    for (int i = 0; i < na && 96000 + i < 96000 * 14; i++) x[96000 + i] += a[i];
+    int nb = sbitx_cw_encode("TEST DE LU1XYZ", a, 96000 * 12, 28, 1430);
+    for (int i = 0; i < nb && 48000 + i < 96000 * 14; i++) x[48000 + i] += 0.7f * a[i];
+    int m = to12k(x, 96000 * 14, 0.2f, y);
+    cw_decode(y, m);
+    float hz_a = 0, hz_b = 0;
+    char la[128], lb[128];
+    snprintf(la, sizeof la, "%s", rx_line_at(560, &hz_a));
+    snprintf(lb, sizeof lb, "%s", rx_line_at(1430, &hz_b));
+    printf("CW   two stations: %.0f Hz [%s], %.0f Hz [%s]\n", hz_a, la, hz_b, lb);
+    TEST_ASSERT_EQUAL_STRING("CQ DE PY2ABC K", la);
+    TEST_ASSERT_EQUAL_STRING("TEST DE LU1XYZ", lb);
+    TEST_ASSERT_FLOAT_WITHIN(5.0f, 560.0f, hz_a);
+    TEST_ASSERT_FLOAT_WITHIN(5.0f, 1430.0f, hz_b);
+}
+
+/* A message longer than the 8 s TX buffer goes out whole, in parts played
+ * one after another (sbitx_cw_encode_part, sbitx_rtty_encode_part): it was
+ * cut at 8 s, mid-word. */
+static void test_cw_long_message_in_parts(void)
+{
+    static const char msg[] = "CQ TEST DE PY2XYZ PY2XYZ PY2XYZ TESTING THE LONG MESSAGE K";
+    static float x[96000 * 60], y[12000 * 60], part[96000 * 8];
+    int n = 96000, parts = 0;
+    memset(x, 0, sizeof x);
+    const char *rest = msg;
+    int k;
+    while ((k = sbitx_cw_encode_part(&rest, part, 96000 * 8, 20, 700)) > 0) {
+        TEST_ASSERT_TRUE_MESSAGE(n + k < 96000 * 59, "fits the test buffer");
+        memcpy(x + n, part, (size_t) k * sizeof(float));
+        n += k;
+        parts++;
+    }
+    int m = to12k(x, n + 96000, 0.05f, y);
+    const char *got = cw_decode(y, m);
+    printf("CW   long message, %d parts, %.1f s: [%s]\n", parts, n / 96000.0, got);
+    TEST_ASSERT_GREATER_THAN_INT(1, parts);
+    TEST_ASSERT_EQUAL_STRING(msg, got);
+}
+
+/* A word longer than a whole part (2 s here, 8 s on air at 8 WPM): its
+ * characters go out over two parts, none lost. */
+static void test_cw_long_word_in_parts(void)
+{
+    static const char msg[] = "DE PY2XYZ ABCDEFGHIJKLMN K";
+    static float x[96000 * 30], y[12000 * 30], part[96000 * 2];
+    int n = 96000, parts = 0;
+    memset(x, 0, sizeof x);
+    const char *rest = msg;
+    int k;
+    while ((k = sbitx_cw_encode_part(&rest, part, 96000 * 2, 20, 700)) > 0) {
+        TEST_ASSERT_TRUE_MESSAGE(n + k < 96000 * 29, "fits the test buffer");
+        TEST_ASSERT_TRUE_MESSAGE(k < 96000 * 2, "a part is not cut at the buffer's end");
+        memcpy(x + n, part, (size_t) k * sizeof(float));
+        n += k;
+        parts++;
+    }
+    int m = to12k(x, n + 96000, 0.05f, y);
+    const char *got = cw_decode(y, m);
+    printf("CW   long word, %d parts, %.1f s: [%s]\n", parts, n / 96000.0, got);
+    TEST_ASSERT_EQUAL_STRING(msg, got);
+}
+
+static void test_rtty_long_message_in_parts(void)
+{
+    static const char msg[] = "CQ CQ CQ DE PY2XYZ PY2XYZ RTTY TEST, A MESSAGE LONGER THAN EIGHT SECONDS OF RTTY AT 45 BAUD K";
+    static float x[96000 * 40], y[12000 * 40], part[96000 * 8];
+    int n = 9600, parts = 0;
+    memset(x, 0, sizeof x);
+    const char *rest = msg;
+    bool first = true;
+    int k;
+    while ((k = sbitx_rtty_encode_part(&rest, first, part, 96000 * 8, 45, 1585, 170)) > 0) {
+        TEST_ASSERT_TRUE_MESSAGE(n + k < 96000 * 39, "fits the test buffer");
+        memcpy(x + n, part, (size_t) k * sizeof(float));
+        n += k;
+        parts++;
+        first = false;
+    }
+    int m = to12k(x, n + 9600, 0.05f, y);
+    const char *got = rtty_decode(y, m);
+    printf("RTTY long message, %d parts, %.1f s: [%s]\n", parts, n / 96000.0, got);
+    TEST_ASSERT_GREATER_THAN_INT(1, parts);
+    TEST_ASSERT_EQUAL_STRING(msg, got);
+}
+
+/* A comb of birdies, more of them than there are CW channels, and then a
+ * station between two of them: steady carriers take no channel, so the
+ * station still gets one. */
+static void test_cw_among_birdies(void)
+{
+    static float x[96000 * 16], y[12000 * 16], a[96000 * 10];
+    memset(x, 0, sizeof x);
+    for (int k = 0; k < 18; k++) {             /* 300, 450 ... 2850 Hz */
+        float w = 2.0f * (float) M_PI * (300.0f + 150.0f * k) / 96000.0f;
+        for (int i = 0; i < 96000 * 16; i++)
+            x[i] += 0.05f * sinf(w * (float) i + (float) k);
+    }
+    int na = sbitx_cw_encode("CQ DE PY2ABC K", a, 96000 * 10, 20, 1125);
+    for (int i = 0; i < na && 96000 * 5 + i < 96000 * 16; i++)
+        x[96000 * 5 + i] += a[i];
+    int m = to12k(x, 96000 * 16, 0.05f, y);
+    cw_decode(y, m);
+    float hz = 0;
+    char line[128];
+    snprintf(line, sizeof line, "%s", rx_line_at(1125, &hz));
+    printf("CW   among 18 birdies: %.0f Hz [%s], %d lines\n", hz, line, rx_nlines);
+    TEST_ASSERT_EQUAL_STRING("CQ DE PY2ABC K", line);
+    TEST_ASSERT_FLOAT_WITHIN(5.0f, 1125.0f, hz);
+}
+
+/* Two RTTY stations at once, away from rtty_mark, one of them reversed
+ * (mark the lower tone): both decode, each in its own polarity. */
+static void test_rtty_two_stations(void)
+{
+    static float x[96000 * 12], y[12000 * 12], a[96000 * 10];
+    memset(x, 0, sizeof x);
+    int na = sbitx_rtty_encode("CQ CQ DE PY2RTY K", a, 96000 * 10, 45, 915, 170);
+    for (int i = 0; i < na && 48000 + i < 96000 * 12; i++) x[48000 + i] += a[i];
+    /* reversed: the "mark" given is the lower tone's space */
+    int nb = sbitx_rtty_encode("599 001 BK", a, 96000 * 10, 45, 2040, -170);
+    for (int i = 0; i < nb && 96000 + i < 96000 * 12; i++) x[96000 + i] += a[i];
+    int m = to12k(x, 96000 * 12, 0.2f, y);
+    rtty_decode(y, m);
+    float hz_a = 0, hz_b = 0;
+    char la[128], lb[128];
+    snprintf(la, sizeof la, "%s", rx_line_at(915, &hz_a));
+    snprintf(lb, sizeof lb, "%s", rx_line_at(2040, &hz_b));
+    printf("RTTY two stations: %.0f Hz [%s], %.0f Hz [%s]\n", hz_a, la, hz_b, lb);
+    TEST_ASSERT_EQUAL_STRING("CQ CQ DE PY2RTY K", la);
+    TEST_ASSERT_EQUAL_STRING("599 001 BK", lb);
+    TEST_ASSERT_FLOAT_WITHIN(5.0f, 915.0f, hz_a);
+    TEST_ASSERT_FLOAT_WITHIN(5.0f, 2040.0f, hz_b);
 }
 
 static void check_ft8(float noise_rms)
@@ -198,6 +388,21 @@ static void test_ft8_log_once(void)
     entries = 0;
     for (const char *p = arr; p && (p = strstr(p, "\"id\":")); p++) entries++;
     TEST_ASSERT_EQUAL_INT64_MESSAGE(2, entries, test_msg("a repeat 15 s later should be logged: %d entries", entries));
+    free(arr);
+
+    /* A hashed call named between two windows of one transmission is still
+     * that transmission. */
+    sbitx_ft8_decode_result h = r;
+    snprintf(h.text, sizeof h.text, "<...> PU2UIT GG66");
+    h.time_s = 4.0f;
+    sbitx_ft8_log_decodes(&h, 1, start + 30.0 - 4.0, 14074000);
+    snprintf(h.text, sizeof h.text, "<PJ2/PY2XYZ> PU2UIT GG66");
+    h.time_s = 2.0f;
+    sbitx_ft8_log_decodes(&h, 1, start + 30.0 - 2.0, 14074000);
+    arr = digi_log_last_json(10);
+    entries = 0;
+    for (const char *p = arr; p && (p = strstr(p, "\"id\":")); p++) entries++;
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(3, entries, test_msg("a hashed call named between windows: %d entries", entries));
     free(arr);
 
     char cmd[300];
@@ -312,6 +517,181 @@ static void test_ft8_snr_falls_with_noise(void)
         test_msg("FT8 SNR should fall with noise: %.0f dB quiet, %.0f dB noisy", snr_quiet, snr_noisy));
 }
 
+/* One FT8 reception at 12 kHz: the message at 1500 Hz, starting `lead`
+ * seconds into a 15 s window, in Gaussian noise of its own (seeded). */
+static void ft8_reception(float *w, float noise_rms, float lead, unsigned seed)
+{
+    static float s12[12000 * 16];
+    int n12 = sbitx_ft8_encode("PU2UIT PY2XYZ -12", s12, 12000 * 16, 1500.0f);
+    uint64_t x = 0x9e3779b97f4a7c15ULL * (seed + 1);
+    for (int i = 0; i < 12000 * 15; i++) {
+        /* Box-Muller on a 64-bit LCG: the same noise on every run */
+        x = x * 6364136223846793005ULL + 1442695040888963407ULL;
+        double u1 = ((x >> 11) + 1.0) / 9007199254740993.0;
+        x = x * 6364136223846793005ULL + 1442695040888963407ULL;
+        double u2 = (x >> 11) / 9007199254740992.0;
+        w[i] = noise_rms * (float) (sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2));
+    }
+    int at = (int) (lead * 12000);
+    for (int i = 0; i < n12 && at + i < 12000 * 15; i++)
+        w[at + i] += 0.1f * s12[i];
+}
+
+static int ft8_decodes_at(float *w, double start_s)
+{
+    sbitx_ft8_decode_result r[8];
+    int n = sbitx_ft8_decode_at(w, 12000 * 15, start_s, r, 8);
+    for (int i = 0; i < n; i++)
+        if (!strcmp(r[i].text, "PU2UIT PY2XYZ -12"))
+            return r[i].pass == FT8_JS8_COMBINE ? 2 : 1;
+    return 0;
+}
+
+/* A message too weak to decode from one reception decodes from two, 15 s
+ * apart (a repeat), added together: and at the same level, two windows of
+ * ONE transmission (2 s apart, as the digi pump's overlap) are not added,
+ * which would only count it twice. */
+static void test_ft8_combining(void)
+{
+    static float a[12000 * 15], b[12000 * 15];
+    unsigned saved = ft8_js8_passes;
+    float level = 0.0f;
+
+    for (float noise = 0.3f; noise < 3.0f && level == 0.0f; noise += 0.05f) {
+        ft8_js8_passes = 0;                         /* one reception, ft8_lib alone */
+        ft8_reception(a, noise, 0.5f, 1);
+        if (ft8_decodes_at(a, 1000.0))
+            continue;
+        ft8_js8_passes = FT8_JS8_COMBINE;
+        ft8_js8_reset();
+        ft8_reception(a, noise, 0.5f, 1);
+        ft8_reception(b, noise, 0.5f, 2);
+        int first = ft8_decodes_at(a, 1000.0), second = ft8_decodes_at(b, 1015.0);
+        if (!first && second == 2)
+            level = noise;
+    }
+    printf("FT8  combining: two receptions decode at noise %.2f where one does not\n", level);
+    TEST_ASSERT_TRUE_MESSAGE(level > 0.0f, "no noise level where two receptions decode and one does not");
+
+    /* the same transmission twice: the second window starts 2 s later, so
+     * the signal sits 2 s earlier in it */
+    ft8_js8_passes = FT8_JS8_COMBINE;
+    ft8_js8_reset();
+    ft8_reception(a, level, 2.5f, 1);
+    ft8_reception(b, level, 0.5f, 1);
+    int one = ft8_decodes_at(a, 1000.0), same = ft8_decodes_at(b, 1002.0);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, one + same, "one transmission, seen in two overlapping windows, was combined");
+
+    ft8_js8_passes = saved;
+    ft8_js8_reset();
+}
+
+/* Every pass on: what ft8_lib decodes alone still decodes, as itself. */
+static void test_ft8_passes_keep_clean(void)
+{
+    static float a[12000 * 15];
+    sbitx_ft8_decode_result r[8];
+    ft8_js8_reset();
+    ft8_reception(a, 0.05f, 0.5f, 3);
+    int n = sbitx_ft8_decode_at(a, 12000 * 15, 2000.0, r, 8);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, n, test_msg("%d decodes of a clean signal", n));
+    TEST_ASSERT_EQUAL_STRING("PU2UIT PY2XYZ -12", r[0].text);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, r[0].pass, test_msg("a clean signal decoded by pass %d, not ft8_lib's", r[0].pass));
+}
+
+/* A message as other stations send it (GFSK, from ft8_subtract), added to
+ * w at freq_hz, `lead` seconds into the window. */
+static void ft8_add(float *w, const char *text, float freq_hz, float amp, float lead)
+{
+    static float s[FT8_WAVEFORM_SAMPLES];
+    ftx_message_t msg;
+    uint8_t tones[FT8_NN];
+    TEST_ASSERT_EQUAL_INT_MESSAGE(FTX_MESSAGE_RC_OK, ftx_message_encode(&msg, NULL, text),
+                                  test_msg("cannot encode [%s]", text));
+    ft8_encode(msg.payload, tones);
+    ft8_waveform(tones, freq_hz, s);
+    int at = (int) (lead * 12000);
+    for (int i = 0; i < FT8_WAVEFORM_SAMPLES && at + i < 12000 * 15; i++)
+        w[at + i] += amp * s[i];
+}
+
+static bool ft8_window_has(float *w, const char *text)
+{
+    static float copy[12000 * 15];
+    sbitx_ft8_decode_result r[16];
+    memcpy(copy, w, sizeof copy);       /* the decoder may keep it */
+    int n = sbitx_ft8_decode_at(copy, 12000 * 15, -1.0, r, 16);
+    for (int i = 0; i < n; i++)
+        if (!strcmp(r[i].text, text))
+            return true;
+    return false;
+}
+
+/* A weak station 20 Hz beside a strong one, its tones among the strong
+ * one's: there is a level where it decodes only once the strong one is
+ * subtracted, and the strong one decodes either way. */
+static void test_ft8_subtraction(void)
+{
+    static float w[12000 * 15];
+    int saved = sbitx_ft8_subtract_passes;
+    float level = 0.0f;
+
+    for (float amp = 0.5f; amp > 0.005f && level == 0.0f; amp *= 0.8f) {
+        memset(w, 0, sizeof w);
+        ft8_add(w, "CQ PU2UIT GG66", 1500.0f, 1.0f, 0.5f);
+        ft8_add(w, "CQ PY2XYZ GG67", 1520.0f, amp, 0.62f);
+        sbitx_ft8_subtract_passes = 1;
+        if (ft8_window_has(w, "CQ PY2XYZ GG67"))
+            continue;
+        TEST_ASSERT_TRUE_MESSAGE(ft8_window_has(w, "CQ PU2UIT GG66"), "the strong station did not decode");
+        sbitx_ft8_subtract_passes = 2;
+        if (ft8_window_has(w, "CQ PY2XYZ GG67"))
+            level = amp;
+    }
+    sbitx_ft8_subtract_passes = saved;
+    printf("FT8  subtraction: a station %.0f dB under another, 20 Hz beside it, decodes only after it\n",
+           20.0f * log10f(level));
+    TEST_ASSERT_TRUE_MESSAGE(level > 0.0f, "no level where the weak station decodes only after subtraction");
+}
+
+/* ft8_waveform's signal, subtracted where it is, leaves only noise. */
+static void test_ft8_subtract_clean(void)
+{
+    static float w[12000 * 15];
+    ftx_message_t msg;
+    uint8_t tones[FT8_NN];
+    ftx_message_encode(&msg, NULL, "PU2UIT PY2XYZ -12");
+    ft8_encode(msg.payload, tones);
+    memset(w, 0, sizeof w);
+    ft8_add(w, "PU2UIT PY2XYZ -12", 1234.5f, 0.5f, 0.537f);
+    double before = 0.0, after = 0.0;
+    for (int i = 0; i < 12000 * 15; i++)
+        before += (double) w[i] * w[i];
+    /* the decoder's estimate is a bin and a time step off */
+    TEST_ASSERT_TRUE(ft8_subtract(w, 12000 * 15, tones, 1232.0f, 0.5f));
+    for (int i = 0; i < 12000 * 15; i++)
+        after += (double) w[i] * w[i];
+    printf("FT8  subtract: %.1f dB of the signal left\n", 10.0 * log10(after / before));
+    TEST_ASSERT_TRUE_MESSAGE(after < before * 1e-3, test_msg("%.1f dB of the signal left", 10.0 * log10(after / before)));
+}
+
+/* A hashed callsign (<...>) is named once it has been heard in full. */
+static void test_ft8_hashed_call(void)
+{
+    static float w[12000 * 15];
+    sbitx_ft8_forget_calls();
+    memset(w, 0, sizeof w);
+    ft8_add(w, "PJ2/PY2XYZ PU2UIT GG66", 1500.0f, 0.5f, 0.5f);   /* sent hashed */
+    TEST_ASSERT_TRUE_MESSAGE(ft8_window_has(w, "<...> PU2UIT GG66"), "the hashed call did not decode as <...>");
+    memset(w, 0, sizeof w);
+    ft8_add(w, "CQ PJ2/PY2XYZ", 1000.0f, 0.5f, 0.5f);
+    TEST_ASSERT_TRUE_MESSAGE(ft8_window_has(w, "CQ PJ2/PY2XYZ"), "CQ PJ2/PY2XYZ did not decode");
+    memset(w, 0, sizeof w);
+    ft8_add(w, "PJ2/PY2XYZ PU2UIT GG66", 1500.0f, 0.5f, 0.5f);   /* sent hashed */
+    TEST_ASSERT_TRUE_MESSAGE(ft8_window_has(w, "<PJ2/PY2XYZ> PU2UIT GG66"), "the hashed call was not named once heard");
+    sbitx_ft8_forget_calls();
+}
+
 static void test_ft8_fields_report(void)    { check_ft8_fields("PU2UIT PY2XYZ -12", 0.05f, "PU2UIT", "PY2XYZ", ""); }
 static void test_ft8_fields_rr73(void)      { check_ft8_fields("PU2UIT PY2XYZ RR73", 0.05f, "PU2UIT", "PY2XYZ", ""); }
 
@@ -350,6 +730,11 @@ int main(void)
     RUN_TEST(test_ft8_fields_report);
     RUN_TEST(test_ft8_fields_rr73);
     RUN_TEST(test_ft8_grid_field);
+    RUN_TEST(test_ft8_combining);
+    RUN_TEST(test_ft8_passes_keep_clean);
+    RUN_TEST(test_ft8_subtract_clean);
+    RUN_TEST(test_ft8_subtraction);
+    RUN_TEST(test_ft8_hashed_call);
     RUN_TEST(test_ft8_fields_free_text);
     RUN_TEST(test_ft8_log_once);
     RUN_TEST(test_ft8_same_text_two_stations);
@@ -358,6 +743,12 @@ int main(void)
     RUN_TEST(test_cw_noisy);
     RUN_TEST(test_rtty_clean);
     RUN_TEST(test_rtty_noisy);
+    RUN_TEST(test_cw_two_stations);
+    RUN_TEST(test_rtty_two_stations);
+    RUN_TEST(test_cw_among_birdies);
+    RUN_TEST(test_cw_long_message_in_parts);
+    RUN_TEST(test_cw_long_word_in_parts);
+    RUN_TEST(test_rtty_long_message_in_parts);
     RUN_TEST(test_ft8_clean);
     RUN_TEST(test_ft8_noisy);
     RUN_TEST(test_noise_only);

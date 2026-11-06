@@ -1,7 +1,10 @@
 %global commit ec808ce
 %global gitdate 20261023
+# git rev-list --count %{commit}: it grows along the branch, so a later
+# commit always sorts newer, even on the same day (the hash alone may not)
+%global gitcount 217
 Name:           libspecbleach
-Version:        0.4.1~git%{gitdate}.%{commit}
+Version:        0.4.1~git%{gitdate}.%{gitcount}.%{commit}
 Release:        1
 Summary:        Voice noise reduction library
 License:        LGPL-2.1-or-later

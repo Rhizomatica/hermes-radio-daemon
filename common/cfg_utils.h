@@ -49,6 +49,16 @@ bool cfg_mode_from_name(const char *name, uint16_t *mode);
  * Keys other than these are always valid here. */
 bool cfg_digi_param_valid(const char *key, long value);
 extern const char cfg_digi_param_ranges[];
+
+/* The DRM transmitter's settings (drm_robustness, drm_spectrum, drm_msc_qam,
+ * drm_protection, drm_codec, drm_label), as text. Like cfg_digi_param_valid,
+ * the one check for both the config file and digi_config. cfg_drm_param_set
+ * stores a valid value in radio_h and returns false, storing nothing, for an
+ * invalid one or a key that is not one of these. */
+bool cfg_drm_param_valid(const char *key, const char *value);
+bool cfg_drm_param_set(radio *radio_h, const char *key, const char *value);
+bool cfg_drm_param_is_key(const char *key);
+extern const char cfg_drm_param_ranges[];
 const char *cfg_mode_name(uint16_t mode);
 
 /* DV_CODEC_* <-> main:digital_voice_codec ("RADEV2" or "DSTAR"). */

@@ -35,7 +35,8 @@ var pathParam = regexp.MustCompile(`\{(\w+)\}`)
 // operation whose parameter is not an id (a filename, a callsign) must be
 // given a value here: fillPath fails the test on a name it does not know,
 // rather than send a wrong kind of value.
-var sample = map[string]string{"profile": "0", "user_id": "999999", "session_id": "999999"}
+var sample = map[string]string{"profile": "0", "user_id": "999999", "session_id": "999999",
+	"broadcast_id": "nothing-queued.bin", "name": "nothing-received.bin"}
 
 func fillPath(t *testing.T, p string) string {
 	return pathParam.ReplaceAllStringFunc(p, func(m string) string {
