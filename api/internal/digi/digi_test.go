@@ -3,6 +3,8 @@ package digi_test
 import (
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/testapi"
@@ -45,6 +47,43 @@ func TestDigiLog(t *testing.T) {
 	}
 	if r := e.Do("GET", "/digi/log?cursor=!!", ""); r.Status != 422 {
 		t.Errorf("bad cursor = %d", r.Status)
+	}
+}
+
+// The log is its files on disk, not only the ring's last entries: what
+// rotated to .1 and what the ring no longer holds is still listed, an
+// entry in both a file and the ring once, a line cut short not at all.
+func TestDigiLogReadsTheFiles(t *testing.T) {
+	e := testapi.New(t)
+	line := func(id int) string {
+		return fmt.Sprintf(`{"id":%d,"at":"2026-10-19T10:0%d:00.000Z","mode":"FT8","dir":"rx",`+
+			`"frequency_hz":7074000,"text":"CQ TEST","from":"PU2UIT","to":"CQ"}`, id, id)
+	}
+	dir := t.TempDir()
+	old, cur := filepath.Join(dir, "digi.jsonl.1"), filepath.Join(dir, "digi.jsonl")
+	if err := os.WriteFile(old, []byte(line(1)+"\n"+line(2)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cur, []byte(line(3)+"\n"+line(4)+"\n"+`{"id":9,"at":"2026-10`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.Radio.SetDigiLogFiles(old, cur)
+	e.Radio.AddDigi(line(4)) // the ring: the newest entries, one also in the file
+	e.Radio.AddDigi(line(5))
+
+	data := e.Do("GET", "/digi/log", "").JSON(t)["data"].([]any)
+	var got []float64
+	for _, d := range data {
+		got = append(got, d.(map[string]any)["id"].(float64))
+	}
+	if fmt.Sprint(got) != "[5 4 3 2 1]" {
+		t.Errorf("ids = %v, want [5 4 3 2 1]", got)
+	}
+	j := e.Do("GET", "/digi/log?limit=2&cursor=", "").JSON(t)
+	next, _ := j["next_cursor"].(string)
+	page2 := e.Do("GET", "/digi/log?limit=3&cursor="+url.QueryEscape(next), "").JSON(t)["data"].([]any)
+	if len(page2) != 3 || page2[0].(map[string]any)["id"] != 3.0 || page2[2].(map[string]any)["id"] != 1.0 {
+		t.Errorf("second page = %v", page2)
 	}
 }
 

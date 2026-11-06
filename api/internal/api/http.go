@@ -32,6 +32,7 @@ var problemTitles = map[string]string{
 	"bad_passphrase":         "Bad passphrase",
 	"conflict":               "Conflict",
 	"too_large":              "Too large",
+	"listen_mode_unsuitable": "Listen mode unsuitable",
 	"internal":               "Internal error",
 }
 

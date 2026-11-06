@@ -75,8 +75,14 @@ static void push_ring(audio_ring_buffer *ring, const int16_t *samples, size_t ns
 
 void sbitx_bridge_push_rx(radio *radio_h, const int16_t *samples, size_t nsamples)
 {
-    push_ring(&radio_h->rx_audio_ring, samples, nsamples);
-    push_ring(&radio_h->rx_digi_ring, samples, nsamples);   /* hamlib digi pump */
+    sbitx_bridge_push_rx_split(radio_h, samples, samples, nsamples);
+}
+
+void sbitx_bridge_push_rx_split(radio *radio_h, const int16_t *listen,
+                                const int16_t *digi, size_t nsamples)
+{
+    push_ring(&radio_h->rx_audio_ring, listen, nsamples);
+    push_ring(&radio_h->rx_digi_ring, digi, nsamples);      /* hamlib digi pump */
 }
 
 static void push_ring(audio_ring_buffer *ring, const int16_t *samples, size_t nsamples)

@@ -183,6 +183,11 @@ tags:
     description: Radio state and saved profiles; live control is on the WebSocket.
   - name: modem
     description: Mercury, the HF modem.
+  - name: broadcasts
+    description: |
+      Files on Mercury's broadcast plane, with radiod as Mercury's broadcast client: the queue
+      going out as a RaptorQ carousel, and the files received. The spool directories behind it
+      are main:broadcast_tx_dir and main:broadcast_rx_dir, which NNCP uses too.
   - name: system
     description: Station identity, health, settings and power.
   - name: logs
@@ -1862,6 +1867,149 @@ paths:
         "204": {description: Removed.}
         '401': {$ref: '#/components/responses/Unauthorized'}
 
+  /broadcasts:
+    get:
+      tags: [broadcasts]
+      operationId: listBroadcasts
+      summary: The broadcast plane and its queue, the file on the air first.
+      x-hermes-role: readonly
+      responses:
+        "200":
+          description: The plane's state and the queue.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [running, connected, mode, data]
+                properties:
+                  running: {type: boolean, description: "main:broadcast_enable, and the plane started."}
+                  connected: {type: boolean, description: "Connected to Mercury's broadcast port."}
+                  mode: {type: [string, "null"], description: "Mercury's listen mode, which the carousel goes out in."}
+                  data:
+                    type: array
+                    items: {$ref: "#/components/schemas/BroadcastFile"}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        "503": {$ref: "#/components/responses/NotRunning"}
+    post:
+      tags: [broadcasts]
+      operationId: createBroadcast
+      summary: Queue a file to go out as a carousel.
+      description: |
+        The body is the file. It joins the end of the queue and goes on the air for `passes`
+        passes (a pass is every one of its RaptorQ symbols once; a receiver needs a little more
+        than one), then leaves the queue. Receivers file it under `name`. Every broadcast is a
+        transmission and counts against the user's `settings.tx_rate_limit.broadcasts_per_hour`.
+      x-hermes-role: user
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema: {$ref: "#/components/schemas/BroadcastName"}
+        - name: passes
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 16, default: 2}
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, contentMediaType: application/octet-stream, maxLength: 1474560}
+      responses:
+        "201":
+          description: Queued.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/BroadcastFile"}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        "409":
+          description: A file of that name is queued already (`code` = `conflict`).
+          content:
+            application/problem+json:
+              schema: {$ref: "#/components/schemas/Problem"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "422": {$ref: "#/components/responses/Invalid"}
+        "429": {$ref: "#/components/responses/TooManyRequests"}
+        "503": {$ref: "#/components/responses/NotRunning"}
+  /broadcasts/{broadcast_id}:
+    parameters:
+      - name: broadcast_id
+        in: path
+        required: true
+        schema: {$ref: "#/components/schemas/BroadcastName"}
+        description: The file's name in the queue.
+    get:
+      tags: [broadcasts]
+      operationId: getBroadcast
+      summary: One file of the queue.
+      x-hermes-role: readonly
+      responses:
+        "200":
+          description: The file.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/BroadcastFile"}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "503": {$ref: "#/components/responses/NotRunning"}
+    delete:
+      tags: [broadcasts]
+      operationId: cancelBroadcast
+      summary: Take a file out of the queue; the one on the air stops at the next frame.
+      x-hermes-role: operator
+      responses:
+        "204": {description: Taken out.}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "503": {$ref: "#/components/responses/NotRunning"}
+  /broadcasts/received:
+    get:
+      tags: [broadcasts]
+      operationId: listReceivedBroadcasts
+      summary: The files received, newest first.
+      x-hermes-role: readonly
+      responses:
+        "200":
+          description: The files.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: "#/components/schemas/ReceivedBroadcast"}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        "503": {$ref: "#/components/responses/NotRunning"}
+  /broadcasts/received/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: {$ref: "#/components/schemas/BroadcastName"}
+    get:
+      tags: [broadcasts]
+      operationId: downloadReceivedBroadcast
+      summary: Download a file received.
+      x-hermes-role: readonly
+      responses:
+        "200":
+          description: The file.
+          content:
+            application/octet-stream:
+              schema: {type: string, contentMediaType: application/octet-stream}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "503": {$ref: "#/components/responses/NotRunning"}
+    delete:
+      tags: [broadcasts]
+      operationId: deleteReceivedBroadcast
+      summary: Delete a file received.
+      x-hermes-role: operator
+      responses:
+        "204": {description: Deleted.}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "503": {$ref: "#/components/responses/NotRunning"}
   /gps:
     get:
       tags: [gps]
@@ -1881,10 +2029,11 @@ paths:
       operationId: listStationPositions
       summary: Every known station with its last-known position, for the map.
       description: |
-        Stations this one can reach (from `/etc/uucp/sys`), each with the position it last
-        reported over the air or was given manually. Stations with no known position are
-        still listed, with null position fields. A reported position is a claim, not an
-        identity.
+        Stations this one can reach (from `/etc/uucp/sys`), each with the position its last
+        position beacon gave (the beacon's callsign is the UUCP name). Stations with no known
+        position are still listed, with null position fields. Version 1 beacons are not
+        authenticated: the position is as the station reports it. Every callsign heard is in
+        `GET /gps/beacons`.
       x-hermes-role: readonly
       responses:
         "200":
@@ -2072,20 +2221,106 @@ paths:
     post:
       tags: [gps]
       operationId: sendSos
-      summary: Send the current position as an emergency message to `settings.sos_recipients`.
+      summary: Set an emergency code; the station beacons it at the emergency interval.
+      description: |
+        The position beacons (docs/BEACON-FORMAT.md) carry the code from now on, one every
+        `emergency_interval_s` whether position reports are on or not, until it is cleared
+        (`DELETE /gps/sos`). One goes out at once. The SOS message to `settings.sos_recipients`
+        comes with the messages layer.
       x-hermes-role: user
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                code: {type: integer, minimum: 1, maximum: 30, default: 1, description: "docs/BEACON-FORMAT.md §7: 1 distress, 2 medical, 3 fire, ..., 8 exercise."}
       responses:
         "202":
-          description: Queued.
+          description: Set, and the first beacon queued.
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/Message"}
-        "409":
-          description: No GPS fix (`code` = `no_fix`).
+              schema: {$ref: "#/components/schemas/Beacon"}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        "422": {$ref: "#/components/responses/Invalid"}
+        "503": {$ref: "#/components/responses/NotRunning"}
+    delete:
+      tags: [gps]
+      operationId: clearSos
+      summary: Clear the emergency code; one beacon says the emergency is over (code 31).
+      x-hermes-role: user
+      responses:
+        "200":
+          description: Cleared.
           content:
-            application/problem+json:
-              schema: {$ref: "#/components/schemas/Problem"}
-
+            application/json:
+              schema: {$ref: "#/components/schemas/Beacon"}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        "503": {$ref: "#/components/responses/NotRunning"}
+  /gps/beacon:
+    get:
+      tags: [gps]
+      operationId: getBeacon
+      summary: The station's position-beacon settings and state.
+      description: |
+        When beacons go out and how often is `GpsSettings.report` (`PATCH /gps/settings`);
+        this is the rest.
+      x-hermes-role: readonly
+      responses:
+        "200":
+          description: The beacon.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Beacon"}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    patch:
+      tags: [gps]
+      operationId: updateBeacon
+      summary: Change the callsign, the fixed position or the emergency interval.
+      x-hermes-role: operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/BeaconPatch"}
+      responses:
+        "200":
+          description: The beacon as it is now.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Beacon"}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        "422": {$ref: "#/components/responses/Invalid"}
+  /gps/beacon/send:
+    post:
+      tags: [gps]
+      operationId: sendBeacon
+      summary: Send one position beacon now, on top of the schedule.
+      x-hermes-role: user
+      responses:
+        "202": {description: Queued.}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        "503": {$ref: "#/components/responses/NotRunning"}
+  /gps/beacons:
+    get:
+      tags: [gps]
+      operationId: listBeacons
+      summary: Every station heard by its position beacons, its last report, newest first.
+      description: Version 1 beacons are not authenticated; the position is as the sender reports it.
+      x-hermes-role: readonly
+      responses:
+        "200":
+          description: The stations heard.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: "#/components/schemas/BeaconHeard"}
+        '401': {$ref: '#/components/responses/Unauthorized'}
   /events:
     get:
       tags: [events]
@@ -2972,6 +3207,59 @@ components:
         altitude_m: {type: [number, "null"]}
         position_at: {oneOf: [$ref: "#/components/schemas/Timestamp", type: "null"], description: "When the last-known position was reported."}
         position_source: {type: [string, "null"], enum: [gps, manual, estimated], description: "Where the last-known position came from; null when unknown."}
+    BroadcastName:
+      type: string
+      pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$"
+      description: A file name, no path.
+    BroadcastFile:
+      type: object
+      required: [id, name, bytes, queued_at, state]
+      properties:
+        id: {$ref: "#/components/schemas/BroadcastName"}
+        name: {type: string, description: "What receivers file it under (the id without a -<N>_frames budget)."}
+        bytes: {type: integer}
+        queued_at: {$ref: "#/components/schemas/Timestamp"}
+        state: {type: string, enum: [waiting, sending], description: "sending: on the air now."}
+        frames_limit: {type: [integer, "null"], description: "Frames it goes out for; null: until it is taken out."}
+        frames_sent: {type: integer, description: On the air only.}
+        frames_per_pass: {type: integer}
+        pass: {type: [integer, "null"], description: "On the air only; the pass now, from 1."}
+        passes: {type: [integer, "null"]}
+    ReceivedBroadcast:
+      type: object
+      required: [name, bytes, received_at]
+      properties:
+        name: {$ref: "#/components/schemas/BroadcastName"}
+        bytes: {type: integer}
+        received_at: {$ref: "#/components/schemas/Timestamp"}
+    Beacon:
+      type: object
+      required: [callsign, station_latitude, station_longitude, emergency_interval_s, emergency, running]
+      properties:
+        callsign: {type: string, maxLength: 9, description: "Sent in each beacon; empty: no beacons."}
+        station_latitude: {type: [number, "null"], minimum: -90, maximum: 90, description: "The fixed position, for when there is no GPS fix; null: none."}
+        station_longitude: {type: [number, "null"], minimum: -180, maximum: 180}
+        emergency_interval_s: {type: integer, minimum: 30}
+        emergency: {type: integer, minimum: 0, maximum: 30, description: "The code set (POST /gps/sos), 0 none."}
+        running: {type: boolean, description: "Beacons go out: the broadcast plane runs."}
+    BeaconPatch:
+      type: object
+      properties:
+        callsign: {type: string, pattern: "^([A-Za-z0-9/.-]{1,9})?$"}
+        station_latitude: {type: [number, "null"], minimum: -90, maximum: 90}
+        station_longitude: {type: [number, "null"], minimum: -180, maximum: 180}
+        emergency_interval_s: {type: integer, minimum: 30}
+    BeaconHeard:
+      type: object
+      required: [callsign, latitude, longitude, emergency, fix, heard_at]
+      properties:
+        callsign: {type: string}
+        latitude: {type: number}
+        longitude: {type: number}
+        altitude_m: {type: [integer, "null"]}
+        emergency: {type: integer}
+        fix: {type: integer, enum: [0, 1, 2, 3], description: "0 none, 1 2-D, 2 3-D, 3 set by hand."}
+        heard_at: {$ref: "#/components/schemas/Timestamp"}
     StationPatch:
       type: object
       properties:
@@ -3071,6 +3359,7 @@ components:
           description: dB relative to S9; null when the rig gives no reading.
         protection: {type: boolean, description: High-SWR protection tripped.}
         digital_voice: {type: boolean}
+        noise_reduction: {type: boolean, description: The active profile's noise_reduction.}
         backend: {type: string, enum: [sbitx, hamlib, none]}
         rig_model: {type: [string, "null"], description: "Hamlib model name, e.g. IC-7100."}
     RadioProfile:
@@ -3084,6 +3373,12 @@ components:
         volume: {type: integer, minimum: 0, maximum: 100}
         filter_width_hz: {type: [integer, "null"]}
         digital_voice: {type: boolean}
+        noise_reduction:
+          type: boolean
+          description: |
+            Noise reduction on the received audio people listen to, on every backend: on a voice
+            profile (operating_mode 0) in USB, LSB, AM, FM or CW. The modem's profile is never
+            denoised, and the digital-mode decoders get the audio as it is.
     RadioProfilePatch:
       type: object
       properties:
@@ -3093,6 +3388,7 @@ components:
         volume: {type: integer, minimum: 0, maximum: 100}
         filter_width_hz: {type: [integer, "null"]}
         digital_voice: {type: boolean}
+        noise_reduction: {type: boolean}
     RadioSettings:
       type: object
       description: |
@@ -3461,7 +3757,7 @@ components:
 
     DigiMode:
       type: string
-      enum: [FT8, CW, RTTY, DSTAR]
+      enum: [FT8, CW, RTTY, DSTAR, BEACON]
     DigiEntry:
       type: object
       required: [id, at, mode, dir, frequency_hz]
@@ -3501,6 +3797,21 @@ components:
             rpt2: {type: string, maxLength: 8}
             encrypted: {type: boolean}
             crc_ok: {type: boolean}
+        beacon:
+          type: [object, "null"]
+          description: |
+            A position beacon (docs/BEACON-FORMAT.md), for `mode` = `BEACON`; `from` is its
+            callsign. Version 1 beacons are not authenticated: the position is as the sender
+            reports it.
+          properties:
+            latitude: {type: number, minimum: -90, maximum: 90}
+            longitude: {type: number, minimum: -180, maximum: 180}
+            emergency: {type: integer, minimum: 0, maximum: 255, description: "0 none; the codes are docs/BEACON-FORMAT.md §7."}
+            fix: {type: integer, enum: [0, 1, 2, 3], description: "0 no fix, 1 2-D, 2 3-D, 3 set by hand."}
+            altitude_m: {type: [integer, "null"]}
+            accuracy_m: {type: integer, minimum: 0, maximum: 63, description: "0 unknown, 63 worse than 62 m."}
+            layout: {type: string, enum: [compact, full]}
+            radio_mode: {type: [string, "null"], description: "The frame's Mercury mode, e.g. DATAC16, when known."}
     DigiSettings:
       type: object
       properties:

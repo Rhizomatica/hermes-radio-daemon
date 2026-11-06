@@ -22,6 +22,7 @@ var (
 	ErrTooLong      = errors.New("too long for one broadcast frame")
 	ErrProtection   = errors.New("the SWR protection has tripped")
 	ErrNoPTT        = errors.New("this client does not hold PTT")
+	ErrDown         = errors.New("the broadcast plane is not running")
 )
 
 // FromC is how Go reads JSON that radiod or mercury wrote. Its text can
@@ -60,29 +61,31 @@ type Control struct {
 
 // State is the radio's live state.
 type State struct {
-	ActiveProfile int
-	TX            bool
-	FrequencyHz   uint32
-	Mode          string // LSB, USB, CW, FM, AM, DRM, FT8, RTTY, DSTAR
-	Power         int    // percent
-	FwdW, RefW    float64
-	SWR           float64
-	SMeterValid   bool
-	SMeterDB      float64 // dB relative to S9
-	Protection    bool
-	DigitalVoice  bool
-	Backend       string // sbitx, hamlib
+	ActiveProfile  int
+	TX             bool
+	FrequencyHz    uint32
+	Mode           string // LSB, USB, CW, FM, AM, DRM, FT8, RTTY, DSTAR
+	Power          int    // percent
+	FwdW, RefW     float64
+	SWR            float64
+	SMeterValid    bool
+	SMeterDB       float64 // dB relative to S9
+	Protection     bool
+	DigitalVoice   bool
+	NoiseReduction bool   // the active profile's
+	Backend        string // sbitx, hamlib
 }
 
 // Profile is one saved profile.
 type Profile struct {
-	Profile       int
-	FrequencyHz   uint32
-	Mode          string
-	Power         int
-	Volume        int
-	FilterWidthHz uint32 // 0: the rig's default
-	DigitalVoice  bool
+	Profile        int
+	FrequencyHz    uint32
+	Mode           string
+	Power          int
+	Volume         int
+	FilterWidthHz  uint32 // 0: the rig's default
+	DigitalVoice   bool
+	NoiseReduction bool // on the received audio people listen to
 }
 
 // Settings are what radiod keeps once for the station, not per profile.
@@ -132,6 +135,56 @@ type GpsReport struct {
 	IntervalS int
 }
 
+// BroadcastState is the state of the file on the air (radiod_api.h
+// RADIOD_API_BCAST_*).
+type BroadcastState int
+
+const (
+	BroadcastIdle BroadcastState = iota
+	BroadcastSending
+	BroadcastDone
+	BroadcastStopped
+	BroadcastError
+)
+
+// Broadcast is radiod's broadcast plane, as Mercury's client: whether it
+// runs, Mercury's listen mode, the spool directories (files dropped in TxDir
+// go on the air, files received appear in RxDir) and the file on the air.
+type Broadcast struct {
+	Running, Connected bool
+	Mode               int
+	ModeName           string
+	TxDir, RxDir       string
+	State              BroadcastState
+	Path               string // the file on the air, in TxDir; "" when none
+	Name               string // what receivers file it under
+	Bytes              uint64
+	Pass, Passes       int // Passes 0: until the file is removed
+	FramesPerPass      int64
+	FramesLimit        int64 // -1: none
+	FramesSent         uint64
+}
+
+// Beacon is the station's position-beacon settings (docs/BEACON-FORMAT.md).
+// StationLatitude/StationLongitude are nil without a fixed position.
+type Beacon struct {
+	Callsign           string
+	StationLatitude    *float64
+	StationLongitude   *float64
+	EmergencyIntervalS int
+	Emergency          int  // the code set, 0 none
+	Running            bool // beacons go out (the broadcast plane runs)
+}
+
+// BeaconStation is a station heard by its beacons: its last report.
+type BeaconStation struct {
+	Callsign            string
+	Latitude, Longitude float64
+	Emergency, Fix      int // Fix: 0 none, 1 2-D, 2 3-D, 3 set by hand
+	AltitudeM           *int
+	HeardAt             string // ISO 8601 UTC
+}
+
 // ChatLine is one of mercury's chat lines as it stores them (its
 // message_store), sent or received on either plane.
 type ChatLine struct {
@@ -171,6 +224,7 @@ type Radio interface {
 	SetVolume(profile int, percent int) error
 	SetFilterWidth(profile int, hz uint32) error
 	SetDigitalVoice(profile int, on bool) error
+	SetNoiseReduction(profile int, on bool) error
 	ResetProtection()
 	// PTT keys (on) or unkeys the transmitter for hermes.v1 connection conn,
 	// which then owns it; radiod unkeys when that connection closes. On:
@@ -202,6 +256,10 @@ type Radio interface {
 	// DigiLog returns up to max entries after id `after`, oldest first,
 	// each one JSON object in digi_log's line format.
 	DigiLog(after uint64, max int) []jsontext.Value
+	// DigiLogFiles returns the log's files on disk, oldest first, each
+	// line one entry in the same format: the whole log, where DigiLog has
+	// only the in-memory ring's last entries. A file may not exist yet.
+	DigiLogFiles() []string
 	// DigiSend queues text for the active profile's digital text mode:
 	// ErrNotSupported when that is not FT8, CW or RTTY, ErrInvalid for FT8
 	// text the modulator cannot carry, ErrBusy with the queue full. The
@@ -233,6 +291,27 @@ type Radio interface {
 	// SetGpsSettings applies the whole GPS settings (already validated by
 	// the handler). ErrInvalid outside the spec's ranges.
 	SetGpsSettings(GpsSettings) error
+
+	// Broadcast is the broadcast plane's state; ErrNotSupported in a build
+	// without Mercury. BroadcastFramesPerPass is how many frames one pass
+	// of len bytes sent under name takes in the listen mode (0: the mode
+	// cannot carry files).
+	Broadcast() (Broadcast, error)
+	BroadcastFramesPerPass(name string, len uint64) int64
+	// BroadcastFileInfo is what the spool makes of a file name in TxDir:
+	// the name receivers file it under, and its frame budget (-1: none).
+	BroadcastFileInfo(file string) (sendName string, framesLimit int64)
+
+	// Beacon is the beacon settings; SetBeacon saves and applies the
+	// callsign, fixed position and emergency interval (ErrInvalid out of
+	// range). SetBeaconEmergency sets the code (1..30) or clears it (0),
+	// BeaconSendNow sends one; both ErrDown while the broadcast plane is
+	// not running. BeaconStations is the stations heard, newest first.
+	Beacon() Beacon
+	SetBeacon(Beacon) error
+	SetBeaconEmergency(code int) error
+	BeaconSendNow() error
+	BeaconStations() []BeaconStation
 
 	// ModemStatus is mercury's last status JSON; false without mercury.
 	ModemStatus() (jsontext.Value, bool)
@@ -297,6 +376,8 @@ func codeErr(rc int) error {
 		return ErrProtection
 	case -9:
 		return ErrNoPTT
+	case -10:
+		return ErrDown
 	default:
 		return ErrNotSupported
 	}

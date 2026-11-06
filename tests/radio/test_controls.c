@@ -337,6 +337,68 @@ static void test_digi_param_ranges(void)
     unlink(path);
 }
 
+/* The DRM transmitter's settings: one check for the file and for
+ * digi_config, and what passes it is all Dream.ini will ever see. */
+static void test_drm_param_ranges(void)
+{
+    TEST_ASSERT_TRUE(cfg_drm_param_valid("drm_robustness", "A"));
+    TEST_ASSERT_TRUE(cfg_drm_param_valid("drm_robustness", "d"));
+    TEST_ASSERT_FALSE(cfg_drm_param_valid("drm_robustness", "E"));
+    TEST_ASSERT_FALSE(cfg_drm_param_valid("drm_robustness", "BB"));
+    TEST_ASSERT_TRUE(cfg_drm_param_valid("drm_spectrum", "0"));
+    TEST_ASSERT_TRUE(cfg_drm_param_valid("drm_spectrum", "5"));
+    TEST_ASSERT_FALSE(cfg_drm_param_valid("drm_spectrum", "6"));
+    TEST_ASSERT_FALSE(cfg_drm_param_valid("drm_spectrum", "3x"));
+    TEST_ASSERT_TRUE(cfg_drm_param_valid("drm_msc_qam", "16"));
+    TEST_ASSERT_TRUE(cfg_drm_param_valid("drm_msc_qam", "64"));
+    TEST_ASSERT_FALSE(cfg_drm_param_valid("drm_msc_qam", "32"));
+    TEST_ASSERT_TRUE(cfg_drm_param_valid("drm_protection", "3"));
+    TEST_ASSERT_FALSE(cfg_drm_param_valid("drm_protection", "-1"));
+    TEST_ASSERT_TRUE(cfg_drm_param_valid("drm_codec", "xHE-AAC"));
+    TEST_ASSERT_TRUE(cfg_drm_param_valid("drm_codec", "HE-AAC"));
+    TEST_ASSERT_TRUE(cfg_drm_param_valid("drm_codec", "AAC"));
+    TEST_ASSERT_FALSE(cfg_drm_param_valid("drm_codec", "Opus"));
+    TEST_ASSERT_TRUE(cfg_drm_param_valid("drm_label", "HERMES B0AA"));
+    TEST_ASSERT_TRUE(cfg_drm_param_valid("drm_label", "1234567890123456"));
+    TEST_ASSERT_FALSE(cfg_drm_param_valid("drm_label", "12345678901234567"));
+    TEST_ASSERT_FALSE(cfg_drm_param_valid("drm_label", ""));
+    TEST_ASSERT_FALSE(cfg_drm_param_valid("drm_label", "X\nmsc=CS_3_SM"));  /* a line of its own */
+    TEST_ASSERT_FALSE(cfg_drm_param_valid("drm_label", "[Receiver]"));
+    TEST_ASSERT_FALSE(cfg_drm_param_valid("cw_wpm", "20"));     /* not a DRM key */
+
+    radio *d = calloc(1, sizeof(*d));
+    TEST_ASSERT_TRUE(cfg_drm_param_set(d, "drm_robustness", "c"));
+    TEST_ASSERT_EQUAL_CHAR('C', d->drm_robustness);
+    TEST_ASSERT_TRUE(cfg_drm_param_set(d, "drm_label", "CALDONO"));
+    TEST_ASSERT_EQUAL_STRING("CALDONO", d->drm_label);
+    TEST_ASSERT_FALSE(cfg_drm_param_set(d, "drm_label", "a=b"));
+    TEST_ASSERT_EQUAL_STRING("CALDONO", d->drm_label);          /* left alone */
+
+    /* and from the file: a bad value falls back to the default */
+    char path[] = "/tmp/controls_test_drmXXXXXX";
+    int fd = mkstemp(path);
+    TEST_ASSERT_GREATER_OR_EQUAL_INT64(0, fd);
+    close(fd);
+    FILE *f = fopen(path, "w");
+    fputs("[main]\ndrm_robustness = Z\ndrm_spectrum = 9\ndrm_msc_qam = 64\n"
+          "drm_protection = 2\ndrm_codec = Opus\ndrm_label = a]b\n\n"
+          "[tx_band0]\nscale = 1.0\n", f);
+    fclose(f);
+    pthread_mutex_init(&d->cfg_mutex, NULL);
+    snprintf(d->cfg_radio_path, sizeof(d->cfg_radio_path), "%s", path);
+    TEST_ASSERT_TRUE(init_config_radio(d, path));
+    TEST_ASSERT_EQUAL_CHAR('B', d->drm_robustness);
+    TEST_ASSERT_EQUAL_INT(3, d->drm_spectrum);
+    TEST_ASSERT_EQUAL_INT(64, d->drm_msc_qam);                  /* valid: kept */
+    TEST_ASSERT_EQUAL_INT(2, d->drm_protection);
+    TEST_ASSERT_EQUAL_STRING("xHE-AAC", d->drm_codec);
+    TEST_ASSERT_EQUAL_STRING("HERMES", d->drm_label);
+    close_config_radio(d);
+    pthread_mutex_destroy(&d->cfg_mutex);
+    free(d);
+    unlink(path);
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -352,6 +414,7 @@ int main(void)
     RUN_TEST(test_rprt);
     RUN_TEST(test_voice_key_refresh);
     RUN_TEST(test_digi_param_ranges);
+    RUN_TEST(test_drm_param_ranges);
     int failed = UNITY_END();
     free(r);
     return failed;

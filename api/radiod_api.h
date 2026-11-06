@@ -28,6 +28,7 @@
 #define RADIOD_API_E2BIG    -7    /* too long for one broadcast frame */
 #define RADIOD_API_EPROTECT -8    /* the SWR protection has tripped: reset it first */
 #define RADIOD_API_ENOPTT   -9    /* this client does not hold PTT */
+#define RADIOD_API_EDOWN    -10   /* the broadcast plane is not running */
 
 /* ── radio ── */
 
@@ -45,6 +46,7 @@ typedef struct {
     double   s_meter_db;          /* dB relative to S9 */
     bool     protection;          /* high-SWR protection tripped */
     bool     digital_voice;
+    bool     noise_reduction;     /* the active profile's, on received audio */
     char     backend[8];          /* sbitx, hamlib */
 } radiod_api_state;
 
@@ -56,6 +58,7 @@ typedef struct {
     int      volume;              /* percent */
     uint32_t filter_width_hz;     /* 0: the rig's default */
     bool     digital_voice;
+    bool     noise_reduction;     /* on the received audio people listen to */
 } radiod_api_profile;
 
 /* What radiod keeps once for the station, not per profile (RadioSettings). */
@@ -80,6 +83,7 @@ int radiod_api_set_power(uint32_t profile, int percent);
 int radiod_api_set_volume(uint32_t profile, int percent);
 int radiod_api_set_filter_width(uint32_t profile, uint32_t hz);
 int radiod_api_set_digital_voice(uint32_t profile, bool on);
+int radiod_api_set_noise_reduction(uint32_t profile, bool on);
 
 /* Station-wide settings; each is saved to the configuration. */
 int radiod_api_set_default_profile(uint32_t profile);
@@ -195,6 +199,86 @@ int radiod_api_set_voice_codec(const char *name);
  * `after`, each a JSON object (digi_log's line format) separated by '\n',
  * in out (NUL-terminated).  Returns how many. */
 int radiod_api_digi_log(uint64_t after, int max, char *out, size_t out_len);
+
+/* The digi log's files on disk, oldest first, separated by '\n' (either may
+ * not exist yet); false when out is too small. */
+bool radiod_api_digi_log_files(char *out, size_t out_len);
+
+/* ── the broadcast plane (modem/bcast_plane.h), as Mercury's client ──
+ * Files dropped in tx_dir go on the air; files received appear in rx_dir.
+ * The API's Go code reads and writes those directories itself. */
+
+#define RADIOD_API_BCAST_IDLE     0     /* bcast_tx_state, in the same order */
+#define RADIOD_API_BCAST_SENDING  1
+#define RADIOD_API_BCAST_DONE     2
+#define RADIOD_API_BCAST_STOPPED  3
+#define RADIOD_API_BCAST_ERROR    4
+
+typedef struct {
+    bool     running;            /* main:broadcast_enable, and it started */
+    bool     connected;          /* to Mercury's broadcast port */
+    int      mode;               /* Mercury's listen mode index */
+    char     mode_name[16];
+    char     tx_dir[256], rx_dir[256];
+    /* the file on the air */
+    int      state;              /* RADIOD_API_BCAST_* */
+    char     path[1024];         /* in tx_dir, "" when none */
+    char     name[256];          /* what receivers file it under */
+    uint64_t bytes;
+    int      pass, passes;       /* passes 0: until the file is removed */
+    int64_t  frames_per_pass, frames_limit;   /* frames_limit -1: none */
+    uint64_t frames_sent;
+} radiod_api_broadcast;
+
+/* The plane's state; ENOTSUP in a build without Mercury (no codec). */
+int radiod_api_broadcast_get(radiod_api_broadcast *out);
+
+/* Frames one pass of len bytes sent under name takes in the listen mode;
+ * 0 when the mode cannot carry files. */
+int64_t radiod_api_broadcast_frames_per_pass(const char *name, uint64_t len);
+
+/* What the spool makes of a file name in tx_dir: the name receivers file it
+ * under and its frame budget (-1: none), "<name>-<N>_frames.<ext>". */
+void radiod_api_broadcast_file_info(const char *file, char *send_name, size_t cap,
+                                    int64_t *frames_limit);
+
+/* ── position beacons (modem/beacon_tx.h, docs/BEACON-FORMAT.md) ── */
+
+typedef struct {
+    char   callsign[16];
+    bool   has_station_position;
+    double station_latitude, station_longitude;
+    int    emergency_interval_s;
+    int    emergency;            /* the code set, 0 none */
+    bool   running;              /* beacons go out (the broadcast plane runs) */
+} radiod_api_beacon;
+
+int radiod_api_beacon_get(radiod_api_beacon *out);
+
+/* Save the callsign, the fixed position and the emergency interval
+ * (core.ini) and apply them; EINVAL for a callsign the beacon cannot carry,
+ * a position out of range or an interval under the minimum. */
+int radiod_api_beacon_set(const radiod_api_beacon *in);
+
+/* Set the emergency code (1..30) and send at once; 0 clears it (one beacon
+ * with code 31).  EINVAL out of range, EDOWN when the plane is not running
+ * (nothing would go out). */
+int radiod_api_beacon_set_emergency(int code);
+
+/* Send one beacon now; EDOWN when the plane is not running. */
+int radiod_api_beacon_send_now(void);
+
+typedef struct {
+    char   callsign[16];
+    double latitude, longitude;
+    int    emergency, fix;       /* the beacon's fix: 0 none, 1 2-D, 2 3-D, 3 set by hand */
+    bool   has_altitude;
+    int    altitude_m;
+    double heard_at;             /* unix seconds */
+} radiod_api_beacon_station;
+
+/* The stations heard, newest first; returns how many (up to max). */
+int radiod_api_beacon_stations(radiod_api_beacon_station *out, int max);
 
 /* ── modem (mercury linked in) ── */
 

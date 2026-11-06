@@ -62,6 +62,7 @@
   footer { display: flex; flex-wrap: wrap; gap: 8px 22px; align-items: center; padding: 10px 16px;
     border-top: 1px solid var(--line); background: var(--panel); font-size: 13px; }
   footer label { display: flex; align-items: center; gap: 8px; color: var(--dim); }
+  .sos { color: var(--tx); }
   .legend { display: inline-block; width: 120px; height: 10px; border-radius: 2px; vertical-align: middle;
     background: linear-gradient(90deg, hsl(0, 80%, 52%), hsl(60, 80%, 52%), hsl(120, 80%, 52%)); }
   select, input, button { font: inherit; color: var(--fg); background: #0d131b;
@@ -133,6 +134,7 @@
   <label>Station <input id="mygrid" placeholder="locator" maxlength="6" autocomplete="off"></label>
   <span class="stat" id="home">–</span>
   <span class="stat">SNR −24 <span class="legend"></span> +10 dB</span>
+  <span class="stat">● FT8 locator · ○ callsign's country · ■ beacon (exact) · <span class="sos">◯ SOS</span></span>
   <span class="stat">drag: move · wheel: zoom</span>
 </footer>
 
@@ -350,8 +352,20 @@ function countryOf(call) {
   return null;
 }
 
+// A position beacon (docs/BEACON-FORMAT.md) places its station exactly; an
+// FT8 locator only at the centre of its square, and never over a beacon's.
+var BEACON = 'BEACON';
+// The emergency codes (BEACON-FORMAT.md §7): 0 none, 8 a drill, 31 over.
+var EMERGENCY = {1: 'distress', 2: 'medical', 3: 'fire', 4: 'flood', 5: 'security',
+                 6: 'missing person', 7: 'comms/power down', 8: 'exercise', 31: 'emergency over'};
+var EMERGENCY_NONE = 0, EMERGENCY_EXERCISE = 8, EMERGENCY_OVER = 31;
+function inEmergency(b) {
+  return b && b.emergency !== EMERGENCY_NONE && b.emergency !== EMERGENCY_EXERCISE &&
+         b.emergency !== EMERGENCY_OVER;
+}
+
 function add(d) {
-  if (!d || d.mode !== 'FT8' || seen[d.id]) return;
+  if (!d || (d.mode !== 'FT8' && d.mode !== BEACON) || seen[d.id]) return;
   seen[d.id] = true;
   d.t = Date.parse(d.at) || Date.now();
   // a hashed call comes as <...>, or <CALL> once resolved: only the latter is a station
@@ -359,7 +373,11 @@ function add(d) {
   if (call && !/^[A-Z0-9\/]+$/.test(call)) call = null;
   if (call) {
     var s = stations[call] || (stations[call] = {call: call});
-    if (d.grid && GRID.test(d.grid)) {
+    if (d.mode === BEACON && d.beacon && (!s.beacon || d.t >= s.beaconAt)) {
+      s.beacon = d.beacon; s.beaconAt = d.t;
+      s.lat = d.beacon.latitude; s.lon = d.beacon.longitude;
+      s.grid = latLonToGrid(s.lat, s.lon); s.country = null;
+    } else if (d.mode === 'FT8' && !s.beacon && d.grid && GRID.test(d.grid)) {
       var ll = gridToLatLon(d.grid);
       s.grid = d.grid; s.lat = ll[0]; s.lon = ll[1]; s.country = null;
     } else if (!s.grid && s.lat == null) {
@@ -537,7 +555,7 @@ function draw() {
 
 function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 var colours = {sea: css('--sea'), land: css('--land'), border: css('--border'), grid: css('--grid'),
-               dim: css('--dim'), fg: css('--fg'), accent: css('--accent')};
+               dim: css('--dim'), fg: css('--fg'), accent: css('--accent'), sos: css('--tx')};
 
 function render() {
   if (!W) return;
@@ -613,18 +631,43 @@ function render() {
     ctx.strokeStyle = 'rgba(58, 209, 160, .18)'; ctx.lineWidth = 1; ctx.stroke();
   }
 
+  // Stations in one place (one grid square, or one beacon position) would
+  // hide each other: they go round it in a sunflower spiral, in pixels, so
+  // they stay apart at any zoom, in callsign order so they keep their seats.
+  var groups = {}, k;
+  list.forEach(function (s) {
+    k = s.lat.toFixed(SAME_PLACE_DECIMALS) + ',' + s.lon.toFixed(SAME_PLACE_DECIMALS);
+    (groups[k] = groups[k] || []).push(s);
+  });
+  for (k in groups) {
+    var g = groups[k].sort(function (a, b) { return a.call < b.call ? -1 : 1; });
+    g.forEach(function (s, i) {
+      var r = g.length > 1 ? SPREAD_PX * Math.sqrt(i + 0.5) : 0, a = i * GOLDEN_ANGLE;
+      s.dx = r * Math.cos(a); s.dy = r * Math.sin(a); s.crowd = g.length;
+    });
+  }
+
   drawn = [];
   ctx.textBaseline = 'middle';
   list.forEach(function (s) {
     var age = Math.min(1, (now - s.last.t) / max), alpha = 1 - 0.65 * age;
+    var sos = inEmergency(s.beacon);
     n++;
     offs.forEach(function (o) {
-      p = px(s.lon + o, s.lat);
+      var c = px(s.lon + o, s.lat);
+      p = [c[0] + s.dx, c[1] + s.dy];
       if (p[0] < -20 || p[0] > W + 20 || p[1] < -20 || p[1] > H + 20) return;
+      if (s.crowd > 1) {                       // where they all really are
+        ctx.beginPath(); ctx.moveTo(c[0], c[1]); ctx.lineTo(p[0], p[1]);
+        ctx.strokeStyle = 'rgba(215, 224, 234, ' + (0.25 * alpha) + ')'; ctx.lineWidth = 1; ctx.stroke();
+      }
       var r = s === selected ? 7 : 5;
-      ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, 2 * Math.PI);
-      if (s.grid) {                              // by its locator: a dot
-        ctx.fillStyle = snrColour(s.last.snr_db, alpha); ctx.fill();
+      ctx.beginPath();
+      if (s.beacon) ctx.rect(p[0] - r, p[1] - r, 2 * r, 2 * r);   // a beacon: its exact position
+      else ctx.arc(p[0], p[1], r, 0, 2 * Math.PI);
+      if (s.grid) {                              // a beacon's square, or a locator's dot
+        ctx.fillStyle = s.beacon && s.last.mode === BEACON ? colours.accent : snrColour(s.last.snr_db, alpha);
+        ctx.fill();
         ctx.lineWidth = s === selected ? 2 : 1;
         ctx.strokeStyle = s === selected ? colours.fg : 'rgba(0, 0, 0, .6)';
       } else {                                   // by its callsign's country: a ring
@@ -632,9 +675,13 @@ function render() {
         ctx.strokeStyle = s === selected ? colours.fg : snrColour(s.last.snr_db, alpha);
       }
       ctx.stroke();
-      if (view.scale >= 6 || s === selected) {
-        ctx.fillStyle = s === selected ? colours.fg : 'rgba(215, 224, 234, ' + (0.85 * alpha) + ')';
-        ctx.fillText(s.call, p[0] + r + 3, p[1]);
+      if (sos) {
+        ctx.beginPath(); ctx.arc(p[0], p[1], r + SOS_RING_PX, 0, 2 * Math.PI);
+        ctx.strokeStyle = colours.sos; ctx.lineWidth = 2; ctx.stroke();
+      }
+      if (view.scale >= 6 || s === selected || sos) {
+        ctx.fillStyle = sos ? colours.sos : s === selected ? colours.fg : 'rgba(215, 224, 234, ' + (0.85 * alpha) + ')';
+        ctx.fillText((sos ? 'SOS ' : '') + s.call, p[0] + r + 3 + (sos ? SOS_RING_PX : 0), p[1]);
       }
       drawn.push({x: p[0], y: p[1], s: s});
     });
@@ -653,6 +700,10 @@ function render() {
   }
 }
 var drawn = [];
+var SPREAD_PX = 8;                              // the spiral's step: markers 12 px apart at least
+var GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+var SAME_PLACE_DECIMALS = 4;                    // about 10 m: one place
+var SOS_RING_PX = 4;
 
 function nearest(x, y) {
   var best = null, bd = 100;
@@ -665,6 +716,12 @@ function nearest(x, y) {
 
 function tipText(s) {
   var d = s.last, lines = [s.call + '  ' + (s.grid || '~' + s.country + ' (from the callsign)')];
+  if (s.beacon) {
+    var b = s.beacon;
+    lines.push('beacon ' + b.latitude.toFixed(5) + ', ' + b.longitude.toFixed(5) +
+               (b.altitude_m == null ? '' : '  ' + b.altitude_m + ' m'));
+    if (b.emergency) lines.push('EMERGENCY ' + b.emergency + ': ' + (EMERGENCY[b.emergency] || 'code ' + b.emergency));
+  }
   lines.push((d.snr_db == null ? '' : d.snr_db + ' dB  ') + new Date(d.t).toISOString().slice(11, 19) + ' UTC');
   if (d.frequency_hz != null)
     lines.push('dial ' + dialKHz(d) + ' kHz USB' + (d.offset_hz != null ? ', center ' + centerKHz(d) + ' kHz' : ''));

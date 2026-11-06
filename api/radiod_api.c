@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+#include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,13 +22,21 @@
 #include "radio_pipeline.h"
 #include "radio_websocket.h"
 #include "cfg_utils.h"
+#include "radiod_log.h"
+
+#define LOG_C "api"
 #include "dsp/digi_log.h"
 #include "gps/gps.h"
 #include "websocket/ws_server.h"
 #include "webrtc/radio_webrtc.h"
+#include "beacon.h"
 #ifdef HAVE_MERCURY
 #include "mercury_link.h"
 #include "mercury_host.h"
+#include "bcast_link.h"
+#include "bcast_plane.h"
+#include "bcast_spool.h"
+#include "beacon_tx.h"
 #endif
 
 #ifndef RADIOD_GIT_HASH
@@ -190,6 +199,7 @@ void radiod_api_state_get(radiod_api_state *out)
     out->s_meter_db = s;
     out->protection = r->swr_protection_enabled;
     out->digital_voice = radio_backend_get_digital_voice(r, a);
+    out->noise_reduction = r->profiles[a].noise_reduction == NOISE_REDUCTION_ON;
     snprintf(out->backend, sizeof(out->backend), "%s",
              r->backend_kind == RADIO_BACKEND_HFSIGNALS ? "sbitx" : "hamlib");
 }
@@ -212,6 +222,7 @@ int radiod_api_profile_get(uint32_t p, radiod_api_profile *out)
     out->volume = (int) r->profiles[p].speaker_level;
     out->filter_width_hz = r->profiles[p].filter_width;
     out->digital_voice = radio_backend_get_digital_voice(r, p);
+    out->noise_reduction = r->profiles[p].noise_reduction == NOISE_REDUCTION_ON;
     return RADIOD_API_OK;
 }
 
@@ -286,6 +297,20 @@ int radiod_api_set_digital_voice(uint32_t p, bool on)
     if (!valid_profile(p))
         return RADIOD_API_ENOENT;
     return radio_backend_set_digital_voice(s_radio, on, p) ? RADIOD_API_OK : RADIOD_API_EBUSY;
+}
+
+/* Every backend reads the profile's setting as it goes (rx_denoise.h). */
+int radiod_api_set_noise_reduction(uint32_t p, bool on)
+{
+    if (!valid_profile(p))
+        return RADIOD_API_ENOENT;
+    char key[48];
+    snprintf(key, sizeof key, "profile%u:noise_reduction", p);
+    s_radio->profiles[p].noise_reduction = on ? NOISE_REDUCTION_ON : NOISE_REDUCTION_OFF;
+    if (cfg_set(s_radio, s_radio->cfg_user, key, on ? "ON" : "OFF") != 0)
+        HLOGE(LOG_C, "noise_reduction: cannot save it to the configuration");
+    s_radio->cfg_user_dirty = true;
+    return RADIOD_API_OK;
 }
 
 void radiod_api_settings_get(radiod_api_settings *out)
@@ -564,6 +589,13 @@ int radiod_api_digi_log(uint64_t after, int max, char *out, size_t out_len)
     return copied;
 }
 
+bool radiod_api_digi_log_files(char *out, size_t out_len)
+{
+    if (!out || !out_len)
+        return false;
+    return digi_log_files(out, out_len);
+}
+
 /* ── modem ── */
 
 bool radiod_api_modem_status(char *out, size_t out_len)
@@ -586,6 +618,196 @@ void radiod_api_gps_get(radiod_api_gps *out)
 int radiod_api_gps_settings_set(const radiod_api_gps_settings *s)
 {
     return gps_settings_apply(s);
+}
+
+/* ── the broadcast plane ── */
+
+int radiod_api_broadcast_get(radiod_api_broadcast *out)
+{
+    if (!out || !s_radio)
+        return RADIOD_API_EINVAL;
+#ifdef HAVE_MERCURY
+    memset(out, 0, sizeof *out);
+    out->running = bcast_plane_running();
+    out->mode = s_radio->broadcast_mode;
+    snprintf(out->mode_name, sizeof out->mode_name, "%s", bcast_link_mode_name(out->mode));
+    snprintf(out->tx_dir, sizeof out->tx_dir, "%s", s_radio->broadcast_tx_dir);
+    snprintf(out->rx_dir, sizeof out->rx_dir, "%s", s_radio->broadcast_rx_dir);
+    if (!out->running)
+        return RADIOD_API_OK;
+    bcast_tx_stats st;
+    bcast_link_stats(&st);
+    out->connected = st.connected;
+    out->state = (int) st.state;
+    snprintf(out->name, sizeof out->name, "%s", st.name);
+    out->bytes = st.bytes;
+    out->pass = st.pass;
+    out->passes = st.passes;
+    out->frames_per_pass = st.frames_per_pass;
+    out->frames_limit = st.frames_limit;
+    out->frames_sent = st.frames_sent;
+    bcast_spool_current(out->path, sizeof out->path);
+    return RADIOD_API_OK;
+#else
+    return RADIOD_API_ENOTSUP;
+#endif
+}
+
+int64_t radiod_api_broadcast_frames_per_pass(const char *name, uint64_t len)
+{
+#ifdef HAVE_MERCURY
+    return s_radio && name ? bcast_link_frames_per_pass(s_radio->broadcast_mode, name, (size_t) len) : 0;
+#else
+    (void) name; (void) len;
+    return 0;
+#endif
+}
+
+void radiod_api_broadcast_file_info(const char *file, char *send_name, size_t cap,
+                                    int64_t *frames_limit)
+{
+#ifdef HAVE_MERCURY
+    bcast_spool_send_name(file ? file : "", send_name, cap);
+    *frames_limit = bcast_spool_frames_limit(file ? file : "");
+#else
+    snprintf(send_name, cap, "%s", file ? file : "");
+    *frames_limit = -1;
+#endif
+}
+
+/* ── position beacons ── */
+
+static bool beacon_running(void)
+{
+#ifdef HAVE_MERCURY
+    return beacon_service_running();
+#else
+    return false;
+#endif
+}
+
+int radiod_api_beacon_get(radiod_api_beacon *out)
+{
+    if (!out || !s_radio)
+        return RADIOD_API_EINVAL;
+    memset(out, 0, sizeof *out);
+    pthread_mutex_lock(&s_radio->cfg_mutex);
+    snprintf(out->callsign, sizeof out->callsign, "%s", s_radio->callsign);
+    out->has_station_position = s_radio->has_station_position;
+    out->station_latitude = s_radio->station_latitude;
+    out->station_longitude = s_radio->station_longitude;
+    out->emergency_interval_s = s_radio->beacon_emergency_interval_s;
+    int saved = iniparser_getint(s_radio->cfg_radio, "main:beacon_emergency", 0);
+    pthread_mutex_unlock(&s_radio->cfg_mutex);
+    out->running = beacon_running();
+#ifdef HAVE_MERCURY
+    out->emergency = out->running ? beacon_emergency() : saved;
+#else
+    out->emergency = saved;
+#endif
+    return RADIOD_API_OK;
+}
+
+int radiod_api_beacon_set(const radiod_api_beacon *in)
+{
+    if (!in || !s_radio)
+        return RADIOD_API_EINVAL;
+    uint8_t packed[6];
+    if ((in->callsign[0] && !beacon_call_pack(in->callsign, packed)) ||
+        strlen(in->callsign) > BEACON_CALL_MAX)
+        return RADIOD_API_EINVAL;
+    if (in->has_station_position &&
+        (!(fabs(in->station_latitude) <= BEACON_LAT_MAX_DEG) ||
+         !(fabs(in->station_longitude) <= BEACON_LON_MAX_DEG)))
+        return RADIOD_API_EINVAL;
+    if (in->emergency_interval_s < BEACON_EMERGENCY_INTERVAL_MIN_S)
+        return RADIOD_API_EINVAL;
+
+    char lat[32] = "", lon[32] = "", every[16];
+    if (in->has_station_position)
+    {
+        snprintf(lat, sizeof lat, "%.7f", in->station_latitude);
+        snprintf(lon, sizeof lon, "%.7f", in->station_longitude);
+    }
+    snprintf(every, sizeof every, "%d", in->emergency_interval_s);
+    cfg_set(s_radio, s_radio->cfg_radio, "main:callsign", in->callsign);
+    cfg_set(s_radio, s_radio->cfg_radio, "main:station_latitude", lat);
+    cfg_set(s_radio, s_radio->cfg_radio, "main:station_longitude", lon);
+    cfg_set(s_radio, s_radio->cfg_radio, "main:beacon_emergency_interval_s", every);
+    s_radio->cfg_radio_dirty = true;
+
+    pthread_mutex_lock(&s_radio->cfg_mutex);
+    snprintf(s_radio->callsign, sizeof s_radio->callsign, "%s", in->callsign);
+    s_radio->has_station_position = in->has_station_position;
+    s_radio->station_latitude = in->has_station_position ? in->station_latitude : 0;
+    s_radio->station_longitude = in->has_station_position ? in->station_longitude : 0;
+    s_radio->beacon_emergency_interval_s = in->emergency_interval_s;
+    pthread_mutex_unlock(&s_radio->cfg_mutex);
+
+#ifdef HAVE_MERCURY
+    if (beacon_service_running())
+    {
+        beacon_config c = {0};
+        snprintf(c.callsign, sizeof c.callsign, "%.*s", BEACON_CALL_MAX, in->callsign);
+        c.has_fixed = in->has_station_position;
+        c.fixed_lat = in->station_latitude;
+        c.fixed_lon = in->station_longitude;
+        c.emergency_interval_s = in->emergency_interval_s;
+        beacon_reconfigure(&c);
+    }
+#endif
+    return RADIOD_API_OK;
+}
+
+int radiod_api_beacon_set_emergency(int code)
+{
+#ifdef HAVE_MERCURY
+    if (!beacon_service_running())
+        return RADIOD_API_EDOWN;
+    return beacon_set_emergency(code) == 0 ? RADIOD_API_OK : RADIOD_API_EINVAL;
+#else
+    (void) code;
+    return RADIOD_API_EDOWN;
+#endif
+}
+
+int radiod_api_beacon_send_now(void)
+{
+#ifdef HAVE_MERCURY
+    if (!beacon_service_running())
+        return RADIOD_API_EDOWN;
+    beacon_send_now();
+    return RADIOD_API_OK;
+#else
+    return RADIOD_API_EDOWN;
+#endif
+}
+
+int radiod_api_beacon_stations(radiod_api_beacon_station *out, int max)
+{
+    if (!out || max <= 0)
+        return 0;
+#ifdef HAVE_MERCURY
+    if (!beacon_service_running())
+        return 0;
+    beacon_station st[BEACON_STATIONS_MAX];
+    int n = beacon_stations(st, max < BEACON_STATIONS_MAX ? max : BEACON_STATIONS_MAX);
+    for (int i = 0; i < n; i++)
+    {
+        memset(&out[i], 0, sizeof out[i]);
+        snprintf(out[i].callsign, sizeof out[i].callsign, "%s", st[i].callsign);
+        out[i].latitude = st[i].lat;
+        out[i].longitude = st[i].lon;
+        out[i].emergency = st[i].emergency;
+        out[i].fix = st[i].fix;
+        out[i].has_altitude = st[i].has_altitude;
+        out[i].altitude_m = st[i].altitude_m;
+        out[i].heard_at = st[i].heard_at;
+    }
+    return n;
+#else
+    return 0;
+#endif
 }
 
 #ifdef HAVE_MERCURY

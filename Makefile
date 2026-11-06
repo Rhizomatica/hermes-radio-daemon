@@ -31,7 +31,7 @@ CFLAGS  = -Ofast -Wall -std=gnu11 -fstack-protector -MMD -MP \
           -I. $(MODULE_INCLUDES) -I/usr/include/iniparser -I/usr/include/csdr \
           -Wno-deprecated-declarations
 LDFLAGS = -liniparser -lhamlib -lasound -lcrypto -lssl -lfftw3f -lfftw3 \
-          -lpthread -lm -li2c -lcsdr -lspecbleach -lcw -lrt -lmbe-neo
+          -lpthread -lm -li2c -lcsdr -lspecbleach -lrt -lmbe-neo
 
 # The in-tree gui_interface/websocket/ module serves as the transport in gui_interface/radio_websocket.c;
 # wss:// is provided by OpenSSL.
@@ -79,6 +79,7 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   audioio/audio_bridge.o \
                   dsp/stream_resampler.o \
                   dsp/digi_log.o \
+                  modem/beacon.o \
                   audioio/audio_headset.o \
                   modem/shm_audio.o \
                   modem/loop_audio.o \
@@ -89,6 +90,7 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   common/cfg_utils.o \
                   common/shm_utils.o \
                   common/radiod_log.o \
+                  common/async_file.o \
                   gps/gps.o \
                   gui_interface/websocket/ws_server.o \
                   gui_interface/websocket/ws_frame.o \
@@ -115,14 +117,19 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              dsp/sbitx_radae.o \
              dsp/radae_vocoder.o \
              dsp/sbitx_drm.o \
+             dsp/dream_proc.o \
              dsp/sbitx_ft8.o \
+             dsp/ft8_js8.o \
+             dsp/ft8_subtract.o \
              dsp/sbitx_cw.o \
+             dsp/tone_scan.o \
              dsp/sbitx_rtty.o \
              dsp/sbitx_dstar.o \
              dsp/dstar_voice.o \
              dsp/voice_crypto.o \
              dsp/rade_voice.o \
              dsp/mic_filter.o \
+             dsp/rx_denoise.o \
              sbitx/sbitx_si5351.o \
              sbitx/ring_buffer.o \
              $(SBITX_GPIOLIB_OBJS) \
@@ -144,6 +151,11 @@ MERCURY_LIBS ?= $(MERCURY_DIR)/libmercury_host.a $(MERCURY_DIR)/modem/freedv/lib
 CFLAGS          += -DHAVE_MERCURY=1
 DAEMON_TOP_OBJS += modem/mercury_link.o
 modem/mercury_link.o: EXTRA_CPPFLAGS += -I$(MERCURY_DIR)/host
+# The broadcast plane, as Mercury's broadcast client: the carousel is
+# Mercury's own codec (datalink_broadcast/bcast_file.h, in libmercury_host.a).
+DAEMON_TOP_OBJS += modem/bcast_link.o modem/bcast_spool.o modem/bcast_plane.o \
+                   modem/beacon_tx.o
+modem/bcast_link.o: EXTRA_CPPFLAGS += -I$(MERCURY_DIR)/datalink_broadcast
 api/radiod_api.o: EXTRA_CPPFLAGS += -I$(MERCURY_DIR)/host
 # One kiss_fft in the binary: freedv's (same structs, MAXFACTORS and float
 # scalar as ft8_lib's).  The FT8 test links the same copy.

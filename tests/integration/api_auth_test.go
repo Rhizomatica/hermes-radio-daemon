@@ -58,7 +58,7 @@ func login(t *testing.T, d *Daemon, user, pass string) httpResult {
 }
 
 // The whole account lifecycle against the real daemon, in the order a station
-// owner meets them: setup, log in, create / disable / re-enable / reset the
+// owner meets them: the default admin, log in, create / disable / re-enable / reset the
 // password of / delete a user, the cookie and its CSRF rule, log out, and the
 // failed-login limit.
 func TestAPIv2AuthLifecycle(t *testing.T) {
@@ -66,17 +66,15 @@ func TestAPIv2AuthLifecycle(t *testing.T) {
 	d := startAPIDaemon(t)
 	base := apiBase(d)
 
-	// Before setup: not done, and nothing but the open operations answers.
+	// A new station is set up already, with its default admin, and nothing
+	// but the open operations answers without a session.
 	r := call(t, "GET", base+"/setup", "")
-	if r.status != 200 || r.body["done"] != false {
-		t.Fatalf("GET /setup before = %d %s", r.status, r.raw)
+	if r.status != 200 || r.body["done"] != true {
+		t.Fatalf("GET /setup on a new station = %d %s", r.status, r.raw)
 	}
 	wantStatus(t, d, "GET /radio without a session", call(t, "GET", base+"/radio", ""), 401, "unauthenticated")
 
 	admin := setupAPI(t, d)
-	if r := call(t, "GET", base+"/setup", ""); r.body["done"] != true {
-		t.Fatalf("GET /setup after = %s", r.raw)
-	}
 	wantStatus(t, d, "second POST /setup", call(t, "POST", base+"/setup",
 		`{"setup_code":"`+apiSetupCode+`","station_name":"x","language":"en","timezone":"UTC","admin":{"username":"other","password":"password1"}}`),
 		409, "setup_done")

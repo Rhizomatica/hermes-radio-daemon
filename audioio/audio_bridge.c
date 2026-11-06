@@ -139,6 +139,7 @@ void audio_bridge_shutdown(audio_bridge *b)
     free(b->pull_i16);
     free(b->pend_up);
     free(b->pend_down);
+    rx_denoise_free(&b->nr);
     memset(b, 0, sizeof(*b));
 }
 
@@ -204,6 +205,28 @@ static size_t resample_down(audio_bridge *b, const int16_t *samples, size_t n_in
                          &b->pend_down, &b->pend_down_len, &b->pend_down_cap);
 }
 
+/* Whether the listening audio is noise-reduced: a Hamlib rig's, when the
+ * active profile is (radio_profile_denoised). */
+static bool rx_denoise_wanted(radio *radio_h)
+{
+    if (radio_h->backend_kind != RADIO_BACKEND_HAMLIB)
+        return false;               /* the sBitx denoises in its own DSP */
+    uint32_t p = radio_h->profile_active_idx;
+    return p < MAX_RADIO_PROFILES && radio_profile_denoised(&radio_h->profiles[p]);
+}
+
+static void push_rx(audio_bridge *b, radio *radio_h, const int16_t *samples, size_t n)
+{
+    const int16_t *listen = samples;
+    if (rx_denoise_wanted(radio_h))
+        listen = rx_denoise_run(&b->nr, b->dsp_rate, radio_h->rx_nr_reduction_db,
+                                radio_h->rx_nr_strength, samples, n);
+    else if (b->nr.sb)
+        rx_denoise_reset(&b->nr);   /* off: when it is back, it learns afresh */
+    sbitx_bridge_push_rx_split(radio_h, listen, samples, n);
+    radio_media_tap_rx_audio(radio_h, samples, n);
+}
+
 void audio_bridge_push_rx_native(audio_bridge *b, radio *radio_h,
                                  const int16_t *samples, size_t n_native)
 {
@@ -211,16 +234,14 @@ void audio_bridge_push_rx_native(audio_bridge *b, radio *radio_h,
         return;
 
     if (b->native_rate == b->dsp_rate) {
-        sbitx_bridge_push_rx(radio_h, samples, n_native);
-        radio_media_tap_rx_audio(radio_h, samples, n_native);
+        push_rx(b, radio_h, samples, n_native);
         return;
     }
 
     size_t n_out = resample_up(b, samples, n_native);
     if (!n_out)
         return;
-    sbitx_bridge_push_rx(radio_h, b->scratch_i16, n_out);
-    radio_media_tap_rx_audio(radio_h, b->scratch_i16, n_out);
+    push_rx(b, radio_h, b->scratch_i16, n_out);
 }
 
 size_t audio_bridge_pop_tx_native(audio_bridge *b, radio *radio_h,

@@ -47,6 +47,7 @@
 #include "libhermes_api.h"        /* api, built as a c-archive */
 #endif
 #include "dsp/sbitx_ft8.h"
+#include "dsp/sbitx_drm.h"
 #include "cfg_utils.h"
 #include "voice_crypto.h"
 #include "radio_media.h"
@@ -54,6 +55,10 @@
 #include "dsp/digi_log.h"
 
 #include "radiod_log.h"
+
+/* A request body's cap: a broadcast upload (POST /broadcasts) is at most
+ * Mercury's 1.44 MB carousel object, so 2 MiB. */
+#define RADIOD_HTTP_BODY_MAX (2u * 1024u * 1024u)
 
 #define LOG_C "ws"
 extern _Atomic bool shutdown_;
@@ -168,6 +173,22 @@ static bool extract_json_string(const char *json, const char *key,
 
     snprintf(out, out_len, "%.*s", (int) (end - start), start);
     return true;
+}
+
+/* Whether key's value is a string: extract_json_string takes the next quoted
+ * text after the colon, which for a number is the next key's. */
+static bool json_value_is_string(const char *json, const char *key)
+{
+    char pattern[64];
+    const char *p;
+
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    p = strstr(json, pattern);
+    if (!p || !(p = strchr(p + strlen(pattern), ':')))
+        return false;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+    return *p == '"';
 }
 
 static bool extract_json_int(const char *json, const char *key, long *out)
@@ -355,6 +376,10 @@ static bool module_command(ws_conn_t *c, const char *payload)
     return true;
 }
 
+/* A state frame, with room for the DRM receiver's report in it */
+#define STATUS_JSON_MAX 6144
+#define DRM_RX_STATUS_MAX 3072
+
 static void build_status_json(radio *radio_h, char *json, size_t json_len)
 {
     uint32_t active = radio_h->profile_active_idx;
@@ -380,6 +405,13 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
     json_escape(radio_h->dstar_rx_rpt1,   ds_r1,  sizeof(ds_r1));
     json_escape(radio_h->dstar_rx_rpt2,   ds_r2,  sizeof(ds_r2));
     json_escape(radio_h->dstar_rx_suffix, ds_sfx, sizeof(ds_sfx));
+
+    static char drm_rx[DRM_RX_STATUS_MAX];      /* not on the stack; one writer at a time */
+    static pthread_mutex_t drm_rx_lock = PTHREAD_MUTEX_INITIALIZER;
+    size_t drm_rx_len = 0;
+    pthread_mutex_lock(&drm_rx_lock);
+    if (radio_h->profiles[active].mode == MODE_DRM)
+        drm_rx_len = sbitx_drm_rx_status(drm_rx, sizeof(drm_rx));
 
     snprintf(json, json_len,
         "{\"type\":\"state\",\"profile\":%u,\"frequency\":%u,\"freq\":%u,"
@@ -410,7 +442,10 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
          /* 0 clear, 1 decrypting, 2 acquiring, 3 no key, 4 key mismatch */
          "\"dstar_crypto\":%u,"
          /* the same codes for the RADE V2 over being received */
-         "\"rade_crypto\":%u}",
+         "\"rade_crypto\":%u,"
+         /* In DRM, the receiver's report as Dream gives it (sync flags,
+          * SNR, mode, services); null without one */
+         "\"drm_rx\":%s}",
          active,
          radio_h->profiles[active].freq, radio_h->profiles[active].freq,
          mode_to_string(radio_h->profiles[active].mode),
@@ -450,7 +485,9 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
          ds_my, ds_ur, ds_r1, ds_r2, ds_sfx,
          (unsigned) radio_h->dstar_rx_heard,
          (unsigned) radio_h->dstar_rx_crypto,
-         (unsigned) radio_h->rade_rx_crypto);
+         (unsigned) radio_h->rade_rx_crypto,
+         drm_rx_len ? drm_rx : "null");
+    pthread_mutex_unlock(&drm_rx_lock);
 }
 
 /* ─────────────────────── command dispatcher ─────────────────────── */
@@ -480,7 +517,7 @@ static void handle_ws_command(radio *radio_h, ws_conn_t *c,
 
     if (!strcmp(cmd, "get_state"))
     {
-        char status[2048];
+        char status[STATUS_JSON_MAX];
         build_status_json(radio_h, status, sizeof(status));
         ws_send_text(c, status);
         return;
@@ -706,8 +743,9 @@ static void handle_ws_command(radio *radio_h, ws_conn_t *c,
 
     if (!strcmp(cmd, "digi_get_config"))
     {
-        char json[448], fp[17];
+        char json[640], fp[17], drm_label[40];
         voice_crypto_fingerprint(fp);
+        json_escape(radio_h->drm_label, drm_label, sizeof(drm_label));
         snprintf(json, sizeof(json),
             "{\"ok\":true,\"cmd\":\"digi_get_config\","
             "\"cw_wpm\":%d,\"cw_pitch\":%d,"
@@ -715,13 +753,17 @@ static void handle_ws_command(radio *radio_h, ws_conn_t *c,
             "\"dstar_verbose\":%d,\"dstar_denoise\":%d,\"dstar_encrypt\":%d,"
             "\"rade_encrypt\":%d,"
             "\"digital_voice_codec\":\"%s\","
-            "\"voice_key_loaded\":%s,\"voice_key_fingerprint\":\"%s\"}",
+            "\"voice_key_loaded\":%s,\"voice_key_fingerprint\":\"%s\","
+            "\"drm_robustness\":\"%c\",\"drm_spectrum\":%d,\"drm_msc_qam\":%d,"
+            "\"drm_protection\":%d,\"drm_codec\":\"%s\",\"drm_label\":\"%s\"}",
             radio_h->cw_wpm, radio_h->cw_pitch,
             radio_h->rtty_baud, radio_h->rtty_mark, radio_h->rtty_shift,
             radio_h->dstar_verbose, radio_h->dstar_denoise, radio_h->dstar_encrypt,
             radio_h->rade_encrypt,
             cfg_dv_codec_name(radio_h->digital_voice_codec),
-            voice_crypto_have_key() ? "true" : "false", fp);
+            voice_crypto_have_key() ? "true" : "false", fp,
+            radio_h->drm_robustness, radio_h->drm_spectrum, radio_h->drm_msc_qam,
+            radio_h->drm_protection, radio_h->drm_codec, drm_label);
         ws_send_text(c, json); return;
     }
 
@@ -764,6 +806,29 @@ static void handle_ws_command(radio *radio_h, ws_conn_t *c,
             { send_cmd_error(c, cmd, "DSTAR digital voice needs the sbitx backend"); return; }
             if (!radio_backend_set_digital_voice_codec(radio_h, codec))
             { send_cmd_error(c, cmd, "refused while transmitting"); return; }
+            send_cmd_result(c, cmd, true, "OK"); return;
+        }
+        /* The DRM transmitter's settings, text or number. The transmitter
+         * reads them when an over starts, so not during one. */
+        if (cfg_drm_param_is_key(key))
+        {
+            char text[24];
+            long n;
+            if (json_value_is_string(payload, "value"))
+                extract_json_string(payload, "value", text, sizeof(text));
+            else if (extract_json_int(payload, "value", &n))
+                snprintf(text, sizeof(text), "%ld", n);
+            else
+            { send_cmd_error(c, cmd, "missing key or value"); return; }
+            if (radio_h->txrx_state == IN_TX)
+            { send_cmd_error(c, cmd, "refused while transmitting"); return; }
+            if (!cfg_drm_param_set(radio_h, key, text))
+            {
+                char why[224];
+                snprintf(why, sizeof(why), "not valid (%s)", cfg_drm_param_ranges);
+                send_cmd_error(c, cmd, why);
+                return;
+            }
             send_cmd_result(c, cmd, true, "OK"); return;
         }
         if (!extract_json_int(payload, "value", &v))
@@ -1112,7 +1177,7 @@ static void handle_ws_command(radio *radio_h, ws_conn_t *c,
 
 static void broadcast_status(websocket_ctx *ctx)
 {
-    char json[2048];
+    char json[STATUS_JSON_MAX];
 
     build_status_json(ctx->radio_h, json, sizeof(json));
     ws_server_broadcast(ctx->server, json, strlen(json), true);
@@ -1555,7 +1620,7 @@ static void on_ws_connect(ws_conn_t *c, void *user_data)
     if (ws_conn_class(c) == WS_CLASS_V2)
         return;                         /* Go sent the hermes.v1 hello */
     char hello[512];
-    char status[2048];
+    char status[STATUS_JSON_MAX];
     size_t n;
 
     n = (size_t) snprintf(hello, sizeof(hello),
@@ -1762,6 +1827,7 @@ bool radio_websocket_init(radio *radio_h, pthread_t *websocket_tid)
     opts.on_message = on_ws_message;
     opts.on_close = on_ws_close;
     opts.on_http = on_ws_http;
+    opts.max_http_body = RADIOD_HTTP_BODY_MAX;
     opts.on_upgrade = on_ws_upgrade;
     opts.user_data = &ws_ctx;
 

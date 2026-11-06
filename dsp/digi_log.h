@@ -43,8 +43,19 @@ typedef struct {
     bool        crc_ok;
 } digi_log_dstar;
 
+/* A position beacon (docs/BEACON-FORMAT.md), mode BEACON. */
 typedef struct {
-    const char *mode;        /* "FT8", "CW", "RTTY", "DSTAR" */
+    double      latitude, longitude;
+    int         emergency;      /* 0 none */
+    int         fix;            /* the beacon's fix type: 0 none, 1 2-D, 2 3-D, 3 set by hand */
+    bool        has_altitude;   int altitude_m;
+    int         accuracy_m;     /* 0 unknown, 63 worse than 62 m */
+    const char *layout;         /* "compact" or "full" */
+    const char *radio_mode;     /* the frame's Mercury mode, e.g. "DATAC16"; NULL if unknown */
+} digi_log_beacon;
+
+typedef struct {
+    const char *mode;        /* "FT8", "CW", "RTTY", "DSTAR", "BEACON" */
     const char *dir;         /* "rx" or "tx" */
     uint64_t    freq_hz;     /* dial frequency */
     double      at;          /* unix time in seconds; 0 = now */
@@ -56,6 +67,7 @@ typedef struct {
     const char *to;
     const char *grid;
     const digi_log_dstar *dstar;  /* mode DSTAR only */
+    const digi_log_beacon *beacon; /* mode BEACON only */
 } digi_log_entry;
 
 /* Where the log lives (default /var/spool/hermes-digi) and when it rotates
@@ -93,6 +105,11 @@ char *digi_log_last_json(int count);
  * received; 0 at start gives every entry still in the ring. */
 int digi_log_since(uint64_t after, char lines[][DIGI_LOG_LINE_MAX],
                    uint64_t *ids, int max);
+
+/* The log's files on disk, oldest first ("<dir>/digi.jsonl.1\n<dir>/digi.jsonl"),
+ * into out; the whole log, where the ring keeps only the last entries.
+ * Either file may not exist. Returns false when out is too small. */
+bool digi_log_files(char *out, size_t out_len);
 
 /* The id of the newest entry, 0 if none since start. */
 uint64_t digi_log_latest_id(void);

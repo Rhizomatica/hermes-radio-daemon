@@ -34,10 +34,14 @@ get https://www.fftw.org/fftw-3.3.10.tar.gz fftw-3.3.10.tar.gz
 get https://gitlab.com/iniparser/iniparser/-/archive/v4.2.6/iniparser-v4.2.6.tar.gz iniparser-v4.2.6.tar.gz
 get https://mirrors.edge.kernel.org/pub/software/utils/i2c-tools/i2c-tools-4.4.tar.xz i2c-tools-4.4.tar.xz
 gitsrc https://github.com/Rhizomatica/csdr "$(commit csdr)" csdr
-gitsrc https://github.com/Rhizomatica/unixcw "$(commit unixcw)" unixcw
 gitsrc https://github.com/Rhizomatica/libspecbleach "$(commit libspecbleach)" libspecbleach
 gitsrc https://github.com/Rhizomatica/mbelib-neo "$(commit mbelib-neo)" mbelib-neo
 gitsrc https://github.com/Rhizomatica/hermes-radio-daemon "$(commit hermes-radio-daemon)" hermes-radio-daemon
+jv=$(sed -n 's/^Version: *//p' "$here/specs/libjuice.spec")
+get "https://github.com/paullouisageneau/libjuice/archive/refs/tags/v$jv.tar.gz" "libjuice-$jv.tar.gz"
+gitsrc https://github.com/paullouisageneau/libdatachannel "$(commit libdatachannel)" libdatachannel
+mv=$(sed -n 's/^Version: *//p' "$here/specs/mercury.spec")
+get "https://github.com/Rhizomatica/mercury/archive/refs/tags/v$mv.tar.gz" "mercury-$mv.tar.gz"
 
 ls hamlib-*.tar.gz >/dev/null 2>&1 ||
     echo "missing: the Hamlib tarball (make-hamlib-tarball.sh)" >&2

@@ -147,7 +147,7 @@ static void jw_opt_str(jw *w, const char *key, const char *value, size_t max_cha
         jw_raw(w, ",\"%s\":null", key);
 }
 
-static const char *const g_modes[] = { "FT8", "CW", "RTTY", "DSTAR", NULL };
+static const char *const g_modes[] = { "FT8", "CW", "RTTY", "DSTAR", "BEACON", NULL };
 static const char *const g_dirs[]  = { "rx", "tx", NULL };
 
 /* The matching entry of `allowed`, or NULL. Returning the table's own
@@ -208,6 +208,20 @@ size_t digi_log_format(const digi_log_entry *e, uint64_t id, double at, char *ou
     } else {
         jw_raw(&w, ",\"dstar\":null");
     }
+    if (!strcmp(mode, "BEACON") && e->beacon && isfinite(e->beacon->latitude) &&
+        isfinite(e->beacon->longitude)) {
+        const digi_log_beacon *b = e->beacon;
+        jw_raw(&w, ",\"beacon\":{\"latitude\":%.7f,\"longitude\":%.7f,\"emergency\":%d,\"fix\":%d",
+               b->latitude, b->longitude, b->emergency, b->fix);
+        if (b->has_altitude) jw_raw(&w, ",\"altitude_m\":%d", b->altitude_m);
+        else                 jw_raw(&w, ",\"altitude_m\":null");
+        jw_raw(&w, ",\"accuracy_m\":%d", b->accuracy_m);
+        jw_raw(&w, ",\"layout\":\"%s\"", b->layout && !strcmp(b->layout, "full") ? "full" : "compact");
+        jw_opt_str(&w, "radio_mode", b->radio_mode, 16);
+        jw_raw(&w, "}");
+    } else {
+        jw_raw(&w, ",\"beacon\":null");
+    }
     jw_raw(&w, "}");
     if (w.failed) {
         if (out_size) out[0] = '\0';
@@ -261,6 +275,17 @@ static void append_legacy(const digi_log_entry *e)
     }
     if (n > 0)
         append_line("spool.log", line, (size_t) n < sizeof(line) ? (size_t) n : sizeof(line) - 1);
+}
+
+bool digi_log_files(char *out, size_t out_len)
+{
+    char old[320], cur[320];
+    pthread_mutex_lock(&g_file_lock);   /* file paths are read under it */
+    path_of(old, sizeof(old), "digi.jsonl.1");
+    path_of(cur, sizeof(cur), "digi.jsonl");
+    pthread_mutex_unlock(&g_file_lock);
+    int n = snprintf(out, out_len, "%s\n%s", old, cur);
+    return n > 0 && (size_t) n < out_len;
 }
 
 static void rotate_if_needed(void)
