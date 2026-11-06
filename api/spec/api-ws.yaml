@@ -193,6 +193,7 @@ channels:
       queue: { $ref: "#/components/messages/QueueEvent" }
       system: { $ref: "#/components/messages/SystemEvent" }
       gps: { $ref: "#/components/messages/GpsEvent" }
+      broadcasts: { $ref: "#/components/messages/BroadcastsEvent" }
       reticulum: { $ref: "#/components/messages/ReticulumEvent" }
       binaryDown: { $ref: "#/components/messages/BinaryFrame" }
 
@@ -440,9 +441,9 @@ components:
     GpsEvent:
       name: gps
       summary: |
-        The station's own position and fix, or other stations' positions as they arrive
-        over the air. The snapshot is the station's own `Gps` (`change: self`); a
-        `change: peers` event carries the stations whose last-known position changed.
+        The station's own position and fix (`change: self`). Other stations' positions
+        arrive on the `digi` topic, as entries of mode `BEACON` (their position beacons);
+        `GET /gps/beacons` and `GET /gps/stations` give the last one of each.
       payload:
         allOf:
           - $ref: "#/components/schemas/EventEnvelope"
@@ -453,11 +454,29 @@ components:
                 type: object
                 required: [change]
                 properties:
-                  change: { type: string, enum: [self, peers] }
+                  change: { type: string, enum: [self] }
                   gps: { $ref: "api-rest.yaml#/components/schemas/Gps" }
-                  stations:
+    BroadcastsEvent:
+      name: broadcasts
+      summary: |
+        The broadcast plane and its queue (GET /broadcasts), the file on the air first:
+        an event when a file joins or leaves the queue, goes on the air, or sends frames.
+        Offered while the broadcast plane runs.
+      payload:
+        allOf:
+          - $ref: "#/components/schemas/EventEnvelope"
+          - type: object
+            properties:
+              topic: { const: broadcasts }
+              data:
+                type: object
+                properties:
+                  running: { type: boolean }
+                  connected: { type: boolean }
+                  mode: { type: [string, "null"] }
+                  queue:
                     type: array
-                    items: { $ref: "api-rest.yaml#/components/schemas/Station" }
+                    items: { $ref: "api-rest.yaml#/components/schemas/BroadcastFile" }
     ReticulumEvent:
       name: reticulum
       summary: |
@@ -503,6 +522,7 @@ components:
         - queue
         - system
         - gps
+        - broadcasts
         - reticulum
     Hello:
       type: object

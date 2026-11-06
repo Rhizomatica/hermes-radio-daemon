@@ -1185,6 +1185,7 @@ second, whatever changed them (a command, CAT, rigctl, the front panel).
 | `radio.rig` | `{levels, funcs, parms}`: the controls this client watches (`rig.watch`), read at its interval (250 ms at least) | readonly |
 | `modem.config` | the same as `GET /api/v2/modem/config` | operator |
 | `modem.chat` | one event per chat line, either plane, sent or received (`{plane, dir, peer, text, at}`); the snapshot is the last 100 lines, one event each, all `snapshot: true` | readonly |
+| `broadcasts` | `{running, connected, mode, queue}`: the broadcast plane and its queue as `GET /api/v2/broadcasts`; an event when a file joins or leaves the queue, goes on the air or sends frames; offered while the plane runs | readonly |
 
 ### Not implemented yet
 
