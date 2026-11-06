@@ -75,8 +75,12 @@ On the device, with developer mode on:
 fftw takes by far the longest, since it builds twice (double and single
 precision).
 
-To package another radiod commit, change `%global commit` and `gitdate` in
-`specs/hermes-radio-daemon.spec`.
+To package another radiod commit, change `%global commit`, `gitdate` and
+`gitcount` in `specs/hermes-radio-daemon.spec`. `gitcount` is
+`git rev-list --count <commit>`, from a full clone. It keeps the versions in
+order: a hash alone can sort a later commit of the same day as older, and
+rpm then refuses the upgrade. libspecbleach and mbelib-neo's specs take the
+same three.
 
 ### The Go API layer
 
