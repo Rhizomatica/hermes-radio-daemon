@@ -55,13 +55,6 @@ type Settings struct {
 	SampleIntervalS int     `json:"sample_interval_s"`
 	FilePeriodS     int     `json:"file_period_s"`
 	Email           *string `json:"email"`
-	Report          Report  `json:"report"`
-}
-
-// Report is the periodic over-the-air position report.
-type Report struct {
-	Enabled   bool `json:"enabled"`
-	IntervalS int  `json:"interval_s"`
 }
 
 func gpsOf(g rad.Gps) Gps {
@@ -75,7 +68,6 @@ func settingsOf(s rad.GpsSettings) Settings {
 	return Settings{
 		Logging: s.Logging, SampleIntervalS: s.SampleIntervalS,
 		FilePeriodS: s.FilePeriodS, Email: s.Email,
-		Report: Report{Enabled: s.Report.Enabled, IntervalS: s.Report.IntervalS},
 	}
 }
 
@@ -127,10 +119,6 @@ func (h handlers) updateSettings(w http.ResponseWriter, r *http.Request) {
 					next.Email = &e
 				}
 			}
-		case "report":
-			if rp, ok := parseReport(raw[key], key, cur.Report, f); ok {
-				next.Report = rp
-			}
 		default:
 			f.Add(key, "unknown field")
 		}
@@ -153,39 +141,6 @@ func (h handlers) problemFor(w http.ResponseWriter, r *http.Request, err error) 
 	default:
 		api.Problem(w, r, http.StatusInternalServerError, "internal", err.Error(), nil)
 	}
-}
-
-// parseReport checks and merges the report object over the current one; both
-// fields are optional.
-func parseReport(raw jsontext.Value, key string, cur rad.GpsReport, f api.Fields) (rad.GpsReport, bool) {
-	if strings.TrimSpace(string(raw)) == "null" {
-		f.Add(key, "an object, not null")
-		return cur, false
-	}
-	var m map[string]jsontext.Value
-	if err := json.Unmarshal(raw, &m); err != nil {
-		f.Add(key, "an object with enabled and interval_s")
-		return cur, false
-	}
-	rp := cur
-	for k := range m {
-		switch k {
-		case "enabled":
-			var b bool
-			if err := json.Unmarshal(m[k], &b); err != nil {
-				f.Add(key+".enabled", "a boolean")
-			} else {
-				rp.Enabled = b
-			}
-		case "interval_s":
-			if v, ok := intIn(m[k], key+".interval_s", 60, 1<<31-1, f); ok {
-				rp.IntervalS = int(v)
-			}
-		default:
-			f.Add(key+"."+k, "unknown field")
-		}
-	}
-	return rp, true
 }
 
 func intIn(raw jsontext.Value, key string, lo, hi int64, f api.Fields) (int64, bool) {

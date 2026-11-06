@@ -2890,7 +2890,6 @@ Returns the trip that was closed.
 | `sample_interval_s` | integer |  | min 1 |
 | `file_period_s` | integer |  | min 60 |
 | `email` | string or null (email) |  |  |
-| `report` | object |  | Periodic position reports broadcast over the air so other stations can plot this one on the map |
 
 **Responses**
 
@@ -2970,7 +2969,7 @@ curl -sS -X PATCH "$BASE/gps/settings" \
 - Status: **implemented**
 
 The position beacons (docs/BEACON-FORMAT.md) carry the code from now on, one every
-`emergency_interval_s` whether position reports are on or not, until it is cleared
+`emergency_interval_s` whether beacons are enabled or not, until it is cleared
 (`DELETE /gps/sos`). One goes out at once. The SOS message to `settings.sos_recipients`
 comes with the messages layer.
 
@@ -3031,8 +3030,8 @@ curl -sS -X DELETE "$BASE/gps/sos" \
 - Role: **readonly**
 - Status: **implemented**
 
-When beacons go out and how often is `GpsSettings.report` (`PATCH /gps/settings`);
-this is the rest.
+Regular beacons go out every `interval_s` while `enabled` (default off); an
+emergency code (`POST /gps/sos`) sends them every `emergency_interval_s` either way.
 
 **Responses**
 
@@ -3060,6 +3059,8 @@ curl -sS -X GET "$BASE/gps/beacon" \
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
+| `enabled` | boolean |  |  |
+| `interval_s` | integer |  | min 60 |
 | `callsign` | string |  | pattern `^([A-Za-z0-9/.-]{1,9})?$` |
 | `station_latitude` | number or null |  | min -90; max 90 |
 | `station_longitude` | number or null |  | min -180; max 180 |
@@ -3080,7 +3081,7 @@ curl -sS -X PATCH "$BASE/gps/beacon" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-  "callsign": "PY2XYZ"
+  "enabled": false
 }'
 ```
 
@@ -3285,6 +3286,8 @@ Type: string
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
+| `enabled` | boolean | yes | Send this station's position at interval_s, so other stations can plot it on the map; default `False` |
+| `interval_s` | integer | yes | Seconds between regular beacons; min 60; default `900` |
 | `callsign` | string | yes | Sent in each beacon; empty: no beacons; max length 9 |
 | `station_latitude` | number or null | yes | The fixed position, for when there is no GPS fix; null: none; min -90; max 90 |
 | `station_longitude` | number or null | yes | min -180; max 180 |
@@ -3310,6 +3313,8 @@ Type: string
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
+| `enabled` | boolean |  |  |
+| `interval_s` | integer |  | min 60 |
 | `callsign` | string |  | pattern `^([A-Za-z0-9/.-]{1,9})?$` |
 | `station_latitude` | number or null |  | min -90; max 90 |
 | `station_longitude` | number or null |  | min -180; max 180 |
@@ -3528,7 +3533,6 @@ Type: one of `FT8`, `CW`, `RTTY`, `DSTAR`, `BEACON`
 | `sample_interval_s` | integer |  | min 1 |
 | `file_period_s` | integer |  | min 60 |
 | `email` | string or null (email) |  |  |
-| `report` | object |  | Periodic position reports broadcast over the air so other stations can plot this one on the map |
 
 <a id="schema-health"></a>
 ### Health

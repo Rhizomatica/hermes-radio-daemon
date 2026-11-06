@@ -818,8 +818,9 @@ same features either way Mercury runs:
   `hermes-broadcast-send` and `hermes-broadcast-rx` (NNCP over the broadcast
   plane) use these two directories.
 - **Beacons** (`modem/beacon_tx.c`):
-  - with `gps_report_enabled`, a beacon goes out every `gps_report_interval_s`,
-    and every `beacon_emergency_interval_s` while an emergency code is set;
+  - with `beacon_enable` (default off), a beacon goes out every
+    `beacon_interval_s`, and every `beacon_emergency_interval_s` while an
+    emergency code is set, enabled or not;
   - it carries `callsign` and the GPS fix, or the fixed
     `station_latitude`/`station_longitude`;
   - received beacons go into the digital-message log (mode `BEACON`) and

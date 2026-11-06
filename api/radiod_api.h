@@ -245,6 +245,8 @@ void radiod_api_broadcast_file_info(const char *file, char *send_name, size_t ca
 /* ── position beacons (modem/beacon_tx.h, docs/BEACON-FORMAT.md) ── */
 
 typedef struct {
+    bool   enabled;              /* main:beacon_enable: the regular beacons */
+    int    interval_s;           /* main:beacon_interval_s */
     char   callsign[16];
     bool   has_station_position;
     double station_latitude, station_longitude;
@@ -255,9 +257,9 @@ typedef struct {
 
 int radiod_api_beacon_get(radiod_api_beacon *out);
 
-/* Save the callsign, the fixed position and the emergency interval
+/* Save the switch, the intervals, the callsign and the fixed position
  * (core.ini) and apply them; EINVAL for a callsign the beacon cannot carry,
- * a position out of range or an interval under the minimum. */
+ * a position out of range or an interval under its minimum. */
 int radiod_api_beacon_set(const radiod_api_beacon *in);
 
 /* Set the emergency code (1..30) and send at once; 0 clears it (one beacon
@@ -303,16 +305,15 @@ typedef struct {
     double   time;            /* unix seconds (UTC) */
 } radiod_api_gps_fix;
 
-/* The station's GPS logging and reporting settings (GpsSettings in
- * api-rest.yaml).  email is set only when has_email. */
+/* The station's GPS logging settings (GpsSettings in api-rest.yaml).
+ * email is set only when has_email.  Sending the position over the air is
+ * the beacon's (radiod_api_beacon). */
 typedef struct {
     bool     logging;
     int32_t  sample_interval_s;  /* >= 1 */
     int32_t  file_period_s;      /* >= 60 */
     bool     has_email;
     char     email[128];
-    bool     report_enabled;     /* broadcast this position over the air */
-    int32_t  report_interval_s;  /* >= 60 */
 } radiod_api_gps_settings;
 
 typedef struct {

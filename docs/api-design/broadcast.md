@@ -139,8 +139,8 @@ About 200 bytes, or five seconds at DATAC3.
   `altitude_m`, `source` (`gps`, `manual` or `estimated`) and `at` timestamp. Receivers
   store it as the sender's last-known position (dropping an older `at` for the same
   sender) and surface it through `GET /gps/stations`. Like every decoded callsign, a
-  position is a claim, not an identity. Sent periodically when `gps.settings.report` is
-  enabled, and signed like any broadcast.
+  position is a claim, not an identity. Sent periodically when the beacon is enabled
+  (`PATCH /gps/beacon`), and signed like any broadcast.
 - Old receivers don't know the magic. They should file the object as an unnamed file,
   which needs checking against Mercury's bundle parser.
 

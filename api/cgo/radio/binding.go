@@ -253,7 +253,6 @@ func (binding) Gps() Gps {
 		Logging:         bool(g.settings.logging),
 		SampleIntervalS: int(g.settings.sample_interval_s),
 		FilePeriodS:     int(g.settings.file_period_s),
-		Report:          GpsReport{Enabled: bool(g.settings.report_enabled), IntervalS: int(g.settings.report_interval_s)},
 	}}
 	switch g.fix.fix {
 	case 2:
@@ -287,8 +286,6 @@ func (binding) SetGpsSettings(s GpsSettings) error {
 	cs.logging = C.bool(s.Logging)
 	cs.sample_interval_s = C.int32_t(s.SampleIntervalS)
 	cs.file_period_s = C.int32_t(s.FilePeriodS)
-	cs.report_enabled = C.bool(s.Report.Enabled)
-	cs.report_interval_s = C.int32_t(s.Report.IntervalS)
 	if s.Email != nil {
 		cs.has_email = true
 		// cs is zero-initialised, so the rest of the buffer stays NUL.
@@ -432,6 +429,7 @@ func (binding) Beacon() Beacon {
 	var b C.radiod_api_beacon
 	C.radiod_api_beacon_get(&b)
 	out := Beacon{
+		Enabled: bool(b.enabled), IntervalS: int(b.interval_s),
 		Callsign: cstr(b.callsign[:]), EmergencyIntervalS: int(b.emergency_interval_s),
 		Emergency: int(b.emergency), Running: bool(b.running),
 	}
@@ -456,6 +454,8 @@ func (binding) SetBeacon(in Beacon) error {
 		b.station_latitude = C.double(*in.StationLatitude)
 		b.station_longitude = C.double(*in.StationLongitude)
 	}
+	b.enabled = C.bool(in.Enabled)
+	b.interval_s = C.int(in.IntervalS)
 	b.emergency_interval_s = C.int(in.EmergencyIntervalS)
 	return codeErr(int(C.radiod_api_beacon_set(&b)))
 }

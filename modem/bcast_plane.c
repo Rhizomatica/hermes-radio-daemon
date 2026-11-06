@@ -36,6 +36,8 @@ bool bcast_plane_start(radio *radio_h)
     lc.in_process = radio_h->enable_mercury ? mercury_link_bcast_host() : NULL;
 
     beacon_config bc = {0};
+    bc.enabled = radio_h->beacon_enable;
+    bc.interval_s = radio_h->beacon_interval_s;
     snprintf(bc.callsign, sizeof bc.callsign, "%.9s", radio_h->callsign);
     bc.has_fixed = radio_h->has_station_position;
     bc.fixed_lat = radio_h->station_latitude;

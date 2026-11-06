@@ -1,9 +1,9 @@
 /* beacon_tx - the station's position beacons (docs/BEACON-FORMAT.md), sent
  * and received through bcast_link.
  *
- * Sending: while position reports are on (main:gps_report_enabled), one
- * beacon every main:gps_report_interval_s; while an emergency code is set,
- * one every main:beacon_emergency_interval_s whether reports are on or not.
+ * Sending: with main:beacon_enable, one beacon every main:beacon_interval_s;
+ * while an emergency code is set, one every main:beacon_emergency_interval_s
+ * whether beacons are enabled or not.
  * The position is the GPS fix, else the station's fixed position
  * (main:station_latitude, main:station_longitude); with neither, nothing is
  * sent.  The callsign is main:callsign.  Over KISS a beacon is the compact
@@ -32,6 +32,8 @@
 
 
 typedef struct {
+    bool   enabled;                 /* main:beacon_enable: the regular beacons */
+    int    interval_s;              /* main:beacon_interval_s */
     char   callsign[BEACON_CALL_MAX + 1];
     bool   has_fixed;               /* the station's fixed position */
     double fixed_lat, fixed_lon;
@@ -63,8 +65,8 @@ typedef struct {
 bool beacon_service_start(radio *radio_h, const beacon_config *cfg);
 void beacon_service_stop(void);
 
-/* Change the callsign, the fixed position or the emergency interval while
- * the service runs (the API does). */
+/* Change the switch, the intervals, the callsign or the fixed position
+ * while the service runs (the API does). */
 void beacon_reconfigure(const beacon_config *cfg);
 bool beacon_service_running(void);
 
@@ -86,7 +88,7 @@ int  beacon_stations(beacon_station *out, int max);
 beacon_position beacon_pick_position(const radiod_api_gps_fix *gps, const beacon_config *cfg);
 int  beacon_build_frame(const beacon_config *cfg, const beacon_position *pos, int emergency,
                         uint8_t seq, uint8_t *frame, size_t frame_len);
-int  beacon_interval_s(bool reports_on, int report_interval_s, int emergency, int emergency_interval_s);
+int  beacon_interval_s(bool enabled, int interval_s, int emergency, int emergency_interval_s);
 void beacon_stations_reset(void);
 bool beacon_stations_save(const char *path);
 bool beacon_stations_load(const char *path);

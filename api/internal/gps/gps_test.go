@@ -55,8 +55,7 @@ func TestUpdateGpsSettingsInvalid(t *testing.T) {
 		{`{"file_period_s":30}`, "file_period_s"},
 		{`{"email":42}`, "email"},
 		{`{"email":"no-at-sign"}`, "email"},
-		{`{"report":{"interval_s":1}}`, "report.interval_s"},
-		{`{"report":null}`, "report"},
+		{`{"report":{"enabled":true}}`, "report"}, // beacons are /gps/beacon's
 		{`{"nonsense":1}`, "nonsense"},
 	}
 	for _, tc := range cases {

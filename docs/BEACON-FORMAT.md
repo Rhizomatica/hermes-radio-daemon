@@ -153,13 +153,13 @@ The callsign is packed in base 40, as M17 does it, into 48 bits, little-endian.
 
 ## 6. Sending
 
-These station settings live in `core.ini` (`[main]`). The GPS ones are also
-`GpsSettings` in the API (`PATCH /gps/settings`):
+These station settings live in `core.ini` (`[main]`), and the API's
+`GET`/`PATCH /gps/beacon` has them:
 
 | Setting | Meaning |
 |---|---|
-| `gps_report_enabled` | send beacons (default off) |
-| `gps_report_interval_s` | seconds between beacons (at least 60, default 900); mind the mode's airtime (§1): a beacon holds the channel for 3 s on DATAC16 and 26 s on MFSK500 |
+| `beacon_enable` | send beacons (default off) |
+| `beacon_interval_s` | seconds between beacons (at least 60, default 900); mind the mode's airtime (§1): a beacon holds the channel for 3 s on DATAC16 and 26 s on MFSK500 |
 | `beacon_emergency_interval_s` | seconds between beacons while an emergency code is set (at least 30, default 120) |
 | `beacon_emergency` | the emergency code set, 0 for none (set over the API) |
 | `callsign` | the station's callsign, sent in each beacon; without it no beacon goes out |

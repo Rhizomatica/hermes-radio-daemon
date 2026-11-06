@@ -43,20 +43,16 @@ func TestGPSRESTAndSettings(t *testing.T) {
 		s["file_period_s"].(float64) != 3600 || s["email"] != nil {
 		t.Errorf("default settings = %v", s)
 	}
-	if rep, _ := s["report"].(map[string]any); rep["enabled"] != false || rep["interval_s"].(float64) != 900 {
-		t.Errorf("default report = %v", rep)
+	if _, ok := s["report"]; ok {
+		t.Errorf("settings still carry report (beacons are /gps/beacon's): %v", s)
 	}
 
 	r = callAuth(t, "PATCH", base+"/gps/settings",
-		`{"logging":true,"sample_interval_s":5,"file_period_s":120,"email":"gps@example.com","report":{"enabled":true,"interval_s":300}}`, token)
+		`{"logging":true,"sample_interval_s":5,"file_period_s":120,"email":"gps@example.com"}`, token)
 	if r.status != 200 || r.body["logging"] != true || r.body["sample_interval_s"].(float64) != 5 ||
 		r.body["file_period_s"].(float64) != 120 || r.body["email"] != "gps@example.com" {
 		t.Fatalf("PATCH /gps/settings = %d %s", r.status, r.raw)
 	}
-	if rep, _ := r.body["report"].(map[string]any); rep["enabled"] != true || rep["interval_s"].(float64) != 300 {
-		t.Errorf("report = %v", rep)
-	}
-
 	r = callAuth(t, "GET", base+"/gps", "", token)
 	if r.status != 200 {
 		t.Fatalf("GET /gps = %d %s", r.status, r.raw)
@@ -93,8 +89,6 @@ func TestGPSRESTAndSettings(t *testing.T) {
 		{"main:gps_sample_interval_s", "5"},
 		{"main:gps_file_period_s", "120"},
 		{"main:gps_email", "gps@example.com"},
-		{"main:gps_report_enabled", "1"},
-		{"main:gps_report_interval_s", "300"},
 	} {
 		if got := ini[kv.key]; got != kv.want {
 			t.Errorf("core.ini %s = %q, want %q\n%s", kv.key, got, kv.want, string(b))

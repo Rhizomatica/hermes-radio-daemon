@@ -266,9 +266,27 @@ func TestBroadcastPlaneOff(t *testing.T) {
 	base := apiBase(d)
 	wantStatus(t, d, "GET /broadcasts", callAuth(t, "GET", base+"/broadcasts", "", admin), 503, "not_running")
 	wantStatus(t, d, "SOS", callAuth(t, "POST", base+"/gps/sos", `{"code":1}`, admin), 503, "not_running")
-	r := callAuth(t, "PATCH", base+"/gps/beacon", `{"callsign":"N0CALL","emergency_interval_s":60}`, admin)
-	if r.status != 200 || r.body["callsign"] != "N0CALL" || r.body["running"] != false {
+	r := callAuth(t, "GET", base+"/gps/beacon", "", admin)
+	if r.status != 200 || r.body["enabled"] != false || r.body["interval_s"].(float64) != 900 {
+		t.Fatalf("default beacon = %d %s", r.status, r.raw)
+	}
+	r = callAuth(t, "PATCH", base+"/gps/beacon",
+		`{"enabled":true,"interval_s":600,"callsign":"N0CALL","emergency_interval_s":60}`, admin)
+	if r.status != 200 || r.body["callsign"] != "N0CALL" || r.body["running"] != false ||
+		r.body["enabled"] != true || r.body["interval_s"].(float64) != 600 {
 		t.Fatalf("PATCH /gps/beacon = %d %s", r.status, r.raw)
+	}
+
+	// Saved to core.ini.
+	d.Stop()
+	b, err := os.ReadFile(filepath.Join(d.Dir, "core.ini"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ini := parseINI(string(b))
+	if ini["main:beacon_enable"] != "1" || ini["main:beacon_interval_s"] != "600" {
+		t.Errorf("core.ini beacon_enable = %q, beacon_interval_s = %q",
+			ini["main:beacon_enable"], ini["main:beacon_interval_s"])
 	}
 }
 
