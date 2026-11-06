@@ -692,6 +692,8 @@ int radiod_api_beacon_get(radiod_api_beacon *out)
         return RADIOD_API_EINVAL;
     memset(out, 0, sizeof *out);
     pthread_mutex_lock(&s_radio->cfg_mutex);
+    out->enabled = s_radio->beacon_enable;
+    out->interval_s = s_radio->beacon_interval_s;
     snprintf(out->callsign, sizeof out->callsign, "%s", s_radio->callsign);
     out->has_station_position = s_radio->has_station_position;
     out->station_latitude = s_radio->station_latitude;
@@ -720,16 +722,20 @@ int radiod_api_beacon_set(const radiod_api_beacon *in)
         (!(fabs(in->station_latitude) <= BEACON_LAT_MAX_DEG) ||
          !(fabs(in->station_longitude) <= BEACON_LON_MAX_DEG)))
         return RADIOD_API_EINVAL;
-    if (in->emergency_interval_s < BEACON_EMERGENCY_INTERVAL_MIN_S)
+    if (in->emergency_interval_s < BEACON_EMERGENCY_INTERVAL_MIN_S ||
+        in->interval_s < BEACON_INTERVAL_MIN_S)
         return RADIOD_API_EINVAL;
 
-    char lat[32] = "", lon[32] = "", every[16];
+    char lat[32] = "", lon[32] = "", every[16], regular[16];
     if (in->has_station_position)
     {
         snprintf(lat, sizeof lat, "%.7f", in->station_latitude);
         snprintf(lon, sizeof lon, "%.7f", in->station_longitude);
     }
     snprintf(every, sizeof every, "%d", in->emergency_interval_s);
+    snprintf(regular, sizeof regular, "%d", in->interval_s);
+    cfg_set(s_radio, s_radio->cfg_radio, "main:beacon_enable", in->enabled ? "1" : "0");
+    cfg_set(s_radio, s_radio->cfg_radio, "main:beacon_interval_s", regular);
     cfg_set(s_radio, s_radio->cfg_radio, "main:callsign", in->callsign);
     cfg_set(s_radio, s_radio->cfg_radio, "main:station_latitude", lat);
     cfg_set(s_radio, s_radio->cfg_radio, "main:station_longitude", lon);
@@ -737,6 +743,8 @@ int radiod_api_beacon_set(const radiod_api_beacon *in)
     s_radio->cfg_radio_dirty = true;
 
     pthread_mutex_lock(&s_radio->cfg_mutex);
+    s_radio->beacon_enable = in->enabled;
+    s_radio->beacon_interval_s = in->interval_s;
     snprintf(s_radio->callsign, sizeof s_radio->callsign, "%s", in->callsign);
     s_radio->has_station_position = in->has_station_position;
     s_radio->station_latitude = in->has_station_position ? in->station_latitude : 0;
@@ -748,6 +756,8 @@ int radiod_api_beacon_set(const radiod_api_beacon *in)
     if (beacon_service_running())
     {
         beacon_config c = {0};
+        c.enabled = in->enabled;
+        c.interval_s = in->interval_s;
         snprintf(c.callsign, sizeof c.callsign, "%.*s", BEACON_CALL_MAX, in->callsign);
         c.has_fixed = in->has_station_position;
         c.fixed_lat = in->station_latitude;

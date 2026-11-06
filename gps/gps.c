@@ -25,7 +25,6 @@
 /* The ranges api-rest.yaml gives GpsSettings (GpsSettings in the contract). */
 #define GPS_SAMPLE_INTERVAL_MIN 1
 #define GPS_FILE_PERIOD_MIN     60
-#define GPS_REPORT_INTERVAL_MIN 60
 
 static radio           *s_radio;
 static pthread_mutex_t  s_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -46,8 +45,6 @@ static void settings_default(radiod_api_gps_settings *s)
     s->file_period_s     = 3600;
     s->has_email         = false;
     s->email[0]          = '\0';
-    s->report_enabled    = false;
-    s->report_interval_s = 900;
 }
 
 static void settings_load(radiod_api_gps_settings *s)
@@ -59,14 +56,10 @@ static void settings_load(radiod_api_gps_settings *s)
     s->logging           = iniparser_getboolean(ini, "main:gps_logging", 0) != 0;
     s->sample_interval_s = iniparser_getint(ini, "main:gps_sample_interval_s", 1);
     s->file_period_s     = iniparser_getint(ini, "main:gps_file_period_s", 3600);
-    s->report_enabled    = iniparser_getboolean(ini, "main:gps_report_enabled", 0) != 0;
-    s->report_interval_s = iniparser_getint(ini, "main:gps_report_interval_s", 900);
     if (s->sample_interval_s < GPS_SAMPLE_INTERVAL_MIN)
         s->sample_interval_s = GPS_SAMPLE_INTERVAL_MIN;
     if (s->file_period_s < GPS_FILE_PERIOD_MIN)
         s->file_period_s = GPS_FILE_PERIOD_MIN;
-    if (s->report_interval_s < GPS_REPORT_INTERVAL_MIN)
-        s->report_interval_s = GPS_REPORT_INTERVAL_MIN;
     const char *email = iniparser_getstring(ini, "main:gps_email", "");
     if (email && *email)
     {
@@ -418,8 +411,7 @@ int gps_settings_apply(const radiod_api_gps_settings *s)
     if (!s)
         return RADIOD_API_EINVAL;
     if (s->sample_interval_s < GPS_SAMPLE_INTERVAL_MIN ||
-        s->file_period_s < GPS_FILE_PERIOD_MIN ||
-        s->report_interval_s < GPS_REPORT_INTERVAL_MIN)
+        s->file_period_s < GPS_FILE_PERIOD_MIN)
         return RADIOD_API_EINVAL;
 
     pthread_mutex_lock(&s_mutex);
@@ -438,10 +430,6 @@ int gps_settings_apply(const radiod_api_gps_settings *s)
     cfg_set(s_radio, s_radio->cfg_radio, "main:gps_file_period_s", val);
     cfg_set(s_radio, s_radio->cfg_radio, "main:gps_email",
             s->has_email ? s->email : "");
-    snprintf(val, sizeof(val), "%d", s->report_enabled ? 1 : 0);
-    cfg_set(s_radio, s_radio->cfg_radio, "main:gps_report_enabled", val);
-    snprintf(val, sizeof(val), "%d", s->report_interval_s);
-    cfg_set(s_radio, s_radio->cfg_radio, "main:gps_report_interval_s", val);
     s_radio->cfg_radio_dirty = true;
     return RADIOD_API_OK;
 }

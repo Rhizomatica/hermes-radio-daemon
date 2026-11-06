@@ -119,20 +119,14 @@ type Gps struct {
 	Settings  GpsSettings
 }
 
-// GpsSettings are the station's GPS logging and reporting settings
-// (GpsSettings in api-rest.yaml). Email is nil when none is set.
+// GpsSettings are the station's GPS logging settings (GpsSettings in
+// api-rest.yaml). Email is nil when none is set. Sending the position over
+// the air is the beacon's (Beacon).
 type GpsSettings struct {
 	Logging         bool
 	SampleIntervalS int
 	FilePeriodS     int
 	Email           *string
-	Report          GpsReport
-}
-
-// GpsReport is the periodic over-the-air position report.
-type GpsReport struct {
-	Enabled   bool
-	IntervalS int
 }
 
 // BroadcastState is the state of the file on the air (radiod_api.h
@@ -168,6 +162,8 @@ type Broadcast struct {
 // Beacon is the station's position-beacon settings (docs/BEACON-FORMAT.md).
 // StationLatitude/StationLongitude are nil without a fixed position.
 type Beacon struct {
+	Enabled            bool // the regular beacons (main:beacon_enable)
+	IntervalS          int  // between them (main:beacon_interval_s)
 	Callsign           string
 	StationLatitude    *float64
 	StationLongitude   *float64

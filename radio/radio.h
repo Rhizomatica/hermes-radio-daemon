@@ -444,9 +444,12 @@ typedef struct {
     int  broadcast_mode;
     char broadcast_tx_dir[256];
     char broadcast_rx_dir[256];
-    /* Position beacons (modem/beacon_tx.h): the station's callsign, its
-     * fixed position for when there is no GPS fix, and the beacon interval
-     * while an emergency code is set. */
+    /* Position beacons (modem/beacon_tx.h): main:beacon_enable and
+     * main:beacon_interval_s for the regular ones, the station's callsign,
+     * its fixed position for when there is no GPS fix, and the beacon
+     * interval while an emergency code is set. */
+    bool   beacon_enable;
+    int    beacon_interval_s;
     char   callsign[16];
     bool   has_station_position;
     double station_latitude, station_longitude;

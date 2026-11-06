@@ -1,5 +1,5 @@
 /* gps - the station's GPS: a reader thread over gpsd's JSON socket and the
- * logging/reporting settings, read from core.ini ([main]).
+ * logging settings, read from core.ini ([main]).
  *
  * radiod_api.h owns the wire types (radiod_api_gps*); this module fills
  * them.  The reader keeps the latest fix in one mutex-guarded struct, so

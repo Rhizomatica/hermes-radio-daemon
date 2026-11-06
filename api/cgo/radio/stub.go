@@ -81,8 +81,7 @@ func NewStub() *Stub {
 		values: map[string]float64{"AF": 0.5, "RF": 1, "PREAMP": 0, "STRENGTH": -20, "NB": 0, "BACKLIGHT": 0.8},
 		digi: DigiSettings{CWWPM: 20, CWPitchHz: 700, RTTYBaud: 45, RTTYShiftHz: 170, RTTYMarkHz: 2125,
 			DstarMycall: "N0CALL", VoiceCodec: "RADEV2"},
-		gps: Gps{Fix: "none", Settings: GpsSettings{SampleIntervalS: 1, FilePeriodS: 3600,
-			Report: GpsReport{IntervalS: 900}}},
+		gps:    Gps{Fix: "none", Settings: GpsSettings{SampleIntervalS: 1, FilePeriodS: 3600}},
 		listen: "DATAC3",
 		Sent:   map[int64][][]byte{},
 		closed: map[int64]WSCloseFrame{},
@@ -633,7 +632,7 @@ func (s *Stub) Gps() Gps {
 
 func (s *Stub) SetGpsSettings(g GpsSettings) error {
 	// The ranges api-rest.yaml gives GpsSettings.
-	if g.SampleIntervalS < 1 || g.FilePeriodS < 60 || g.Report.IntervalS < 60 {
+	if g.SampleIntervalS < 1 || g.FilePeriodS < 60 {
 		return ErrInvalid
 	}
 	s.mu.Lock()
@@ -846,6 +845,9 @@ func (s *Stub) Beacon() Beacon {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b := s.beacon
+	if b.IntervalS == 0 {
+		b.IntervalS = stubIntervalDefault
+	}
 	if b.EmergencyIntervalS == 0 {
 		b.EmergencyIntervalS = stubEmergencyIntervalDefault
 	}
@@ -855,6 +857,8 @@ func (s *Stub) Beacon() Beacon {
 // The ranges radiod_api_beacon_set checks.
 const (
 	stubCallsignMax              = 9
+	stubIntervalMin              = 60
+	stubIntervalDefault          = 900
 	stubEmergencyIntervalMin     = 30
 	stubEmergencyIntervalDefault = 120
 	stubLatMaxDeg                = 90
@@ -862,7 +866,8 @@ const (
 )
 
 func (s *Stub) SetBeacon(b Beacon) error {
-	if len(b.Callsign) > stubCallsignMax || b.EmergencyIntervalS < stubEmergencyIntervalMin {
+	if len(b.Callsign) > stubCallsignMax || b.IntervalS < stubIntervalMin ||
+		b.EmergencyIntervalS < stubEmergencyIntervalMin {
 		return ErrInvalid
 	}
 	if (b.StationLatitude == nil) != (b.StationLongitude == nil) ||

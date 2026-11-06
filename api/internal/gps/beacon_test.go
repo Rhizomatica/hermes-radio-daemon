@@ -17,16 +17,18 @@ func running(e *testapi.Env) {
 func TestBeaconSettings(t *testing.T) {
 	e := testapi.New(t)
 	j := e.Do("GET", "/gps/beacon", "").JSON(t)
-	if j["callsign"] != "" || j["station_latitude"] != nil || j["emergency_interval_s"].(float64) != 120 || j["running"] != false {
+	if j["enabled"] != false || j["interval_s"].(float64) != 900 ||
+		j["callsign"] != "" || j["station_latitude"] != nil || j["emergency_interval_s"].(float64) != 120 || j["running"] != false {
 		t.Fatalf("GET /gps/beacon = %v", j)
 	}
 
-	r := e.Do("PATCH", "/gps/beacon", `{"callsign":"n0call-7","station_latitude":4.5,"station_longitude":-75.7,"emergency_interval_s":60}`)
+	r := e.Do("PATCH", "/gps/beacon", `{"enabled":true,"interval_s":300,"callsign":"n0call-7","station_latitude":4.5,"station_longitude":-75.7,"emergency_interval_s":60}`)
 	if r.Status != 200 {
 		t.Fatalf("PATCH = %d %s", r.Status, r.Body)
 	}
 	j = r.JSON(t)
-	if j["callsign"] != "N0CALL-7" || j["station_latitude"] != 4.5 || j["station_longitude"] != -75.7 || j["emergency_interval_s"].(float64) != 60 {
+	if j["enabled"] != true || j["interval_s"].(float64) != 300 ||
+		j["callsign"] != "N0CALL-7" || j["station_latitude"] != 4.5 || j["station_longitude"] != -75.7 || j["emergency_interval_s"].(float64) != 60 {
 		t.Errorf("after PATCH = %v", j)
 	}
 
@@ -39,7 +41,7 @@ func TestBeaconSettings(t *testing.T) {
 	for _, bad := range []string{
 		`{"callsign":"N0 CALL"}`, `{"callsign":"TOOLONGCALL"}`,
 		`{"station_latitude":91,"station_longitude":0}`, `{"station_latitude":1}`,
-		`{"emergency_interval_s":10}`, `{"nonsense":1}`,
+		`{"emergency_interval_s":10}`, `{"interval_s":59}`, `{"enabled":"yes"}`, `{"nonsense":1}`,
 	} {
 		if r := e.Do("PATCH", "/gps/beacon", bad); r.Status != 422 {
 			t.Errorf("PATCH %s = %d, want 422", bad, r.Status)

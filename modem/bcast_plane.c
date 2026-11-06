@@ -33,6 +33,8 @@ bool bcast_plane_start(radio *radio_h)
     bcast_spool_incoming_dir(&sc, lc.incoming_dir, sizeof lc.incoming_dir);
 
     beacon_config bc = {0};
+    bc.enabled = radio_h->beacon_enable;
+    bc.interval_s = radio_h->beacon_interval_s;
     snprintf(bc.callsign, sizeof bc.callsign, "%.9s", radio_h->callsign);
     bc.has_fixed = radio_h->has_station_position;
     bc.fixed_lat = radio_h->station_latitude;

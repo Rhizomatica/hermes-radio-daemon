@@ -104,11 +104,11 @@ int beacon_build_frame(const beacon_config *cfg, const beacon_position *pos, int
     return beacon_encode(&b, frame, frame_len);
 }
 
-int beacon_interval_s(bool reports_on, int report_interval_s, int emergency, int emergency_interval_s)
+int beacon_interval_s(bool enabled, int interval_s, int emergency, int emergency_interval_s)
 {
     if (emergency)
         return emergency_interval_s > 0 ? emergency_interval_s : BEACON_EMERGENCY_INTERVAL_DEFAULT_S;
-    return reports_on && report_interval_s > 0 ? report_interval_s : 0;
+    return enabled && interval_s > 0 ? interval_s : 0;
 }
 
 /* ── the stations heard ───────────────────────────────────────── */
@@ -373,11 +373,9 @@ static void *beacon_thread(void *arg)
 
     while (atomic_load(&g_running))
     {
-        radiod_api_gps g;
-        gps_latest(&g);
         int code = atomic_load(&g_emergency);
-        int every = beacon_interval_s(g.settings.report_enabled, g.settings.report_interval_s,
-                                      code, cfg_now().emergency_interval_s);
+        beacon_config c = cfg_now();
+        int every = beacon_interval_s(c.enabled, c.interval_s, code, c.emergency_interval_s);
         double now = digi_log_now();
 
         if (atomic_exchange(&g_send_over, false))
@@ -427,8 +425,12 @@ bool beacon_service_start(radio *radio_h, const beacon_config *cfg)
         return false;
     }
     atomic_store(&g_started, true);
-    HLOGI(LOG_C, "beacons as %s%s", cfg->callsign[0] ? cfg->callsign : "(no callsign)",
-          atomic_load(&g_emergency) ? ", emergency set" : "");
+    if (cfg->enabled)
+        HLOGI(LOG_C, "beacons as %s every %d s%s", cfg->callsign[0] ? cfg->callsign : "(no callsign)",
+              cfg->interval_s, atomic_load(&g_emergency) ? ", emergency set" : "");
+    else
+        HLOGI(LOG_C, "beacons off (main:beacon_enable), receiving only%s",
+              atomic_load(&g_emergency) ? "; an emergency code is set, so it is sent" : "");
     return true;
 }
 

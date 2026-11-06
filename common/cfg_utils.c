@@ -576,6 +576,9 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     s = iniparser_getstring(ini, "main:broadcast_rx_dir", BCAST_SPOOL_DEFAULT_RX_DIR);
     snprintf(radio_h->broadcast_rx_dir, sizeof(radio_h->broadcast_rx_dir), "%s", s);
 
+    radio_h->beacon_enable = iniparser_getboolean(ini, "main:beacon_enable", 0) != 0;
+    i = iniparser_getint(ini, "main:beacon_interval_s", BEACON_INTERVAL_DEFAULT_S);
+    radio_h->beacon_interval_s = i >= BEACON_INTERVAL_MIN_S ? i : BEACON_INTERVAL_MIN_S;
     s = iniparser_getstring(ini, "main:callsign", "");
     snprintf(radio_h->callsign, sizeof(radio_h->callsign), "%s", s);
     {

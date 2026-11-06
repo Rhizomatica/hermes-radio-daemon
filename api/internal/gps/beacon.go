@@ -25,7 +25,9 @@ const (
 	// SosMax is the highest code a station sets; 31 is "emergency over",
 	// sent by clearing it.
 	SosMax = 30
-	// EmergencyIntervalMin is the shortest emergency interval (beacon.h).
+	// IntervalMin is the shortest interval between regular beacons, and
+	// EmergencyIntervalMin between those of an emergency (beacon.h).
+	IntervalMin          = 60
 	EmergencyIntervalMin = 30
 	// LatMax and LonMax bound a position.
 	LatMax = 90
@@ -59,6 +61,8 @@ func registerBeacon(rt *api.Router, h handlers) {
 
 // Beacon is Beacon.
 type Beacon struct {
+	Enabled            bool     `json:"enabled"`
+	IntervalS          int      `json:"interval_s"`
 	Callsign           string   `json:"callsign"`
 	StationLatitude    *float64 `json:"station_latitude"`
 	StationLongitude   *float64 `json:"station_longitude"`
@@ -69,6 +73,7 @@ type Beacon struct {
 
 func beaconOf(b rad.Beacon) Beacon {
 	return Beacon{
+		Enabled: b.Enabled, IntervalS: b.IntervalS,
 		Callsign: b.Callsign, StationLatitude: b.StationLatitude, StationLongitude: b.StationLongitude,
 		EmergencyIntervalS: b.EmergencyIntervalS, Emergency: b.Emergency, Running: b.Running,
 	}
@@ -91,6 +96,17 @@ func (h handlers) updateBeacon(w http.ResponseWriter, r *http.Request) {
 	f := api.Fields{}
 	for key, v := range raw {
 		switch key {
+		case "enabled":
+			var e bool
+			if json.Unmarshal(v, &e) != nil {
+				f.Add(key, "a boolean")
+			} else {
+				next.Enabled = e
+			}
+		case "interval_s":
+			if n, ok := intIn(v, key, IntervalMin, 1<<31-1, f); ok {
+				next.IntervalS = int(n)
+			}
 		case "callsign":
 			var c string
 			if json.Unmarshal(v, &c) != nil || !callsignRe.MatchString(c) {
