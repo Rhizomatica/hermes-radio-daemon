@@ -90,18 +90,30 @@ func startAPIDaemon(t *testing.T, extra ...string) *Daemon {
 // setupAPI runs first-boot setup on a freshly started daemon and returns the
 // new admin's session token. startDaemon points the daemon at a temp database
 // and a known setup code (SETUP_CODE_PATH), so this is deterministic.
+// The admin a station starts with (api/internal/setup/default_admin.go).
+const (
+	defaultAdminUser = "root"
+	defaultAdminPass = "caduceu"
+)
+
+// setupAPI logs in as the station's default admin and makes the tests' own
+// admin ("admin" / "password1"), returning that admin's token.
 func setupAPI(t *testing.T, d *Daemon) string {
 	t.Helper()
-	r := call(t, "POST", apiBase(d)+"/setup",
-		`{"setup_code":"`+apiSetupCode+`","station_name":"Test Station","callsign":"TEST1",`+
-			`"country":"BR","language":"en","timezone":"America/Sao_Paulo",`+
-			`"admin":{"username":"admin","password":"password1","display_name":"Admin"}}`)
+	r := login(t, d, defaultAdminUser, defaultAdminPass)
 	if r.status != 201 {
-		t.Fatalf("POST /setup = %d %s\n--- daemon log ---\n%s", r.status, r.raw, d.Log())
+		t.Fatalf("login as the default admin = %d %s\n--- daemon log ---\n%s", r.status, r.raw, d.Log())
 	}
+	root, _ := r.body["token"].(string)
+	r = callAuth(t, "POST", apiBase(d)+"/users",
+		`{"username":"admin","password":"password1","display_name":"Admin","role":"admin"}`, root)
+	if r.status != 201 {
+		t.Fatalf("POST /users admin = %d %s", r.status, r.raw)
+	}
+	r = login(t, d, "admin", "password1")
 	token, _ := r.body["token"].(string)
-	if token == "" {
-		t.Fatalf("POST /setup returned no token: %s", r.raw)
+	if r.status != 201 || token == "" {
+		t.Fatalf("login as admin = %d %s", r.status, r.raw)
 	}
 	return token
 }
