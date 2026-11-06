@@ -164,12 +164,14 @@ These station settings live in `core.ini` (`[main]`). The GPS ones are also
 | `beacon_emergency` | the emergency code set, 0 for none (set over the API) |
 | `callsign` | the station's callsign, sent in each beacon; without it no beacon goes out |
 | `station_latitude`, `station_longitude` | the station's fixed position, in degrees, for when there is no GPS fix |
-| `beacon_mode` | the broadcast frame mode, from §1's table; DATAC16 (Mercury's mode index 8) by default |
+| `beacon_mode` | planned: the broadcast frame mode, from §1's table; DATAC16 (Mercury's mode index 8) by default |
 
-With Mercury as its own process, radiod reaches Mercury through its broadcast
-port only (`broadcast_enable`, `broadcast_host`, `broadcast_port`). Mercury
-sends a beacon from that port on DATAC16, so radiod sends the compact layout
-there, and `beacon_mode` takes effect with Mercury inside radiod.
+radiod sends the compact layout on DATAC16, either way Mercury runs. With
+Mercury as its own process, radiod reaches it through its broadcast port only
+(`broadcast_enable`, `broadcast_host`, `broadcast_port`), and Mercury sends a
+beacon from that port on DATAC16. With Mercury inside radiod
+(`enable_mercury`), radiod calls `mercury_host_beacon_send()`, which also
+takes the other modes of §1; `beacon_mode` will choose among them there.
 
 - **Layout:** the compact one in a 14-byte mode, the full one in every larger
   mode.

@@ -40,6 +40,11 @@
 #define TX_IDLE_WAIT_MS   200    /* the sender's wait for an object or a connection */
 #define RX_BUF_BYTES      4096
 #define INCOMING_DIR_MODE 0770
+#define HOST_POLL_MS      200    /* how often the in-process backend reads Mercury's carousel */
+#define HOST_TICK_MS      50     /* how often its wait checks for shutdown */
+#define HOST_FILE_TEMPLATE "/.received-XXXXXX"   /* a received file, in incoming_dir */
+#define PACKET_TYPE_SHIFT   5    /* a frame's packet type: its first byte's top 3 bits */
+#define PACKET_TYPE_STATION 0x07
 
 #define MS_PER_S  1000
 #define NS_PER_MS 1000000L
@@ -123,6 +128,12 @@ static bool             g_stop_req;
 
 static bcast_file_rx_t *g_rx;
 
+/* In process: the carousel is Mercury's; g_host_end is how this one ends
+ * once Mercury says it stopped (0: as Mercury says). */
+static pthread_t g_host_tid;
+static bool      g_host_on_air;
+static bcast_tx_state g_host_end;
+
 static void sleep_ms(int ms)
 {
     struct timespec ts = { ms / MS_PER_S, (long) (ms % MS_PER_S) * NS_PER_MS };
@@ -191,7 +202,7 @@ static void on_kiss_frame(const uint8_t *f, size_t len, void *user)
     const uint8_t *frame = f + 1;   /* past the KISS command */
     size_t n = len - 1;
 
-    if ((frame[0] >> 5) == 0x07)
+    if ((frame[0] >> PACKET_TYPE_SHIFT) == PACKET_TYPE_STATION)
     {
         if (g_ops.on_station_frame)
             g_ops.on_station_frame(frame, n, g_ops.user);
@@ -339,12 +350,160 @@ static void *tx_thread(void *arg)
     return NULL;
 }
 
+/* ── in process: Mercury inside radiod ───────────────────────── */
+
+static void host_on_object(const uint8_t *data, size_t len, const char *name)
+{
+    char path[sizeof g_cfg.incoming_dir + sizeof HOST_FILE_TEMPLATE];
+    snprintf(path, sizeof path, "%s" HOST_FILE_TEMPLATE, g_cfg.incoming_dir);
+    int fd = mkstemp(path);
+    if (fd < 0)
+    {
+        HLOGW(LOG_C, "cannot file \"%s\" in %s: %s", name, g_cfg.incoming_dir, strerror(errno));
+        return;
+    }
+    size_t off = 0;
+    while (off < len)
+    {
+        ssize_t w = write(fd, data + off, len - off);
+        if (w < 0 && errno == EINTR)
+            continue;
+        if (w <= 0)
+            break;
+        off += (size_t) w;
+    }
+    close(fd);
+    if (off < len)
+    {
+        HLOGW(LOG_C, "cannot write \"%s\" to %s", name, path);
+        unlink(path);
+        return;
+    }
+    HLOGI(LOG_C, "received \"%s\"", name);
+    if (g_ops.on_object)
+        g_ops.on_object(path, name, g_ops.user);
+    else
+        unlink(path);
+}
+
+static void host_on_frame(const uint8_t *frame, size_t len)
+{
+    if (len && (frame[0] >> PACKET_TYPE_SHIFT) == PACKET_TYPE_STATION && g_ops.on_station_frame)
+        g_ops.on_station_frame(frame, len, g_ops.user);
+}
+
+/* Starts the receiver once the engine is up, follows the carousel, and ends
+ * it at its frame count (Mercury's runs until stopped). */
+static void *host_thread(void *arg)
+{
+    (void) arg;
+    const bcast_link_host *h = g_cfg.in_process;
+    bool receiving = false, said_rx_error = false;
+    while (atomic_load(&g_running))
+    {
+        if (!receiving)
+        {
+            int rc = h->receive(host_on_object, host_on_frame);
+            if (rc == 0)
+            {
+                receiving = true;
+                HLOGI(LOG_C, "on Mercury inside radiod");
+            }
+            else if (rc == EINVAL && !said_rx_error)
+            {
+                HLOGW(LOG_C, "Mercury's broadcast receiver did not start; retrying");
+                said_rx_error = true;
+            }
+        }
+        bcast_host_status hs;
+        bool up = h->status(&hs);
+        atomic_store(&g_connected, up && receiving);
+
+        bool stop = false;
+        pthread_mutex_lock(&g_tx_lock);
+        if (g_host_on_air && up)
+        {
+            g_stats.frames_sent = hs.frames_sent;
+            if (g_stats.frames_per_pass > 0 && hs.frames_sent > 0)
+                g_stats.pass = (int) ((int64_t) (hs.frames_sent - 1) / g_stats.frames_per_pass) + 1;
+            if (hs.state == BCAST_TX_SENDING)
+            {
+                if (!g_host_end && g_stop_req)
+                    g_host_end = BCAST_TX_STOPPED;
+                else if (!g_host_end && g_stats.frames_limit > 0 &&
+                         (int64_t) hs.frames_sent >= g_stats.frames_limit)
+                    g_host_end = BCAST_TX_DONE;
+                stop = g_host_end != 0;
+            }
+            else
+            {
+                bcast_tx_state st = g_host_end ? g_host_end
+                                  : hs.state == BCAST_TX_DONE || hs.state == BCAST_TX_ERROR ? (bcast_tx_state) hs.state
+                                  : BCAST_TX_STOPPED;   /* stopped by Mercury: an ARQ session */
+                if (st == BCAST_TX_DONE)
+                    HLOGI(LOG_C, "\"%s\": done, %llu frames", g_stats.name, (unsigned long long) hs.frames_sent);
+                else if (st == BCAST_TX_ERROR)
+                    HLOGE(LOG_C, "\"%s\": the carousel failed", g_stats.name);
+                else
+                    HLOGI(LOG_C, "stopped \"%s\" after %llu frames", g_stats.name,
+                          (unsigned long long) hs.frames_sent);
+                g_stats.state = st;
+                g_host_on_air = false;
+                g_host_end = 0;
+                g_stop_req = false;
+            }
+        }
+        pthread_mutex_unlock(&g_tx_lock);
+        if (stop)
+            h->stop();   /* returns once Mercury's sender is gone: not under the lock */
+
+        for (int i = 0; i < HOST_POLL_MS / HOST_TICK_MS && atomic_load(&g_running); i++)
+            sleep_ms(HOST_TICK_MS);
+    }
+    pthread_mutex_lock(&g_tx_lock);
+    bool on_air = g_host_on_air;
+    if (on_air)
+        g_stats.state = BCAST_TX_STOPPED;
+    g_host_on_air = false;
+    pthread_mutex_unlock(&g_tx_lock);
+    if (on_air)
+        h->stop();
+    if (receiving)
+        h->receive(NULL, NULL);
+    atomic_store(&g_connected, false);
+    return NULL;
+}
+
+static bool host_start(void)
+{
+    pthread_mutex_lock(&g_tx_lock);
+    memset(&g_stats, 0, sizeof g_stats);
+    g_stats.frames_limit = -1;
+    g_host_on_air = false;
+    g_host_end = 0;
+    pthread_mutex_unlock(&g_tx_lock);
+    atomic_store(&g_running, true);
+    if (pthread_create(&g_host_tid, NULL, host_thread, NULL) != 0)
+    {
+        atomic_store(&g_running, false);
+        return false;
+    }
+    atomic_store(&g_started, true);
+    HLOGI(LOG_C, "broadcast plane on Mercury inside radiod, at its listen mode");
+    return true;
+}
+
 bool bcast_link_start(const bcast_link_config *cfg, const bcast_link_ops *ops)
 {
     if (atomic_load(&g_started))
         return true;
     g_cfg = *cfg;
     g_ops = ops ? *ops : (bcast_link_ops) {0};
+    if (g_cfg.in_process)
+    {
+        mkdir(g_cfg.incoming_dir, INCOMING_DIR_MODE);
+        return host_start();
+    }
 
     if (!bcast_file_mode_usable(g_cfg.mode) || bcast_file_mode_symbols(g_cfg.mode) == 0)
     {
@@ -391,6 +550,11 @@ void bcast_link_stop(void)
     if (!atomic_exchange(&g_started, false))
         return;
     atomic_store(&g_running, false);
+    if (g_cfg.in_process)
+    {
+        pthread_join(g_host_tid, NULL);
+        return;
+    }
     pthread_mutex_lock(&g_fd_lock);
     if (g_fd >= 0)
         shutdown(g_fd, SHUT_RDWR);   /* unblocks a send waiting on Mercury */
@@ -405,6 +569,18 @@ void bcast_link_stop(void)
 const char *bcast_link_mode_name(int mode)
 {
     return bcast_file_mode_name(mode);
+}
+
+int bcast_link_mode(int fallback)
+{
+    if (!atomic_load(&g_started))
+        return fallback;
+    if (g_cfg.in_process)
+    {
+        int m = g_cfg.in_process->listen_mode();
+        return m >= 0 ? m : g_cfg.mode;
+    }
+    return g_cfg.mode;
 }
 
 int64_t bcast_link_frames_per_pass(int mode, const char *name, size_t len)
@@ -422,27 +598,43 @@ int bcast_link_send_object(const char *name, const uint8_t *data, size_t len,
 {
     if (!atomic_load(&g_started))
         return EAGAIN;             /* the link is not up yet (or any more) */
+    int mode = bcast_link_mode(g_cfg.mode);
     pthread_mutex_lock(&g_tx_lock);
-    if (g_tx)
+    if (g_tx || g_host_on_air)
     {
         pthread_mutex_unlock(&g_tx_lock);
         return EBUSY;
     }
     /* The codec's "cycle" is one frame per RaptorQ block; passes are counted
-     * here, so it runs endless and the frame count ends it. */
-    bcast_file_tx_t *tx = bcast_file_tx_open_mem(name, data, len, g_cfg.mode, 0, 0, err, errlen);
-    if (!tx)
+     * here, so it runs endless and the frame count ends it.  In process the
+     * codec is Mercury's carousel. */
+    if (g_cfg.in_process)
     {
-        pthread_mutex_unlock(&g_tx_lock);
-        return EINVAL;
+        int rc = g_cfg.in_process->send(name, data, len, err, errlen);
+        if (rc != 0)
+        {
+            pthread_mutex_unlock(&g_tx_lock);
+            return rc;
+        }
+        g_host_on_air = true;
+        g_host_end = 0;
     }
-    g_tx = tx;
+    else
+    {
+        bcast_file_tx_t *tx = bcast_file_tx_open_mem(name, data, len, g_cfg.mode, 0, 0, err, errlen);
+        if (!tx)
+        {
+            pthread_mutex_unlock(&g_tx_lock);
+            return EINVAL;
+        }
+        g_tx = tx;
+    }
     memset(&g_stats, 0, sizeof g_stats);
     g_stats.state = BCAST_TX_SENDING;
     snprintf(g_stats.name, sizeof g_stats.name, "%s", name);
     g_stats.bytes = len;
     g_stats.passes = passes > 0 ? passes : 0;
-    g_stats.frames_per_pass = bcast_link_frames_per_pass(g_cfg.mode, name, len);
+    g_stats.frames_per_pass = bcast_link_frames_per_pass(mode, name, len);
     int64_t limit = frames_limit > 0 ? frames_limit : -1;
     if (g_stats.passes && g_stats.frames_per_pass > 0)
     {
@@ -464,7 +656,7 @@ int bcast_link_send_object(const char *name, const uint8_t *data, size_t len,
 void bcast_link_stop_object(void)
 {
     pthread_mutex_lock(&g_tx_lock);
-    if (g_tx)
+    if (g_tx || g_host_on_air)
         g_stop_req = true;
     pthread_cond_broadcast(&g_tx_cond);
     pthread_mutex_unlock(&g_tx_lock);
@@ -480,9 +672,12 @@ void bcast_link_stats(bcast_tx_stats *out)
 
 int bcast_link_send_station_frame(const uint8_t *frame, size_t len)
 {
-    if (!frame || len == 0 || len > STATION_FRAME_MAX || (frame[0] >> 5) != 0x07)
+    if (!frame || len == 0 || len > STATION_FRAME_MAX ||
+        (frame[0] >> PACKET_TYPE_SHIFT) != PACKET_TYPE_STATION)
         return EINVAL;
     if (!atomic_load(&g_connected))
         return ENOTCONN;
+    if (g_cfg.in_process)
+        return g_cfg.in_process->station_frame(frame, len, BCAST_LINK_BEACON_MODE);
     return send_frame(frame, len) == 0 ? 0 : ENOTCONN;
 }

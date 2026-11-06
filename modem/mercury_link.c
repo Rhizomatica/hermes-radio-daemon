@@ -2,6 +2,7 @@
  * See mercury_link.h; the contract is vendor/mercury/host/mercury_host.h. */
 
 #define _GNU_SOURCE
+#include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -288,6 +289,117 @@ int mercury_link_command(const char *json)
     int rc = mercury_host_ui_command_json(json, strlen(json));
     engine_put();
     return rc;
+}
+
+/* ── the broadcast plane: bcast_link's in-process backend ── */
+
+static void (*s_bcast_on_object)(const uint8_t *data, size_t len, const char *name);
+static void (*s_bcast_on_frame)(const uint8_t *frame, size_t len);
+
+static void bcast_rx_object(const uint8_t *data, size_t len, const char *name, bool sealed_ok, void *user)
+{
+    (void) sealed_ok;
+    (void) user;
+    if (s_bcast_on_object)
+        s_bcast_on_object(data, len, name);
+}
+
+static void bcast_rx_frame(const uint8_t *frame, size_t len, int mode, float snr, void *user)
+{
+    (void) mode;
+    (void) snr;
+    (void) user;
+    if (s_bcast_on_frame)
+        s_bcast_on_frame(frame, len);
+}
+
+static int bcast_send(const char *name, const uint8_t *data, size_t len, char *err, size_t errlen)
+{
+    if (!engine_get())
+        return EAGAIN;
+    int rc = mercury_host_bcast_send(name, data, len, 0, err, errlen);   /* 0: until stopped */
+    engine_put();
+    return rc == MERCURY_HOST_OK ? 0 : rc == MERCURY_HOST_BUSY ? EBUSY : EINVAL;
+}
+
+static void bcast_stop(void)
+{
+    if (!engine_get())
+        return;
+    mercury_host_bcast_stop();
+    engine_put();
+}
+
+static bool bcast_status(bcast_host_status *out)
+{
+    if (!engine_get())
+        return false;
+    mercury_host_bcast_stats_t st;
+    mercury_host_bcast_stats(&st);
+    engine_put();
+    const char *s = st.state ? st.state : "";
+    out->state = strcmp(s, "sending") == 0 ? BCAST_TX_SENDING
+               : strcmp(s, "done") == 0    ? BCAST_TX_DONE
+               : strcmp(s, "error") == 0   ? BCAST_TX_ERROR
+               : strcmp(s, "idle") == 0    ? BCAST_TX_IDLE
+               : BCAST_TX_STOPPED;          /* "stopped", "stopped_by_arq" */
+    out->frames_sent = st.frames_sent;
+    return true;
+}
+
+static int bcast_station_frame(const uint8_t *frame, size_t len, int mode)
+{
+    if (!engine_get())
+        return ENOTCONN;
+    int rc = mercury_host_beacon_send(frame, len, mode);
+    engine_put();
+    return rc == MERCURY_HOST_OK ? 0 : rc == MERCURY_HOST_FULL ? EBUSY : EINVAL;
+}
+
+static int bcast_listen_mode(void)
+{
+    if (!engine_get())
+        return -1;
+    int m = mercury_host_listen_mode();
+    engine_put();
+    return m;
+}
+
+static int bcast_receive(void (*on_object)(const uint8_t *data, size_t len, const char *name),
+                         void (*on_frame)(const uint8_t *frame, size_t len))
+{
+    if (!engine_get())
+        return ENOTCONN;
+    int rc;
+    if (!on_object && !on_frame)
+    {
+        rc = mercury_host_set_bcast_rx(NULL);
+        s_bcast_on_object = NULL;
+        s_bcast_on_frame = NULL;
+    }
+    else
+    {
+        s_bcast_on_object = on_object;
+        s_bcast_on_frame = on_frame;
+        mercury_host_bcast_rx_ops ops = { .on_object = bcast_rx_object, .on_frame = bcast_rx_frame };
+        rc = mercury_host_set_bcast_rx(&ops);
+    }
+    engine_put();
+    return rc == MERCURY_HOST_OK ? 0 : EINVAL;
+}
+
+static const bcast_link_host s_bcast_host = {
+    .send = bcast_send,
+    .stop = bcast_stop,
+    .status = bcast_status,
+    .station_frame = bcast_station_frame,
+    .listen_mode = bcast_listen_mode,
+    .receive = bcast_receive,
+};
+
+const bcast_link_host *mercury_link_bcast_host(void)
+{
+    return &s_bcast_host;
 }
 
 /* The listen mode the API last set (user.ini), once the engine is up. */
