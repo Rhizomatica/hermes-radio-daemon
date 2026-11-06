@@ -159,6 +159,15 @@ type Broadcast struct {
 	FramesSent         uint64
 }
 
+// TransportSettings are the store-and-forward layer's settings
+// (api/internal/transport.Settings): Prefer "uucp" or "nncp", uucico's
+// options over the radio, and the systems it reaches over TCP.
+type TransportSettings struct {
+	Prefer           string
+	UucicoAirOptions []string
+	UucicoTCPSystems []string
+}
+
 // Beacon is the station's position-beacon settings (docs/BEACON-FORMAT.md).
 // StationLatitude/StationLongitude are nil without a fixed position.
 type Beacon struct {
@@ -308,6 +317,9 @@ type Radio interface {
 	SetBeaconEmergency(code int) error
 	BeaconSendNow() error
 	BeaconStations() []BeaconStation
+
+	// Transport is the store-and-forward layer's settings (core.ini).
+	Transport() TransportSettings
 
 	// ModemStatus is mercury's last status JSON; false without mercury.
 	ModemStatus() (jsontext.Value, bool)

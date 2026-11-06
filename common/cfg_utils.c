@@ -42,6 +42,10 @@
 #include "radiod_log.h"
 
 #define LOG_C "cfg"
+
+/* main:transport_prefer: the transport for a station both UUCP and NNCP
+ * reach (api/internal/transport DefaultPrefer). */
+#define TRANSPORT_PREFER_DEFAULT "nncp"
 extern _Atomic bool shutdown_;
 
 static int cfg_getint_alias(dictionary *ini,
@@ -593,6 +597,13 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     }
     i = iniparser_getint(ini, "main:beacon_emergency_interval_s", BEACON_EMERGENCY_INTERVAL_DEFAULT_S);
     radio_h->beacon_emergency_interval_s = i >= BEACON_EMERGENCY_INTERVAL_MIN_S ? i : BEACON_EMERGENCY_INTERVAL_MIN_S;
+
+    s = iniparser_getstring(ini, "main:transport_prefer", TRANSPORT_PREFER_DEFAULT);
+    snprintf(radio_h->transport_prefer, sizeof(radio_h->transport_prefer), "%s", s);
+    s = iniparser_getstring(ini, "main:uucico_air_options", "");
+    snprintf(radio_h->uucico_air_options, sizeof(radio_h->uucico_air_options), "%s", s);
+    s = iniparser_getstring(ini, "main:uucico_tcp_systems", "");
+    snprintf(radio_h->uucico_tcp_systems, sizeof(radio_h->uucico_tcp_systems), "%s", s);
 
     s = iniparser_getstring(ini, "main:log_level", "info");
     snprintf(radio_h->log_level, sizeof(radio_h->log_level), "%s", s);

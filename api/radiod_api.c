@@ -820,6 +820,19 @@ int radiod_api_beacon_stations(radiod_api_beacon_station *out, int max)
 #endif
 }
 
+int radiod_api_transport_get(radiod_api_transport *out)
+{
+    if (!out || !s_radio)
+        return RADIOD_API_EINVAL;
+    memset(out, 0, sizeof *out);
+    pthread_mutex_lock(&s_radio->cfg_mutex);
+    snprintf(out->prefer, sizeof out->prefer, "%s", s_radio->transport_prefer);
+    snprintf(out->uucico_air_options, sizeof out->uucico_air_options, "%s", s_radio->uucico_air_options);
+    snprintf(out->uucico_tcp_systems, sizeof out->uucico_tcp_systems, "%s", s_radio->uucico_tcp_systems);
+    pthread_mutex_unlock(&s_radio->cfg_mutex);
+    return RADIOD_API_OK;
+}
+
 #ifdef HAVE_MERCURY
 static int modem_rc(int rc)
 {
