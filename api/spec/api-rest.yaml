@@ -2224,7 +2224,7 @@ paths:
       summary: Set an emergency code; the station beacons it at the emergency interval.
       description: |
         The position beacons (docs/BEACON-FORMAT.md) carry the code from now on, one every
-        `emergency_interval_s` whether position reports are on or not, until it is cleared
+        `emergency_interval_s` whether beacons are enabled or not, until it is cleared
         (`DELETE /gps/sos`). One goes out at once. The SOS message to `settings.sos_recipients`
         comes with the messages layer.
       x-hermes-role: user
@@ -2263,8 +2263,8 @@ paths:
       operationId: getBeacon
       summary: The station's position-beacon settings and state.
       description: |
-        When beacons go out and how often is `GpsSettings.report` (`PATCH /gps/settings`);
-        this is the rest.
+        Regular beacons go out every `interval_s` while `enabled` (default off); an
+        emergency code (`POST /gps/sos`) sends them every `emergency_interval_s` either way.
       x-hermes-role: readonly
       responses:
         "200":
@@ -3234,8 +3234,10 @@ components:
         received_at: {$ref: "#/components/schemas/Timestamp"}
     Beacon:
       type: object
-      required: [callsign, station_latitude, station_longitude, emergency_interval_s, emergency, running]
+      required: [enabled, interval_s, callsign, station_latitude, station_longitude, emergency_interval_s, emergency, running]
       properties:
+        enabled: {type: boolean, default: false, description: "Send this station's position at interval_s, so other stations can plot it on the map."}
+        interval_s: {type: integer, minimum: 60, default: 900, description: "Seconds between regular beacons."}
         callsign: {type: string, maxLength: 9, description: "Sent in each beacon; empty: no beacons."}
         station_latitude: {type: [number, "null"], minimum: -90, maximum: 90, description: "The fixed position, for when there is no GPS fix; null: none."}
         station_longitude: {type: [number, "null"], minimum: -180, maximum: 180}
@@ -3245,6 +3247,8 @@ components:
     BeaconPatch:
       type: object
       properties:
+        enabled: {type: boolean}
+        interval_s: {type: integer, minimum: 60}
         callsign: {type: string, pattern: "^([A-Za-z0-9/.-]{1,9})?$"}
         station_latitude: {type: [number, "null"], minimum: -90, maximum: 90}
         station_longitude: {type: [number, "null"], minimum: -180, maximum: 180}
@@ -3636,12 +3640,6 @@ components:
         sample_interval_s: {type: integer, minimum: 1}
         file_period_s: {type: integer, minimum: 60}
         email: {type: [string, "null"], format: email}
-        report:
-          type: object
-          description: Periodic position reports broadcast over the air so other stations can plot this one on the map.
-          properties:
-            enabled: {type: boolean, description: "Broadcast this station's position. Default off."}
-            interval_s: {type: integer, minimum: 60, default: 900, description: "How often to report, in seconds."}
     GpsFile:
       type: object
       required: [name, size_bytes, created_at]

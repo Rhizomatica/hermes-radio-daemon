@@ -33,6 +33,10 @@
 #define BEACON_LAT_MAX_DEG    90.0
 #define BEACON_LON_MAX_DEG    180.0
 
+/* main:beacon_interval_s: the default and the shortest allowed */
+#define BEACON_INTERVAL_DEFAULT_S 900
+#define BEACON_INTERVAL_MIN_S     60
+
 /* main:beacon_emergency_interval_s: the default and the shortest allowed */
 #define BEACON_EMERGENCY_INTERVAL_DEFAULT_S 120
 #define BEACON_EMERGENCY_INTERVAL_MIN_S     30
