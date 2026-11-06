@@ -21,12 +21,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/logging"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/ratelimit"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/spec"
 )
 
 const (
@@ -48,11 +50,27 @@ type handlers struct {
 	r     rad.Radio
 	limit *ratelimit.Limiter
 	log   *slog.Logger
+	cache *topicCache
+}
+
+// topicEvery is how often the broadcasts topic reads the spool at most: its
+// state function runs every publishing cycle.
+const topicEvery = time.Second
+
+// errNotRunning keeps the broadcasts topic off while the plane is.
+var errNotRunning = errors.New("the broadcast plane is not running")
+
+type topicCache struct {
+	mu  sync.Mutex
+	at  time.Time
+	v   any
+	err error
 }
 
 // Register adds the broadcast operations.
 func Register(rt *api.Router) {
-	h := handlers{r: rt.Radio(), limit: &ratelimit.Limiter{}, log: logging.New(rt.Radio(), "api.tx")}
+	h := handlers{r: rt.Radio(), limit: &ratelimit.Limiter{}, log: logging.New(rt.Radio(), "api.tx"),
+		cache: &topicCache{}}
 	rt.Op("listBroadcasts", h.list)
 	rt.Op("createBroadcast", h.create)
 	rt.Op("getBroadcast", h.get)
@@ -60,6 +78,31 @@ func Register(rt *api.Router) {
 	rt.Op("listReceivedBroadcasts", h.listReceived)
 	rt.Op("downloadReceivedBroadcast", h.download)
 	rt.Op("deleteReceivedBroadcast", h.deleteReceived)
+	rt.Topic("broadcasts", spec.RoleReadonly, h.topicState)
+}
+
+// topicState is the broadcasts topic: the plane and its queue, as
+// listBroadcasts, read from the spool at most every topicEvery.
+func (h handlers) topicState() (any, error) {
+	c := h.cache
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.at.IsZero() && time.Since(c.at) < topicEvery {
+		return c.v, c.err
+	}
+	b, err := h.r.Broadcast()
+	if err != nil || !b.Running {
+		c.v, c.err = nil, errNotRunning
+	} else {
+		var mode *string
+		if b.ModeName != "" {
+			mode = &b.ModeName
+		}
+		c.v, c.err = map[string]any{"running": b.Running, "connected": b.Connected, "mode": mode,
+			"queue": h.queue(b)}, nil
+	}
+	c.at = time.Now()
+	return c.v, c.err
 }
 
 // ── response schemas (api-rest.yaml components) ──

@@ -2,6 +2,7 @@ package broadcasts_test
 
 import (
 	"bytes"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -172,5 +173,36 @@ func TestReceived(t *testing.T) {
 	}
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
 		t.Error("old.txt is still there")
+	}
+}
+
+// The broadcasts topic: off while the plane is; its snapshot is the queue,
+// and a file queued arrives as an event.
+func TestBroadcastsTopic(t *testing.T) {
+	off := testapi.New(t)
+	w := off.Open()
+	if h := w.Next(testapi.Type("hello"), time.Second); strings.Contains(fmt.Sprint(h["topics"]), "broadcasts") {
+		t.Errorf("hello offers broadcasts with the plane off: %v", h["topics"])
+	}
+
+	e := newEnv(t)
+	w = e.Open()
+	if h := w.Next(testapi.Type("hello"), time.Second); !strings.Contains(fmt.Sprint(h["topics"]), "broadcasts") {
+		t.Fatalf("hello does not offer broadcasts: %v", h["topics"])
+	}
+	w.Send(`{"type":"subscribe","id":"s","topics":["broadcasts"]}`)
+	isTopic := func(m map[string]any) bool { return m["type"] == "event" && m["topic"] == "broadcasts" }
+	snap := w.Next(isTopic, 2*time.Second)
+	d := snap["data"].(map[string]any)
+	if d["running"] != true || d["mode"] != "DATAC3" || len(d["queue"].([]any)) != 0 {
+		t.Fatalf("snapshot = %v", d)
+	}
+	if r := e.upload("name=notice.txt", []byte("for the whole area")); r.Status != 201 {
+		t.Fatalf("POST = %d %s", r.Status, r.Body)
+	}
+	ev := w.Next(isTopic, 3*time.Second)
+	q, _ := ev["data"].(map[string]any)["queue"].([]any)
+	if len(q) != 1 || q[0].(map[string]any)["name"] != "notice.txt" {
+		t.Errorf("event = %v, want the queued file", ev)
 	}
 }
