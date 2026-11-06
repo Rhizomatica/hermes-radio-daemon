@@ -1,8 +1,7 @@
 # HERMES position beacon (proposal)
 
-Status: **proposal**, not yet implemented. The frame header is shared with
-Mercury, so the packet type below needs Mercury's agreement before anything is
-sent on the air.
+Status: **proposal**, not yet implemented. Mercury has checked it: packet
+type `0x07` is free, and Mercury will deliver and send these frames (§1, §6).
 
 A beacon is one Mercury broadcast frame. It says who the station is, where it
 is, and whether it has an emergency. It needs no connection and no return path,
@@ -14,36 +13,40 @@ the file bundle of `BROADCAST-WIRE-FORMAT.md`.
 
 ## 1. Transport
 
-- A beacon is sent as one modem frame, over Mercury's broadcast socket with
-  KISS `CMD_MODEM_FRAME` (`0x03`): *this payload is already one modem frame,
-  transmit it untouched*.
-- It is not sent as a message (`CMD_DATA`). Mercury would prepend its own
-  1-byte header and a 2-byte length to a message, and the compact layout
-  needs all 14 bytes of the most robust modes.
+- A beacon is one modem frame, sent as it is. Mercury doesn't add its message
+  framing (a 1-byte header and a 2-byte length), so the compact layout can
+  fill all 14 bytes of DATAC16.
 - The frame is exactly `payload_bytes_per_modem_frame` long for the mode. The
   beacon fills the start of it and the rest is zero.
 - The modem frame's own CRC protects it, so the beacon adds no checksum.
+- A beacon describes itself, so Mercury delivers it from whichever decoder
+  hears it, at any frame size, not only at the station's listen mode.
 
 The mode to send in is a station setting (§6). The layout follows from the
-mode's frame size:
+mode's frame size. Who hears a beacon follows from the decoders a listening
+HERMES station already runs:
+- DATAC16, the control decoder, always;
+- MFSK and MFSK500, the call listeners;
+- the listen mode.
 
-| Mode | Payload bytes | Layout |
-|---|---|---|
-| DATAC14 | 3 | none: a beacon does not fit |
-| DATAC0, DATAC13, DATAC16 | 14 | compact (§3) |
-| FSK_LDPC, DATAC15 | 30 | full (§4) |
-| DATAC4, DATAC3, DATAC1, DATAC17, QAM16C2 | 54 to 1213 | full |
-| MFSK, MFSK500 | 98 | full |
+| Mode | Payload bytes | Layout | Heard by | Airtime |
+|---|---|---|---|---|
+| DATAC16 | 14 | compact (§3) | every listening station | about 3 s |
+| MFSK | 98 | full (§4) | every listening station | about 13.5 s |
+| MFSK500 | 98 | full | every listening station | about 26 s |
+| DATAC15 | 30 | full | stations listening on that mode | about 3.7 s |
+| DATAC4, DATAC3, DATAC1, DATAC17, QAM16C2 | 54 to 1213 | full | stations listening on that mode | 3.2 to 6.7 s |
 
-The most robust choices are:
+- **Robustness:**
+  - MFSK500 decodes 90 % of frames at −14.1 dB AWGN;
+  - MFSK decodes 50 % at −11.2 dB;
+  - DATAC16 works down to about −7 dB.
+- **Not used:**
+  - DATAC0, DATAC13 and FSK_LDPC: no station runs a decoder for them, so
+    nobody would hear a beacon;
+  - DATAC14: its 3 bytes are too small.
 
-- MFSK500: 90 % of frames decoded at −14.1 dB AWGN, but a frame takes
-  about 26 s;
-- MFSK: 50 % of frames decoded at −11.2 dB, about 13.5 s per frame;
-- DATAC16 and DATAC15: down to about −7 dB.
-
-The figures are from Mercury's `docs/MODES.md`. Mercury's broadcast send path
-doesn't offer the MFSK modes yet.
+The figures are from Mercury's `docs/MODES.md`.
 
 ## 2. Header byte
 
@@ -57,13 +60,18 @@ top 3 bits and a 5-bit extension.
      +---+---+---+---+---+---+---+---+
 ```
 
-- Packet type `0x07`: beacon. Mercury's framer uses `0x00` to `0x06`. The
-  value is to be confirmed with Mercury.
-- The extension gives the layout and its version:
-  - `0` = compact v1;
-  - `1` = full v1;
-  - the other values are reserved.
-- A receiver ignores a beacon whose layout it doesn't know.
+- **Packet type `0x07`:** a single-frame station message.
+  - Mercury's framer uses `0x00` to `0x06`. Broadcast chat is `0x04` with flags
+    in the extension, and RaptorQ frames are `0x03`/`0x04` with a session id.
+  - `0x07` is the last free value, so it's shared by every one-frame message
+    type through the extension.
+- **The extension** gives the message and its version:
+  - `0` = compact beacon v1;
+  - `1` = full beacon v1;
+  - `31` = escape: the message type is in byte 1, for later one-frame types;
+  - `2` to `30` are reserved.
+- **Unknown values:** a receiver ignores a frame whose extension it doesn't
+  know.
 
 So a compact v1 beacon starts with `0xE0`, and a full v1 beacon with `0xE1`.
 
@@ -147,7 +155,7 @@ These station settings live in `core.ini` and are reachable over the API:
 |---|---|
 | `beacon_enable` | send beacons (default off) |
 | `beacon_mode` | the broadcast frame mode, from §1's table |
-| `beacon_interval_s` | seconds between beacons |
+| `beacon_interval_s` | seconds between beacons; mind the mode's airtime (§1): a beacon holds the channel for 3 s on DATAC16 and 26 s on MFSK500 |
 | `beacon_emergency_interval_s` | seconds between beacons while an emergency code is set (shorter) |
 
 - **Layout:** the compact one in a 14-byte mode, the full one in every larger
@@ -157,9 +165,34 @@ These station settings live in `core.ini` and are reachable over the API:
 - **Emergency:** `POST /gps/sos` sets the emergency code. The station then
   beacons at the emergency interval until the code is cleared. It still also
   sends the SOS message to `settings.sos_recipients`, as `api-rest.yaml` says.
-- **Transmitter access:** a beacon goes out only when the radio is free. It
-  never interrupts a transmission or an ARQ session, and waits for the
-  channel to be clear like any other broadcast.
+- **Transmitter access:** a beacon goes out only when the radio is free.
+  - It never interrupts a transmission, an ARQ session or a carousel. It
+    waits for them to end, and for the channel to be clear like any other
+    keying.
+  - While it is on the air, a listening station can miss an incoming CALL,
+    as with any broadcast.
+
+### The Mercury interface
+
+The beacon mode is usually not the listen mode, and DATAC16 can't be one.
+Retuning the listen mode for each beacon would change what the station
+hears, so Mercury sends a beacon on the mode it's given and then goes back
+to the listen mode. Mercury stores no beacon setting: `beacon_mode` is
+radiod's.
+
+- **Mercury inside radiod (host API):**
+  - `int mercury_host_beacon_send(const uint8_t *frame, size_t len, int mode_index)`
+    zero-pads the frame to the mode's size and keys it on that mode.
+  - The modes accepted are DATAC16, DATAC15, DATAC4, DATAC3, DATAC1, DATAC17,
+    QAM16C2, MFSK and MFSK500.
+  - It returns `MERCURY_HOST_BAD` for another mode, a frame longer than the
+    mode's size, or a header that isn't type `0x07`.
+  - Received frames come through the host's `on_frame` callback: the whole
+    frame, header included and padded, with its mode and SNR.
+- **Mercury as its own process (the KISS broadcast socket):**
+  - A frame goes both ways as `CMD_MODEM_FRAME` (`0x03`).
+  - Sent that way, it goes out at the listen mode. Choosing the mode needs a
+    command on Mercury's control port, still to be added.
 
 ## 7. Emergency codes
 
@@ -184,8 +217,8 @@ later.
 
 ## 8. Receiving
 
-- **Source:** radiod takes type-`0x07` frames from Mercury's broadcast receive
-  path, whatever the mode.
+- **Source:** type-`0x07` frames from Mercury (§6), from any of its decoders.
+  Mercury keeps them out of its chat store.
 - **Validation:** a frame is dropped, never partly used, if:
   - its layout is unknown;
   - the callsign is invalid;
@@ -225,10 +258,12 @@ c5 ff ff 2e 00 84 01 07 00 00
 
 ## 10. Open points
 
-- Packet type `0x07`: Mercury to confirm it is free, broadcast chat
-  included.
-- Mercury to pass type-`0x07` frames up to the broadcast client and host API,
-  instead of dropping them as an unknown type.
-- Broadcast send on MFSK and MFSK500 (Mercury).
-- The emergency code list (§7).
-- Whether stations relay emergency beacons, and how far.
+- **Mercury:**
+  - deliver type-`0x07` frames from every decoder at any size, through
+    `on_frame` and the KISS socket. Today they're dropped as an unknown type,
+    with one warning each;
+  - add `mercury_host_beacon_send`, and a control-port command to choose the
+    mode over KISS.
+- **To decide:**
+  - the emergency code list (§7);
+  - whether stations relay emergency beacons, and how far.
