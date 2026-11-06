@@ -12,6 +12,8 @@
  *   - a repeated PTT-on is still deduplicated (never re-keys);
  *   - shutdown unkeys whatever the cache says;
  *   - radio_daemon --ptt-off (force_ptt_off) unkeys with nothing running;
+ *   - a digital-text profile (FT8/CW/RTTY) puts the rig in PKTUSB, so the
+ *     tones from the data port go out whatever mode the rig was left in;
  *   - a CAT link that stops answering (the radio's USB went away and came
  *     back) is reopened, and the rig unkeyed, once it answers again;
  *   - a frequency in another band, where the rig's band memory brings back
@@ -164,6 +166,43 @@ static void test_shutdown_unkeys_whatever_the_cache(void)
     printf("  shutdown unkeys whatever the cache ... ok\n");
 }
 
+/* What the rig is put in: Hamlib's dummy rig keeps the mode it is set
+ * to, with no link and no thread in between to wait for. */
+static void test_digital_text_profile_sets_pktusb(void)
+{
+    radio local;
+    init_local(&local);
+    local.hamlib_model = RIG_MODEL_DUMMY;
+    local.rig_pathname[0] = '\0';
+    local.profiles_count = 5;
+    local.profiles[0].mode = MODE_USB;      /* voice: mic is the TX source */
+    local.profiles[1].mode = MODE_FT8;
+    local.profiles[2].mode = MODE_CW;
+    local.profiles[2].operating_mode = OPERATING_MODE_FULL_LOOPBACK;
+    local.profiles[3].mode = MODE_RTTY;
+    local.profiles[3].operating_mode = OPERATING_MODE_FULL_LOOPBACK;
+    local.profiles[4].mode = MODE_AM;       /* in between: none of the above */
+    for (int i = 0; i < 5; i++)
+        local.profiles[i].freq = 7074000;
+    TEST_ASSERT_TRUE(radio_hamlib_init(&local));
+    RIG *rig = (RIG *) local.rig;
+
+    const char *want[] = { "USB", "PKTUSB", "PKTUSB", "PKTUSB" };
+    for (uint32_t i = 0; i < 4; i++) {
+        rmode_t m;
+        pbwidth_t w;
+        hamlib_apply_profile(&local, 4);
+        TEST_ASSERT_EQUAL_INT(RIG_OK, rig_get_mode(rig, RIG_VFO_CURR, &m, &w));
+        TEST_ASSERT_EQUAL_STRING("AM", rig_strrmode(m));
+        hamlib_apply_profile(&local, i);
+        TEST_ASSERT_EQUAL_INT(RIG_OK, rig_get_mode(rig, RIG_VFO_CURR, &m, &w));
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(want[i], rig_strrmode(m), mode_to_string(local.profiles[i].mode));
+    }
+
+    radio_hamlib_shutdown(&local);
+    printf("  digital-text profiles set PKTUSB ..... ok\n");
+}
+
 static void test_force_ptt_off(void)
 {
     radio local;
@@ -282,6 +321,7 @@ int main(void)
     UNITY_BEGIN();
     RUN_TEST(test_init_unkeys_a_keyed_rig);
     RUN_TEST(test_ptt_off_ignores_stale_cache);
+    RUN_TEST(test_digital_text_profile_sets_pktusb);
     RUN_TEST(test_shutdown_unkeys_whatever_the_cache);
     RUN_TEST(test_force_ptt_off);
     RUN_TEST(test_reopens_a_dead_cat_link);
