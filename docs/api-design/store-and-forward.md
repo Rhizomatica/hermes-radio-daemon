@@ -93,6 +93,14 @@ payload on standard input and hands it to radiod through a drop directory
 Incoming files (`SendFile`) land in the transports' own directories. radiod watches both
 and replaces `iwatch` and `/api/unpack`.
 
+## One message format
+
+A message is the same file whichever way it goes: the HERMES message pack (`.hmp`, what
+hermes-api's `dec_message` and `/api/unpack` read today), over UUCP to one station, over
+NNCP to one station or in an NNCP bundle to an area, and as the tar.gz on the broadcast
+plane. Its definition can be tidied and made smaller in the process (to be written up
+separately, with the deployed stations' `.hmp` still read).
+
 ## The SOS, the first user
 
 - `POST /gps/sos` sets the emergency code. The beacon carries it on the air, as it does
