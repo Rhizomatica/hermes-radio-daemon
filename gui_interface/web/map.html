@@ -6,7 +6,8 @@
 <title>HERMES FT8 map</title>
 <!--
   Who the station hears: every FT8 decode on the station API (hermes.v1),
-  the senders placed on a world map by the locator they send. Log in,
+  the senders placed on a world map by the locator they send, or by their
+  callsign's country until they send one (map-prefixes.js). Log in,
   subscribe to digi, radio.state and gps, and read the last hours from
   GET /digi/log. With rtc.offer, Listen plays the receiver (receive only).
   Self-contained: stations are often offline, so no library, no web font
@@ -45,7 +46,7 @@
     background: rgba(5, 8, 12, .9); border: 1px solid var(--line); padding: 5px 8px;
     border-radius: 4px; white-space: pre; }
   #msg { position: absolute; left: 52px; top: 12px; font: 12px var(--mono); color: var(--warn); }
-  aside { width: 30em; max-width: 45%; display: flex; flex-direction: column; min-height: 0;
+  aside { width: 36em; max-width: 50%; display: flex; flex-direction: column; min-height: 0;
     border-left: 1px solid var(--line); background: var(--panel); }
   aside h2 { margin: 0; padding: 8px 12px; font-size: 13px; font-weight: 600; color: var(--dim);
     border-bottom: 1px solid var(--line); }
@@ -89,6 +90,7 @@
   <span class="tag" id="mode">–</span>
   <span class="tag" id="txrx">RX</span>
   <span class="stat"><b id="ndecodes">0</b> decodes</span>
+  <span class="stat"><b id="nheard">0</b> stations</span>
   <span class="stat"><b id="nstations">0</b> on the map</span>
   <span class="grow"></span>
   <button id="listen" type="button" hidden title="Play the receiver here (receive only)">Listen</button>
@@ -112,7 +114,7 @@
     <h2>FT8 received, newest first</h2>
     <div id="list">
       <table>
-        <thead><tr><th>UTC</th><th class="num">dB</th><th class="num">DT</th><th class="num">Hz</th><th>message</th><th class="num">km</th></tr></thead>
+        <thead><tr><th>UTC</th><th class="num">dB</th><th class="num">DT</th><th class="num" title="The USB dial frequency it was received on, kHz">dial</th><th class="num" title="The signal's centre on the air: the dial plus its audio offset, kHz">center</th><th>message</th><th class="num">km</th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
     </div>
@@ -132,7 +134,7 @@
   <label>Station <input id="mygrid" placeholder="locator" maxlength="6" autocomplete="off"></label>
   <span class="stat" id="home">–</span>
   <span class="stat">SNR −24 <span class="legend"></span> +10 dB</span>
-  <span class="stat">● FT8 locator · ■ beacon (exact) · <span class="sos">◯ SOS</span></span>
+  <span class="stat">● FT8 locator · ○ callsign's country · ■ beacon (exact) · <span class="sos">◯ SOS</span></span>
   <span class="stat">drag: move · wheel: zoom</span>
 </footer>
 
@@ -149,6 +151,7 @@
 
 <audio id="rx"></audio>
 <script src="map-world.js"></script>
+<script src="map-prefixes.js"></script>
 <script>
 'use strict';
 var $ = function (id) { return document.getElementById(id); };
@@ -327,6 +330,28 @@ function gridToLatLon(g) {                     // the centre of the square
   return [lat, lon];
 }
 
+// A callsign's country, from its prefix (AD1C's cty.dat, map-prefixes.js):
+// where a station is placed until it sends its locator.
+var PREFIXES = {};
+(typeof MAP_PREFIXES === 'string' ? MAP_PREFIXES : '').split(';').forEach(function (g) {
+  var i = g.indexOf(':'), pos = g.slice(0, i).split(','), c;
+  if (i < 0 || pos.length < 3) return;
+  c = {lat: +pos[0] / 10, lon: +pos[1] / 10, name: pos.slice(2).join(',')};
+  g.slice(i + 1).split(' ').forEach(function (p) { if (p) PREFIXES[p] = c; });
+});
+function countryOf(call) {
+  // EA8/DL1ABC is in EA8; DL1ABC/P, /M, /QRP or /7 stay where DL is
+  var parts = call.split('/'), base = parts[0];
+  if (parts.length > 1) {
+    var other = parts[1];
+    if (parts[0].length < parts[1].length) { base = parts[1]; other = parts[0]; }
+    if (/^[A-Z0-9]{1,4}$/.test(other) && /[A-Z]/.test(other) && !/^(P|M|MM|AM|QRP|A|B)$/.test(other)) base = other;
+  }
+  for (var n = Math.min(base.length, 8); n > 0; n--)
+    if (PREFIXES[base.slice(0, n)]) return PREFIXES[base.slice(0, n)];
+  return null;
+}
+
 // A position beacon (docs/BEACON-FORMAT.md) places its station exactly; an
 // FT8 locator only at the centre of its square, and never over a beacon's.
 var BEACON = 'BEACON';
@@ -343,16 +368,21 @@ function add(d) {
   if (!d || (d.mode !== 'FT8' && d.mode !== BEACON) || seen[d.id]) return;
   seen[d.id] = true;
   d.t = Date.parse(d.at) || Date.now();
-  var call = d.dir === 'rx' && d.from ? String(d.from).toUpperCase() : null;
+  // a hashed call comes as <...>, or <CALL> once resolved: only the latter is a station
+  var call = d.dir === 'rx' && d.from ? String(d.from).toUpperCase().replace(/[<>]/g, '') : null;
+  if (call && !/^[A-Z0-9\/]+$/.test(call)) call = null;
   if (call) {
     var s = stations[call] || (stations[call] = {call: call});
     if (d.mode === BEACON && d.beacon && (!s.beacon || d.t >= s.beaconAt)) {
       s.beacon = d.beacon; s.beaconAt = d.t;
       s.lat = d.beacon.latitude; s.lon = d.beacon.longitude;
-      s.grid = latLonToGrid(s.lat, s.lon);
+      s.grid = latLonToGrid(s.lat, s.lon); s.country = null;
     } else if (d.mode === 'FT8' && !s.beacon && d.grid && GRID.test(d.grid)) {
       var ll = gridToLatLon(d.grid);
-      s.grid = d.grid; s.lat = ll[0]; s.lon = ll[1];
+      s.grid = d.grid; s.lat = ll[0]; s.lon = ll[1]; s.country = null;
+    } else if (!s.grid && s.lat == null) {
+      var c = countryOf(call);                   // until it sends a locator
+      if (c) { s.lat = c.lat; s.lon = c.lon; s.country = c.name; }
     }
     if (!s.last || d.t >= s.last.t) s.last = d;
     d.station = s;
@@ -361,6 +391,16 @@ function add(d) {
   if (decodes.length > 5000) decodes.splice(0, decodes.length - 5000);
   listDirty = true;
   draw();
+}
+
+// The USB dial frequency it was received on, in kHz (as FT8 frequencies
+// are given: 14074), and the signal's centre on the air, the dial plus its
+// audio offset, to the hertz.
+function dialKHz(d) {
+  return d.frequency_hz == null ? '' : String(Math.round(d.frequency_hz / 100) / 10);
+}
+function centerKHz(d) {
+  return d.frequency_hz == null || d.offset_hz == null ? '' : ((d.frequency_hz + d.offset_hz) / 1000).toFixed(3);
 }
 
 function visible(d, now) {
@@ -382,13 +422,14 @@ function renderList() {
     var tr = document.createElement('tr');
     if (d.dir === 'tx') tr.className = 'tx';
     if (selected && d.station === selected) tr.className += ' sel';
-    var km = d.station && d.station.grid && home ? Math.round(distance(home, d.station)) : '';
+    var km = d.station && d.station.lat != null && home ?
+      (d.station.grid ? '' : '~') + Math.round(distance(home, d.station)) : '';
     [new Date(d.t).toISOString().slice(11, 19), d.snr_db, d.dt_s == null ? '' : d.dt_s.toFixed(1),
-     d.offset_hz, (d.dir === 'tx' ? 'TX ' : '') + (d.text || ''), km].forEach(function (v, i) {
+     dialKHz(d), centerKHz(d), (d.dir === 'tx' ? 'TX ' : '') + (d.text || ''), km].forEach(function (v, i) {
       var td = document.createElement('td');
       td.textContent = v == null ? '' : v;
-      if (i !== 0 && i !== 4) td.className = 'num';
-      if (i === 4) td.className = 'text';
+      if (i !== 0 && i !== 5) td.className = 'num';
+      if (i === 5) td.className = 'text';
       tr.appendChild(td);
     });
     if (d.station) tr.addEventListener('click', function () { select(d.station, true); });
@@ -566,11 +607,14 @@ function render() {
   }
 
   // the stations, oldest underneath; fading with age
-  var now = Date.now(), list = [], n = 0;
+  var now = Date.now(), list = [], n = 0, heard = 0;
   for (var c in stations) {
     var s = stations[c];
-    if (s.grid && s.last && visible(s.last, now)) list.push(s);
+    if (!s.last || !visible(s.last, now)) continue;
+    heard++;                                    // a hashed call (<...>) has nowhere to go
+    if (s.lat != null) list.push(s);
   }
+  $('nheard').textContent = heard;
   list.sort(function (a, b) { return a.last.t - b.last.t; });
   var max = (+$('age').value || 6 * 3600) * 1000;
 
@@ -620,11 +664,17 @@ function render() {
       var r = s === selected ? 7 : 5;
       ctx.beginPath();
       if (s.beacon) ctx.rect(p[0] - r, p[1] - r, 2 * r, 2 * r);   // a beacon: its exact position
-      else ctx.arc(p[0], p[1], r, 0, 2 * Math.PI);               // FT8: its locator's square
-      ctx.fillStyle = s.beacon && s.last.mode === BEACON ? colours.accent : snrColour(s.last.snr_db, alpha);
-      ctx.fill();
-      ctx.lineWidth = s === selected ? 2 : 1;
-      ctx.strokeStyle = s === selected ? colours.fg : 'rgba(0, 0, 0, .6)'; ctx.stroke();
+      else ctx.arc(p[0], p[1], r, 0, 2 * Math.PI);
+      if (s.grid) {                              // a beacon's square, or a locator's dot
+        ctx.fillStyle = s.beacon && s.last.mode === BEACON ? colours.accent : snrColour(s.last.snr_db, alpha);
+        ctx.fill();
+        ctx.lineWidth = s === selected ? 2 : 1;
+        ctx.strokeStyle = s === selected ? colours.fg : 'rgba(0, 0, 0, .6)';
+      } else {                                   // by its callsign's country: a ring
+        ctx.lineWidth = s === selected ? 3 : 2;
+        ctx.strokeStyle = s === selected ? colours.fg : snrColour(s.last.snr_db, alpha);
+      }
+      ctx.stroke();
       if (sos) {
         ctx.beginPath(); ctx.arc(p[0], p[1], r + SOS_RING_PX, 0, 2 * Math.PI);
         ctx.strokeStyle = colours.sos; ctx.lineWidth = 2; ctx.stroke();
@@ -665,7 +715,7 @@ function nearest(x, y) {
 }
 
 function tipText(s) {
-  var d = s.last, lines = [s.call + '  ' + s.grid];
+  var d = s.last, lines = [s.call + '  ' + (s.grid || '~' + s.country + ' (from the callsign)')];
   if (s.beacon) {
     var b = s.beacon;
     lines.push('beacon ' + b.latitude.toFixed(5) + ', ' + b.longitude.toFixed(5) +
@@ -673,14 +723,16 @@ function tipText(s) {
     if (b.emergency) lines.push('EMERGENCY ' + b.emergency + ': ' + (EMERGENCY[b.emergency] || 'code ' + b.emergency));
   }
   lines.push((d.snr_db == null ? '' : d.snr_db + ' dB  ') + new Date(d.t).toISOString().slice(11, 19) + ' UTC');
-  if (home) lines.push(Math.round(distance(home, s)) + ' km  ' + Math.round(bearing(home, s)) + '°');
+  if (d.frequency_hz != null)
+    lines.push('dial ' + dialKHz(d) + ' kHz USB' + (d.offset_hz != null ? ', center ' + centerKHz(d) + ' kHz' : ''));
+  if (home) lines.push((s.grid ? '' : '~') + Math.round(distance(home, s)) + ' km  ' + Math.round(bearing(home, s)) + '°');
   lines.push(d.text || '');
   return lines.join('\n');
 }
 
 function select(s, centre) {
   selected = selected === s ? null : s;
-  if (selected && centre && s.grid) { view.lon = s.lon; view.lat = s.lat; clampView(); }
+  if (selected && centre && s.lat != null) { view.lon = s.lon; view.lat = s.lat; clampView(); }
   listDirty = true; draw();
 }
 

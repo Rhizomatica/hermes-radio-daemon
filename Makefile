@@ -319,6 +319,7 @@ install: radio_daemon radio_client
 	install -m 644 gui_interface/web/spectrum.html $(DESTDIR)$(sysconfdir)/hermes/web/spectrum.html
 	install -m 644 gui_interface/web/map.html $(DESTDIR)$(sysconfdir)/hermes/web/map.html
 	install -m 644 gui_interface/web/map-world.js $(DESTDIR)$(sysconfdir)/hermes/web/map-world.js
+	install -m 644 gui_interface/web/map-prefixes.js $(DESTDIR)$(sysconfdir)/hermes/web/map-prefixes.js
 	install -m 644 gui_interface/web/tune.html $(DESTDIR)$(sysconfdir)/hermes/web/tune.html
 	install -D -m 644 config/avahi/hermes-radio.service \
 	  $(DESTDIR)$(sysconfdir)/hermes/avahi/hermes-radio.service
