@@ -521,6 +521,9 @@ typedef struct {
      * the baud line in the discriminator stream (it should sit at exactly
      * 4800 Hz) and negating the offset. */
     _Atomic int32_t dstar_clock_ppm;
+    /* main:dstar_clock_auto: measure dstar_clock_ppm from the overs heard
+     * (dsp/sbitx_dsp.c) and save it; 0 keeps the configured value */
+    _Atomic uint16_t dstar_clock_auto;
     /* sBitx mic high-pass cutoff (Hz), 4th-order Butterworth, applied to the
      * mic before every TX voice path; takes DC and mains hum off. 0 = off. */
     _Atomic uint32_t mic_highpass_hz;
