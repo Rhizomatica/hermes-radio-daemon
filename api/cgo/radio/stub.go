@@ -33,6 +33,7 @@ type Stub struct {
 	beacon      Beacon
 	stations    []BeaconStation
 	beaconSends int
+	transport   TransportSettings
 	gps         Gps
 	listen      string // mercury's listen mode
 	busy        string // "arq", "broadcast" or ""
@@ -920,6 +921,24 @@ func (s *Stub) BeaconSends() int {
 func (s *Stub) SetBeaconStations(st []BeaconStation) {
 	s.mu.Lock()
 	s.stations = append([]BeaconStation(nil), st...)
+	s.mu.Unlock()
+}
+
+// Transport is the defaults: NNCP preferred, no uucico options. SetTransport
+// changes them.
+func (s *Stub) Transport() TransportSettings {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.transport
+	if t.Prefer == "" {
+		t.Prefer = "nncp"
+	}
+	return t
+}
+
+func (s *Stub) SetTransport(t TransportSettings) {
+	s.mu.Lock()
+	s.transport = t
 	s.mu.Unlock()
 }
 

@@ -1155,13 +1155,17 @@ curl -X PATCH -H 'Content-Type: application/json' \
 | `listReceivedBroadcasts` | `GET /api/v2/broadcasts/received`, newest first | readonly |
 | `downloadReceivedBroadcast` | `GET /api/v2/broadcasts/received/{name}` | readonly |
 | `deleteReceivedBroadcast` | `DELETE /api/v2/broadcasts/received/{name}` | operator |
-| `getBeacon` | `GET /api/v2/gps/beacon`: callsign, fixed position, emergency interval and code | readonly |
-| `updateBeacon` | `PATCH /api/v2/gps/beacon` (saved in core.ini); when beacons go out is `PATCH /gps/settings`'s `report` | operator |
+| `getBeacon` | `GET /api/v2/gps/beacon`: on or off, interval, callsign, fixed position, emergency interval and code | readonly |
+| `updateBeacon` | `PATCH /api/v2/gps/beacon` (saved in core.ini): `enabled`, `interval_s` and the rest | operator |
 | `sendBeacon` | `POST /api/v2/gps/beacon/send`: one beacon now | user |
 | `sendSos` | `POST /api/v2/gps/sos` `{"code":1}`: beacons carry the emergency code, at the emergency interval | user |
 | `clearSos` | `DELETE /api/v2/gps/sos`: one beacon says the emergency is over | user |
 | `listBeacons` | `GET /api/v2/gps/beacons`: every station heard by its beacons, newest first | readonly |
 | `listStationPositions` | `GET /api/v2/gps/stations`: the UUCP stations, with their last beacon's position | readonly |
+| `listQueue` | `GET /api/v2/queue[?station=]`: the jobs waiting on UUCP and NNCP, oldest first ([store-and-forward.md](docs/api-design/store-and-forward.md)) | operator |
+| `cancelJob` | `DELETE /api/v2/queue/{job_id}`, the id as `listQueue` gives it | operator |
+| `callNow` | `POST /api/v2/queue/call` `{"station":"gw"}`: call now, over the transport that reaches it (or `transport`); no station, every station with work | operator |
+| `stopCalls` | `POST /api/v2/queue/stop`: end the calls in progress, either transport | operator |
 
 `hermes.v1` at `/api/v2/ws` (the WebSocket subprotocol `hermes.v1` is required;
 426 without it): a `hello` (protocol, version, role, the commands the role may

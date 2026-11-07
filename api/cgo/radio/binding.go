@@ -471,6 +471,19 @@ func (binding) BeaconSendNow() error {
 // beaconStationsMax is BEACON_STATIONS_MAX (modem/beacon_tx.h).
 const beaconStationsMax = 256
 
+func (binding) Transport() TransportSettings {
+	var t C.radiod_api_transport
+	C.radiod_api_transport_get(&t)
+	return TransportSettings{
+		Prefer:           cstr(t.prefer[:]),
+		UucicoAirOptions: strings.Fields(cstr(t.uucico_air_options[:])),
+		UucicoTCPSystems: strings.FieldsFunc(cstr(t.uucico_tcp_systems[:]), isListSep),
+	}
+}
+
+// isListSep separates a core.ini list's entries: commas or spaces.
+func isListSep(r rune) bool { return r == ',' || r == ' ' || r == '\t' }
+
 func (binding) BeaconStations() []BeaconStation {
 	var st [beaconStationsMax]C.radiod_api_beacon_station
 	n := int(C.radiod_api_beacon_stations(&st[0], C.int(len(st))))

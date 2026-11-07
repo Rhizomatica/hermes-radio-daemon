@@ -1305,7 +1305,11 @@ paths:
     get:
       tags: [queue]
       operationId: listQueue
-      summary: Jobs waiting in the UUCP spool.
+      summary: Jobs waiting in the UUCP and NNCP spools.
+      description: |
+        Both transports' jobs (docs/api-design/store-and-forward.md), oldest first; NNCP's,
+        which carry no time, last. A job's `station` is the station's name, whichever
+        transport carries it.
       x-hermes-role: operator
       parameters:
         - name: station
@@ -1329,21 +1333,26 @@ paths:
       - name: job_id
         in: path
         required: true
-        description: The UUCP job id (`<station>.<id>`).
-        schema: {type: string, pattern: "^[A-Za-z0-9._-]{1,64}$"}
+        description: "The job's id as `listQueue` gives it: `<transport>.<station on it>.<the transport's id>`."
+        schema: {type: string, pattern: "^(uucp|nncp)\\.[A-Za-z0-9_-]{1,32}\\.[A-Za-z0-9_-]{1,64}$"}
     delete:
       tags: [queue]
       operationId: cancelJob
-      summary: Cancel a job. A mail job's sender is told it was not delivered.
+      summary: Cancel a job, on either transport.
       x-hermes-role: operator
       responses:
         "204": {description: Cancelled.}
+        '401': {$ref: '#/components/responses/Unauthorized'}
         "404": {$ref: "#/components/responses/NotFound"}
   /queue/call:
     post:
       tags: [queue]
       operationId: callNow
       summary: Call a station now (or every station with work queued).
+      description: |
+        Over the transport that reaches the station (NNCP where both do, unless
+        `main:transport_prefer` says UUCP), or the one given. Without a station, every
+        transport calls every station it has work for.
       x-hermes-role: operator
       requestBody:
         content:
@@ -1354,9 +1363,24 @@ paths:
                 station: {$ref: "#/components/schemas/UucpName"}
                 transport:
                   $ref: "#/components/schemas/Transport"
-                  description: Default `uucp`. `reticulum` brings up the station's backhaul link.
+                  description: Default the transport that reaches the station. `reticulum` brings up the station's backhaul link.
       responses:
-        "202": {description: Call started; follow it on the `queue` and `modem.status` topics.}
+        "202":
+          description: Call started; follow it on the `queue` and `modem.status` topics.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [station, transports]
+                properties:
+                  station: {oneOf: [$ref: "#/components/schemas/UucpName", type: "null"], description: "Null: every station with work queued."}
+                  transports:
+                    type: array
+                    items: {type: string, enum: [uucp, nncp]}
+                    description: The transports that call (none on a station with neither).
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/Invalid"}
         "409":
           description: A call is already in progress (`code` = `busy`).
           content:
@@ -1366,7 +1390,7 @@ paths:
     post:
       tags: [queue]
       operationId: stopCalls
-      summary: Stop the call in progress.
+      summary: Stop the call in progress, on either transport.
       x-hermes-role: operator
       responses:
         "204": {description: Stopped.}
@@ -3333,18 +3357,27 @@ components:
 
     QueueJob:
       type: object
-      required: [job_id, station, kind, size_bytes, queued_at]
+      required: [job_id, transport, station, kind, size_bytes, queued_at]
       properties:
         job_id: {type: string}
+        transport: {type: string, enum: [uucp, nncp]}
         station: {$ref: "#/components/schemas/UucpName"}
-        kind: {type: string, enum: [message, mail, gps, file, other]}
-        size_bytes: {type: integer}
-        queued_at: {$ref: "#/components/schemas/Timestamp"}
+        kind:
+          type: string
+          enum: [message, mail, gps, file, other]
+          description: What the job carries; always `other` over NNCP, whose packets are encrypted for their recipient.
+        size_bytes: {type: integer, description: "NNCP rounds it."}
+        queued_at:
+          oneOf: [$ref: "#/components/schemas/Timestamp", type: "null"]
+          description: Null over NNCP, which doesn't say.
+        mail_to:
+          type: [array, "null"]
+          items: {type: string}
+          description: For mail jobs over UUCP, the recipients.
         message_id:
           type: [integer, "null"]
           format: int64
           description: The message this job carries, when it is one.
-        mail_from: {type: [string, "null"], description: "For mail jobs."}
 
     RadioState:
       type: object
