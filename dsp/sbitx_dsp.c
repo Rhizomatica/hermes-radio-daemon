@@ -403,12 +403,17 @@ static void dsp_process_digital_voice_rx(double *rx_baseband_i, double *rx_baseb
         memset(speech_out, 0, block_size * sizeof(double));
         return;
     }
+    // On LSB the over sits below the dial, mirrored, as the TX side sends
+    // it (it conjugates for LSB): conjugate it back, or RADE sees its
+    // carriers in reverse order and barely holds sync.
+    const bool is_lsb = (radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].mode == MODE_LSB);
+    const float q_sign = is_lsb ? -1.0f : 1.0f;
     size_t modem_len_i, modem_len_q;
     {
         float in_i[block_size], in_q[block_size];
         for (uint32_t k = 0; k < block_size; k++) {
             in_i[k] = (float) rx_baseband_i[k];
-            in_q[k] = (float) rx_baseband_q[k];
+            in_q[k] = q_sign * (float) rx_baseband_q[k];
         }
         modem_len_i = stream_resampler_run(&radae_rx_i_rs, in_i, block_size);
         modem_len_q = stream_resampler_run(&radae_rx_q_rs, in_q, block_size);
