@@ -54,6 +54,8 @@
 
 
 #include "sbitx_dsp.h"
+#include "cfg_utils.h"
+#include "dstar_clock_cal.h"
 #include "radiod_cpus.h"
 #include "sbitx_core.h"
 #include "sbitx_alsa.h"
@@ -683,6 +685,43 @@ static bool dstar_track_feed(const float *x, int n, double *ppm)
     return true;
 }
 
+/* ── automatic clock calibration (dstar_clock_cal.h) ───────────────────
+ *
+ * Baud-line readings taken while frames decode feed the calibration;
+ * between overs, when the modem has lost sync or seen the end of
+ * transmission and a step in the resampling rate costs nothing, the
+ * correction moves to what they agree on, and is saved as
+ * main:dstar_clock_ppm so the next start begins calibrated.
+ * main:dstar_clock_auto = 0 keeps dstar_clock_ppm as configured. */
+static dstar_clock_cal dstar_cal;
+
+static void dstar_cal_apply(void)
+{
+    if (!radio_h_dsp->dstar_clock_auto)
+        return;
+    long ppm = 0;
+    double m = 0, spread = 0;
+    switch (dstar_clock_cal_decide(&dstar_cal, dstar_clock_track, &ppm, &m, &spread)) {
+    case DSTAR_CAL_HOLD:
+        return;
+    case DSTAR_CAL_DISAGREE:
+        if (radio_h_dsp->dstar_verbose)
+            HLOGI(LOG_C, "DSTAR: clock readings disagree (median %+.0f ppm, spread %.0f), held at %+.0f",
+                    m, spread, dstar_clock_track);
+        return;
+    case DSTAR_CAL_MOVE:
+        break;
+    }
+    HLOGI(LOG_C, "DSTAR: clock calibrated %+.0f -> %+ld ppm (%d readings, spread %.0f)",
+            dstar_clock_track, ppm, dstar_cal.n, spread);
+    dstar_clock_track = (double) ppm;
+    radio_h_dsp->dstar_clock_ppm = (int32_t) ppm;
+    char val[16];
+    snprintf(val, sizeof(val), "%ld", ppm);
+    if (cfg_set(radio_h_dsp, radio_h_dsp->cfg_radio, "main:dstar_clock_ppm", val) == 0)
+        radio_h_dsp->cfg_radio_dirty = true;
+}
+
 static mbe_parms dstar_rx_cur, dstar_rx_prev, dstar_rx_enh, dstar_rx_prevsyn;
 static mbe_parms dstar_tx_cur, dstar_tx_prev, dstar_tx_enh;
 /* The AMBE encoder's analysis state (mbelib-neo keeps it in a caller-owned
@@ -949,6 +988,7 @@ static void dstar_rx_lost_cb(void *user)
         HLOGI(LOG_C, "DSTAR: lost sync (got %ld frames)%s", dstar_rx_frame_count,
                 dstar_rx_confirmed ? "" : " -- never confirmed, muted (false sync on noise)");
     dstar_log_over_stats();
+    dstar_cal_apply();
     dstar_rx_unconfirm();
     if (dstar_pcm_rb_ready)
         ring_buffer_clear(&dstar_pcm_rb);   /* drop stale audio on loss of lock */
@@ -963,6 +1003,7 @@ static void dstar_rx_eot_cb(void *user)
     if (radio_h_dsp->dstar_verbose)
         HLOGI(LOG_C, "DSTAR: end of transmission (rx'd %ld frames)", dstar_rx_frame_count);
     dstar_log_over_stats();
+    dstar_cal_apply();
     dstar_rx_unconfirm();
     dstar_voice_rx_reset(&dstar_vrx);
     radio_h_dsp->dstar_rx_crypto = DSTAR_VC_CLEAR;
@@ -1879,6 +1920,9 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
                  * ignored, and a rate that is ramped rather than stepped --
                  * a timing discontinuity costs more than the error it
                  * corrects. */
+                /* Kept for the calibration between overs (above) */
+                if (dstar_rx_frame_count != trk_last_frames)
+                    dstar_clock_cal_push(&dstar_cal, dstar_clock_track, trk_ppm);
                 if (radio_h_dsp->dstar_verbose && dstar_rx_frame_count != trk_last_frames)
                     HLOGI(LOG_C, "DSTAR: baud line reads %+.0f ppm (clock held at %+.0f)",
                             trk_ppm, dstar_clock_track);

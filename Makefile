@@ -129,6 +129,7 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              dsp/voice_crypto.o \
              dsp/rade_voice.o \
              dsp/rade_afc.o \
+             dsp/dstar_clock_cal.o \
              dsp/mic_filter.o \
              dsp/rx_denoise.o \
              sbitx/sbitx_si5351.o \
