@@ -418,6 +418,34 @@ static void test_shm_keyer_death_releases_ptt(void)
     puts("  shm keyer death releases PTT ......... ok");
 }
 
+/* The pipeline follows the active profile: digital voice by its flag, and
+ * under DSTAR by the profile's mode (the flag off). */
+static void test_pipeline_follows_digital_voice(void)
+{
+    radio radio_h;
+
+    init_test_radio(&radio_h, RADIO_BACKEND_HFSIGNALS, true);
+    TEST_ASSERT_EQUAL_STRING("hfsignals-analog", radio_pipeline_name(&radio_h));
+
+    radio_h.profile_active_idx = 1;
+    radio_pipeline_refresh(&radio_h);
+    TEST_ASSERT_EQUAL_STRING("hfsignals-digital-voice", radio_pipeline_name(&radio_h));
+
+    radio_h.profiles[1].digital_voice = false;
+    radio_h.profiles[1].mode = MODE_DSTAR;
+    radio_pipeline_refresh(&radio_h);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("hfsignals-analog", radio_pipeline_name(&radio_h),
+                                     "D-STAR mode under RADEV2 is not radiod's digital voice");
+
+    radio_h.digital_voice_codec = DV_CODEC_DSTAR;
+    radio_pipeline_refresh(&radio_h);
+    TEST_ASSERT_EQUAL_STRING("hfsignals-digital-voice", radio_pipeline_name(&radio_h));
+    TEST_ASSERT_EQUAL_STRING("dstar", radio_pipeline_domain_name(&radio_h));
+
+    destroy_test_radio(&radio_h);
+    puts("  pipeline follows digital voice ....... ok");
+}
+
 void setUp(void) { reset_backend_call(); }
 void tearDown(void) {}
 
@@ -427,5 +455,6 @@ int main(void)
     RUN_TEST(test_shm_profile_and_message_semantics);
     RUN_TEST(test_shm_ptt_off_always_unkeys);
     RUN_TEST(test_shm_keyer_death_releases_ptt);
+    RUN_TEST(test_pipeline_follows_digital_voice);
     return UNITY_END();
 }

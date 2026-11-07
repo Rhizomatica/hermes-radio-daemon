@@ -91,7 +91,11 @@ static bool active_profile_uses_digital_voice(const radio *radio_h)
     if (active >= radio_h->profiles_count)
         active = 0;
 
-    return radio_h->profiles[active].digital_voice;
+    /* Under DSTAR digital voice is the profile's mode, with the flag off
+     * (cfg_carry_digital_voice) */
+    return radio_h->profiles[active].digital_voice ||
+           (radio_h->profiles[active].mode == MODE_DSTAR &&
+            atomic_load(&radio_h->digital_voice_codec) == DV_CODEC_DSTAR);
 }
 
 /* Digital voice is named by the codec it runs. */
