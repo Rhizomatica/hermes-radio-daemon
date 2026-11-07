@@ -111,6 +111,11 @@ bool rade_voice_scramble(float z[RADE_VOICE_LATENT],
 #define RX_AUX_ON   0.6f               /* aux power against the data carriers: on (~0.9 when on) */
 #define RX_AUX_OFF  0.45f              /* and back off (~0.2-0.35 when off) */
 #define RX_AUX_AVG  50                 /* symbols the power test averages, ~1 s */
+/* An over already shown clear turns "encrypted" only when the aux carriers
+ * stay on this long: at ~-3 dB SNR the data carriers are mostly noise, the
+ * power test sits by its thresholds, and a clear over flickered to muted
+ * every second or two. An encrypted over is settled by its messages. */
+#define RX_FLIP_SYMS 50                /* ~1 s */
 #define TRACK_SPAN  4                  /* symbols either side a locked receiver looks */
 #define TRACK_GOOD  0.25f              /* normalised correlation: the message is there */
 #define TRACK_GONE  0.10f              /* below: not this over's message, mute now */
@@ -369,8 +374,10 @@ static void rx_status(rade_voice_rx *r)
         r->status = RADE_VC_ACQUIRING;  /* the expected message is not there */
     else if (!r->enc_seen && r->n_sym < RX_DECIDE)
         r->status = RADE_VC_ACQUIRING;  /* not yet known: muted */
-    else if (!r->enc_seen)
+    else if (!r->enc_seen) {
         r->status = RADE_VC_CLEAR;
+        r->clear_shown = true;
+    }
     else if (!voice_crypto_have_key())
         r->status = RADE_VC_NO_KEY;
     else if (r->bad_key)
@@ -647,8 +654,14 @@ int rade_voice_rx_symbol(rade_voice_rx *r, float z[RADE_VOICE_LATENT],
         r->aux_on = true;
     else if (r->p_aux < RX_AUX_OFF * r->p_data)
         r->aux_on = false;
+    if (r->aux_on) {
+        if (r->aux_run < UINT8_MAX)
+            r->aux_run++;
+    } else {
+        r->aux_run = 0;
+    }
     if (r->msgs == 0)
-        r->enc_seen = r->aux_on;
+        r->enc_seen = r->aux_on && (!r->clear_shown || r->aux_run >= RX_FLIP_SYMS);
 #ifdef RADE_VOICE_DEBUG
     if (sym % 25 == 0)
         fprintf(stderr, "rade_voice: ratio %.2f (aux %.1f data %.1f) %s\n",
