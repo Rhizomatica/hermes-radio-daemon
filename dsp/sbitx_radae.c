@@ -41,7 +41,6 @@
 #include "rade_api.h"
 #include "radae_vocoder.h"
 #include "rade_voice.h"
-#include "rade_afc.h"
 #include "sbitx_core.h"
 #include "sbitx_radae.h"
 
@@ -689,11 +688,9 @@ static void *radae_rx_thread(void *arg)
     rade_vc_status was_crypto = RADE_VC_CLEAR;
     long unsynced = 0;                 /* modem samples since sync was lost */
     bool over_open = false;            /* FARGAN has synthesized this over */
-    rade_afc *afc = NULL;              /* coarse frequency correction */
 
-    afc = rade_afc_new();
     synthesis = radae_synthesis_new();
-    if (!afc || !synthesis) {
+    if (!synthesis) {
         HLOGE(LOG_C, "RADAE RX: cannot allocate the FARGAN vocoder");
         goto cleanup;
     }
@@ -757,24 +754,8 @@ static void *radae_rx_thread(void *arg)
         if (!have_frame)
             continue;
 
-        /* RADE's own offset estimate holds to +-31 Hz: the coarse one puts
-         * the over there first, and restarts a decoder a carrier off. */
-        rade_afc_process(afc, rx_in, nin);
         int has_eoo_out = 0;
         int n_features = rade_rx(rx_rade, features_out, &has_eoo_out, NULL, rx_in);
-        if (rade_afc_update(afc, rade_sync(rx_rade) != 0, rade_freq_offset(rx_rade))) {
-            HLOGI(LOG_C, "RADAE RX: locked a carrier off, correcting %+.1f Hz and starting again",
-                    (double) rade_afc_shift(afc));
-            if (!radae_reset_rx_session(&rx_rade))
-                break;
-            rade_voice_rx_reset(&vrx);
-            rade_set_latent_hook(rx_rade, radae_rx_hook, &vrx);
-            radae_synthesis_reset(synthesis);
-            over_open = false;
-            was_synced = false;
-            unsynced = 0;
-            continue;
-        }
         if (has_eoo_out)
             HLOGI(LOG_C, "RADAE RX: end of over");
         /* Log lock changes: without them a receiver that never locks and
@@ -783,8 +764,7 @@ static void *radae_rx_thread(void *arg)
         if (synced != was_synced) {
             if (synced)
                 HLOGI(LOG_C, "RADAE RX: sync (SNR %.1f dB, offset %+.1f Hz)",
-                        (double) rade_snrdB_3k_est(rx_rade),
-                        (double) (rade_afc_shift(afc) + rade_freq_offset(rx_rade)));
+                        (double) rade_snrdB_3k_est(rx_rade), (double) rade_freq_offset(rx_rade));
             else
                 HLOGI(LOG_C, "RADAE RX: sync lost%s", has_eoo_out ? " (end of over)" : "");
             was_synced = synced;
@@ -833,7 +813,6 @@ static void *radae_rx_thread(void *arg)
     }
 
 cleanup:
-    rade_afc_free(afc);
     radae_synthesis_free(synthesis);
     free(rx_in);
     free(features_out);

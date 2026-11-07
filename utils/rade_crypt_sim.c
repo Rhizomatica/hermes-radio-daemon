@@ -18,9 +18,7 @@
  * Encrypted overs go through rade_voice's clipper, as the daemon sends them.
  *
  * Environment: AUX_AMP, the aux carriers' level against the data carriers
- * (1); CLIP=0, no clipper; AFC=0, no coarse frequency correction in front
- * of the receiver (dsp/rade_afc.h), as stock RADE V2; AFC_DEBUG=1, its
- * estimate and every restart on stderr; SNR_PEAK=1, take snr3k against the over's peak
+ * (1); CLIP=0, no clipper; SNR_PEAK=1, take snr3k against the over's peak
  * power instead of its mean (a transmitter that is peak-limited, as a PA
  * is).
  *   CHAN: awgn | mpg | mpp | mpd (two equal Rayleigh paths: 1 ms 0.1 Hz,
@@ -39,7 +37,6 @@
 #include "rade_api.h"
 #include "radae_vocoder.h"
 #include "rade_voice.h"
-#include "rade_afc.h"
 
 _Static_assert(RADE_VOICE_NC == RADE_V2_NC && RADE_VOICE_NS == RADE_V2_NS &&
                RADE_VOICE_LATENT == RADE_V2_LATENT_DIM, "rade_voice.h: RADE V2 layout");
@@ -280,10 +277,6 @@ int main(int argc, char **argv)
     }
 
     /* RX */
-    const int use_afc = !(getenv("AFC") && !atoi(getenv("AFC")));
-    rade_afc *afc = use_afc ? rade_afc_new() : NULL;
-    RADE_COMP *rx_in = calloc((size_t) rade_nin_max(rx), sizeof(*rx_in));
-    long afc_resets = 0;
     radae_synthesis *syn = radae_synthesis_new();
     float *rfeat = calloc((size_t) rade_n_features_in_out(rx), sizeof(float));
     size_t pos = 0;
@@ -295,31 +288,7 @@ int main(int argc, char **argv)
         int nin = rade_nin(rx), has_eoo = 0;
         if (pos + (size_t) nin > sig_n)
             break;
-        memcpy(rx_in, ch + pos, (size_t) nin * sizeof(*rx_in));
-        if (afc)
-            rade_afc_process(afc, rx_in, nin);
-        int n = rade_rx(rx, rfeat, &has_eoo, NULL, rx_in);
-        if (afc && getenv("AFC_DEBUG") && calls % 8 == 0) {
-            float e = 0;
-            int have = rade_afc_estimate(afc, &e);
-            fprintf(stderr, "afc at %.2f s: estimate %s%.1f, shift %.1f, sync %d, rade offset %.1f\n",
-                    (double) (pos - on_start) / fs, have ? "" : "(none) ", (double) e,
-                    (double) rade_afc_shift(afc), rade_sync(rx), (double) rade_freq_offset(rx));
-        }
-        if (afc && rade_afc_update(afc, rade_sync(rx) != 0, rade_freq_offset(rx))) {
-            /* locked one carrier off: start again on the corrected input */
-            if (getenv("AFC_DEBUG"))
-                fprintf(stderr, "afc restart at %.2f s: shift now %.1f, rade offset %.1f\n",
-                        (double) (pos - on_start) / fs, (double) rade_afc_shift(afc),
-                        (double) rade_freq_offset(rx));
-            rade_close(rx);
-            rx = rade_open("builtin", RADE_MODE_V2 | RADE_VERBOSE_0);
-            rade_voice_rx_reset(&vrx);
-            if (!plain)
-                rade_set_latent_hook(rx, rx_hook, NULL);
-            afc_resets++;
-            n = 0;
-        }
+        int n = rade_rx(rx, rfeat, &has_eoo, NULL, ch + pos);
         int play = plain || rade_voice_rx_play(&vrx);
         pos += (size_t) nin;
         calls++;
@@ -370,14 +339,6 @@ int main(int argc, char **argv)
            plain ? "-" : st[vrx.status], 10 * log10(peak / S_mean),
            lat_n ? sqrt(lat_pow / lat_n) : 0.0, played ? best : INFINITY);
     free(was_played);
-    if (afc) {
-        float est = 0;
-        int have = rade_afc_estimate(afc, &est);
-        printf("afc: shift %.1f Hz, estimate %s%.1f Hz, receiver restarts %ld\n",
-               (double) rade_afc_shift(afc), have ? "" : "(none) ", (double) est, afc_resets);
-    }
-    rade_afc_free(afc);
-    free(rx_in);
 
     radae_analysis_free(an);
     radae_synthesis_free(syn);
