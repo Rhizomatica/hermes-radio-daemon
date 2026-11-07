@@ -774,13 +774,6 @@ static void *radae_rx_thread(void *arg)
         unsynced = synced ? 0 : unsynced + nin;
         if (unsynced > RADAE_RX_OVER_LOST_S * RADE_MODEM_SAMPLE_RATE && vrx.any)
             rade_voice_rx_reset(&vrx);
-        /* Every over starts from a primed FARGAN, as the first one does:
-         * left with the last over's state, the next over's first frame
-         * played as a ~10 ms burst. */
-        if (over_open && (has_eoo_out || unsynced > RADAE_RX_OVER_LOST_S * RADE_MODEM_SAMPLE_RATE)) {
-            radae_synthesis_reset(synthesis);
-            over_open = false;
-        }
         /* An encrypted over this station cannot decrypt (yet) is muted,
          * not played as noise. */
         const bool play = rade_voice_rx_play(&vrx);
@@ -807,6 +800,14 @@ static void *radae_rx_thread(void *arg)
         }
         if (has_eoo_out)
             rade_voice_rx_reset(&vrx);   /* the next over starts afresh */
+        /* Every over starts from a primed FARGAN, as the first one does:
+         * left with the last over's state, the next over's first frame
+         * played as a ~10 ms burst.  After this frame's speech: the
+         * end-of-over frame still carries the over's last 120 ms. */
+        if (over_open && (has_eoo_out || unsynced > RADAE_RX_OVER_LOST_S * RADE_MODEM_SAMPLE_RATE)) {
+            radae_synthesis_reset(synthesis);
+            over_open = false;
+        }
         if (n_features > 0)
             RADAE_RATE_LOG("rx_fargan", "feat", n_features, "decoded features");
     }
