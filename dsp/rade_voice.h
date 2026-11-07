@@ -121,6 +121,8 @@ typedef struct {
     bool     any;            /* a symbol has been seen */
     bool     aux_on;         /* the aux carriers carry power (with hysteresis) */
     bool     enc_seen;       /* aux_on, or a message came (then for the over) */
+    bool     clear_shown;    /* the over has been shown clear (and played) */
+    uint8_t  aux_run;        /* symbols in a row with aux_on, up to 255 */
     uint8_t  n_sym;          /* symbols seen, up to 255 */
     bool     aligned;        /* a message was seen: where they end */
     uint32_t align_sym;
