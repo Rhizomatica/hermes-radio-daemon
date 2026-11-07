@@ -128,6 +128,7 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              dsp/dstar_voice.o \
              dsp/voice_crypto.o \
              dsp/rade_voice.o \
+             dsp/rade_afc.o \
              dsp/mic_filter.o \
              dsp/rx_denoise.o \
              sbitx/sbitx_si5351.o \
@@ -256,6 +257,8 @@ endif
 RADE_OBJS = $(RADE_C_EMBED_OBJS) $(OPUS_DNN_OBJS) dsp/sbitx_radae.o dsp/radae_vocoder.o
 $(RADE_OBJS): EXTRA_CPPFLAGS := $(RADE_C_EMBED_CPPFLAGS) $(OPUS_DNN_CPPFLAGS)
 $(RADE_OBJS): EXTRA_CFLAGS := $(RADE_C_EMBED_CFLAGS)
+# rade_afc: RADE's types, built with the daemon's own flags
+dsp/rade_afc.o: EXTRA_CPPFLAGS := $(RADE_C_EMBED_CPPFLAGS) $(OPUS_DNN_CPPFLAGS)
 $(OPUS_DNN_OBJS): CFLAGS := $(filter-out -Ofast,$(CFLAGS)) -O2
 
 # Generic compile rule. Sbitx hw/dsp need extra include paths for csdr,
@@ -287,7 +290,7 @@ dstar_crypt_sim: $(DSTAR_CRYPT_SIM_OBJS)
 
 # ── RADE V2 voice scrambling over a simulated HF channel, a testing aid
 # (not built by "all"): utils/rade_crypt_sim.c ──
-RADE_CRYPT_SIM_OBJS = utils/rade_crypt_sim.o dsp/rade_voice.o dsp/voice_crypto.o \
+RADE_CRYPT_SIM_OBJS = utils/rade_crypt_sim.o dsp/rade_voice.o dsp/rade_afc.o dsp/voice_crypto.o \
                       dsp/radae_vocoder.o $(RADE_C_EMBED_OBJS) $(OPUS_DNN_OBJS) \
                       vendor/hermes_log/hermes_log.o
 utils/rade_crypt_sim.o: EXTRA_CPPFLAGS := $(RADE_C_EMBED_CPPFLAGS) $(OPUS_DNN_CPPFLAGS)
