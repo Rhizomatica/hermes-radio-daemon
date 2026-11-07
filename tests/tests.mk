@@ -61,7 +61,7 @@ TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
 # need the submodule.  Added here: the test rule reads TEST_BINS as it is
 # parsed.
 ifeq ($(HAVE_MERCURY),1)
-TEST_BINS += tests/modem/test_bcast_link tests/modem/test_bcast_spool
+TEST_BINS += tests/modem/test_bcast_link tests/modem/test_bcast_host tests/modem/test_bcast_spool
 endif
 # Browser audio end to end, against a real libdatachannel peer: only where
 # radiod itself builds with WebRTC.
@@ -174,6 +174,10 @@ BCAST_TEST_FLAGS = -I$(MERCURY_DIR)/datalink_broadcast
 tests/modem/test_bcast_link: tests/modem/test_bcast_link.c modem/bcast_link.c modem/bcast_link.h \
                              modem/beacon.c modem/beacon.h $(MERCURY_LIBS)
 	$(CC) $(TEST_CFLAGS) $(BCAST_TEST_FLAGS) $< modem/bcast_link.c modem/beacon.c $(UNITY_SRC) \
+	      $(HERMES_LOG_SRC) $(MERCURY_LIBS) -o $@ -lpthread -lm
+tests/modem/test_bcast_host: tests/modem/test_bcast_host.c modem/bcast_link.c modem/bcast_link.h \
+                             $(MERCURY_LIBS)
+	$(CC) $(TEST_CFLAGS) $(BCAST_TEST_FLAGS) $< modem/bcast_link.c $(UNITY_SRC) \
 	      $(HERMES_LOG_SRC) $(MERCURY_LIBS) -o $@ -lpthread -lm
 tests/modem/test_bcast_spool: tests/modem/test_bcast_spool.c modem/bcast_spool.c modem/bcast_spool.h \
                               modem/bcast_link.c modem/bcast_link.h $(MERCURY_LIBS)

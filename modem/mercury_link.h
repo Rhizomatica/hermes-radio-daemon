@@ -28,6 +28,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "bcast_link.h"
 #include "radio.h"
 
 /* mercury's PTT id with modem_audio (an RTP modem's is its SSRC, >= 0). */
@@ -75,5 +76,10 @@ int mercury_link_chat_send(const char *plane, const char *text);
 /* One of mercury's UI commands ({"command": ...}, its docs/WEBSOCKET_API.md),
  * as a UI client's: 0 when carried out. */
 int mercury_link_command(const char *json);
+
+/* The broadcast plane's calls into this engine (bcast_link's in-process
+ * backend): mercury_host.h's carousel, station messages and broadcast
+ * receiver, each answering as the engine is down while it is not up. */
+const bcast_link_host *mercury_link_bcast_host(void);
 
 #endif /* MERCURY_LINK_H */

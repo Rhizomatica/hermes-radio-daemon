@@ -244,15 +244,12 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     gps_init(&radio_h);
 
     /* The broadcast plane (files, received broadcasts, beacons) as Mercury's
-     * broadcast client, with Mercury as its own process. */
+     * broadcast client: on its KISS port, or by direct calls with Mercury
+     * inside radiod (main:enable_mercury, started above). */
     if (radio_h.broadcast_enable)
     {
 #ifdef HAVE_MERCURY
-        if (radio_h.enable_mercury)
-            HLOGW(LOG_C, "main:broadcast_enable is for Mercury as its own process; "
-                         "with main:enable_mercury the broadcast plane is not running yet");
-        else
-            bcast_started = bcast_plane_start(&radio_h);
+        bcast_started = bcast_plane_start(&radio_h);
 #else
         HLOGE(LOG_C, "main:broadcast_enable is set, but this radio_daemon was built "
                      "without mercury (its broadcast codec); running without the broadcast plane");
