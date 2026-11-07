@@ -36,6 +36,7 @@
 #include "sbitx_gpio.h"
 #include "sbitx_si5351.h"
 #include "sbitx_alsa.h"
+#include "radio_pipeline.h"
 #include "sbitx_dsp.h"
 #include "radio_backend.h"
 #include "radio_controls.h"
@@ -240,7 +241,7 @@ static void set_power_knob(radio *radio_h, uint16_t power_level, uint32_t profil
 
 static void set_digital_voice(radio *radio_h, bool digital_voice, uint32_t profile)
 {
-    if (profile > radio_h->profiles_count)
+    if (profile >= radio_h->profiles_count)
     {
         HLOGE(LOG_C, "Profile index out of bounds");
         return;
@@ -252,6 +253,7 @@ static void set_digital_voice(radio *radio_h, bool digital_voice, uint32_t profi
         return;
 
     radio_h->profiles[profile].digital_voice = digital_voice;
+    radio_pipeline_refresh(radio_h);
 
     char tmp1[64]; char tmp2[64];
     sprintf(tmp1, "profile%u:digital_voice", profile);
@@ -269,6 +271,7 @@ static void set_profile(radio *radio_h, uint32_t profile)
         return;
 
     radio_h->profile_active_idx = profile;
+    radio_pipeline_refresh(radio_h);
 
     // set the frequency and mode
     set_frequency(radio_h, radio_h->profiles[profile].freq, profile);
@@ -432,6 +435,8 @@ static void set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
 
     if (!value_changed)
         return;             /* filters re-applied above; nothing to persist */
+
+    radio_pipeline_refresh(radio_h);   /* in or out of D-STAR */
 
     char tmp1[64];
     const char *mode_str;

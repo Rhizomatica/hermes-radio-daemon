@@ -61,6 +61,8 @@ bool radae_is_debug(void) { return radae_debug != 0; }
 
 #define RADAE_TX_COMP_CAPACITY       1024
 #define RADAE_TX_FEATURE_CAPACITY    256   /* floats per rade_tx() call, at most */
+/* A signal lost this long ends an over that sent no end-of-over frame */
+#define RADAE_RX_OVER_LOST_S         2
 
 #if RADAE_FRAME_SIZE != RADAE_VOCODER_FRAME
 #error "RADAE_FRAME_SIZE must be the vocoder's 10 ms frame"
@@ -685,6 +687,7 @@ static void *radae_rx_thread(void *arg)
     static rade_voice_rx vrx;          /* unscrambling, and the play gate */
     rade_vc_status was_crypto = RADE_VC_CLEAR;
     long unsynced = 0;                 /* modem samples since sync was lost */
+    bool over_open = false;            /* FARGAN has synthesized this over */
 
     synthesis = radae_synthesis_new();
     if (!synthesis) {
@@ -769,7 +772,7 @@ static void *radae_rx_thread(void *arg)
         /* A signal lost for 2 s ends the over, as rade_voice_rx_symbol()
          * would decide at the next one. */
         unsynced = synced ? 0 : unsynced + nin;
-        if (unsynced > 2 * RADE_MODEM_SAMPLE_RATE && vrx.any)
+        if (unsynced > RADAE_RX_OVER_LOST_S * RADE_MODEM_SAMPLE_RATE && vrx.any)
             rade_voice_rx_reset(&vrx);
         /* An encrypted over this station cannot decrypt (yet) is muted,
          * not played as noise. */
@@ -787,15 +790,24 @@ static void *radae_rx_thread(void *arg)
         ctx->radio_h->rade_rx_crypto = (uint16_t) crypto;
         for (int k = 0; k + RADAE_VOCODER_FEATURES <= n_features; k += RADAE_VOCODER_FEATURES) {
             int n = RADAE_VOCODER_FRAME;
-            if (play)
+            if (play) {
                 n = radae_synthesis_frame(synthesis, &features_out[k], pcm);
-            else
+                over_open = true;
+            } else
                 memset(pcm, 0, sizeof(pcm));
             if (n > 0)
                 rx_store_speech_pcm(ctx, pcm, n);
         }
         if (has_eoo_out)
             rade_voice_rx_reset(&vrx);   /* the next over starts afresh */
+        /* Every over starts from a primed FARGAN, as the first one does:
+         * left with the last over's state, the next over's first frame
+         * played as a ~10 ms burst.  After this frame's speech: the
+         * end-of-over frame still carries the over's last 120 ms. */
+        if (over_open && (has_eoo_out || unsynced > RADAE_RX_OVER_LOST_S * RADE_MODEM_SAMPLE_RATE)) {
+            radae_synthesis_reset(synthesis);
+            over_open = false;
+        }
         if (n_features > 0)
             RADAE_RATE_LOG("rx_fargan", "feat", n_features, "decoded features");
     }

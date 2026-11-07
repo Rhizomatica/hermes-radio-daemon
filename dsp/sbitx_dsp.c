@@ -175,6 +175,15 @@ static float radae_tx_fifo_i[RADAE_FIFO], radae_tx_fifo_q[RADAE_FIFO];
 static float radae_rx_fifo[RADAE_FIFO];
 static int radae_rx_fifo_n = 0;
 
+/* With no decoded speech for this long the over has ended (the decoder
+ * plays muted overs as zeros, so speech stops only without sync), and the
+ * 16k -> 96k resampler drops what it holds of the last over's end: kept,
+ * it played as a ~3 ms click at the start of the next over.  Well above a
+ * RADE modem frame (120 ms), the longest gap between bursts of speech. */
+#define RADAE_RX_IDLE_RESET_S   0.5
+#define RADAE_RX_DSP_RATE       96000   /* the sBitx DSP's sample rate */
+static uint32_t radae_rx_idle = 0;      /* samples with no speech, to the reset */
+
 static bool radae_rs_init(void)
 {
     if (radae_rs_ready)
@@ -394,12 +403,17 @@ static void dsp_process_digital_voice_rx(double *rx_baseband_i, double *rx_baseb
         memset(speech_out, 0, block_size * sizeof(double));
         return;
     }
+    // On LSB the over sits below the dial, mirrored, as the TX side sends
+    // it (it conjugates for LSB): conjugate it back, or RADE sees its
+    // carriers in reverse order and barely holds sync.
+    const bool is_lsb = (radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].mode == MODE_LSB);
+    const float q_sign = is_lsb ? -1.0f : 1.0f;
     size_t modem_len_i, modem_len_q;
     {
         float in_i[block_size], in_q[block_size];
         for (uint32_t k = 0; k < block_size; k++) {
             in_i[k] = (float) rx_baseband_i[k];
-            in_q[k] = (float) rx_baseband_q[k];
+            in_q[k] = q_sign * (float) rx_baseband_q[k];
         }
         modem_len_i = stream_resampler_run(&radae_rx_i_rs, in_i, block_size);
         modem_len_q = stream_resampler_run(&radae_rx_q_rs, in_q, block_size);
@@ -466,6 +480,7 @@ static void dsp_process_digital_voice_rx(double *rx_baseband_i, double *rx_baseb
     }
 
     if (radae_rx_fifo_n > 0) {
+        radae_rx_idle = 0;
         int n = radae_rx_fifo_n < (int) block_size ? radae_rx_fifo_n : (int) block_size;
         for (int i = 0; i < n; i++)
             speech_out[i] = radae_rx_fifo[i];
@@ -483,6 +498,11 @@ static void dsp_process_digital_voice_rx(double *rx_baseband_i, double *rx_baseb
     } else {
         // No speech output yet
         memset(speech_out, 0, block_size * sizeof(double));
+        if (radae_rx_idle < (uint32_t) (RADAE_RX_IDLE_RESET_S * RADAE_RX_DSP_RATE)) {
+            radae_rx_idle += block_size;
+            if (radae_rx_idle >= (uint32_t) (RADAE_RX_IDLE_RESET_S * RADAE_RX_DSP_RATE))
+                stream_resampler_reset(&radae_rx_speech_rs);
+        }
     }
 }
 

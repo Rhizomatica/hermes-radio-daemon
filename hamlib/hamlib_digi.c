@@ -56,12 +56,14 @@ extern _Atomic bool shutdown_;
 #define FT8_SLOT_SECONDS 15
 
 /* RADAE modem audio rate (matches the 8 kHz IQ baseband the encoder/decoder
- * use internally; see dsp/sbitx_dsp.c). After freq-shift to the SSB
- * passband centre this becomes 8 kHz real audio that we resample up to the
- * ring rate. */
+ * use internally; see dsp/sbitx_dsp.c), as 8 kHz real audio that we
+ * resample to and from the ring rate. */
 #define RADAE_MODEM_RATE   8000
 #define RADAE_SPEECH_RATE  16000
-#define RADAE_CARRIER_HZ   1500.0f   /* centre in SSB audio passband */
+/* The Hilbert filter that makes the received audio complex again: odd
+ * length, so its delay is a whole number of samples. 65 taps keep RADE's
+ * 1062-1938 Hz carriers flat at 8 kHz. */
+#define RADAE_HILBERT_TAPS 65
 
 /* One direction of rate conversion. Wraps stream_resampler, which carries
  * the input csdr's rational_resampler_ff() leaves unconsumed. Calling that
@@ -213,10 +215,9 @@ typedef struct {
     mbe_ambe2400_encoder *dstar_tx_enc;   /* AMBE analysis state, reset per over */
     dstar_voice_rx dstar_vrx;   /* over being received */
 
-    /* Phase accumulators for the freq-shift (mixer) at 1500 Hz, 8 kHz fs.
-     * Carried across calls so consecutive blocks stay phase-continuous. */
-    double radae_tx_phase;
-    double radae_rx_phase;
+    /* The received audio's last RADAE_HILBERT_TAPS samples, carried across
+     * calls so the Hilbert filter runs on one continuous stream. */
+    float radae_rx_hist[RADAE_HILBERT_TAPS];
     /* Auto-PTT for typed digital TX (CW/RTTY/FT8): when text is queued we key
      * PTT, transmit, then drop PTT once the queue empties and the TX ring has
      * drained. digi_auto_tx distinguishes our keying from a manual operator PTT
@@ -798,49 +799,59 @@ static void do_dstar_rx(hamlib_digi_state *s, uint32_t ring_rate)
 }
 
 
-/* ─── RADAE: complex IQ ↔ real audio at the SSB passband centre ──
+/* ─── RADAE: complex IQ ↔ real audio in the SSB passband ──────────
  *
- * The rig itself does the SSB modulation/demodulation. All we need is to
- * place the RADAE modem signal inside the audio passband (USB sideband)
- * as a real-valued audio stream, and inverse on RX. That's a single
- * complex-to-real frequency shift; no Hilbert / SSB modulator required.
- *
- * TX shift (USB): real[n] = I[n]*cos(2π·fc·n/fs) − Q[n]*sin(2π·fc·n/fs)
- * RX shift (USB demod): I'[n] + jQ'[n] = real[n] * exp(−j·2π·fc·n/fs)
+ * The rig itself does the SSB modulation/demodulation. RADE V2's complex
+ * signal is already in the passband (its carriers centre on 1500 Hz,
+ * vendor/rade_c/src/rade_v2_ofdm.c), so on TX the audio is its real part,
+ * as FreeDV sends it and as the sBitx's SSB modulator puts it on the air.
+ * On RX a Hilbert filter makes the rig's real audio complex again
+ * (analytic: the positive frequencies only). This used to shift the signal
+ * by another 1500 Hz each way: on the air it sat around 3 kHz, half outside
+ * the rig's filter, and only another Hamlib station could decode it.
  */
 
 static void mix_iq_to_real(const float *iq_interleaved, int n_complex,
-                           float *real_out, double *phase_io,
-                           uint32_t fs)
+                           float *real_out)
 {
-    double dphi = 2.0 * M_PI * RADAE_CARRIER_HZ / (double) fs;
-    double phi = *phase_io;
-    for (int n = 0; n < n_complex; n++) {
-        float I = iq_interleaved[2*n];
-        float Q = iq_interleaved[2*n + 1];
-        real_out[n] = (float)(I * cos(phi) - Q * sin(phi));
-        phi += dphi;
-        if (phi > 2.0 * M_PI) phi -= 2.0 * M_PI;
-    }
-    *phase_io = phi;
+    for (int n = 0; n < n_complex; n++)
+        real_out[n] = iq_interleaved[2*n];
 }
 
-static void demod_real_to_iq(const float *real_in, int n,
-                             float *iq_interleaved, double *phase_io,
-                             uint32_t fs)
+/* The Hilbert filter's taps: 2/(pi k) at odd k from the centre, 0 at even
+ * k, under a Hamming window. */
+static const float *radae_hilbert_taps(void)
 {
-    double dphi = 2.0 * M_PI * RADAE_CARRIER_HZ / (double) fs;
-    double phi = *phase_io;
-    for (int i = 0; i < n; i++) {
-        /* multiply by exp(-j*phi) = cos(phi) - j*sin(phi) */
-        float c = (float) cos(phi);
-        float s = (float) sin(phi);
-        iq_interleaved[2*i]     = real_in[i] * c;
-        iq_interleaved[2*i + 1] = real_in[i] * (-s);
-        phi += dphi;
-        if (phi > 2.0 * M_PI) phi -= 2.0 * M_PI;
+    static float h[RADAE_HILBERT_TAPS];
+    static bool ready;
+    if (!ready) {
+        const int mid = RADAE_HILBERT_TAPS / 2;
+        for (int i = 0; i < RADAE_HILBERT_TAPS; i++) {
+            const int k = i - mid;
+            const double w = 0.54 - 0.46 * cos(2.0 * M_PI * i / (RADAE_HILBERT_TAPS - 1));
+            h[i] = (k % 2) ? (float) (2.0 / (M_PI * k) * w) : 0.0f;
+        }
+        ready = true;
     }
-    *phase_io = phi;
+    return h;
+}
+
+/* real -> analytic: I is the input delayed by the filter's half length,
+ * Q its Hilbert transform. hist holds the previous call's last samples. */
+static void demod_real_to_iq(const float *real_in, int n,
+                             float *iq_interleaved, float hist[RADAE_HILBERT_TAPS])
+{
+    const float *h = radae_hilbert_taps();
+    const int mid = RADAE_HILBERT_TAPS / 2;
+    for (int i = 0; i < n; i++) {
+        memmove(hist, hist + 1, (RADAE_HILBERT_TAPS - 1) * sizeof(float));
+        hist[RADAE_HILBERT_TAPS - 1] = real_in[i];
+        float q = 0.0f;
+        for (int k = 0; k < RADAE_HILBERT_TAPS; k++)
+            q += h[k] * hist[RADAE_HILBERT_TAPS - 1 - k];
+        iq_interleaved[2*i]     = hist[RADAE_HILBERT_TAPS - 1 - mid];
+        iq_interleaved[2*i + 1] = q;
+    }
 }
 
 static void do_radae_tx(hamlib_digi_state *s, uint32_t ring_rate)
@@ -884,11 +895,11 @@ static void do_radae_tx(hamlib_digi_state *s, uint32_t ring_rate)
     if (n_complex <= 0)
         return;
 
-    /* IQ at 8 kHz -> real audio at 8 kHz, shifted to RADAE_CARRIER_HZ. */
+    /* IQ at 8 kHz -> real audio at 8 kHz, in the passband as it is. */
     static float real_8k[4096];
     if (n_complex > (int)(sizeof(real_8k)/sizeof(real_8k[0])))
         n_complex = (int)(sizeof(real_8k)/sizeof(real_8k[0]));
-    mix_iq_to_real(iq_buf, n_complex, real_8k, &s->radae_tx_phase, RADAE_MODEM_RATE);
+    mix_iq_to_real(iq_buf, n_complex, real_8k);
 
     /* Resample 8 kHz -> ring rate and push to tx_radae_ring. */
     if (s->radae_modem_to_ring.taps_len == 0 && ring_rate != RADAE_MODEM_RATE)
@@ -937,11 +948,11 @@ static void do_radae_rx(hamlib_digi_state *s, uint32_t ring_rate)
     if (!n_8k)
         return;
 
-    /* Real -> complex baseband at 8 kHz via freq-shift down from 1500 Hz. */
+    /* Real -> complex (analytic) at 8 kHz: RADE V2 centred on 1500 Hz. */
     static float iq_buf[8192];
     if (n_8k * 2 > sizeof(iq_buf)/sizeof(iq_buf[0]))
         n_8k = (sizeof(iq_buf)/sizeof(iq_buf[0])) / 2;
-    demod_real_to_iq(real_8k, (int) n_8k, iq_buf, &s->radae_rx_phase, RADAE_MODEM_RATE);
+    demod_real_to_iq(real_8k, (int) n_8k, iq_buf, s->radae_rx_hist);
 
     radae_rx_write_modem_iq(&s->radae_ctx, iq_buf, (int) n_8k);
 
