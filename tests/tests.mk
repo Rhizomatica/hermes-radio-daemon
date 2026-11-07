@@ -54,7 +54,7 @@ TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
             tests/audioio/test_audio_bridge \
             tests/dsp/test_upsample2 tests/dsp/test_stream_resampler tests/dsp/test_mic_filter \
             tests/dsp/test_digi_modes tests/dsp/test_digi_log tests/dsp/test_dstar_voice \
-            tests/dsp/test_rade_voice tests/dsp/test_rade_afc tests/dsp/test_radae_vocoder tests/dsp/test_drm \
+            tests/dsp/test_rade_voice tests/dsp/test_rade_afc tests/dsp/test_dstar_clock_cal tests/dsp/test_radae_vocoder tests/dsp/test_drm \
             tests/sbitx/test_sbitx_buffer \
             tests/common/test_radiod_log tests/common/test_async_file
 # The broadcast plane uses Mercury's codec (libmercury_host.a), so its tests
@@ -260,6 +260,9 @@ tests/dsp/test_rade_voice: tests/dsp/test_rade_voice.c dsp/rade_voice.c dsp/rade
                            dsp/voice_crypto.c dsp/voice_crypto.h
 	$(CC) $(TEST_CFLAGS) -Idsp $< dsp/rade_voice.c dsp/voice_crypto.c \
 	      $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lcrypto -lm
+
+tests/dsp/test_dstar_clock_cal: tests/dsp/test_dstar_clock_cal.c dsp/dstar_clock_cal.c dsp/dstar_clock_cal.h
+	$(CC) $(TEST_CFLAGS) $< dsp/dstar_clock_cal.c $(UNITY_SRC) -o $@ -lm
 
 # RADE_COMP comes from rade_api.h, which wants RADE's and Opus's include paths.
 tests/dsp/test_rade_afc: tests/dsp/test_rade_afc.c dsp/rade_afc.c dsp/rade_afc.h

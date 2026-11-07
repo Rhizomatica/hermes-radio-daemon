@@ -55,6 +55,7 @@
 
 #include "sbitx_dsp.h"
 #include "cfg_utils.h"
+#include "dstar_clock_cal.h"
 #include "radiod_cpus.h"
 #include "sbitx_core.h"
 #include "sbitx_alsa.h"
@@ -684,72 +685,35 @@ static bool dstar_track_feed(const float *x, int n, double *ppm)
     return true;
 }
 
-/* ── automatic clock calibration ──────────────────────────────────────
+/* ── automatic clock calibration (dstar_clock_cal.h) ───────────────────
  *
- * The codec's clock error is a property of its crystal: it does not need
- * tracking within an over, it needs measuring once. Each baud-line reading
- * taken while frames decode is kept as an absolute error (the correction
- * in force plus what the line still shows); between overs, when the modem
- * has lost sync or seen the end of transmission and a step in the
- * resampling rate costs nothing, the correction moves to their median if
- * enough of them agree, and is saved as main:dstar_clock_ppm so the next
- * start begins calibrated. On the bench, two sBitx held at 0 read their
- * codecs at +297 and +302 ppm (hand-calibrated: +300 and +301), within
- * +-7 ppm per 2 s window; weak signals on the air scatter far more, which
- * the median and the agreement test absorb. main:dstar_clock_auto = 0
- * keeps dstar_clock_ppm as configured. */
-#define DSTAR_CAL_KEEP      32         /* readings kept (~1 min of overs) */
-#define DSTAR_CAL_MIN       6          /* needed to move the correction */
-#define DSTAR_CAL_MAD_MAX   25.0       /* their median absolute deviation, ppm */
-#define DSTAR_CAL_DEADBAND  10.0       /* closer than this: leave it */
+ * Baud-line readings taken while frames decode feed the calibration;
+ * between overs, when the modem has lost sync or seen the end of
+ * transmission and a step in the resampling rate costs nothing, the
+ * correction moves to what they agree on, and is saved as
+ * main:dstar_clock_ppm so the next start begins calibrated.
+ * main:dstar_clock_auto = 0 keeps dstar_clock_ppm as configured. */
+static dstar_clock_cal dstar_cal;
 
-static double cal_ppm[DSTAR_CAL_KEEP];
-static int    cal_n, cal_pos, cal_fresh;
-
-static int cmp_double(const void *a, const void *b)
-{
-    const double x = *(const double *) a, y = *(const double *) b;
-    return (x > y) - (x < y);
-}
-
-static double median_of(double *v, int n)
-{
-    qsort(v, (size_t) n, sizeof(double), cmp_double);
-    return n % 2 ? v[n / 2] : 0.5 * (v[n / 2 - 1] + v[n / 2]);
-}
-
-static void dstar_cal_push(double residual_ppm)
-{
-    cal_ppm[cal_pos] = dstar_clock_track + residual_ppm;
-    cal_pos = (cal_pos + 1) % DSTAR_CAL_KEEP;
-    if (cal_n < DSTAR_CAL_KEEP)
-        cal_n++;
-    cal_fresh++;
-}
-
-/* Between overs: move the correction to what the readings agree on. */
 static void dstar_cal_apply(void)
 {
-    if (!radio_h_dsp->dstar_clock_auto || cal_fresh == 0 || cal_n < DSTAR_CAL_MIN)
+    if (!radio_h_dsp->dstar_clock_auto)
         return;
-    cal_fresh = 0;
-    double v[DSTAR_CAL_KEEP], dev[DSTAR_CAL_KEEP];
-    memcpy(v, cal_ppm, (size_t) cal_n * sizeof(double));
-    const double m = median_of(v, cal_n);
-    for (int i = 0; i < cal_n; i++)
-        dev[i] = fabs(cal_ppm[i] - m);
-    const double mad = median_of(dev, cal_n);
-    if (mad > DSTAR_CAL_MAD_MAX) {
+    long ppm = 0;
+    double m = 0, spread = 0;
+    switch (dstar_clock_cal_decide(&dstar_cal, dstar_clock_track, &ppm, &m, &spread)) {
+    case DSTAR_CAL_HOLD:
+        return;
+    case DSTAR_CAL_DISAGREE:
         if (radio_h_dsp->dstar_verbose)
             HLOGI(LOG_C, "DSTAR: clock readings disagree (median %+.0f ppm, spread %.0f), held at %+.0f",
-                    m, mad, dstar_clock_track);
+                    m, spread, dstar_clock_track);
         return;
+    case DSTAR_CAL_MOVE:
+        break;
     }
-    if (fabs(m - dstar_clock_track) < DSTAR_CAL_DEADBAND)
-        return;
-    const long ppm = lround(m);
     HLOGI(LOG_C, "DSTAR: clock calibrated %+.0f -> %+ld ppm (%d readings, spread %.0f)",
-            dstar_clock_track, ppm, cal_n, mad);
+            dstar_clock_track, ppm, dstar_cal.n, spread);
     dstar_clock_track = (double) ppm;
     radio_h_dsp->dstar_clock_ppm = (int32_t) ppm;
     char val[16];
@@ -1958,7 +1922,7 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
                  * corrects. */
                 /* Kept for the calibration between overs (above) */
                 if (dstar_rx_frame_count != trk_last_frames)
-                    dstar_cal_push(trk_ppm);
+                    dstar_clock_cal_push(&dstar_cal, dstar_clock_track, trk_ppm);
                 if (radio_h_dsp->dstar_verbose && dstar_rx_frame_count != trk_last_frames)
                     HLOGI(LOG_C, "DSTAR: baud line reads %+.0f ppm (clock held at %+.0f)",
                             trk_ppm, dstar_clock_track);
