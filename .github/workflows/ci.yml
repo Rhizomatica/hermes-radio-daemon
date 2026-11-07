@@ -116,7 +116,11 @@ jobs:
       matrix:
         sanitize: [asan, tsan]
     runs-on: ubuntu-latest
-    container: debian:trixie
+    # TSan needs the runner VM's sysctl below, which only a privileged
+    # container can set
+    container:
+      image: debian:trixie
+      options: ${{ matrix.sanitize == 'tsan' && '--privileged' || '' }}
     timeout-minutes: 60
     steps:
       - name: Git for the checkout
@@ -129,5 +133,11 @@ jobs:
         run: git config --global --add safe.directory '*'
       - name: Build dependencies
         run: tests/ci/install-deps.sh
+      # Trixie's TSan aborts every binary ("unexpected memory mapping") on
+      # a kernel with more than 28 bits of mmap randomisation, as the
+      # runners now have
+      - name: mmap randomisation TSan can run with
+        if: matrix.sanitize == 'tsan'
+        run: sysctl -w vm.mmap_rnd_bits=28
       - name: Unit tests under ${{ matrix.sanitize }}
         run: make test SANITIZE=${{ matrix.sanitize }}

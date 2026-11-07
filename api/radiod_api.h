@@ -282,6 +282,16 @@ typedef struct {
 /* The stations heard, newest first; returns how many (up to max). */
 int radiod_api_beacon_stations(radiod_api_beacon_station *out, int max);
 
+/* ── the store-and-forward layer (api/internal/transport) ── */
+
+typedef struct {
+    char prefer[8];                  /* main:transport_prefer: "uucp" or "nncp" */
+    char uucico_air_options[64];     /* main:uucico_air_options */
+    char uucico_tcp_systems[256];    /* main:uucico_tcp_systems */
+} radiod_api_transport;
+
+int radiod_api_transport_get(radiod_api_transport *out);
+
 /* ── modem (mercury linked in) ── */
 
 /* Mercury's last status JSON (its websocket's {"type":"status",...}) into

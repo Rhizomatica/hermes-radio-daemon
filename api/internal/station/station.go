@@ -11,6 +11,7 @@ import (
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/gps"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/health"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/modem"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/queue"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/radio"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/setup"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/store"
@@ -41,6 +42,7 @@ func newRouter(r rad.Radio, st *store.Store, cfg setup.Config) *api.Router {
 	modem.Register(rt)
 	gps.Register(rt)
 	broadcasts.Register(rt)
+	queue.Register(rt)
 	if st != nil {
 		auth.Register(rt, st, auth.Config{})
 		users.Register(rt, st)

@@ -455,6 +455,13 @@ typedef struct {
     bool   has_station_position;
     double station_latitude, station_longitude;
     int    beacon_emergency_interval_s;
+    /* The store-and-forward layer (api/internal/transport): the transport
+     * for a station both UUCP and NNCP reach (main:transport_prefer), and
+     * uucico's options on a call over the radio (main:uucico_air_options,
+     * e.g. "-Y"), left off for the systems of main:uucico_tcp_systems. */
+    char transport_prefer[8];
+    char uucico_air_options[64];
+    char uucico_tcp_systems[256];
     /* Logging (common/radiod_log.c, mercury's hermes_log): main:log_level,
      * main:log_component_levels ("hamlib=debug, ws=warn"), main:log_file
      * ("" for none), main:log_jsonl for the file's format and main:log_utc

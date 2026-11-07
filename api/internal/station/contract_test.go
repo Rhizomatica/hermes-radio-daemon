@@ -1,14 +1,18 @@
 package station_test
 
 import (
+	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"net/http"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/queue"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/testapi"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/transport"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/spec"
 )
 
@@ -29,6 +33,24 @@ const gateDetail = "not logged in, or the session ended"
 
 var pathParam = regexp.MustCompile(`\{(\w+)\}`)
 
+// noRunner runs nothing: the contract test must not start uucico or nncp-call.
+type noRunner struct{}
+
+func (noRunner) Run(context.Context, []byte, string, ...string) ([]byte, error) { return nil, nil }
+func (noRunner) Start(string, ...string) error                                  { return nil }
+
+// noTransports is a station with neither UUCP nor NNCP configured, whose
+// transports run nothing.
+func noTransports(t *testing.T) {
+	dir := t.TempDir()
+	transport.UUCPSys = filepath.Join(dir, "sys")
+	transport.UUCPConfig = filepath.Join(dir, "config")
+	transport.NNCPNeigh = filepath.Join(dir, "neigh")
+	transport.NNCPCallsign = filepath.Join(dir, "nncp-callsign")
+	transport.ProcDir = filepath.Join(dir, "proc")
+	queue.NewRunner = func() transport.Runner { return noRunner{} }
+}
+
 // sample is the value for a {param}, by name. profile 0 exists on the stub
 // radio; the other implemented parameters are numeric ids, and 999999 is one
 // nothing has, so the operation answers 404 from its handler. A new
@@ -36,7 +58,7 @@ var pathParam = regexp.MustCompile(`\{(\w+)\}`)
 // given a value here: fillPath fails the test on a name it does not know,
 // rather than send a wrong kind of value.
 var sample = map[string]string{"profile": "0", "user_id": "999999", "session_id": "999999",
-	"broadcast_id": "nothing-queued.bin", "name": "nothing-received.bin"}
+	"broadcast_id": "nothing-queued.bin", "name": "nothing-received.bin", "job_id": "uucp.B0ZZ.C0000"}
 
 func fillPath(t *testing.T, p string) string {
 	return pathParam.ReplaceAllStringFunc(p, func(m string) string {
@@ -78,6 +100,7 @@ func snapshot(e *testapi.Env, token string) map[string]string {
 //   - every reply has X-Request-Id; errors are problem+json with a matching
 //     status, a code and the same request_id; 204 has no body.
 func TestContract(t *testing.T) {
+	noTransports(t)
 	e := testapi.NewAuth(t)
 	login := func(r spec.Role) string {
 		return e.Login(string(r)+"1", "password-"+string(r))
