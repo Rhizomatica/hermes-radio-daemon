@@ -169,7 +169,20 @@ static char *build_payload(void)
     if (!strcmp(g_cmd, "get_volume"))             SIMPLE("get_volume");
     if (!strcmp(g_cmd, "set_volume"))             NUMBER("set_volume");
     if (!strcmp(g_cmd, "get_digital_voice"))      SIMPLE("get_digital_voice");
-    if (!strcmp(g_cmd, "set_digital_voice"))      STRING("set_digital_voice");
+    /* radiod takes digital voice as a number (radio_websocket.c reads the
+     * value as an integer): "ON" sent as a string read as 0, turning it off */
+    if (!strcmp(g_cmd, "set_digital_voice")) {
+        if (!g_arg) return NULL;
+        int on;
+        if (!strcasecmp(g_arg, "ON") || !strcmp(g_arg, "1") || !strcasecmp(g_arg, "true"))
+            on = 1;
+        else if (!strcasecmp(g_arg, "OFF") || !strcmp(g_arg, "0") || !strcasecmp(g_arg, "false"))
+            on = 0;
+        else
+            return NULL;
+        snprintf(json, 512, "{\"cmd\":\"set_digital_voice\",\"value\":%d%s}", on, profile);
+        return json;
+    }
     if (!strcmp(g_cmd, "get_txrx_status"))        SIMPLE("get_txrx_status");
     if (!strcmp(g_cmd, "get_protection_status"))  SIMPLE("get_protection_status");
     if (!strcmp(g_cmd, "reset_protection"))       SIMPLE("reset_protection");
