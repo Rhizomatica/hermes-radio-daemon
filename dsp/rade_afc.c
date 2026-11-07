@@ -3,10 +3,16 @@
  *
  * Two averaged spectra of the decoder's input: a short one, to pick the
  * correction while the decoder searches, and a long one, begun afresh at
- * each lock, to check a locked decoder (the short one until then). The over's centre is the centre of
- * the power above the noise floor; frequency-selective fading moves it by
- * tens of Hz over a second, less over several, so a locked decoder is only
- * moved when the long spectrum says it is a whole carrier (62.5 Hz) off.
+ * each lock, to check a locked decoder (the short one until then). The
+ * over's centre is the centre of the power above the noise floor.
+ *
+ * That centre is only good to about +-30 Hz on real radios: their transmit
+ * and receive filters tilt the over (two sBitx 3.6 Hz apart, as RADE itself
+ * measured, read +25 Hz). So it only chooses the carrier: the correction
+ * is always a whole number of carriers (62.5 Hz), and RADE's own estimate,
+ * exact to +-31.25 Hz, does the rest. A locked decoder whose offset, with
+ * the correction, rounds to another carrier than the spectrum's is moved
+ * there and restarted.
  *
  * Copyright (C) 2026 Rhizomatica
  * Author: Rafael Diniz <rafael@riseup.net>
@@ -42,13 +48,17 @@
 /* Power above the floor in the window, against the floor's: below this
  * there is no over to measure (an over at -3 dB SNR reads ~1) */
 #define AFC_MIN_EXCESS    0.25f
-/* While the decoder searches, follow the estimate once it is this far off */
-#define AFC_RETUNE_HZ     10.0f
-/* A locked decoder is a whole number of carriers off when the long
- * estimate is within this of such a multiple (and not of zero) */
-#define AFC_BRANCH_TOL_HZ 15.0f
-/* ...for this many decoder calls in a row (~1 s) before it restarts */
-#define AFC_WRONG_CALLS   8
+/* While the decoder searches, move to another whole carrier only when the
+ * estimate is this far from the one in force: past what RADE tracks itself
+ * (31.25 Hz) by more than the spectrum's own tilt on real radios (below) */
+#define AFC_SEARCH_HZ     45.0f
+/* A locked decoder judged on the long spectrum is another carrier off
+ * when its offset and the spectrum's differ by more than this: half a
+ * carrier, widened by what fading moves the long spectrum (seen +-35 Hz
+ * for 2-3 s on the simulator's multipath channels) */
+#define AFC_LOCKED_HZ     40.0f
+/* ...for this many decoder calls in a row (~2 s) before it restarts */
+#define AFC_WRONG_CALLS   16
 
 typedef struct {
     float psd[AFC_N];               /* averaged power per bin */
@@ -228,25 +238,29 @@ bool rade_afc_update(rade_afc *a, bool synced, float rade_foff)
     if (!synced) {
         a->was_synced = false;
         a->wrong = 0;
-        if (estimate(&a->shrt, AFC_SHORT_MIN, &est) && fabsf(est - a->shift) > AFC_RETUNE_HZ)
-            a->shift = est;              /* no over: keep the last correction */
+        /* no over: keep the last correction (the station's, most likely) */
+        if (estimate(&a->shrt, AFC_SHORT_MIN, &est) && fabsf(est - a->shift) > AFC_SEARCH_HZ)
+            a->shift += AFC_CARRIER_HZ * roundf((est - a->shift) / AFC_CARRIER_HZ);
         return false;
     }
     if (!a->was_synced) {
         a->was_synced = true;
         a->lng.frames = 0;               /* judge this lock on its own over */
     }
-    /* the long spectrum once it has enough of this lock, else the short
-     * one: a whole carrier is further than either strays */
-    if (!estimate(&a->lng, AFC_LONG_MIN, &est) &&
-        !estimate(&a->shrt, AFC_SHORT_MIN, &est)) {
-        a->wrong = 0;
-        return false;
+    /* the long spectrum once it has enough of this lock (AFC_LOCKED_HZ);
+     * until then the short one, which a fade moves further: AFC_SEARCH_HZ */
+    float margin = AFC_LOCKED_HZ;
+    if (!estimate(&a->lng, AFC_LONG_MIN, &est)) {
+        margin = AFC_SEARCH_HZ;
+        if (!estimate(&a->shrt, AFC_SHORT_MIN, &est)) {
+            a->wrong = 0;
+            return false;
+        }
     }
-    /* how many whole carriers the lock is off, and how cleanly */
+    /* how many whole carriers the lock is off */
     const float d = est - (a->shift + rade_foff);
     const float k = roundf(d / AFC_CARRIER_HZ);
-    if (k == 0.0f || fabsf(d - k * AFC_CARRIER_HZ) > AFC_BRANCH_TOL_HZ) {
+    if (fabsf(d) <= margin || k == 0.0f) {
         a->wrong = 0;
         return false;
     }

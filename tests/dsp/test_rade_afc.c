@@ -25,9 +25,10 @@
  * wrong-carrier test allows (AFC_BRANCH_TOL_HZ) */
 #define WIDE_HZ     100.0
 #define TOL_WIDE_HZ 15.0f
-/* A searching decoder follows the estimate once it is this far off
- * (AFC_RETUNE_HZ): what is left is RADE's own to track */
-#define RETUNE_HZ   10.0f
+/* A searching decoder is moved to another whole carrier only when the
+ * estimate is this far off (AFC_SEARCH_HZ): what is left, within half a
+ * carrier, is RADE's own to track */
+#define SEARCH_HZ   45.0
 
 static double gauss(void)
 {
@@ -87,8 +88,18 @@ static void test_estimate_finds_the_offset(void)
         const float tol = fabs(offs[i]) > WIDE_HZ ? TOL_WIDE_HZ : TOL_HZ;
         TEST_ASSERT_TRUE(rade_afc_estimate(a, &est));
         TEST_ASSERT_FLOAT_WITHIN(tol, (float) offs[i], est);
-        /* a searching decoder gets the over corrected */
-        TEST_ASSERT_FLOAT_WITHIN(tol + RETUNE_HZ, (float) offs[i], rade_afc_shift(a));
+        /* a searching decoder is left alone well inside SEARCH_HZ and put
+         * on the over's whole carrier well outside it (what is left within
+         * RADE's own +-31.25 Hz); within the estimate's tolerance of the
+         * threshold, either */
+        const float nearest = (float) (CARRIER_HZ * round(offs[i] / CARRIER_HZ));
+        const float shift = rade_afc_shift(a);
+        if (fabs(offs[i]) < SEARCH_HZ - tol)
+            TEST_ASSERT_EQUAL_FLOAT(0.0f, shift);
+        else if (fabs(offs[i]) > SEARCH_HZ + tol)
+            TEST_ASSERT_EQUAL_FLOAT(nearest, shift);
+        else
+            TEST_ASSERT_TRUE(shift == 0.0f || shift == nearest);
         rade_afc_free(a);
     }
 }
