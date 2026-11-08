@@ -158,36 +158,13 @@ turns. This is how they do it today, what goes wrong, and what radiod could do i
    "call now". A "call now" can start in the middle of the gateway's session with
    another station.
 
-### Proposal: one scheduler, in radiod
+### What to do about it
 
-- **One caller per station, in radiod,** through the transport layer (`Call`, `Queue`,
-  `Calling`). It replaces `caller.sh` and NNCP's cron for HF calls. The central server's
-  TCP calls can stay as they are.
-- **A star for both UUCP and NNCP: the gateway calls, the remotes answer.** A remote calls
-  on its own only:
-  - for an SOS or other priority traffic;
-  - or when it has had traffic waiting longer than a time limit and the gateway hasn't
-    called it.
-- **The gateway calls by traffic.** Each round it calls:
-  1. the stations it has queued traffic for;
-  2. the stations that have said they have traffic for it;
-  3. the rest only now and then, so their traffic can't wait forever.
-- **A remote says it has traffic** by a flag sent on the broadcast plane, which already
-  reaches every station one way. That's open: the compact beacon has no spare bits.
-- **It listens before it calls:** it waits for Mercury's channel to read clear, plus a
-  random backoff, so two stations that free up together don't both call.
-- **One session at a time.** A "call now" from the GUI waits for the session in progress.
-- **The time windows stay** (the GUI's schedules), as limits on when the gateway calls.
-  So do the per-station frequencies.
-
-### Questions
-
-1. A star for NNCP networks too, with remote-to-remote traffic through the gateway, or
-   keep NNCP's mesh?
-2. How often should the gateway call an idle station: every 30 minutes, or only within
-   the time windows?
-3. How should a remote say it has traffic: a broadcast frame, or a change to the beacon?
-4. Should calls pause while the station is on its voice profile?
+The design is in [hf-channel-access.md](hf-channel-access.md), a separate proposal:
+- only the gateway places ARQ calls;
+- a remote with traffic asks for one, with a short request frame in a window after the
+  gateway's poll frame, and retries a set number of times;
+- every periodic frame gets random jitter per station.
 
 ## Order of work
 
