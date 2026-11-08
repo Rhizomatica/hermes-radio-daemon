@@ -182,6 +182,8 @@ Message sending becomes two steps that clients can retry. `POST /messages` store
 
 A message can instead be a **broadcast** to an area, sent once over Mercury's broadcast plane in the station's listen mode. It is an NNCP area bundle when encrypted and a signed plain object otherwise. See [broadcast.md](broadcast.md).
 
+Over the air, the stations take turns on one frequency: only the gateway places ARQ calls, and a remote with traffic asks for one with a short request frame. See [hf-channel-access.md](hf-channel-access.md) (a proposal).
+
 A message can also be **LXMF**, to any Reticulum address, from the user's own LXMF address. The station is a Reticulum transport and propagation node for phones on its Wi-Fi, and links to other stations over Mercury ARQ, with calls that share the line with UUCP (`transport` on calls and schedules). See [reticulum.md](reticulum.md).
 
 The scripts' calls should stop going through HTTP, so that no unauthenticated route is needed. `iwatch` calls `GET /api/unpack/<file>` for every incoming message, `caller.sh` reads `/api/caller` and `/api/frequency/alias/{alias}`, and `mailkill.sh` reads `/api/sys/language`. The plan was hermes-api CLI commands (`php artisan hermes:unpack`, `hermes:schedule-now`, `hermes:setting language`); with the backend in radiod, what replaces them is open (Open questions). Until then those routes stay open, to localhost only.
