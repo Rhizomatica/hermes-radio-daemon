@@ -53,7 +53,9 @@ Both are sent on **DATAC16**:
 - its own CRC protects it, as for the compact beacon.
 
 Mercury sends station messages the host builds, with no change on Mercury's side
-(`vendor/mercury/host/mercury_host.h`, station messages).
+(`vendor/mercury/host/mercury_host.h`, station messages). It passes type-7 frames up whole,
+at any mode, without reading the extension; only its frame monitor labels them, as
+`STATION LAYOUT=2` and `LAYOUT=3`.
 
 **Poll frame**, sent by the gateway. Its 13 bytes after the header carry:
 
@@ -157,6 +159,15 @@ requests and polls, the way GSM's colour code separates cells that reuse a frequ
 | Cost | 1 of the 14 bytes | no payload |
 | Change to Mercury | none | yes |
 | Could cover ARQ calls | no | yes, if Mercury's CALL frames get it too |
+
+What option B costs beyond Mercury's code:
+- a station with the wrong colour decodes none of those frames, Mercury's frame monitor
+  included, so nobody can watch another network's requests and polls;
+- on ARQ call frames it would break compatibility on the air with Mercury 1.9.x, and
+  changes to the ARQ protocol need TLA+ models.
+
+So if B is chosen, it would be kept to the station messages (packet type 7), or made a
+setting per network, off by default.
 
 Still to decide:
 - A or B;
