@@ -121,6 +121,74 @@ Email stays with Postfix and its transport map, which the installer writes for U
 NNCP. The layer uses `Exec(dest, "rmail", ...)` only for mail radiod itself sends, such
 as notifications.
 
+## Who calls whom on HF
+
+Every exchange over the air is one ARQ session: one station calls, the other answers,
+and the channel is busy until it ends. On a shared frequency the stations have to take
+turns. This is how they do it today, what goes wrong, and what radiod could do instead.
+
+### Today
+
+- **UUCP networks** are a star, and only the gateway calls. hermes-net's `caller.sh`:
+  - calls the central server every 315 s, over the TCP uplink;
+  - during the time windows set in the GUI (`/api/caller`), calls each remote in turn,
+    20 s apart, first retuning to that station's frequency if one is set
+    (`/api/frequency`, the GUI's station list).
+  - A remote only answers (`uucpd`). It calls only when someone presses "call now"
+    (hermes-api, or radiod's `POST /queue/call`). Mail from one remote to another goes
+    through the gateway, so it waits up to two rounds.
+- **NNCP networks** are a mesh. Every station, the gateway included, calls each neighbour
+  it has traffic for, twice an hour, at a minute derived from its callsign
+  (`hermes-nncp-mesh`, `NNCP_CALL_CRON`).
+- **Mercury** holds a CALL only while it is decoding a frame, for at most one frame and
+  its decode, and then keys anyway. It also has a busy detector (VARA's `BUSY ON` /
+  `BUSY OFF`), but `uucico`, `nncp-call` and radiod don't wait on it.
+
+### What goes wrong
+
+1. **Calls don't wait for a free channel.** A station that can't hear one side of a
+   session calls on top of it. NNCP's spread of call minutes doesn't prevent this: a
+   session on HF lasts minutes, and 12 stations calling twice an hour share 30 minutes.
+2. **The gateway calls every station, traffic or not.** A call costs 30–60 s of airtime
+   before anything moves, so a round of 11 remotes takes 10 minutes or more. A remote
+   with mail waits for its turn.
+3. **With no time window enabled in the GUI, the gateway never calls a remote.** Their
+   mail never leaves.
+4. **Three callers that don't know about each other:** `caller.sh`, NNCP's cron and a
+   "call now". A "call now" can start in the middle of the gateway's session with
+   another station.
+
+### Proposal: one scheduler, in radiod
+
+- **One caller per station, in radiod,** through the transport layer (`Call`, `Queue`,
+  `Calling`). It replaces `caller.sh` and NNCP's cron for HF calls. The central server's
+  TCP calls can stay as they are.
+- **A star for both UUCP and NNCP: the gateway calls, the remotes answer.** A remote calls
+  on its own only:
+  - for an SOS or other priority traffic;
+  - or when it has had traffic waiting longer than a time limit and the gateway hasn't
+    called it.
+- **The gateway calls by traffic.** Each round it calls:
+  1. the stations it has queued traffic for;
+  2. the stations that have said they have traffic for it;
+  3. the rest only now and then, so their traffic can't wait forever.
+- **A remote says it has traffic** by a flag sent on the broadcast plane, which already
+  reaches every station one way. That's open: the compact beacon has no spare bits.
+- **It listens before it calls:** it waits for Mercury's channel to read clear, plus a
+  random backoff, so two stations that free up together don't both call.
+- **One session at a time.** A "call now" from the GUI waits for the session in progress.
+- **The time windows stay** (the GUI's schedules), as limits on when the gateway calls.
+  So do the per-station frequencies.
+
+### Questions
+
+1. A star for NNCP networks too, with remote-to-remote traffic through the gateway, or
+   keep NNCP's mesh?
+2. How often should the gateway call an idle station: every 30 minutes, or only within
+   the time windows?
+3. How should a remote say it has traffic: a broadcast frame, or a change to the beacon?
+4. Should calls pause while the station is on its voice profile?
+
 ## Order of work
 
 1. radiod: `api/internal/transport` with both backends, and the queue and station
