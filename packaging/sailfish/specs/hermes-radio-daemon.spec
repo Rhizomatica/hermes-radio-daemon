@@ -1,8 +1,8 @@
-%global commit c99915f
-%global gitdate 20261105
+%global commit 8f3738f
+%global gitdate 20261107
 # git rev-list --count %{commit}: it grows along the branch, so a later
 # commit always sorts newer, even on the same day (the hash alone may not)
-%global gitcount 481
+%global gitcount 552
 # The Go API layer (/api/v2, hermes.v1: what the browser pages and WebRTC
 # audio use) when a Go of api/go.mod's version or later is on the PATH;
 # --define 'have_go 0' or 1 decides it outright.
