@@ -13,6 +13,7 @@ S=$HOME/rpmbuild/SOURCES
 mkdir -p "$S" "$HOME/rpmbuild/SPECS"
 cp "$here"/specs/*.spec "$HOME/rpmbuild/SPECS/"
 cp "$here/radiod.service" "$S/radiod-sailfish.service"
+cp "$here/mercury-ui.desktop" "$here"/icons/*.png "$S/"
 cd "$S"
 
 # %global commit of a spec
@@ -40,8 +41,27 @@ gitsrc https://github.com/Rhizomatica/hermes-radio-daemon "$(commit hermes-radio
 jv=$(sed -n 's/^Version: *//p' "$here/specs/libjuice.spec")
 get "https://github.com/paullouisageneau/libjuice/archive/refs/tags/v$jv.tar.gz" "libjuice-$jv.tar.gz"
 gitsrc https://github.com/paullouisageneau/libdatachannel "$(commit libdatachannel)" libdatachannel
-mv=$(sed -n 's/^Version: *//p' "$here/specs/mercury.spec")
-get "https://github.com/Rhizomatica/mercury/archive/refs/tags/v$mv.tar.gz" "mercury-$mv.tar.gz"
+gitsrc https://github.com/Rhizomatica/mercury "$(commit mercury)" mercury
+
+# The Khronos headers mercury-ui builds against, laid out as
+# build-mercury-ui.sh wants them (EGL/, KHR/, GLES2/), at the registry
+# commits mercury.spec names.
+global() { sed -n "s/^%global $2 *//p" "$here/specs/$1.spec"; }
+khronos() { # registry commit name dir/file...
+    [ -s "khronos-$3-$2.tar.gz" ] && return
+    t=$(mktemp -d)
+    r=$1 c=$2 n=$3; shift 3
+    for f in "$@"; do
+        mkdir -p "$t/$(dirname "$f")"
+        curl -fsSL -o "$t/$f" "https://raw.githubusercontent.com/KhronosGroup/$r/$c/api/$f"
+    done
+    (cd "$t" && tar czf "$S/khronos-$n-$c.tar.gz" "$@")
+    rm -rf "$t"
+}
+khronos EGL-Registry "$(global mercury egl_registry)" egl \
+    EGL/egl.h EGL/eglext.h EGL/eglplatform.h KHR/khrplatform.h
+khronos OpenGL-Registry "$(global mercury gl_registry)" gl \
+    GLES2/gl2.h GLES2/gl2ext.h GLES2/gl2platform.h
 
 ls hamlib-*.tar.gz >/dev/null 2>&1 ||
     echo "missing: the Hamlib tarball (make-hamlib-tarball.sh)" >&2

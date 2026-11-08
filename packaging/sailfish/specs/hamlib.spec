@@ -1,6 +1,6 @@
 Name:           hamlib
 Version:        5.0.0~git
-Release:        1.usbserial1
+Release:        3.usbserial1
 Summary:        Radio transceiver, receiver and rotator control library
 License:        LGPL-2.1-or-later and GPL-2.0-or-later
 URL:            https://hamlib.github.io
@@ -9,6 +9,8 @@ URL:            https://hamlib.github.io
 # (Rhizomatica/Hamlib usb-serial-userspace). Master, not 4.6.2: it sets and
 # reads the FT-710's DATA-mode filter width, which 4.6.2 cannot. Made with
 # `make dist` (make-hamlib-tarball.sh), since the device has no automake.
+# Release 3: the branch at cf114602f (the PR's second review fixes); bump
+# the release whenever the tarball is remade from a newer commit.
 Source0:        hamlib-%{version}.tar.gz
 BuildRequires:  libusb1-devel
 

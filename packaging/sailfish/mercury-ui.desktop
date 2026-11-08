@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Mercury
+Comment=HF modem for store-and-forward communication
+Icon=mercury-ui
+# Wayland EGL through libhybris; the radio's audio through PulseAudio
+Exec=env EGL_PLATFORM=wayland /usr/bin/mercury-ui -x pulse
+X-Nemo-Application-Type=generic
+
+[X-Sailjail]
+# The modem needs the audio devices, the network (its TCP TNC interface)
+# and its own files, outside any one sandbox profile
+Sandboxing=Disabled
