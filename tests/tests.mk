@@ -185,8 +185,10 @@ tests/modem/test_bcast_spool: tests/modem/test_bcast_spool.c modem/bcast_spool.c
 	$(CC) $(TEST_CFLAGS) $(BCAST_TEST_FLAGS) $< modem/bcast_spool.c modem/bcast_link.c $(UNITY_SRC) \
 	      $(HERMES_LOG_SRC) $(MERCURY_LIBS) -o $@ -lpthread -lm
 tests/modem/test_beacon_tx: tests/modem/test_beacon_tx.c modem/beacon_tx.c modem/beacon_tx.h \
-                            modem/beacon.c modem/beacon.h dsp/digi_log.c dsp/digi_log.h
-	$(CC) $(TEST_CFLAGS) -Idsp $< modem/beacon_tx.c modem/beacon.c dsp/digi_log.c $(UNITY_SRC) \
+                            modem/beacon.c modem/beacon.h dsp/digi_log.c dsp/digi_log.h \
+                            gps/gps_track.c gps/gps_track.h
+	$(CC) $(TEST_CFLAGS) -Idsp -Igps $< modem/beacon_tx.c modem/beacon.c dsp/digi_log.c gps/gps_track.c \
+	      $(UNITY_SRC) \
 	      $(HERMES_LOG_SRC) -o $@ -lpthread -lm -liniparser
 
 tests/modem/test_beacon: tests/modem/test_beacon.c modem/beacon.c modem/beacon.h

@@ -9,6 +9,7 @@ package radio
 import (
 	"encoding/json/jsontext"
 	"errors"
+	"math"
 )
 
 // Errors of the setters, matching radiod_api.h.
@@ -118,6 +119,29 @@ type Gps struct {
 	At        *string
 	Settings  GpsSettings
 }
+
+// GpsPoint is a point of a station track (radiod_api_gps_point), as the
+// track's files hold it: its time in unix milliseconds, its position in
+// 1e-7 degrees, its altitude and horizontal accuracy in decimetres (GpsNoAlt,
+// GpsNoAcc when unknown), its fix (GpsFix*) and a beacon's emergency code
+// (0 none).
+type GpsPoint struct {
+	AtMs           int64
+	LatE7, LonE7   int32
+	AltDm          int32
+	AccuracyDm     uint16
+	Fix, Emergency uint8
+}
+
+// A GpsPoint's unknowns and fixes.
+const (
+	GpsNoAlt     = math.MinInt32
+	GpsNoAcc     = math.MaxUint16
+	GpsFixNone   = 0 // the last known position
+	GpsFix2D     = 2
+	GpsFix3D     = 3
+	GpsFixManual = 4 // set by hand: a fixed station
+)
 
 // GpsSettings are the station's GPS logging settings (GpsSettings in
 // api-rest.yaml). Email is nil when none is set. Sending the position over
@@ -265,6 +289,25 @@ type Radio interface {
 	// line one entry in the same format: the whole log, where DigiLog has
 	// only the in-memory ring's last entries. A file may not exist yet.
 	DigiLogFiles() []string
+	// GpsTrack returns up to max points of a station's track (station "":
+	// this one's; else a callsign) at times sinceMs..untilMs (unix
+	// milliseconds, both included), oldest first: ErrInvalid when station
+	// is no callsign. A track's times only go forward, so the next page
+	// starts 1 ms after the last point's.
+	GpsTrack(station string, sinceMs, untilMs int64, max int) ([]GpsPoint, error)
+	// GpsTrackCount returns how many points a track has at times
+	// sinceMs..untilMs, without reading them: ErrInvalid as GpsTrack.
+	GpsTrackCount(station string, sinceMs, untilMs int64) (int, error)
+	// GpsTrackStations returns the other stations with a track: those
+	// whose position beacons were heard while logging.
+	GpsTrackStations() []string
+	// GpsTrackFiles returns this station's track files (gps/gps_track.h,
+	// /gps/files), full paths, oldest first; each one's name,
+	// gps-YYYYMMDDTHHMMSSZ.trk, is the start of the period it covers.
+	GpsTrackFiles() []string
+	// GpsTrackDelete deletes one by name (no path): ErrInvalid when that is
+	// no track file's name.
+	GpsTrackDelete(name string) error
 	// DigiSend queues text for the active profile's digital text mode:
 	// ErrNotSupported when that is not FT8, CW or RTTY, ErrInvalid for FT8
 	// text the modulator cannot carry, ErrBusy with the queue full. The

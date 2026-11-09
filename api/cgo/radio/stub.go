@@ -4,7 +4,10 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,18 +18,20 @@ import (
 // profiles, the setters' range checks of the real one, and whatever frames
 // the API layer sent (Sent).
 type Stub struct {
-	mu       sync.Mutex
-	state    State
-	profiles []Profile
-	settings Settings
-	controls []Control
-	values   map[string]float64
-	rigDown  bool
-	reads    int
-	digi     DigiSettings
-	log      []jsontext.Value
-	logFiles []string
-	modem    jsontext.Value
+	mu         sync.Mutex
+	state      State
+	profiles   []Profile
+	settings   Settings
+	controls   []Control
+	values     map[string]float64
+	rigDown    bool
+	reads      int
+	digi       DigiSettings
+	log        []jsontext.Value
+	logFiles   []string
+	trackFiles []string
+	tracks     map[string][]GpsPoint
+	modem      jsontext.Value
 	// the broadcast plane and beacons: off until SetBroadcast
 	bcast       Broadcast
 	bcastErr    error
@@ -578,6 +583,88 @@ func (s *Stub) DigiSent() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.digiSent...)
+}
+
+// SetGpsTrack sets a station's track ("" this one's), oldest first.
+func (s *Stub) SetGpsTrack(station string, pts ...GpsPoint) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tracks == nil {
+		s.tracks = map[string][]GpsPoint{}
+	}
+	s.tracks[strings.ToUpper(station)] = pts
+}
+
+// gpsRange is the points of a track at times sinceMs..untilMs, found as
+// radiod finds them: by binary search.
+func (s *Stub) gpsRange(station string, sinceMs, untilMs int64) ([]GpsPoint, error) {
+	if strings.HasPrefix(station, ".") || strings.ContainsAny(station, "_ \\") {
+		return nil, ErrInvalid
+	}
+	t := s.tracks[strings.ToUpper(station)]
+	from := sort.Search(len(t), func(i int) bool { return t[i].AtMs >= sinceMs })
+	to := sort.Search(len(t), func(i int) bool { return t[i].AtMs > untilMs })
+	if to < from {
+		to = from
+	}
+	return t[from:to], nil
+}
+
+func (s *Stub) GpsTrack(station string, sinceMs, untilMs int64, max int) ([]GpsPoint, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.gpsRange(station, sinceMs, untilMs)
+	if len(r) > max {
+		r = r[:max]
+	}
+	return append([]GpsPoint(nil), r...), err
+}
+
+func (s *Stub) GpsTrackCount(station string, sinceMs, untilMs int64) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.gpsRange(station, sinceMs, untilMs)
+	return len(r), err
+}
+
+func (s *Stub) GpsTrackStations() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	for k := range s.tracks {
+		if k != "" {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// SetGpsTrackFiles sets what GpsTrackFiles returns.
+func (s *Stub) SetGpsTrackFiles(paths ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.trackFiles = paths
+}
+
+func (s *Stub) GpsTrackFiles() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.trackFiles...)
+}
+
+// GpsTrackDelete removes the named file from the list, and from disk.
+func (s *Stub) GpsTrackDelete(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, p := range s.trackFiles {
+		if filepath.Base(p) == name {
+			s.trackFiles = append(s.trackFiles[:i], s.trackFiles[i+1:]...)
+			_ = os.Remove(p)
+			return nil
+		}
+	}
+	return ErrInvalid
 }
 
 // SetDigiLogFiles sets what DigiLogFiles returns.

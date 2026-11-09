@@ -214,6 +214,74 @@ func (binding) DigiLogFiles() []string {
 	return strings.Split(C.GoString(&buf[0]), "\n")
 }
 
+// The track can hold years of hourly files: the list's buffer grows until
+// it fits, up to gpsTrackListMax.
+const (
+	gpsTrackListFirst = 64 << 10
+	gpsTrackListMax   = 1 << 20
+)
+
+func (binding) GpsTrackFiles() []string {
+	for size := gpsTrackListFirst; size <= gpsTrackListMax; size *= 4 {
+		buf := C.malloc(C.size_t(size))
+		ok := C.radiod_api_gps_track_files((*C.char)(buf), C.size_t(size))
+		s := C.GoString((*C.char)(buf))
+		C.free(buf)
+		if ok {
+			return strings.FieldsFunc(s, func(r rune) bool { return r == '\n' })
+		}
+	}
+	return nil
+}
+
+func (binding) GpsTrack(station string, sinceMs, untilMs int64, max int) ([]GpsPoint, error) {
+	if max <= 0 {
+		return nil, nil
+	}
+	cs := C.CString(station)
+	defer C.free(unsafe.Pointer(cs))
+	pts := make([]C.radiod_api_gps_point, max)
+	n := int(C.radiod_api_gps_track_read(cs, C.int64_t(sinceMs), C.int64_t(untilMs), &pts[0], C.int(max)))
+	if n < 0 {
+		return nil, codeErr(n)
+	}
+	out := make([]GpsPoint, n)
+	for i, p := range pts[:n] {
+		out[i] = GpsPoint{
+			AtMs: int64(p.at_ms), LatE7: int32(p.lat_e7), LonE7: int32(p.lon_e7),
+			AltDm: int32(p.alt_dm), AccuracyDm: uint16(p.accuracy_dm),
+			Fix: uint8(p.fix), Emergency: uint8(p.emergency),
+		}
+	}
+	return out, nil
+}
+
+func (binding) GpsTrackCount(station string, sinceMs, untilMs int64) (int, error) {
+	cs := C.CString(station)
+	defer C.free(unsafe.Pointer(cs))
+	n := int(C.radiod_api_gps_track_count(cs, C.int64_t(sinceMs), C.int64_t(untilMs)))
+	if n < 0 {
+		return 0, codeErr(n)
+	}
+	return n, nil
+}
+
+// The other stations with a track: a callsign a line.
+const gpsTrackStationsMax = 64 << 10
+
+func (binding) GpsTrackStations() []string {
+	buf := C.malloc(gpsTrackStationsMax)
+	defer C.free(buf)
+	C.radiod_api_gps_track_stations((*C.char)(buf), gpsTrackStationsMax)
+	return strings.FieldsFunc(C.GoString((*C.char)(buf)), func(r rune) bool { return r == '\n' })
+}
+
+func (binding) GpsTrackDelete(name string) error {
+	cs := C.CString(name)
+	defer C.free(unsafe.Pointer(cs))
+	return codeErr(int(C.radiod_api_gps_track_delete(cs)))
+}
+
 func (binding) DigiLog(after uint64, max int) []jsontext.Value {
 	if max <= 0 {
 		return nil

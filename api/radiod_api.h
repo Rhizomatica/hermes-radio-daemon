@@ -204,13 +204,45 @@ int radiod_api_digi_log(uint64_t after, int max, char *out, size_t out_len);
  * not exist yet); false when out is too small. */
 bool radiod_api_digi_log_files(char *out, size_t out_len);
 
-/* The station's track (gps/gps_track.h): its files on disk, full paths,
- * oldest first, separated by '\n' (none while main:gps_logging has not
- * recorded any); false when out is too small or the directory cannot be
- * read.  Each line of a file is a GpsPoint (api-rest.yaml) and its fix. */
+/* Station tracks (gps/gps_track.h): this station's position fixes while
+ * main:gps_logging is on, and every position beacon heard from another. */
+
+/* A point of a track. */
+typedef struct {
+    int64_t  at_ms;         /* unix milliseconds, UTC */
+    int32_t  lat_e7;        /* 1e-7 degrees */
+    int32_t  lon_e7;
+    int32_t  alt_dm;        /* decimetres; RADIOD_API_GPS_NO_ALT unknown */
+    uint16_t accuracy_dm;   /* horizontal; RADIOD_API_GPS_NO_ACC unknown */
+    uint8_t  fix;           /* 0 none (last known), 2 2D, 3 3D, 4 set by hand */
+    uint8_t  emergency;     /* a beacon's emergency code, 0 none */
+} radiod_api_gps_point;
+
+#define RADIOD_API_GPS_NO_ALT INT32_MIN
+#define RADIOD_API_GPS_NO_ACC UINT16_MAX
+
+/* The points of a track (station NULL or "": this station's; else a
+ * callsign) at times since_ms..until_ms, both included, oldest first, at
+ * most max into out.  How many; RADIOD_API_EINVAL for a name that is no
+ * callsign.  The points of a track have strictly increasing times, so the
+ * next page starts 1 ms after the last point's. */
+int radiod_api_gps_track_read(const char *station, int64_t since_ms, int64_t until_ms,
+                              radiod_api_gps_point *out, int max);
+
+/* How many points a track has at times since_ms..until_ms (two binary
+ * searches a file); RADIOD_API_EINVAL as above. */
+long radiod_api_gps_track_count(const char *station, int64_t since_ms, int64_t until_ms);
+
+/* The other stations with a track, one callsign a line; false when out is
+ * too small. */
+bool radiod_api_gps_track_stations(char *out, size_t out_len);
+
+/* This station's track files on disk (/gps/files), full paths, oldest
+ * first, separated by '\n'; false when out is too small or the directory
+ * cannot be read.  Their format is in gps/gps_track.h. */
 bool radiod_api_gps_track_files(char *out, size_t out_len);
 
-/* Deletes one track file by name (gps-YYYYMMDDTHHMMSSZ.jsonl, no path).
+/* Deletes one of this station's track files by name (gps-...trk, no path).
  * RADIOD_API_OK, or RADIOD_API_EINVAL for no such track file. */
 int radiod_api_gps_track_delete(const char *name);
 
