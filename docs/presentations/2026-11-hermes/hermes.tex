@@ -176,18 +176,24 @@
       \node[font=\scriptsize\color{horange},anchor=south] at (1.6,4.65) {NVIS};
       \node[font=\scriptsize\color{hdkgreen},anchor=south] at (5.1,4.65) {one hop};
       \node[font=\scriptsize\color{hdkmauve},anchor=north] at (3.9,-0.38) {ground wave};
+      % distance along the ground, 250 km a unit, from the station
+      \draw[hblack,line width=0.5pt] (0,-1.15) -- (9,-1.15);
+      \foreach \km in {-250,0,500,1000,1500}
+        \draw[hblack,line width=0.5pt] ({1.6+\km/250},-1.05) -- ({1.6+\km/250},-1.25)
+          node[below,font=\tiny] {\km};
+      \node[font=\tiny,anchor=north east] at (9,-1.25) {km};
     \end{tikzpicture}
     \column{0.51\textwidth}
     \footnotesize
     \begin{itemize}
       \item HF is 3 to 30 MHz. The ionosphere, ionised by the sun, bends it back to Earth: no towers, satellites or cables between stations
       \item NVIS (near vertical incidence skywave): sent almost straight up, on about 2 to 10 MHz, it comes down all around, out to some 400 km, over mountains and forest
-      \item At a low angle, one hop reaches thousands of kilometres
+      \item At a lower angle, one hop reaches 1000 to 4000 km
       \item It changes over the day: the D layer absorbs low frequencies in daylight and fades at night, and the usable frequencies fall after dark, so stations change frequency through the day
       \item Fading and multipath: the modem adapts its speed, and repeats only what was lost
     \end{itemize}
   \end{columns}
-  \src{Illustrative, not to scale}
+  \src{Distances to scale; heights not}
 \end{frame}
 
 \begin{frame}{How a network fits together}
