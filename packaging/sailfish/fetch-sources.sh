@@ -13,7 +13,7 @@ S=$HOME/rpmbuild/SOURCES
 mkdir -p "$S" "$HOME/rpmbuild/SPECS"
 cp "$here"/specs/*.spec "$HOME/rpmbuild/SPECS/"
 cp "$here/radiod.service" "$S/radiod-sailfish.service"
-cp "$here/mercury-ui.desktop" "$here"/icons/*.png "$S/"
+cp "$here/mercury-ui.desktop" "$here"/icons/*.png "$here"/patches/*.patch "$S/"
 cd "$S"
 
 # %global commit of a spec
