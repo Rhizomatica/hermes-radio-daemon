@@ -7,6 +7,7 @@
 #define _GNU_SOURCE     /* sched_getcpu, CPU sets, thread affinity */
 #include "js8_worker.h"
 #include "js8_decode.h"
+#include "ft8_subtract.h"
 #include "radiod_cpus.h"
 #include "radiod_log.h"
 
@@ -141,6 +142,7 @@ static void *js8_thread(void *arg)
         }
     }
     pthread_mutex_unlock(&g_lock);
+    ft8_subtract_release();   /* the subtraction's per-thread work space */
     return NULL;
 }
 

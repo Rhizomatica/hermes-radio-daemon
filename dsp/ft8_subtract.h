@@ -28,6 +28,10 @@ void ft8_waveform(const uint8_t tones[79], float freq_hz, float *out);
  * found it, to within a few hertz and 0.2 s. False when it is not there. */
 bool ft8_subtract(float *audio, int n, const uint8_t tones[79], float freq_hz, float time_s);
 
+/* Frees this thread's work space (made on its first subtraction): a
+ * thread that subtracts calls it before it ends. */
+void ft8_subtract_release(void);
+
 /* The same for a JS8 signal (plain FSK, as JS8Call's Modulator sends it)
  * of `symbol` samples a tone: 600, 1200, 1920 or 3840. */
 bool js8_subtract(float *audio, int n, const uint8_t tones[79], int symbol, float freq_hz,

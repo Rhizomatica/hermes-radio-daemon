@@ -180,6 +180,18 @@ static _Thread_local struct {
     double complex *acc;
 } scratch;
 
+void ft8_subtract_release(void)
+{
+    free(scratch.bb);
+    free(scratch.dphi);
+    free(scratch.amp);
+    free(scratch.wgt);
+    free(scratch.acc);
+    free(scratch.y);
+    free(scratch.r);
+    memset(&scratch, 0, sizeof(scratch));
+}
+
 static bool scratch_ready(void)
 {
     if (scratch.bb)
