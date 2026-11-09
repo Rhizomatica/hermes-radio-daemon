@@ -56,6 +56,8 @@
   \node[anchor=south west,inner sep=0,font=\tiny,text=hdkmauve] at ($(current page.south west)+(0.42cm,0.2cm)$) {#1};
 \end{tikzpicture}}
 \newcommand{\hl}[1]{{\color{horange}\bfseries #1}}
+% A photo or screenshot with a thin frame: \photo{width or height spec}{file}
+\newcommand{\photo}[2]{{\setlength{\fboxsep}{0pt}\setlength{\fboxrule}{0.6pt}\color{hdkgreen}\fbox{\includegraphics[#1]{#2}}}}
 
 \title{HERMES}
 \subtitle{High-Frequency Emergency and Rural Multimedia Exchange System}
@@ -87,51 +89,44 @@
   \begin{columns}[T]
     \column{0.56\textwidth}
     \begin{itemize}
-      \item A \textbf{telecommunication system over HF radio} for communities beyond the reach of the internet and the phone network
-      \item People use it as they use the internet: \textbf{email}, webmail and Delta Chat on their phone, over the station's \textbf{WiFi}
-      \item The station carries the traffic over \textbf{HF} to a gateway, which has an uplink to the internet
+      \item A \textbf{telecommunication system over HF radio} for communities beyond the internet and the phone network
+      \item People use it as they use the internet: \textbf{email}, webmail and Delta Chat, over the station's \textbf{WiFi}
+      \item The station carries it over \textbf{HF} to a gateway with an internet uplink
       \item Also \textbf{voice}, digital and encrypted where that is permitted, \textbf{broadcast} files, and \textbf{positions} with an emergency call
       \item \textbf{Free software} from Rhizomatica, supported by ARDC grants since 2021; \textbf{hands-on training} so a community runs its own station
     \end{itemize}
     \column{0.42\textwidth}
-    \begin{tikzpicture}[node distance=0.32cm,
-        box/.style={draw=hdkgreen,fill=white,rounded corners=2pt,minimum width=4.6cm,minimum height=0.62cm,font=\small,line width=0.8pt},
-        acc/.style={box,fill=hgreen!45,font=\small\bfseries}]
-      \node[box] (ui) {Phone or laptop \faMobile*\ \faLaptop};
-      \node[box,below=of ui] (wifi) {Station WiFi: web UI, mail, chat};
-      \node[acc,below=of wifi] (sf) {UUCP \,/\, NNCP store and forward};
-      \node[acc,below=of sf] (mod) {Mercury HF modem};
-      \node[box,below=of mod] (rd) {hermes-radio-daemon};
-      \node[box,below=of rd,fill=hcreamdk] (rad) {SSB transceiver \faBroadcastTower};
-      \foreach \a/\b in {ui/wifi,wifi/sf,sf/mod,mod/rd,rd/rad}
-        \draw[-{Latex[length=2mm]},hdkgreen,line width=0.8pt] (\a) -- (\b);
-    \end{tikzpicture}
+    \centering
+    \photo{width=\linewidth}{img/web-ui.png}\par\smallskip
+    {\scriptsize\color{hdkmauve} The station's web interface: voice, messages, e-mail, the radio, schedules, GPS}
   \end{columns}
+  \src{Screenshot: hermes-gui}
 \end{frame}
 
 \begin{frame}{Where HERMES runs}
-  \small
+  \centering
+  \photo{height=2.55cm}{img/field-antenna.jpg}\hfill
+  \photo{height=2.55cm}{img/field-solar.jpg}\hfill
+  \photo{height=2.55cm}{img/field-river.jpg}\par\medskip
+  \footnotesize\raggedright
   \begin{columns}[T]
-    \column{0.5\textwidth}
+    \column{0.36\textwidth}
     \begin{block}{\faTree\ Ecuadorian Amazon}
-      \begin{itemize}
-        \item Waorani Indigenous communities: \hl{nearly 90 radios}, the largest deployment
-        \item Some sites are days away on foot or by boat
-        \item Older residents keep in touch with family in other villages
-      \end{itemize}
+      Waorani Indigenous communities: \hl{nearly 90 radios}, the largest deployment; some sites days away on foot or by boat. Older residents keep in touch with family in other villages
     \end{block}
+    \column{0.29\textwidth}
+    \begin{block}{\faShip\ Bangladesh}
+      Fishing communities, HERMES on their \textbf{fishing boats}, in a conservation project
+    \end{block}
+    \begin{block}{\faExclamationTriangle\ Central African Rep.}
+      \textbf{Early warning} systems
+    \end{block}
+    \column{0.31\textwidth}
     \begin{exampleblock}{\faUsers\ Run by the community}
       Rhizomatica trains a small group of community members, on site, to install, operate and maintain the station without constant outside support
     \end{exampleblock}
-    \column{0.46\textwidth}
-    \begin{block}{\faShip\ Bangladesh}
-      Fishing communities, with HERMES on their \textbf{fishing boats}, in a conservation project
-    \end{block}
-    \begin{block}{\faExclamationTriangle\ Central African Republic}
-      \textbf{Early warning} systems
-    \end{block}
   \end{columns}
-  \src{Source: ARDC, ``Rhizomatica's HERMES and Mercury Expand Open Source HF Communications'', 6 November 2026}
+  \src{Source: ARDC, ``Rhizomatica's HERMES and Mercury Expand Open Source HF Communications'', 6 November 2026. Photos: Rhizomatica, Ecuadorian Amazon}
 \end{frame}
 
 \begin{frame}{How a network fits together}
@@ -159,26 +154,23 @@
 \begin{frame}{A station}
   \small
   \begin{columns}[T]
-    \column{0.5\textwidth}
-    \begin{block}{\faMicrochip\ Hardware}
-      \begin{itemize}
-        \item A \textbf{Raspberry Pi} (1 to 16 GB) or another Debian computer
-        \item An \textbf{SSB transceiver}: the \textbf{sBitx} or zBitx, driven directly, or any radio Hamlib controls (IC-7100, IC-7300, FT-710, TS-480, ...)
-        \item An antenna, and a WiFi access point for the users
-        \item Optionally a GPS receiver
-      \end{itemize}
-    \end{block}
-    \column{0.5\textwidth}
-    \begin{block}{\faCogs\ Software}
-      \begin{itemize}
-        \item Debian 13 and the HERMES package repository
-        \item Postfix and Dovecot, UUCP (or NNCP), Mercury, \textbf{hermes-radio-daemon}
-        \item A web interface for messages, users, the radio, the UUCP queue and schedules
-        \item One installer for every station, from a \textbf{station file}; a USB installer image for the field
-      \end{itemize}
-    \end{block}
+    \column{0.46\textwidth}
+    \begin{itemize}
+      \item A \textbf{Raspberry Pi} or another Debian computer
+      \item An \textbf{SSB transceiver}: the \textbf{sBitx} or zBitx, driven directly, or any radio Hamlib controls (IC-7100, IC-7300, FT-710, ...)
+      \item An antenna, solar power, a WiFi access point; optionally GPS
+      \item Postfix and Dovecot, UUCP (or NNCP), Mercury, \textbf{hermes-radio-daemon}, the web interface
+      \item One installer for every station, from a \textbf{station file}; a USB installer image for the field
+    \end{itemize}
+    \column{0.52\textwidth}
+    \centering
+    \photo{height=3.75cm}{img/station-installed.jpg}\par\smallskip
+    \photo{height=2.3cm}{img/station-sbitx.jpg}\hfill
+    \begin{minipage}[b]{0.36\linewidth}\scriptsize\raggedright\color{hdkmauve}
+      Above: a station on a community wall.\\ Left: the sBitx, with the HERMES interface on its screen
+    \end{minipage}
   \end{columns}
-  \src{Source: hermes-installer docs/station-files.md; hermes-radio-daemon README.md}
+  \src{Source: hermes-installer docs/station-files.md; hermes-radio-daemon README.md. Photos: Rhizomatica}
 \end{frame}
 
 \begin{frame}{Data over HF: store and forward, and broadcast}
@@ -261,21 +253,21 @@
 \begin{frame}{Digital text modes and reception reports}
   \small
   \begin{columns}[T]
-    \column{0.5\textwidth}
+    \column{0.46\textwidth}
     \begin{itemize}
-      \item \textbf{FT8}: receive and send, a decoder with several passes and signal subtraction
-      \item \textbf{JS8}: all four submodes (Normal, Fast, Turbo, Slow), receive and send; free-text messages across several frames
-      \item \textbf{CW} and \textbf{RTTY}: decoded as \textbf{skimmers}, every station in the passband at once
-      \item One log of everything decoded and sent, read through the API
+      \item \textbf{FT8}: receive and send, several passes with signal subtraction
+      \item \textbf{JS8}: all four submodes, receive and send, messages across frames
+      \item \textbf{CW} and \textbf{RTTY} \textbf{skimmers}: every station in the passband at once
+      \item Received stations reported to \textbf{PSKReporter}, at the station's GPS position
+      \item \textbf{DRM}: digital broadcast, received and sent
+      \item SSB processing: equaliser, compressor; noise reduction and AGC on receive
     \end{itemize}
-    \column{0.5\textwidth}
-    \begin{itemize}
-      \item Received stations reported to \textbf{PSKReporter}, with the station's own position from its GPS
-      \item \textbf{DRM}: digital broadcast reception, and transmission: music sent and decoded between two stations
-      \item SSB voice processing: equaliser, compressor, limiter; on receive, adaptive noise reduction and AGC
-    \end{itemize}
+    \column{0.52\textwidth}
+    \centering
+    \photo{width=\linewidth}{img/radiod-ft8-map.jpg}\par\smallskip
+    {\scriptsize\color{hdkmauve} The radio daemon's web map: FT8 stations heard, placed by their locators}
   \end{columns}
-  \src{Source: hermes-radio-daemon README.md; dsp/ft8*, dsp/js8*, dsp/pskreporter*}
+  \src{Source: hermes-radio-daemon README.md; dsp/ft8*, dsp/js8*, dsp/pskreporter*; gui\_interface/web/map.html}
 \end{frame}
 
 \begin{frame}{Positions over the air}
