@@ -573,17 +573,18 @@ static void track_configure(const radiod_api_gps_settings *s)
         .logging = s->logging,
         .sample_interval_s = s->sample_interval_s,
         .file_period_s = s->file_period_s,
-        .max_bytes = (long) GPS_TRACK_MAX_MB_DEFAULT * 1024 * 1024,
+        .max_bytes = (int64_t) GPS_TRACK_MAX_MB_DEFAULT * 1024 * 1024,
     };
     snprintf(c.dir, sizeof(c.dir), "%s", GPS_TRACK_DIR_DEFAULT);
     if (s_radio && s_radio->cfg_radio)
     {
         dictionary *ini = s_radio->cfg_radio;
-        snprintf(c.dir, sizeof(c.dir), "%s",
-                 iniparser_getstring(ini, "main:gps_log_dir", GPS_TRACK_DIR_DEFAULT));
+        const char *dir = iniparser_getstring(ini, "main:gps_log_dir", GPS_TRACK_DIR_DEFAULT);
+        if (dir && *dir)   /* "gps_log_dir =" left empty: the default */
+            snprintf(c.dir, sizeof(c.dir), "%s", dir);
         int mb = iniparser_getint(ini, "main:gps_log_max_mb", GPS_TRACK_MAX_MB_DEFAULT);
         if (mb > 0)
-            c.max_bytes = (long) mb * 1024 * 1024;
+            c.max_bytes = (int64_t) mb * 1024 * 1024;
     }
     gps_track_configure(&c);
 }

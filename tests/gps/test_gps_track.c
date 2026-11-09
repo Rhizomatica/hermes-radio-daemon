@@ -3,8 +3,11 @@
  * makes the next one a point at once; a file per period, named by its UTC
  * start, of fixed records; a time range is read and counted across files;
  * a record cut short is dropped; times only go forward, also when the
- * period changes; other stations' tracks by callsign; the oldest files go
- * past the cap; and only track files can be deleted.
+ * period changes; a fix dated far ahead does not stop the track; a read
+ * finds the points a file runs on with after the period was shortened;
+ * other stations' tracks by callsign; the oldest files go past the cap,
+ * which a running total watches; and only track files can be deleted, a
+ * missing one told from a bad name.
  */
 #include <dirent.h>
 #include <fcntl.h>
@@ -275,14 +278,97 @@ static void test_stations(void)
 static void test_delete_only_track_files(void)
 {
     move(0);
-    TEST_ASSERT_EQUAL_INT(-1, gps_track_delete("../etc/passwd"));
-    TEST_ASSERT_EQUAL_INT(-1, gps_track_delete("gps-2026.trk"));
-    TEST_ASSERT_EQUAL_INT(-1, gps_track_delete("gps-20261109T000000Z.trk/../x"));
-    TEST_ASSERT_EQUAL_INT(0, gps_track_delete("gps-20261109T000000Z.trk"));
+    TEST_ASSERT_EQUAL_INT(GPS_TRACK_EBADNAME, gps_track_delete("../etc/passwd"));
+    TEST_ASSERT_EQUAL_INT(GPS_TRACK_EBADNAME, gps_track_delete("gps-2026.trk"));
+    TEST_ASSERT_EQUAL_INT(GPS_TRACK_EBADNAME, gps_track_delete("gps-20261109T000000Z.trk/../x"));
+    TEST_ASSERT_EQUAL_INT(GPS_TRACK_DELETED, gps_track_delete("gps-20261109T000000Z.trk"));
     TEST_ASSERT_EQUAL_INT(0, files());
-    TEST_ASSERT_EQUAL_INT(-1, gps_track_delete("gps-20261109T000000Z.trk"));
+    TEST_ASSERT_EQUAL_INT(GPS_TRACK_ENOENT, gps_track_delete("gps-20261109T000000Z.trk"));
     move(10);   /* the deleted newest file is not written to as if there */
     TEST_ASSERT_EQUAL_INT(1, count());
+}
+
+/* One fix dated a year ahead (a cold start, a clock gone wrong) does not
+ * stop the track: the fixes after it are recorded in their own periods. */
+static void test_fix_from_the_future(void)
+{
+    gps_track_fix(3, LAT0, LON0, NAN, false, NAN, T0 + 365.0 * 86400);
+    gps_track_fix(0, NAN, NAN, NAN, false, NAN, T0);
+    for (int s = 0; s < 30; s += 10)
+        move(s);
+    TEST_ASSERT_EQUAL_INT(3, gps_track_count(NULL, T0_MS - 1, T0_MS + 60000));
+    TEST_ASSERT_EQUAL_INT(4, count());
+}
+
+/* The period made shorter halfway through a long one: the long file runs on
+ * into the new short file's period, and a read from inside that overlap
+ * still finds its points, in order. */
+static void test_shortened_period_read(void)
+{
+    configure(1, 3600, 64L * 1024 * 1024);
+    for (int s = 0; s <= 1820; s += 10)   /* to 00:30:20 in the hour's file */
+        move(s);
+    configure(1, 60, 64L * 1024 * 1024);
+    move(1815);   /* not later than the track's last point: refused */
+    move(1830);   /* 00:30:30, in gps-20261109T003000Z.trk */
+    TEST_ASSERT_EQUAL_INT(2, files());
+    int64_t since = T0_MS + 1805 * 1000, until = T0_MS + 1830 * 1000;
+    TEST_ASSERT_EQUAL_INT(3, gps_track_count(NULL, since, until));
+    TEST_ASSERT_EQUAL_INT(3, gps_track_read(NULL, since, until, pts, POINTS_MAX));
+    TEST_ASSERT_EQUAL_INT64(T0_MS + 1810 * 1000, pts[0].at_ms);
+    TEST_ASSERT_EQUAL_INT64(T0_MS + 1830 * 1000, pts[2].at_ms);
+}
+
+/* The cap is watched as files are written, not only when configured: past
+ * it the oldest go, down to GPS_TRACK_TRIM_PERCENT of it. */
+static void test_cap_while_writing(void)
+{
+    const long cap = 4 * (GPS_TRACK_HEADER + 6 * GPS_TRACK_RECORD);   /* four full minutes */
+    configure(1, 60, cap);
+    for (int s = 0; s < 600; s += 10)   /* ten minutes, ten files */
+        move(s);
+    char out[OUT_MAX];
+    TEST_ASSERT_TRUE(gps_track_files(out, sizeof out));
+    long total = 0;
+    for (char *l = strtok(out, "\n"); l; l = strtok(NULL, "\n")) {
+        struct stat st;
+        TEST_ASSERT_EQUAL_INT(0, stat(l, &st));
+        total += st.st_size;
+    }
+    TEST_ASSERT_TRUE(total <= cap);
+    TEST_ASSERT_TRUE(files() >= 2);
+    TEST_ASSERT_EQUAL_INT64(T0_MS + 590 * 1000, (gps_track_read(NULL, T0_MS + 590000, INT64_MAX, pts, 1), pts[0].at_ms));
+}
+
+/* No directory yet: no files, not an error; an empty directory setting is
+ * the default directory. */
+static void test_no_directory_yet(void)
+{
+    char missing[GPS_TRACK_DIR_MAX], out[OUT_MAX];
+    snprintf(missing, sizeof missing, "%s/not-yet", dir);
+    gps_track_config c = { .logging = false, .sample_interval_s = 1, .file_period_s = 3600,
+                           .max_bytes = 1024 };
+    snprintf(c.dir, sizeof c.dir, "%s", missing);
+    gps_track_configure(&c);
+    TEST_ASSERT_TRUE(gps_track_files(out, sizeof out));
+    TEST_ASSERT_EQUAL_STRING("", out);
+    c.dir[0] = '\0';
+    gps_track_configure(&c);   /* GPS_TRACK_DIR_DEFAULT, with logging off: nothing written */
+    TEST_ASSERT_EQUAL_INT(0, gps_track_count(NULL, ALL) < 0);
+}
+
+/* A file that cannot be removed is told from a missing one (not as root,
+ * which removes it anyway). */
+static void test_delete_failure(void)
+{
+    if (geteuid() == 0)
+        TEST_IGNORE_MESSAGE("root removes files from a read-only directory");
+    move(0);
+    TEST_ASSERT_EQUAL_INT(0, chmod(dir, 0555));
+    int rc = gps_track_delete("gps-20261109T000000Z.trk");
+    chmod(dir, 0700);
+    TEST_ASSERT_EQUAL_INT(GPS_TRACK_EIO, rc);
+    TEST_ASSERT_EQUAL_INT(1, files());
 }
 
 static void test_not_logging(void)
@@ -312,6 +398,11 @@ int main(void)
     RUN_TEST(test_period_change);
     RUN_TEST(test_stations);
     RUN_TEST(test_delete_only_track_files);
+    RUN_TEST(test_fix_from_the_future);
+    RUN_TEST(test_shortened_period_read);
+    RUN_TEST(test_cap_while_writing);
+    RUN_TEST(test_no_directory_yet);
+    RUN_TEST(test_delete_failure);
     RUN_TEST(test_not_logging);
     int rc = UNITY_END();
     remove_tree(dir);

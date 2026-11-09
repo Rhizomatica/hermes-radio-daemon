@@ -24,6 +24,7 @@ var (
 	ErrProtection   = errors.New("the SWR protection has tripped")
 	ErrNoPTT        = errors.New("this client does not hold PTT")
 	ErrDown         = errors.New("the broadcast plane is not running")
+	ErrNotFound     = errors.New("no such file")
 )
 
 // FromC is how Go reads JSON that radiod or mercury wrote. Its text can
@@ -299,11 +300,14 @@ type Radio interface {
 	// sinceMs..untilMs, without reading them: ErrInvalid as GpsTrack.
 	GpsTrackCount(station string, sinceMs, untilMs int64) (int, error)
 	// GpsTrackFiles returns this station's track files (gps/gps_track.h,
-	// /gps/files), full paths, oldest first; each one's name,
-	// gps-YYYYMMDDTHHMMSSZ.trk, is the start of the period it covers.
-	GpsTrackFiles() []string
+	// /gps/files), full paths, oldest first, the newest 65536 of them (none
+	// before the directory exists); each one's name, gps-YYYYMMDDTHHMMSSZ.trk,
+	// is the start of the period it covers. An error when the directory
+	// cannot be read.
+	GpsTrackFiles() ([]string, error)
 	// GpsTrackDelete deletes one by name (no path): ErrInvalid when that is
-	// no track file's name.
+	// no track file's name, ErrNotFound when there is no such file, ErrIO
+	// when it cannot be removed.
 	GpsTrackDelete(name string) error
 	// DigiSend queues text for the active profile's digital text mode:
 	// ErrNotSupported when that is not FT8, CW or RTTY, ErrInvalid for FT8

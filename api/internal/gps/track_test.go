@@ -2,6 +2,7 @@ package gps_test
 
 import (
 	"bytes"
+	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -127,5 +128,46 @@ func TestGpsFiles(t *testing.T) {
 	}
 	if data := e.Do("GET", "/gps/files", "").JSON(t)["data"].([]any); len(data) != 0 {
 		t.Errorf("after DELETE = %v", data)
+	}
+}
+
+// Track with no room for a point returns none, and does not panic.
+func TestTrackNoLimit(t *testing.T) {
+	e := testapi.New(t)
+	e.Radio.SetGpsTrack("", minutes(3)...)
+	for _, limit := range []int{0, -1} {
+		pts, next, err := gps.Track(e.Radio, "", t0, t0.Add(time.Hour), limit)
+		if err != nil || len(pts) != 0 || !next.IsZero() {
+			t.Errorf("limit %d = %v %v %v", limit, pts, next, err)
+		}
+	}
+}
+
+// A directory that cannot be read is a 500, not an empty list; a file that
+// cannot be removed fails the delete; one gone already does not.
+func TestGpsFilesFailures(t *testing.T) {
+	e := testapi.New(t)
+	e.Radio.SetGpsTrackFilesError(errors.New("the track's directory cannot be read"))
+	for _, c := range []struct{ method, path string }{
+		{"GET", "/gps/files"}, {"GET", "/gps/files/gps-20261109T000000Z.trk"}, {"DELETE", "/gps/files"},
+	} {
+		if r := e.Do(c.method, c.path, ""); r.Status != 500 {
+			t.Errorf("%s %s = %d", c.method, c.path, r.Status)
+		}
+	}
+	e.Radio.SetGpsTrackFilesError(nil)
+
+	dir := t.TempDir()
+	gone := filepath.Join(dir, "gps-20261109T000000Z.trk") // listed, never written: trimmed meanwhile
+	e.Radio.SetGpsTrackFiles(gone)
+	if r := e.Do("DELETE", "/gps/files", ""); r.Status != 204 {
+		t.Errorf("DELETE with a file gone already = %d %s", r.Status, r.Body)
+	}
+
+	stuck := filepath.Join(dir, "sub", "gps-20261109T010000Z.trk")
+	os.MkdirAll(filepath.Join(dir, "sub", "gps-20261109T010000Z.trk", "x"), 0o755) // a directory: os.Remove fails
+	e.Radio.SetGpsTrackFiles(stuck)
+	if r := e.Do("DELETE", "/gps/files", ""); r.Status != 500 {
+		t.Errorf("DELETE of a file that cannot be removed = %d %s", r.Status, r.Body)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"strings"
 	"time"
 	"unsafe"
@@ -214,24 +215,29 @@ func (binding) DigiLogFiles() []string {
 	return strings.Split(C.GoString(&buf[0]), "\n")
 }
 
-// The track can hold years of hourly files: the list's buffer grows until
-// it fits, up to gpsTrackListMax.
-const (
-	gpsTrackListFirst = 64 << 10
-	gpsTrackListMax   = 1 << 20
-)
+// The track can hold years of files: the list's buffer grows until it
+// fits, up to RADIOD_API_GPS_TRACK_LIST_MAX, which the longest list does.
+const gpsTrackListFirst = 64 << 10
 
-func (binding) GpsTrackFiles() []string {
-	for size := gpsTrackListFirst; size <= gpsTrackListMax; size *= 4 {
-		buf := C.malloc(C.size_t(size))
-		ok := C.radiod_api_gps_track_files((*C.char)(buf), C.size_t(size))
+// errTrackList: the track's directory could not be read.
+var errTrackList = errors.New("the track's directory cannot be read")
+
+func (binding) GpsTrackFiles() ([]string, error) {
+	for size := C.size_t(gpsTrackListFirst); ; size *= 4 {
+		if size > C.RADIOD_API_GPS_TRACK_LIST_MAX {
+			size = C.RADIOD_API_GPS_TRACK_LIST_MAX
+		}
+		buf := C.malloc(size)
+		ok := C.radiod_api_gps_track_files((*C.char)(buf), size)
 		s := C.GoString((*C.char)(buf))
 		C.free(buf)
 		if ok {
-			return strings.FieldsFunc(s, func(r rune) bool { return r == '\n' })
+			return strings.FieldsFunc(s, func(r rune) bool { return r == '\n' }), nil
+		}
+		if size == C.RADIOD_API_GPS_TRACK_LIST_MAX {
+			return nil, errTrackList // it fits there: the directory itself failed
 		}
 	}
-	return nil
 }
 
 func (binding) GpsTrack(station string, sinceMs, untilMs int64, max int) ([]GpsPoint, error) {
@@ -269,7 +275,11 @@ func (binding) GpsTrackCount(station string, sinceMs, untilMs int64) (int, error
 func (binding) GpsTrackDelete(name string) error {
 	cs := C.CString(name)
 	defer C.free(unsafe.Pointer(cs))
-	return codeErr(int(C.radiod_api_gps_track_delete(cs)))
+	if rc := int(C.radiod_api_gps_track_delete(cs)); rc == C.RADIOD_API_ENOENT {
+		return ErrNotFound
+	} else {
+		return codeErr(rc)
+	}
 }
 
 func (binding) DigiLog(after uint64, max int) []jsontext.Value {

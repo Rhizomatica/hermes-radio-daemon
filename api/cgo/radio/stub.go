@@ -18,20 +18,21 @@ import (
 // profiles, the setters' range checks of the real one, and whatever frames
 // the API layer sent (Sent).
 type Stub struct {
-	mu         sync.Mutex
-	state      State
-	profiles   []Profile
-	settings   Settings
-	controls   []Control
-	values     map[string]float64
-	rigDown    bool
-	reads      int
-	digi       DigiSettings
-	log        []jsontext.Value
-	logFiles   []string
-	trackFiles []string
-	tracks     map[string][]GpsPoint
-	modem      jsontext.Value
+	mu            sync.Mutex
+	state         State
+	profiles      []Profile
+	settings      Settings
+	controls      []Control
+	values        map[string]float64
+	rigDown       bool
+	reads         int
+	digi          DigiSettings
+	log           []jsontext.Value
+	logFiles      []string
+	trackFiles    []string
+	trackFilesErr error
+	tracks        map[string][]GpsPoint
+	modem         jsontext.Value
 	// the broadcast plane and beacons: off until SetBroadcast
 	bcast       Broadcast
 	bcastErr    error
@@ -634,10 +635,21 @@ func (s *Stub) SetGpsTrackFiles(paths ...string) {
 	s.trackFiles = paths
 }
 
-func (s *Stub) GpsTrackFiles() []string {
+// SetGpsTrackFilesError makes GpsTrackFiles fail, as an unreadable
+// directory does (nil: it lists again).
+func (s *Stub) SetGpsTrackFilesError(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]string(nil), s.trackFiles...)
+	s.trackFilesErr = err
+}
+
+func (s *Stub) GpsTrackFiles() ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.trackFilesErr != nil {
+		return nil, s.trackFilesErr
+	}
+	return append([]string(nil), s.trackFiles...), nil
 }
 
 // GpsTrackDelete removes the named file from the list, and from disk.
@@ -647,11 +659,16 @@ func (s *Stub) GpsTrackDelete(name string) error {
 	for i, p := range s.trackFiles {
 		if filepath.Base(p) == name {
 			s.trackFiles = append(s.trackFiles[:i], s.trackFiles[i+1:]...)
-			_ = os.Remove(p)
+			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+				return ErrIO
+			}
 			return nil
 		}
 	}
-	return ErrInvalid
+	if !strings.HasPrefix(name, "gps-") || !strings.HasSuffix(name, ".trk") {
+		return ErrInvalid
+	}
+	return ErrNotFound
 }
 
 // SetDigiLogFiles sets what DigiLogFiles returns.

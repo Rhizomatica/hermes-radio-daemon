@@ -234,12 +234,19 @@ int radiod_api_gps_track_read(const char *station, int64_t since_ms, int64_t unt
 long radiod_api_gps_track_count(const char *station, int64_t since_ms, int64_t until_ms);
 
 /* This station's track files on disk (/gps/files), full paths, oldest
- * first, separated by '\n'; false when out is too small or the directory
- * cannot be read.  Their format is in gps/gps_track.h. */
+ * first, separated by '\n': the newest RADIOD_API_GPS_TRACK_FILES_MAX, none
+ * while there is no directory yet.  False when out is too small (it never is
+ * at RADIOD_API_GPS_TRACK_LIST_MAX) or the directory cannot be read.  Their
+ * format is in gps/gps_track.h. */
+#define RADIOD_API_GPS_TRACK_FILES_MAX 65536
+#define RADIOD_API_GPS_TRACK_PATH_MAX  (256 + 32)   /* the directory, a name and the '\n' */
+#define RADIOD_API_GPS_TRACK_LIST_MAX  \
+    ((size_t) RADIOD_API_GPS_TRACK_FILES_MAX * RADIOD_API_GPS_TRACK_PATH_MAX + 1)
 bool radiod_api_gps_track_files(char *out, size_t out_len);
 
-/* Deletes one of this station's track files by name (gps-...trk, no path).
- * RADIOD_API_OK, or RADIOD_API_EINVAL for no such track file. */
+/* Deletes one of this station's track files by name (gps-...trk, no path):
+ * RADIOD_API_OK; RADIOD_API_EINVAL for no track file's name, RADIOD_API_ENOENT
+ * for no such file, RADIOD_API_EIO when it cannot be removed. */
 int radiod_api_gps_track_delete(const char *name);
 
 /* ── the broadcast plane (modem/bcast_plane.h), as Mercury's client ──

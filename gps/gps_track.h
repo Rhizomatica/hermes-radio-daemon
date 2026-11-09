@@ -30,7 +30,9 @@
  *
  * So the files of a time range are picked by their names, a time inside a
  * file is found by binary search, and a range's point count is two
- * searches; a point costs 24 bytes on disk and on the air.
+ * searches; a point costs 24 bytes on disk and on the air.  A file's points
+ * all come after those of the files before it.  After the period is made
+ * shorter, a file may run on into the next file's period, never further.
  *
  * Copyright (C) 2026 Rhizomatica
  * Author: Rafael Diniz <rafael@riseup.net>
@@ -56,6 +58,9 @@
 #define GPS_TRACK_STATIONS       "stations"
 #define GPS_TRACK_DIR_MAX        256
 #define GPS_TRACK_CALL_MAX       15     /* a station's name: a callsign, SSID included */
+#define GPS_TRACK_FILES_MAX      65536  /* files gps_track_files lists, the newest: years of hourly ones */
+#define GPS_TRACK_TRIM_PERCENT   90     /* past the cap, the oldest files go until this share of it is left,
+                                           so the cap is not rescanned at every new file */
 
 #define GPS_TRACK_MAGIC          "HGPS"
 #define GPS_TRACK_VERSION        1
@@ -73,7 +78,7 @@ typedef struct {
     bool logging;               /* main:gps_logging */
     int  sample_interval_s;     /* main:gps_sample_interval_s (>= 1) */
     int  file_period_s;         /* main:gps_file_period_s (>= GPS_TRACK_PERIOD_MIN_S) */
-    long max_bytes;             /* main:gps_log_max_mb, in bytes */
+    int64_t max_bytes;          /* main:gps_log_max_mb, in bytes */
     char dir[GPS_TRACK_DIR_MAX];/* main:gps_log_dir */
 } gps_track_config;
 
@@ -111,11 +116,17 @@ int gps_track_read(const char *station, int64_t since_ms, int64_t until_ms,
 long gps_track_count(const char *station, int64_t since_ms, int64_t until_ms);
 
 /* This station's track files, full paths, oldest first, one a line, into
- * out.  False if they do not fit or the directory cannot be read. */
+ * out: the newest GPS_TRACK_FILES_MAX of them.  None while the directory does
+ * not exist yet.  False if they do not fit or the directory cannot be read. */
 bool gps_track_files(char *out, size_t out_len);
 
-/* Deletes one of them, by name (gps-...trk, no path); 0, or -1 if that is
- * no track file's name or it cannot be removed. */
+/* gps_track_delete's results */
+#define GPS_TRACK_DELETED   0
+#define GPS_TRACK_EBADNAME  (-1)   /* no track file's name */
+#define GPS_TRACK_ENOENT    (-2)   /* no such file (trimmed, or deleted already) */
+#define GPS_TRACK_EIO       (-3)   /* it could not be removed */
+
+/* Deletes one of them, by name (gps-...trk, no path). */
 int gps_track_delete(const char *name);
 
 #endif

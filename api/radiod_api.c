@@ -629,9 +629,19 @@ bool radiod_api_gps_track_files(char *out, size_t out_len)
     return gps_track_files(out, out_len);
 }
 
+_Static_assert(RADIOD_API_GPS_TRACK_FILES_MAX == GPS_TRACK_FILES_MAX &&
+               RADIOD_API_GPS_TRACK_PATH_MAX >= GPS_TRACK_DIR_MAX + GPS_TRACK_NAME_LEN + 2,
+               "the C API's track list fits gps_track_files' longest");
+
 int radiod_api_gps_track_delete(const char *name)
 {
-    return gps_track_delete(name) == 0 ? RADIOD_API_OK : RADIOD_API_EINVAL;
+    switch (gps_track_delete(name))
+    {
+    case GPS_TRACK_DELETED:  return RADIOD_API_OK;
+    case GPS_TRACK_ENOENT:   return RADIOD_API_ENOENT;
+    case GPS_TRACK_EIO:      return RADIOD_API_EIO;
+    default:                 return RADIOD_API_EINVAL;
+    }
 }
 
 /* ── modem ── */

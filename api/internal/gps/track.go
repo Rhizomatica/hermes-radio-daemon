@@ -75,6 +75,9 @@ func pointOf(p rad.GpsPoint) Point {
 // the time the next page starts at (zero when there are no more).
 // rad.ErrInvalid when station is no callsign.
 func Track(r rad.Radio, station string, since, until time.Time, limit int) ([]Point, time.Time, error) {
+	if limit <= 0 {
+		return []Point{}, time.Time{}, nil
+	}
 	pts, err := r.GpsTrack(station, since.UnixMilli(), until.UnixMilli(), limit+1)
 	if err != nil {
 		return nil, time.Time{}, err
@@ -172,9 +175,23 @@ func periodStart(name string) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
+// trackFiles is this station's track files, or false after answering 500.
+func (h handlers) trackFiles(w http.ResponseWriter, r *http.Request) ([]string, bool) {
+	paths, err := h.r.GpsTrackFiles()
+	if err != nil {
+		api.Problem(w, r, http.StatusInternalServerError, "internal", err.Error(), nil)
+		return nil, false
+	}
+	return paths, true
+}
+
 func (h handlers) listFiles(w http.ResponseWriter, r *http.Request) {
+	paths, ok := h.trackFiles(w, r)
+	if !ok {
+		return
+	}
 	out := []File{}
-	for _, p := range h.r.GpsTrackFiles() {
+	for _, p := range paths {
 		fi, err := os.Stat(p)
 		if err != nil {
 			continue // trimmed since it was listed
@@ -187,7 +204,11 @@ func (h handlers) listFiles(w http.ResponseWriter, r *http.Request) {
 
 func (h handlers) downloadFile(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	for _, p := range h.r.GpsTrackFiles() {
+	paths, ok := h.trackFiles(w, r)
+	if !ok {
+		return
+	}
+	for _, p := range paths {
 		if filepath.Base(p) != name {
 			continue
 		}
@@ -208,12 +229,28 @@ func (h handlers) downloadFile(w http.ResponseWriter, r *http.Request) {
 	api.Problem(w, r, http.StatusNotFound, "not_found", "no such position file", nil)
 }
 
+// deleteFiles deletes every file: a list holds the newest 65536, so it lists
+// again until none are left.
 func (h handlers) deleteFiles(w http.ResponseWriter, r *http.Request) {
-	for _, p := range h.r.GpsTrackFiles() {
-		// ErrInvalid: trimmed since it was listed
-		if err := h.r.GpsTrackDelete(filepath.Base(p)); err != nil && !errors.Is(err, rad.ErrInvalid) {
-			api.Problem(w, r, http.StatusInternalServerError, "internal", "cannot delete "+filepath.Base(p), nil)
+	for {
+		paths, ok := h.trackFiles(w, r)
+		if !ok {
 			return
+		}
+		deleted := 0
+		for _, p := range paths {
+			err := h.r.GpsTrackDelete(filepath.Base(p))
+			switch {
+			case err == nil:
+				deleted++
+			case errors.Is(err, rad.ErrNotFound): // trimmed since it was listed
+			default:
+				api.Problem(w, r, http.StatusInternalServerError, "internal", "cannot delete "+filepath.Base(p)+": "+err.Error(), nil)
+				return
+			}
+		}
+		if deleted == 0 { // none left, or only ones already gone
+			break
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
