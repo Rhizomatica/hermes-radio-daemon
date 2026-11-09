@@ -18,13 +18,14 @@ void setUp(void) {}
 void tearDown(void) {}
 
 #define WINDOW      (JS8_NORMAL_PERIOD_S * JS8_SAMPLE_RATE)
+#define SLOW_WINDOW (30 * JS8_SAMPLE_RATE)
 #define TONE_HZ     (JS8_SAMPLE_RATE / (float) JS8_NORMAL_SYMBOL)
 #define TWO_PI      6.28318531f
 #define MAX_OUT     8
 #define OFFSET_TOL  3.2f     /* Hz: half a tone */
 #define START_TOL   0.1f     /* s */
 
-static float audio[WINDOW];
+static float audio[SLOW_WINDOW];
 
 static float gauss(void)
 {
@@ -32,19 +33,26 @@ static float gauss(void)
     return sqrtf(-2.0f * logf(u1)) * cosf(TWO_PI * u2);
 }
 
-/* 79 tones from base_hz, starting at start_s, of amplitude amp. */
-static void add_tones(const int *tones, int ntones, float base_hz, float start_s, float amp)
+/* 79 tones of `symbol` samples from base_hz, starting at start_s, of
+ * amplitude amp: JS8Call's Modulator. */
+static void add_tones_sub(const int *tones, int ntones, int symbol, float base_hz, float start_s,
+                          float amp)
 {
-    float phase = 0;
+    float phase = 0, spacing = (float) JS8_SAMPLE_RATE / symbol;
     int at = (int) (start_s * JS8_SAMPLE_RATE);
     for (int k = 0; k < ntones; k++)
-        for (int i = 0; i < JS8_NORMAL_SYMBOL; i++, at++) {
-            phase += TWO_PI * (base_hz + tones[k] * TONE_HZ) / JS8_SAMPLE_RATE;
+        for (int i = 0; i < symbol; i++, at++) {
+            phase += TWO_PI * (base_hz + tones[k] * spacing) / JS8_SAMPLE_RATE;
             if (phase > TWO_PI)
                 phase -= TWO_PI;   /* a float phase left to grow loses the frequency */
-            if (at >= 0 && at < WINDOW)
+            if (at >= 0 && at < SLOW_WINDOW)
                 audio[at] += amp * sinf(phase);
         }
+}
+
+static void add_tones(const int *tones, int ntones, float base_hz, float start_s, float amp)
+{
+    add_tones_sub(tones, ntones, JS8_NORMAL_SYMBOL, base_hz, start_s, amp);
 }
 
 /* White noise of unit power: a tone of amplitude a then has an SNR of
@@ -116,9 +124,37 @@ static void test_ft8_is_not_js8(void)
     TEST_ASSERT_EQUAL_INT(0, js8_rx_decode(audio, WINDOW, r, MAX_OUT));
 }
 
+/* Fast, Turbo and Slow: their own symbols and the modified Costas set;
+ * each decodes in its submode, at -12 dB, and not as Normal. */
+static void test_submodes(void)
+{
+    static const js8_submode subs[] = { JS8_SUB_FAST, JS8_SUB_TURBO, JS8_SUB_SLOW };
+    for (int s = 0; s < 3; s++) {
+        const js8_submode_params *p = js8_submode_get(subs[s]);
+        int window = p->period_s * JS8_SAMPLE_RATE;
+        srand(5 + s);
+        for (int i = 0; i < window; i++)
+            audio[i] = gauss();
+        int t[JS8_NN];
+        TEST_ASSERT_TRUE(js8_encode("Hello-World0", 1, p->costas, t));
+        float amp = sqrtf(2.0f * (2500.0f / 6000.0f) * powf(10.0f, -12.0f / 10.0f));
+        add_tones_sub(t, JS8_NN, p->symbol, 1000.0f, 0.3f, amp);
+        js8_rx_result r[MAX_OUT];
+        int n = js8_rx_decode_sub(subs[s], audio, window, r, MAX_OUT);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, n, p->name);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("Hello-World0", r[0].frame, p->name);
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE((float) JS8_SAMPLE_RATE / p->symbol / 2, 1000.0f,
+                                         r[0].freq_hz, p->name);
+        TEST_ASSERT_FLOAT_WITHIN_MESSAGE(4.0f * p->symbol / JS8_SAMPLE_RATE, 0.3f, r[0].time_s, p->name);
+        if (window >= WINDOW)
+            TEST_ASSERT_EQUAL_INT_MESSAGE(0, js8_rx_decode(audio, WINDOW, r, MAX_OUT), p->name);
+    }
+}
+
 int main(void)
 {
     UNITY_BEGIN();
+    RUN_TEST(test_submodes);
     RUN_TEST(test_one_clean);
     RUN_TEST(test_two_in_noise);
     RUN_TEST(test_ft8_is_not_js8);

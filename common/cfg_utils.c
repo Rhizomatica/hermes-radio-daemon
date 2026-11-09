@@ -39,6 +39,7 @@
 #include "beacon.h"
 #include "dsp/rx_denoise.h"
 #include "dsp/pskreporter.h"
+#include "dsp/js8_worker.h"
 
 #include "radiod_log.h"
 
@@ -606,6 +607,20 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     snprintf(radio_h->pskreporter_server, sizeof(radio_h->pskreporter_server), "%s", s);
     s = iniparser_getstring(ini, "main:pskreporter_antenna", "");
     snprintf(radio_h->pskreporter_antenna, sizeof(radio_h->pskreporter_antenna), "%s", s);
+
+    s = iniparser_getstring(ini, "main:js8_submodes", "normal");
+    radio_h->js8_submodes = 0;
+    static const char *const js8_names[JS8_SUBMODES] = JS8_SUBMODE_NAMES;
+    for (int sub = 0; sub < JS8_SUBMODES; sub++) {
+        const char *name = js8_names[sub];
+        size_t len = strlen(name);
+        for (const char *p = s; *p; p++)
+            if (!strncasecmp(p, name, len) && (p == s || p[-1] == ',' || p[-1] == ' ') &&
+                (p[len] == '\0' || p[len] == ',' || p[len] == ' '))
+                radio_h->js8_submodes |= 1u << sub;
+    }
+    if (!radio_h->js8_submodes)
+        radio_h->js8_submodes = JS8_SUBMODES_DEFAULT;
 
     s = iniparser_getstring(ini, "main:transport_prefer", TRANSPORT_PREFER_DEFAULT);
     snprintf(radio_h->transport_prefer, sizeof(radio_h->transport_prefer), "%s", s);

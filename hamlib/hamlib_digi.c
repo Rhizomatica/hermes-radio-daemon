@@ -33,7 +33,7 @@
 #include "../dsp/sbitx_cw.h"
 #include "../dsp/sbitx_ft8.h"
 #include "../dsp/digi_log.h"
-#include "../dsp/js8_decode.h"
+#include "../dsp/js8_worker.h"
 #include <sys/time.h>
 #include "../dsp/sbitx_rtty.h"
 #include "../dsp/sbitx_radae.h"
@@ -477,8 +477,7 @@ static void do_cw_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz)
         sbitx_cw_rx_feed(audio, (int) n, cw_rx_line_cb, &freq_hz);
 }
 
-/* FT8 and JS8 Normal both: 15 s windows of 12 kHz audio every 2 s. */
-static void do_ft8_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz, uint16_t mode)
+static void do_ft8_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz)
 {
     if (s->ft8_rx_buf_cap == 0) {
         s->ft8_rx_buf_cap = DIGI_DECODE_RATE * (FT8_SLOT_SECONDS + 1);
@@ -509,13 +508,9 @@ static void do_ft8_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz
          * built up, which this path cannot see. Overlapping windows decode
          * a transmission more than once; sbitx_ft8_log_decodes() keeps one. */
         const double window_start = newest_at - (double) s->ft8_rx_buf_n / DIGI_DECODE_RATE;
-        if (mode == MODE_JS8) {
-            js8_decode_and_log(s->ft8_rx_buf, slot_samples, window_start, freq_hz);
-        } else {
-            sbitx_ft8_decode_result res[50];
-            int nres = sbitx_ft8_decode_at(s->ft8_rx_buf, slot_samples, window_start, res, 50);
-            sbitx_ft8_log_decodes(res, nres, window_start, freq_hz);
-        }
+        sbitx_ft8_decode_result res[50];
+        int nres = sbitx_ft8_decode_at(s->ft8_rx_buf, slot_samples, window_start, res, 50);
+        sbitx_ft8_log_decodes(res, nres, window_start, freq_hz);
         /* Slide by 2 s. Transmissions here are not UTC-slot aligned, and a
          * 12.64 s burst fits a 15 s window only if it starts within its
          * first 2.36 s; the old half-slot (7.5 s) step missed most of
@@ -525,6 +520,15 @@ static void do_ft8_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz
                 (s->ft8_rx_buf_n - shift) * sizeof(float));
         s->ft8_rx_buf_n -= shift;
     }
+}
+
+/* JS8: ~100 ms at a time to its worker, which keeps the windows. */
+static void do_js8_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz)
+{
+    float audio[DIGI_DECODE_RATE / 10 + 64];
+    size_t n = pull_rx_12k(s, ring_rate, ring_rate / 10, audio, sizeof audio / sizeof audio[0]);
+    if (n)
+        js8_worker_feed(audio, (int) n, digi_log_now(), freq_hz);
 }
 
 static void do_rtty_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz,
@@ -1145,8 +1149,10 @@ static void *hamlib_digi_thread(void *radio_h_v)
                 do_cw_rx(s, ring_rate, freq_hz);
                 break;
             case MODE_FT8:
+                do_ft8_rx(s, ring_rate, freq_hz);
+                break;
             case MODE_JS8:
-                do_ft8_rx(s, ring_rate, freq_hz, mode);
+                do_js8_rx(s, ring_rate, freq_hz);
                 break;
             case MODE_RTTY:
                 do_rtty_rx(s, ring_rate, freq_hz, radio_h->rtty_baud, radio_h->rtty_shift);

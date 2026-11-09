@@ -57,7 +57,7 @@ static void test_one_entry_per_transmission(void)
             audio[at] = 0.1f * sinf(phase);
         }
     digi_log_set_listener(listener);
-    js8_decode_and_log(audio, WINDOW, 1000.0, DIAL_HZ);
+    js8_decode_and_log(JS8_SUB_NORMAL, audio, WINDOW, 1000.0, DIAL_HZ);
     TEST_ASSERT_EQUAL_INT(1, entries);
     TEST_ASSERT_EQUAL_STRING("JS8", got_mode);
     TEST_ASSERT_EQUAL_STRING("CR7BYQ: @HB HEARTBEAT IN51", got_text);
@@ -68,7 +68,7 @@ static void test_one_entry_per_transmission(void)
      * search still covers (from 10 symbols before), and is the same one. */
     js8_rx_result r[4];
     TEST_ASSERT_EQUAL_INT(1, js8_rx_decode(audio + STEP, WINDOW, r, 4));   /* it is in there */
-    js8_decode_and_log(audio + STEP, WINDOW, 1000.0 + 2.0, DIAL_HZ);
+    js8_decode_and_log(JS8_SUB_NORMAL, audio + STEP, WINDOW, 1000.0 + 2.0, DIAL_HZ);
     TEST_ASSERT_EQUAL_INT(1, entries);                                     /* and logged once */
     digi_log_set_listener(NULL);
 }

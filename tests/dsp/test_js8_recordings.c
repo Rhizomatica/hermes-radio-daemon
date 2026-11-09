@@ -14,7 +14,7 @@
 #include "dsp/js8_rx.h"
 
 #define WAV_HEADER_MIN 12
-#define MAX_SECONDS    16
+#define MAX_SECONDS    31      /* Slow's 30 s */
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -45,14 +45,19 @@ static int load_wav(const char *path)
     return 0;
 }
 
-static int decode(const char *path, js8_msg *msgs, int max)
+static int decode_sub(js8_submode sub, const char *path, js8_msg *msgs, int max)
 {
     int n = load_wav(path);
     js8_rx_result r[50];
-    int nr = js8_rx_decode(audio, n, r, 50);
+    int nr = js8_rx_decode_sub(sub, audio, n, r, 50);
     for (int i = 0; i < nr && i < max; i++)
         js8_msg_unpack(r[i].frame, r[i].type, &msgs[i]);
     return nr;
+}
+
+static int decode(const char *path, js8_msg *msgs, int max)
+{
+    return decode_sub(JS8_SUB_NORMAL, path, msgs, max);
 }
 
 static bool has(const js8_msg *m, int n, const char *text)
@@ -101,9 +106,21 @@ static void test_a_2_1(void)
     TEST_ASSERT_EQUAL_STRING("MSG ID 416", m[0].text);
 }
 
+/* Slow (E): a data-only frame, one message on its own. */
+static void test_e_1_1(void)
+{
+    js8_msg m[50];
+    int n = decode_sub(JS8_SUB_SLOW, "tests/fixtures/js8/E_1_1.wav", m, 50);
+    TEST_ASSERT_EQUAL_INT(1, n);
+    TEST_ASSERT_EQUAL_STRING("KN4CRD: TEST", m[0].text);
+    TEST_ASSERT_TRUE(m[0].first && m[0].last);
+    TEST_ASSERT_EQUAL_INT(0, decode("tests/fixtures/js8/E_1_1.wav", m, 50));   /* not as Normal */
+}
+
 int main(void)
 {
     UNITY_BEGIN();
+    RUN_TEST(test_e_1_1);
     RUN_TEST(test_a_2_1);
     RUN_TEST(test_a_1_4);
     RUN_TEST(test_a_2_9);

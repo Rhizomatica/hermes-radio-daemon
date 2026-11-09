@@ -64,7 +64,7 @@
 #include "sbitx_radae.h"
 #include "sbitx_drm.h"
 #include "sbitx_ft8.h"
-#include "js8_decode.h"
+#include "js8_worker.h"
 #include "sbitx_cw.h"
 #include "sbitx_rtty.h"
 #include "sbitx_dstar.h"
@@ -1222,7 +1222,6 @@ static struct {
     int             n;
     double          window_start;
     uint64_t        freq_hz;
-    uint16_t        mode;               /* MODE_FT8 or MODE_JS8: the same windows */
     atomic_uint     skipped;            /* windows not decoded */
 } g_ft8w = { .lock = PTHREAD_MUTEX_INITIALIZER, .wake = PTHREAD_COND_INITIALIZER };
 
@@ -1243,16 +1242,11 @@ static void *ft8_worker(void *arg)
         g_ft8w.pending = false;
         double start = g_ft8w.window_start;
         uint64_t freq = g_ft8w.freq_hz;
-        uint16_t mode = g_ft8w.mode;
         int n = g_ft8w.n;
         pthread_mutex_unlock(&g_ft8w.lock);
 
-        if (mode == MODE_JS8) {
-            js8_decode_and_log(buf, n, start, freq);
-        } else {
-            int nres = sbitx_ft8_decode_at(buf, n, start, res, 50);
-            sbitx_ft8_log_decodes(res, nres, start, freq);
-        }
+        int nres = sbitx_ft8_decode_at(buf, n, start, res, 50);
+        sbitx_ft8_log_decodes(res, nres, start, freq);
 
         unsigned skipped = atomic_load(&g_ft8w.skipped);
         time_t now = time(NULL);
@@ -1310,8 +1304,7 @@ static bool ft8_worker_start(int samples)
 }
 
 /* Hand a window to the worker: the DSP thread copies it and goes on. */
-static void ft8_worker_post(const float *slot, int n, double window_start, uint64_t freq_hz,
-                            uint16_t mode)
+static void ft8_worker_post(const float *slot, int n, double window_start, uint64_t freq_hz)
 {
     if (pthread_mutex_trylock(&g_ft8w.lock) != 0) {
         atomic_fetch_add(&g_ft8w.skipped, 1);
@@ -1323,7 +1316,6 @@ static void ft8_worker_post(const float *slot, int n, double window_start, uint6
     g_ft8w.n = n;
     g_ft8w.window_start = window_start;
     g_ft8w.freq_hz = freq_hz;
-    g_ft8w.mode = mode;
     g_ft8w.pending = true;
     pthread_cond_signal(&g_ft8w.wake);
     pthread_mutex_unlock(&g_ft8w.lock);
@@ -1358,7 +1350,10 @@ static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, in
         sbitx_rtty_rx_feed(out12, n12, radio_h_dsp->rtty_baud, radio_h_dsp->rtty_shift,
                            digi_rtty_line_cb, &freq_khz);
     }
-    else if (mode == MODE_FT8 || mode == MODE_JS8) {   /* the same windows */
+    else if (mode == MODE_JS8) {   /* its worker keeps the windows */
+        js8_worker_feed(out12, n12, digi_log_now(), (uint64_t) freq_khz * 1000);
+    }
+    else if (mode == MODE_FT8) {
         static bool inited = false;
         if (!inited) { sbitx_ft8_init(); inited = true; }
         static float *slot = NULL; static int slotn = 0;
@@ -1382,10 +1377,8 @@ static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, in
                 g_ft8w.started = ft8_worker_start(slot_samples);
             }
             if (g_ft8w.started) {
-                ft8_worker_post(slot, slot_samples, window_start, (uint64_t) freq_khz * 1000, mode);
-            } else if (mode == MODE_JS8) {   /* no thread: decode here, as before */
-                js8_decode_and_log(slot, slot_samples, window_start, (uint64_t) freq_khz * 1000);
-            } else {
+                ft8_worker_post(slot, slot_samples, window_start, (uint64_t) freq_khz * 1000);
+            } else {                    /* no thread: decode here, as before */
                 static sbitx_ft8_decode_result res[50];
                 int nres = sbitx_ft8_decode_at(slot, slot_samples, window_start, res, 50);
                 sbitx_ft8_log_decodes(res, nres, window_start, (uint64_t) freq_khz * 1000);

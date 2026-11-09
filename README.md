@@ -727,10 +727,14 @@ Uses the vendored `ft8_lib` (`vendor/ft8_lib/`, MIT) in process:
 
 ### JS8 (JS8Call's keyboard mode, receive)
 
-JS8 Normal, as JS8Call sends it, ported from JS8Call-improved (GPL-3.0):
-- **RX**: the same 15 s windows as FT8, every 2 s, on the same decode
-  thread. JS8 Normal has FT8's symbol (0.16 s, 6.25 Hz) and frame shape,
-  so ft8_lib's waterfall serves; `dsp/js8_rx.c` searches for JS8's Costas
+JS8 as JS8Call sends it, ported from JS8Call-improved (GPL-3.0), in its
+four submodes: Normal (15 s), Fast (10 s), Turbo (6 s) and Slow (30 s),
+those `js8_submodes` names (default `normal`):
+- **RX**: `dsp/js8_worker.c` keeps the newest 32 s of audio and, on its
+  own thread off the DSP core, decodes each submode's period of it every
+  2/15 of a period (Normal: 15 s every 2 s, as FT8). Every submode has
+  FT8's frame shape, so ft8_lib's waterfall serves, set to the submode's
+  symbol; `dsp/js8_rx.c` searches for JS8's Costas
   arrays and reads the tones without FT8's Gray map; `dsp/js8_frame.c` is
   JS8's frame (12-bit CRC, the (174,87) LDPC code, which is not FT8's);
   `dsp/js8_msg.c` unpacks what each frame says as JS8Call shows it
@@ -738,7 +742,7 @@ JS8 Normal, as JS8Call sends it, ported from JS8Call-improved (GPL-3.0):
   compressed against JSC's 262144-word list) → the digi log as mode
   `JS8`, with the callsigns and grid each frame names.
 - `tests/dsp/test_js8_recordings` decodes JS8Call's own test recordings.
-- JS8's Fast, Turbo and Slow submodes and JS8 TX are still to come.
+- JS8 TX is still to come.
 
 ### RTTY (Radio Teletype — 45.45 baud FSK)
 

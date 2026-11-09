@@ -12,7 +12,6 @@
 
 #include "digi_log.h"
 #include "js8_msg.h"
-#include "js8_rx.h"
 
 #define JS8_MAX_DECODES   50
 #define JS8_RECENT        64      /* transmissions remembered, to log each once */
@@ -43,11 +42,11 @@ static bool seen_recently(const char *frame, double start, float offset_hz)
     return false;
 }
 
-void js8_decode_and_log(const float *audio_12k, int nsamples, double window_start,
-                        uint64_t dial_hz)
+void js8_decode_and_log(js8_submode sub, const float *audio_12k, int nsamples,
+                        double window_start, uint64_t dial_hz)
 {
     js8_rx_result res[JS8_MAX_DECODES];
-    int n = js8_rx_decode(audio_12k, nsamples, res, JS8_MAX_DECODES);
+    int n = js8_rx_decode_sub(sub, audio_12k, nsamples, res, JS8_MAX_DECODES);
     pthread_mutex_lock(&g_lock);
     for (int i = 0; i < n; i++) {
         const js8_rx_result *r = &res[i];
