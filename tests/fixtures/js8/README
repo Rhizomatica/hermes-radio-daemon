@@ -4,4 +4,6 @@ GPL-3.0), 12 kHz mono, 15 s: real traffic, heartbeats and directed
 messages.  JS8Call names them {MODE}_{DEPTH}_{EXPECTED_DECODES}: A is
 Normal; the depth is how hard JS8Call's decoder tries.
 
+A_2_1 carries one frame of compressed (JSC) text.
+
 tests/dsp/test_js8_recordings decodes them with radiod's JS8 receiver.

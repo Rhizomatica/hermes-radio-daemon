@@ -5,12 +5,13 @@
  * too.  The twelve characters pack one of: a heartbeat or CQ (a callsign
  * and grid), a compound callsign, a directed message (from, to and a
  * command), or text, Huffman-coded or compressed against JSC's word
- * list.  This unpacks each as JS8Call's DecodedText does, in its order,
- * into the text JS8Call shows and the callsigns it names.  Compressed
- * text is not decoded yet: it comes back as the raw frame.
+ * list (262144 words, dsp/js8_jsc_words.h).  This unpacks each as
+ * JS8Call's DecodedText does, in its order, into the text JS8Call shows
+ * and the callsigns it names; a frame that unpacks as none comes back as
+ * the raw frame.
  *
- * Ported from JS8Call-improved's JS8_Main/Varicode.cpp and
- * JS8_Mode/DecodedText.cpp (GPL-3.0).
+ * Ported from JS8Call-improved's JS8_Main/Varicode.cpp,
+ * JS8_Mode/DecodedText.cpp and JS8_JSC/JSC.cpp (GPL-3.0).
  *
  * Copyright (C) 2026 Rhizomatica
  * Author: Rafael Diniz <rafael@riseup.net>
@@ -33,7 +34,7 @@
 #define JS8_MSG_GRID_MAX  8
 
 typedef enum {
-    JS8_MSG_RAW,              /* not unpacked (compressed text, or unknown) */
+    JS8_MSG_RAW,              /* not unpacked */
     JS8_MSG_HEARTBEAT,        /* "CALL: @HB HEARTBEAT GRID" */
     JS8_MSG_CQ,               /* "CALL: @ALLCALL CQ CQ CQ GRID" */
     JS8_MSG_COMPOUND,         /* "CALL: " - a message's first frame */

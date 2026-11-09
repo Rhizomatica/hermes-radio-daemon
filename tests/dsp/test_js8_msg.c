@@ -9,6 +9,7 @@
 
 #include "unity.h"
 #include "dsp/js8_msg.h"
+#include "dsp/js8_jsc_words.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -185,14 +186,65 @@ static void test_data(void)
     TEST_ASSERT_EQUAL_INT(JS8_MSG_DATA, m.kind);
     TEST_ASSERT_EQUAL_STRING("HELLO", m.text);
     TEST_ASSERT_EQUAL_STRING("", m.from);
-    /* Compressed text, and data-only frames: the raw frame. */
-    v.b[1] = 1;
-    to_frame(&v, f);
-    unpack(f, 0, &m);
-    TEST_ASSERT_EQUAL_INT(JS8_MSG_RAW, m.kind);
-    TEST_ASSERT_EQUAL_STRING(f, m.text);
-    unpack(f, JS8_TX_DATA, &m);
-    TEST_ASSERT_EQUAL_INT(JS8_MSG_RAW, m.kind);
+}
+
+/* JSC::codeword: the index's last base-7 digit with the space bit, after
+ * its higher part as base-9 digits offset by 7, most significant first. */
+static void jsc_codeword(bits *v, uint32_t index, bool space)
+{
+    unsigned digits[8];
+    int n = 0;
+    for (uint32_t x = index / 7; x > 0; x /= 9) {
+        x -= 1;
+        digits[n++] = x % 9 + 7;
+    }
+    while (n > 0)
+        put(v, digits[--n], 4);
+    put(v, (index % 7) << 1 | space, 5);
+}
+
+static const char *jsc_word(uint32_t index)
+{
+    const char *p = js8_jsc_words;
+    while (index--)
+        p += strlen(p) + 1;
+    return p;
+}
+
+/* Compressed text, as a message's frame and as a data-only frame: words
+ * from the first and the last of JSC's table, and a space after some. */
+static void test_jsc(void)
+{
+    /* The table, as generated: JSC_map.cpp's first, a reserved and its last. */
+    TEST_ASSERT_EQUAL_STRING("E", jsc_word(0));
+    TEST_ASSERT_EQUAL_STRING("JS8", jsc_word(70));
+    TEST_ASSERT_EQUAL_STRING("ROSIDS", jsc_word(JS8_JSC_WORDS - 1));
+    static const uint32_t idx[] = { 0, 70, 5000, 262143 };
+    static const bool space[] = { true, false, true, true };
+    char want[128] = "";
+    for (int i = 0; i < 4; i++) {
+        strcat(want, jsc_word(idx[i]));
+        if (space[i])
+            strcat(want, " ");
+    }
+    for (int data_only = 0; data_only < 2; data_only++) {
+        bits v = { .n = 0 };
+        if (!data_only) {
+            put(&v, 1, 1);   /* data */
+            put(&v, 1, 1);   /* compressed */
+        }
+        for (int i = 0; i < 4; i++)
+            jsc_codeword(&v, idx[i], space[i]);
+        put(&v, 0, 1);
+        while (v.n < 72)
+            put(&v, 1, 1);
+        char f[13];
+        to_frame(&v, f);
+        js8_msg m;
+        unpack(f, data_only ? JS8_TX_DATA : 0, &m);
+        TEST_ASSERT_EQUAL_INT(JS8_MSG_DATA, m.kind);
+        TEST_ASSERT_EQUAL_STRING(want, m.text);
+    }
 }
 
 /* Through the whole chain: frame to tones to soft bits to message. */
@@ -236,6 +288,7 @@ int main(void)
     RUN_TEST(test_compound);
     RUN_TEST(test_directed);
     RUN_TEST(test_data);
+    RUN_TEST(test_jsc);
     RUN_TEST(test_chain);
     RUN_TEST(test_not_a_frame);
     return UNITY_END();

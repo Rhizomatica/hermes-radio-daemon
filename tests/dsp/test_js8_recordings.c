@@ -1,8 +1,8 @@
-/* JS8 on real recordings: two of JS8Call's own decoder test files
- * (tests/fixtures/js8/README), decoded by radiod's JS8 receiver and
- * message layer.  The counts are what this decoder finds today (JS8Call
- * finds 4 and 9 with its deeper passes); a change that finds fewer, or
- * reads a frame differently, fails here.
+/* JS8 on real recordings: three of JS8Call's own decoder test files
+ * (tests/fixtures/js8/README), one with compressed text, decoded by
+ * radiod's JS8 receiver and message layer.  The counts are what this
+ * decoder finds today (JS8Call finds 4 and 9 with its deeper passes); a
+ * change that finds fewer, or reads a frame differently, fails here.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -90,9 +90,21 @@ static void test_a_2_9(void)
     TEST_ASSERT_TRUE(has(m, n, "KB1CTC: K0EIA HEARTBEAT SNR +06"));
 }
 
+/* Compressed text (JSC): the last frame of a message. */
+static void test_a_2_1(void)
+{
+    js8_msg m[50];
+    int n = decode("tests/fixtures/js8/A_2_1.wav", m, 50);
+    TEST_ASSERT_EQUAL_INT(1, n);
+    TEST_ASSERT_EQUAL_INT(JS8_MSG_DATA, m[0].kind);
+    TEST_ASSERT_TRUE(m[0].last);
+    TEST_ASSERT_EQUAL_STRING("MSG ID 416", m[0].text);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
+    RUN_TEST(test_a_2_1);
     RUN_TEST(test_a_1_4);
     RUN_TEST(test_a_2_9);
     return UNITY_END();

@@ -734,10 +734,11 @@ JS8 Normal, as JS8Call sends it, ported from JS8Call-improved (GPL-3.0):
   arrays and reads the tones without FT8's Gray map; `dsp/js8_frame.c` is
   JS8's frame (12-bit CRC, the (174,87) LDPC code, which is not FT8's);
   `dsp/js8_msg.c` unpacks what each frame says as JS8Call shows it
-  (heartbeats, CQs, directed messages, Huffman-coded text) → the digi log
-  as mode `JS8`, with the callsigns and grid each frame names.
-- Text compressed against JSC's word list is logged as the raw frame for
-  now; JS8's Fast, Turbo and Slow submodes and JS8 TX are still to come.
+  (heartbeats, CQs, directed messages, Huffman-coded text and text
+  compressed against JSC's 262144-word list) → the digi log as mode
+  `JS8`, with the callsigns and grid each frame names.
+- `tests/dsp/test_js8_recordings` decodes JS8Call's own test recordings.
+- JS8's Fast, Turbo and Slow submodes and JS8 TX are still to come.
 
 ### RTTY (Radio Teletype — 45.45 baud FSK)
 

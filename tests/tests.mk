@@ -270,8 +270,8 @@ tests/dsp/test_pskreporter: tests/dsp/test_pskreporter.c dsp/pskreporter_ipfix.c
 tests/dsp/test_js8_frame: tests/dsp/test_js8_frame.c dsp/js8_frame.c dsp/js8_frame.h dsp/js8_ldpc_tables.h
 	$(CC) $(TEST_CFLAGS) $< dsp/js8_frame.c $(UNITY_SRC) -o $@ -lm
 
-tests/dsp/test_js8_msg: tests/dsp/test_js8_msg.c dsp/js8_msg.c dsp/js8_msg.h dsp/js8_frame.c dsp/js8_frame.h
-	$(CC) $(TEST_CFLAGS) $< dsp/js8_msg.c dsp/js8_frame.c $(UNITY_SRC) -o $@ -lm
+tests/dsp/test_js8_msg: tests/dsp/test_js8_msg.c dsp/js8_msg.c dsp/js8_msg.h dsp/js8_frame.c dsp/js8_frame.h dsp/js8_jsc_words.h
+	$(CC) $(TEST_CFLAGS) $< dsp/js8_msg.c dsp/js8_frame.c $(UNITY_SRC) -o $@ -lpthread -lm
 
 tests/dsp/test_js8_decode: tests/dsp/test_js8_decode.c dsp/js8_decode.c dsp/js8_decode.h dsp/js8_rx.c \
                            dsp/js8_msg.c dsp/js8_frame.c dsp/digi_log.c dsp/digi_log.h \
@@ -281,10 +281,10 @@ tests/dsp/test_js8_decode: tests/dsp/test_js8_decode.c dsp/js8_decode.c dsp/js8_
 	      -o $@ -lpthread -lm
 
 tests/dsp/test_js8_recordings: tests/dsp/test_js8_recordings.c dsp/js8_rx.c dsp/js8_msg.c dsp/js8_frame.c \
-                              tests/fixtures/js8/A_1_4.wav tests/fixtures/js8/A_2_9.wav \
-                              $(FT8_TEST_SRCS) $(FT8_TEST_LIBS)
+                              dsp/js8_jsc_words.h tests/fixtures/js8/A_1_4.wav tests/fixtures/js8/A_2_9.wav \
+                              tests/fixtures/js8/A_2_1.wav $(FT8_TEST_SRCS) $(FT8_TEST_LIBS)
 	$(CC) $(TEST_CFLAGS) -w -Idsp $(FT8_LIB_CPPFLAGS) $< dsp/js8_rx.c dsp/js8_msg.c dsp/js8_frame.c \
-	      $(FT8_TEST_SRCS) $(FT8_TEST_LIBS) $(UNITY_SRC) -o $@ -lm
+	      $(FT8_TEST_SRCS) $(FT8_TEST_LIBS) $(UNITY_SRC) -o $@ -lpthread -lm
 
 tests/dsp/test_js8_rx: tests/dsp/test_js8_rx.c dsp/js8_rx.c dsp/js8_rx.h dsp/js8_frame.c dsp/js8_frame.h \
                        $(FT8_TEST_SRCS) $(FT8_TEST_LIBS)

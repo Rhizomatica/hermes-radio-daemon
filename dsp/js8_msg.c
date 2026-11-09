@@ -6,9 +6,12 @@
  */
 #include "js8_msg.h"
 
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "js8_jsc_words.h"
 
 /* Varicode's frame types: the 72 bits' first three. */
 #define FRAME_HEARTBEAT          0
@@ -202,17 +205,111 @@ static void format_snr(int snr, char *out, size_t size)
         snprintf(out, size, "-%02d", -snr);
 }
 
-/* Data: [1][compressed][bits..., 0, 1...]; Huffman text, or false for
- * compressed (JSC) text, not decoded yet. */
+/* JSC: (s,c)-dense coding of word indices into its word list, in 4-bit
+ * groups (JSC::decompress).  A group below JSC_S ends a word and is
+ * followed by a bit: 1 for a space after the word. */
+#define JSC_GROUP_BITS 4
+#define JSC_S          7
+#define JSC_C          ((1 << JSC_GROUP_BITS) - JSC_S)
+#define JSC_MAX_GROUPS 8          /* JSC's base[] table: up to 7 continuations */
+#define JSC_MAX_WORDS  32         /* 72 bits hold far fewer */
+
+static uint32_t       g_jsc_offset[JS8_JSC_WORDS];
+static pthread_once_t g_jsc_once = PTHREAD_ONCE_INIT;
+
+static void jsc_index(void)
+{
+    const char *p = js8_jsc_words;
+    for (int i = 0; i < JS8_JSC_WORDS; i++) {
+        g_jsc_offset[i] = (uint32_t) (p - js8_jsc_words);
+        p += strlen(p) + 1;
+    }
+}
+
+/* Appends a Latin-1 string as UTF-8. */
+static size_t put_latin1(char *out, size_t n, size_t size, const char *w)
+{
+    for (const unsigned char *c = (const unsigned char *) w; *c; c++) {
+        if (*c < 0x80) {
+            if (n + 1 < size)
+                out[n++] = (char) *c;
+        } else if (n + 2 < size) {
+            out[n++] = (char) (0xC0 | *c >> 6);
+            out[n++] = (char) (0x80 | (*c & 0x3F));
+        }
+    }
+    out[n] = '\0';
+    return n;
+}
+
+static bool jsc_decompress(const uint8_t *bits, int count, char *out, size_t size)
+{
+    pthread_once(&g_jsc_once, jsc_index);
+    uint32_t base[JSC_MAX_GROUPS], pw = JSC_S;
+    base[0] = 0;
+    for (int k = 1; k < JSC_MAX_GROUPS; k++) {
+        base[k] = base[k - 1] + pw;
+        pw *= JSC_C;
+    }
+    unsigned groups[FRAME_BITS / JSC_GROUP_BITS + 1];
+    bool space[FRAME_BITS / JSC_GROUP_BITS + 1] = { false };
+    int ng = 0;
+    for (int i = 0; i + JSC_GROUP_BITS <= count;) {
+        unsigned g = 0;
+        for (int k = 0; k < JSC_GROUP_BITS; k++)
+            g = g << 1 | bits[i + k];
+        i += JSC_GROUP_BITS;
+        groups[ng] = g;
+        if (g < JSC_S) {
+            space[ng] = i < count && bits[i];
+            i++;
+        }
+        ng++;
+    }
+    size_t n = 0;
+    out[0] = '\0';
+    for (int start = 0, words = 0; start < ng && words < JSC_MAX_WORDS; words++) {
+        uint32_t j = 0;
+        int k = 0;
+        while (start + k < ng && groups[start + k] >= JSC_S) {
+            j = j * JSC_C + (groups[start + k] - JSC_S);
+            k++;
+        }
+        if (j >= JS8_JSC_WORDS || start + k >= ng || k >= JSC_MAX_GROUPS)
+            break;
+        j = j * JSC_S + groups[start + k] + base[k];
+        if (j >= JS8_JSC_WORDS)
+            break;
+        n = put_latin1(out, n, size, js8_jsc_words + g_jsc_offset[j]);
+        if (space[start + k] && n + 1 < size) {
+            out[n++] = ' ';
+            out[n] = '\0';
+        }
+        start += k + 1;
+    }
+    return n > 0;
+}
+
+/* The last 0 among bits [from, FRAME_BITS): where the padding starts. */
+static int last_zero(const bits72 *v, int from)
+{
+    int z = -1;
+    for (int i = from; i < FRAME_BITS; i++)
+        if (!v->b[i])
+            z = i;
+    return z;
+}
+
+/* Data: [1][compressed][bits..., 0, 1...]: Huffman-coded text, or JSC. */
 static bool unpack_data(const bits72 *v, char *text, size_t size)
 {
-    if (!v->b[0] || v->b[1])
+    if (!v->b[0])
         return false;
-    int last0 = -1;
-    for (int i = 1; i < FRAME_BITS; i++)
-        if (!v->b[i])
-            last0 = i;
-    int at = 2, end = last0;   /* the data: after the two flags, up to the pad's 0 */
+    if (v->b[1]) {
+        int end = last_zero(v, 1);
+        return end > 2 && jsc_decompress(v->b + 2, end - 2, text, size);
+    }
+    int at = 2, end = last_zero(v, 1);   /* after the two flags, up to the pad's 0 */
     size_t n = 0;
     while (at < end) {
         int k = 0;
@@ -245,14 +342,22 @@ void js8_msg_unpack(const char *frame, int type, js8_msg *m)
     m->last = type & JS8_TX_LAST;
     snprintf(m->text, sizeof m->text, "%s", frame ? frame : "");
     bits72 v;
-    if (!frame_bits(frame, &v) || (type & JS8_TX_DATA))
-        return;   /* a data-only frame is always compressed */
+    if (!frame_bits(frame, &v))
+        return;
+    if (type & JS8_TX_DATA) {   /* data only: all 72 bits are JSC */
+        int end = last_zero(&v, 0);
+        if (end > 0 && jsc_decompress(v.b, end, m->text, sizeof m->text))
+            m->kind = JS8_MSG_DATA;
+        else
+            snprintf(m->text, sizeof m->text, "%s", frame);
+        return;
+    }
 
     if (unpack_data(&v, m->text, sizeof m->text)) {
         m->kind = JS8_MSG_DATA;
         return;
     }
-    if (v.b[0]) {   /* compressed text */
+    if (v.b[0]) {   /* data that does not decode */
         snprintf(m->text, sizeof m->text, "%s", frame);
         return;
     }
