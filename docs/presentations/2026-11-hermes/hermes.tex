@@ -89,11 +89,11 @@
   \begin{columns}[T]
     \column{0.56\textwidth}
     \begin{itemize}
-      \item A \textbf{telecommunication system over HF radio} for communities beyond the internet and the phone network
-      \item People use it as they use the internet: \textbf{email}, webmail and Delta Chat, over the station's \textbf{WiFi}
-      \item The station carries it over \textbf{HF} to a gateway with an internet uplink
-      \item Also \textbf{voice}, digital and encrypted where that is permitted, \textbf{broadcast} files, and \textbf{positions} with an emergency call
-      \item \textbf{Free software} from Rhizomatica, supported by ARDC grants since 2021; \textbf{hands-on training} so a community runs its own station
+      \item A telecommunication system over HF radio for communities beyond the internet and the phone network
+      \item People use it as they use the internet: email, webmail and Delta Chat, over the station's WiFi
+      \item The station carries it over HF to a gateway with an internet uplink
+      \item Also voice, digital and encrypted where that is permitted, broadcast files, and positions with an emergency call
+      \item Free software from Rhizomatica, supported by ARDC grants since 2021; hands-on training so a community runs its own station
     \end{itemize}
     \column{0.42\textwidth}
     \centering
@@ -113,14 +113,14 @@
   \begin{columns}[T]
     \column{0.36\textwidth}
     \begin{block}{\faTree\ Ecuadorian Amazon}
-      Waorani Indigenous communities: \hl{nearly 90 radios}, the largest deployment; some sites days away on foot or by boat. Older residents keep in touch with family in other villages
+      Waorani Indigenous communities: nearly 90 radios, the largest deployment; some sites days away on foot or by boat. Older residents keep in touch with family in other villages
     \end{block}
     \column{0.29\textwidth}
     \begin{block}{\faShip\ Bangladesh}
-      Fishing communities, HERMES on their \textbf{fishing boats}, in a conservation project
+      Fishing communities, HERMES on their fishing boats, in a conservation project
     \end{block}
     \begin{block}{\faExclamationTriangle\ Central African Rep.}
-      \textbf{Early warning} systems
+      Early warning systems
     \end{block}
     \column{0.31\textwidth}
     \begin{exampleblock}{\faUsers\ Run by the community}
@@ -134,11 +134,11 @@
   \centering
   \begin{minipage}[t]{0.55\textwidth}\centering
     \photo{width=0.98\linewidth}{img/field-river.jpg}\par\smallskip
-    {\small\bfseries Getting there:} {\small days on foot or by boat}
+    {\small Getting there:} {\small days on foot or by boat}
   \end{minipage}\hfill
   \begin{minipage}[t]{0.42\textwidth}\centering
     \photo{width=0.98\linewidth}{img/field-solar.jpg}\par\smallskip
-    {\small\bfseries Power:} {\small a solar panel and a battery}
+    {\small Power:} {\small a solar panel and a battery}
   \end{minipage}
   \par\bigskip
   {\small The station is installed with the community, which then runs it: the radio, the antenna, the power and the computer}
@@ -172,11 +172,11 @@
   \begin{columns}[T]
     \column{0.46\textwidth}
     \begin{itemize}
-      \item A \textbf{Raspberry Pi} or another Debian computer
-      \item An \textbf{SSB transceiver}: the \textbf{sBitx} or zBitx, driven directly, or any radio Hamlib controls (IC-7100, IC-7300, FT-710, ...)
+      \item A Raspberry Pi or another Debian computer
+      \item An SSB transceiver: the sBitx or zBitx, driven directly, or any radio Hamlib controls (IC-7100, IC-7300, FT-710, ...)
       \item An antenna, solar power, a WiFi access point; optionally GPS
-      \item Postfix and Dovecot, UUCP (or NNCP), Mercury, \textbf{hermes-radio-daemon}, the web interface
-      \item One installer for every station, from a \textbf{station file}; a USB installer image for the field
+      \item Postfix and Dovecot, UUCP (or NNCP), Mercury, hermes-radio-daemon, the web interface
+      \item One installer for every station, from a station file; a USB installer image for the field
     \end{itemize}
     \column{0.52\textwidth}
     \centering
@@ -194,9 +194,9 @@
   \begin{columns}[T]
     \column{0.55\textwidth}
     \begin{itemize}
-      \item \textbf{UUCP} carries mail and files over HF by default; it is robust, resumes interrupted transfers, and every station already knows it
-      \item \textbf{NNCP}, encrypted and authenticated, is the alternative; a network uses one or the other on every station
-      \item The link is \textbf{Mercury}: an ARQ session that delivers a file intact, or reports that it did not
+      \item UUCP carries mail and files over HF by default; it is robust, resumes interrupted transfers, and every station already knows it
+      \item NNCP, encrypted and authenticated, is the alternative; a network uses one or the other on every station
+      \item The link is Mercury: an ARQ session that delivers a file intact, or reports that it did not
       \item A station keeps mail while the band is closed and sends it at the next call
     \end{itemize}
     \column{0.42\textwidth}
@@ -204,7 +204,7 @@
       \footnotesize Free software since May 2026, replacing VARA, a proprietary modem with a paid licence per radio. Seven speed rungs, from MFSK below $-10$ dB SNR to 3.1 kbit/s; a VARA-compatible TNC. It has its own presentation.
     \end{block}
     \begin{block}{Broadcast: one to many}
-      \footnotesize Files go out as a \textbf{RaptorQ fountain}: a receiver that hears enough of \emph{any} frames rebuilds the file, wherever it tuned in. No return path: bulletins and updates to a whole region.
+      \footnotesize Files go out as a RaptorQ fountain: a receiver that hears enough of \emph{any} frames rebuilds the file, wherever it tuned in. No return path: bulletins and updates to a whole region.
     \end{block}
   \end{columns}
   \src{Source: hermes-installer docs/README.md; Mercury docs/presentations/2026-10-mercury; hermes-broadcast WIRE-FORMAT.md}
@@ -215,11 +215,11 @@
   \begin{columns}[T]
     \column{0.52\textwidth}
     \begin{itemize}
-      \item \textbf{One daemon} for the radio: control, DSP, audio, voice, digital modes and the modem
-      \item Two backends: \textbf{hfsignals} drives the sBitx and zBitx hardware itself (synthesiser, GPIO, codec); \textbf{hamlib} drives any CAT radio
-      \item Mercury runs \textbf{inside} it, keyed and fed audio directly
-      \item \textbf{One front door}, one HTTPS port: the web interface, REST under \texttt{/api/v2}, the \texttt{hermes.v1} WebSocket, audio over WebRTC
-      \item Spec first: \hl{113 operations} in an OpenAPI contract; Go handlers linked into the daemon; every route needs a login, roles enforced on the server
+      \item One daemon for the radio: control, DSP, audio, voice, digital modes and the modem
+      \item Two backends: hfsignals drives the sBitx and zBitx hardware itself (synthesiser, GPIO, codec); hamlib drives any CAT radio
+      \item Mercury runs inside it, keyed and fed audio directly
+      \item One front door, one HTTPS port: the web interface, REST under \texttt{/api/v2}, the \texttt{hermes.v1} WebSocket, audio over WebRTC
+      \item Spec first: 113 operations in an OpenAPI contract; Go handlers linked into the daemon; every route needs a login, roles enforced on the server
     \end{itemize}
     \column{0.46\textwidth}
     \begin{tikzpicture}[node distance=0.26cm,
@@ -244,15 +244,15 @@
     \column{0.5\textwidth}
     \begin{block}{\faMicrophone\ Two digital voice codecs}
       \begin{itemize}
-        \item \textbf{RADE V2}: neural digital voice (FARGAN vocoder, the RADE V2 modem), entirely in C inside the daemon
-        \item \textbf{D-STAR}: AMBE voice, compatible with commercial D-STAR radios
+        \item RADE V2: neural digital voice (FARGAN vocoder, the RADE V2 modem), entirely in C inside the daemon
+        \item D-STAR: AMBE voice, compatible with commercial D-STAR radios
         \item A profile switches between analogue and digital voice
       \end{itemize}
     \end{block}
     \column{0.5\textwidth}
     \begin{block}{\faLock\ Voice encryption (opt-in)}
       \begin{itemize}
-        \item For networks where encryption is permitted, \textbf{never on amateur bands}
+        \item For networks where encryption is permitted
         \item One 256-bit key shared by the network's stations
         \item D-STAR: the voice bits XORed with a ChaCha20 keystream
         \item RADE V2: keyed rotations of the carriers every 40 ms; a late listener locks in about 1 s
@@ -261,7 +261,7 @@
   \end{columns}
   \smallskip
   \begin{exampleblock}{On air, October 2026}
-    \footnotesize Both codecs, encrypted and clear, with the right key, the wrong key and none, and a listener joining mid-over: all passed. Listeners heard \textbf{no difference} between encrypted and clear speech.
+    \footnotesize Both codecs, encrypted and clear, with the right key, the wrong key and none, and a listener joining mid-over: all passed. Listeners heard no difference between encrypted and clear speech.
   \end{exampleblock}
   \src{Source: hermes-radio-daemon README.md (Digital Voice, Voice encryption), dsp/rade\_voice.h, dsp/dstar\_voice.h}
 \end{frame}
@@ -271,11 +271,11 @@
   \begin{columns}[T]
     \column{0.46\textwidth}
     \begin{itemize}
-      \item \textbf{FT8}: receive and send, several passes with signal subtraction
-      \item \textbf{JS8}: all four submodes, receive and send, messages across frames
-      \item \textbf{CW} and \textbf{RTTY} \textbf{skimmers}: every station in the passband at once
-      \item Received stations reported to \textbf{PSKReporter}, at the station's GPS position
-      \item \textbf{DRM}: digital broadcast, received and sent
+      \item FT8: receive and send, several passes with signal subtraction
+      \item JS8: all four submodes, receive and send, messages across frames
+      \item CW and RTTY skimmers: every station in the passband at once
+      \item Received stations reported to PSKReporter, at the station's GPS position
+      \item DRM: digital broadcast, received and sent
       \item SSB processing: equaliser, compressor; noise reduction and AGC on receive
     \end{itemize}
     \column{0.52\textwidth}
@@ -293,7 +293,7 @@
     \begin{block}{\faMapMarker*\ Position beacons}
       \begin{itemize}
         \item A station sends its position on a schedule: from its GPS, or a fixed position typed in
-        \item Every station heard is listed with its last position, and drawn on a \textbf{map}
+        \item Every station heard is listed with its last position, and drawn on a map
         \item The beacon format is documented byte by byte
       \end{itemize}
     \end{block}
@@ -305,8 +305,8 @@
       \begin{itemize}
         \item The station's own track, and every other station's from its beacons
         \item A point every few seconds while moving; one every 5 minutes while still
-        \item Fixed \textbf{24-byte records}, one file per period: a time range is found by binary search
-        \item A \textbf{trip} is a named time range of a track
+        \item Fixed 24-byte records, one file per period: a time range is found by binary search
+        \item A trip is a named time range of a track
       \end{itemize}
     \end{block}
   \end{columns}
@@ -319,19 +319,19 @@
     \column{0.5\textwidth}
     \begin{block}{\faVial\ Testing}
       \begin{itemize}
-        \item \textbf{280 C unit tests} (Unity + fff): DSP, codecs, modes, beacons, tracks
-        \item \textbf{Go}: every API handler, its refusals too
-        \item \textbf{Integration}: the real daemon on Hamlib's dummy radio
-        \item \textbf{Sanitizers} (ASan + UBSan, TSan) and CI on amd64 and arm64 for every pull request
-        \item \textbf{On air}: sBitx, IC-7100 and FT-710 stations
+        \item 280 C unit tests (Unity + fff): DSP, codecs, modes, beacons, tracks
+        \item Go: every API handler, its refusals too
+        \item Integration: the real daemon on Hamlib's dummy radio
+        \item Sanitizers (ASan + UBSan, TSan) and CI on amd64 and arm64 for every pull request
+        \item On air: sBitx, IC-7100 and FT-710 stations
       \end{itemize}
     \end{block}
     \column{0.5\textwidth}
     \begin{block}{\faServer\ Platforms}
       \begin{itemize}
-        \item \textbf{Raspberry Pi} 4 and 5, Debian 13, from the HERMES package repository; Mercury even on a Pi Zero, with the zBitx
-        \item \textbf{A phone as the station}: the daemon and Mercury on Sailfish OS and a PinePhone Pro, the radio on USB (CAT without kernel drivers, proposed to Hamlib), the phone's own GPS
-        \item Mercury also on \textbf{Android} and \textbf{iOS} phones, \textbf{macOS} and \textbf{Windows}; iOS gives apps no USB access
+        \item Raspberry Pi 4 and 5, Debian 13, from the HERMES package repository; Mercury even on a Pi Zero, with the zBitx
+        \item A phone as the station: the daemon and Mercury on Sailfish OS and a PinePhone Pro, the radio on USB (CAT without kernel drivers, proposed to Hamlib), the phone's own GPS
+        \item Mercury also on Android and iOS phones, macOS and Windows; iOS gives apps no USB access
       \end{itemize}
     \end{block}
   \end{columns}
