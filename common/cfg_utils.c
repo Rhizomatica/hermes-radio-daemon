@@ -38,6 +38,7 @@
 #include "beacon_tx.h"
 #include "beacon.h"
 #include "dsp/rx_denoise.h"
+#include "dsp/pskreporter.h"
 
 #include "radiod_log.h"
 
@@ -597,6 +598,12 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     }
     i = iniparser_getint(ini, "main:beacon_emergency_interval_s", BEACON_EMERGENCY_INTERVAL_DEFAULT_S);
     radio_h->beacon_emergency_interval_s = i >= BEACON_EMERGENCY_INTERVAL_MIN_S ? i : BEACON_EMERGENCY_INTERVAL_MIN_S;
+
+    radio_h->pskreporter_enable = iniparser_getboolean(ini, "main:pskreporter_enable", 0) != 0;
+    s = iniparser_getstring(ini, "main:pskreporter_server", PSKREPORTER_DEFAULT_SERVER);
+    snprintf(radio_h->pskreporter_server, sizeof(radio_h->pskreporter_server), "%s", s);
+    s = iniparser_getstring(ini, "main:pskreporter_antenna", "");
+    snprintf(radio_h->pskreporter_antenna, sizeof(radio_h->pskreporter_antenna), "%s", s);
 
     s = iniparser_getstring(ini, "main:transport_prefer", TRANSPORT_PREFER_DEFAULT);
     snprintf(radio_h->transport_prefer, sizeof(radio_h->transport_prefer), "%s", s);

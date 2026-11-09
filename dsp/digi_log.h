@@ -82,6 +82,12 @@ void digi_log_set_max_bytes(long max_bytes);
  * above is refused with a warning rather than logged under a wrong label. */
 void digi_log_add(const digi_log_entry *e);
 
+/* One function told of every entry logged, after it is logged, on the
+ * logging thread, with its time resolved (unix seconds); NULL for none.
+ * It must be quick: the decoders wait for it. */
+typedef void (*digi_log_listener)(const digi_log_entry *e, double at);
+void digi_log_set_listener(digi_log_listener fn);
+
 /* Log a D-STAR header, received or sent, from its raw bytes (at least
  * DIGI_LOG_DSTAR_HEADER_MIN of them: flags, rpt1, rpt2, urcall, mycall,
  * suffix). Both backends call this for both directions, so the entry is

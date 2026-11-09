@@ -13,6 +13,7 @@
 #include <fcntl.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -146,6 +147,9 @@ static void jw_opt_str(jw *w, const char *key, const char *value, size_t max_cha
     else
         jw_raw(w, ",\"%s\":null", key);
 }
+
+/* Told of every entry logged (digi_log_set_listener). */
+static _Atomic(digi_log_listener) g_listener;
 
 static const char *const g_modes[] = { "FT8", "CW", "RTTY", "DSTAR", "BEACON", NULL };
 static const char *const g_dirs[]  = { "rx", "tx", NULL };
@@ -418,6 +422,15 @@ void digi_log_add(const digi_log_entry *e)
     }
     append_legacy(e);
     pthread_mutex_unlock(&g_file_lock);
+
+    digi_log_listener fn = atomic_load(&g_listener);
+    if (fn)
+        fn(e, at);
+}
+
+void digi_log_set_listener(digi_log_listener fn)
+{
+    atomic_store(&g_listener, fn);
 }
 
 void digi_log_dstar_header(const uint8_t *header, size_t header_len, const char *dir,
