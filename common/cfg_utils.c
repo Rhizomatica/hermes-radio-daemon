@@ -239,6 +239,7 @@ bool cfg_mode_from_name(const char *name, uint16_t *mode)
     else if (!strcasecmp(name, "AM"))    *mode = MODE_AM;
     else if (!strcasecmp(name, "DRM"))   *mode = MODE_DRM;
     else if (!strcasecmp(name, "FT8"))   *mode = MODE_FT8;
+    else if (!strcasecmp(name, "JS8"))   *mode = MODE_JS8;
     else if (!strcasecmp(name, "RTTY"))  *mode = MODE_RTTY;
     else if (!strcasecmp(name, "DSTAR")) *mode = MODE_DSTAR;
     else                                 return false;
@@ -255,6 +256,7 @@ const char *cfg_mode_name(uint16_t mode)
     case MODE_AM:    return "AM";
     case MODE_DRM:   return "DRM";
     case MODE_FT8:   return "FT8";
+    case MODE_JS8:   return "JS8";
     case MODE_RTTY:  return "RTTY";
     case MODE_DSTAR: return "DSTAR";
     default:         return "USB";

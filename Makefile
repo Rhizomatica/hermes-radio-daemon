@@ -130,6 +130,10 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              dsp/rade_voice.o \
              dsp/dstar_clock_cal.o \
              dsp/pskreporter.o \
+             dsp/js8_frame.o \
+             dsp/js8_rx.o \
+             dsp/js8_msg.o \
+             dsp/js8_decode.o \
              dsp/pskreporter_ipfix.o \
              dsp/mic_filter.o \
              dsp/rx_denoise.o \

@@ -55,7 +55,7 @@ typedef struct {
 } digi_log_beacon;
 
 typedef struct {
-    const char *mode;        /* "FT8", "CW", "RTTY", "DSTAR", "BEACON" */
+    const char *mode;        /* "FT8", "JS8", "CW", "RTTY", "DSTAR", "BEACON" */
     const char *dir;         /* "rx" or "tx" */
     uint64_t    freq_hz;     /* dial frequency */
     double      at;          /* unix time in seconds; 0 = now */

@@ -517,7 +517,7 @@ static void hamlib_apply_profile(radio *radio_h, uint32_t profile)
     if (ret != RIG_OK)
         HLOGE(LOG_C, "hamlib_apply_profile: rig_set_freq failed: %s",
                 rigerror(ret));
-    else if (pm != MODE_CW && pm != MODE_RTTY && pm != MODE_FT8)
+    else if (pm != MODE_CW && pm != MODE_RTTY && pm != MODE_FT8 && pm != MODE_JS8)
         hamlib_keep_mode(radio_h, rig, profile);
 
     hamlib_set_level_float(rig,
@@ -585,6 +585,7 @@ static rmode_t mode_to_hamlib(uint16_t mode, bool data_path)
     case MODE_RTTY: return data_path ? RIG_MODE_PKTUSB : RIG_MODE_RTTY;
     case MODE_DRM:  return RIG_MODE_PKTUSB;   /* digital only, no voice DRM   */
     case MODE_FT8:  return RIG_MODE_PKTUSB;   /* USB worldwide by convention  */
+    case MODE_JS8:  return RIG_MODE_PKTUSB;
     case MODE_DSTAR: return RIG_MODE_DSTAR; /* rig-native DV (IC-7100 etc.) */
     default:        return data_path ? RIG_MODE_PKTUSB : RIG_MODE_USB;
     }
@@ -642,6 +643,7 @@ static const char *mode_to_string(uint16_t mode)
     case MODE_AM:   return "AM";
     case MODE_DRM:  return "DRM";
     case MODE_FT8:  return "FT8";
+    case MODE_JS8:  return "JS8";
     case MODE_RTTY: return "RTTY";
     default:        return "USB";
     }
@@ -711,7 +713,7 @@ static bool radio_hamlib_init(radio *radio_h)
      * which the rig's PKTUSB reads back as USB; overwriting it lost an FT8
      * profile's mode at every start. */
     uint16_t pm = radio_h->profiles[profile].mode;
-    if (pm != MODE_CW && pm != MODE_RTTY && pm != MODE_FT8 &&
+    if (pm != MODE_CW && pm != MODE_RTTY && pm != MODE_FT8 && pm != MODE_JS8 &&
         rig_get_mode(rig, RIG_VFO_CURR, &hmode, &width) == RIG_OK)
         radio_h->profiles[profile].mode = hamlib_to_mode(hmode);
     RIG_UNLOCK();
@@ -1188,7 +1190,7 @@ static void hamlib_poll_vfo_state(radio *radio_h)
      * frequency only for those; sync both for voice/SSB profiles. */
     uint16_t pmode = radio_h->profiles[profile].mode;
     if (mr == RIG_OK &&
-        pmode != MODE_CW && pmode != MODE_RTTY && pmode != MODE_FT8)
+        pmode != MODE_CW && pmode != MODE_RTTY && pmode != MODE_FT8 && pmode != MODE_JS8)
         radio_h->profiles[profile].mode = hamlib_to_mode(hmode);
 }
 

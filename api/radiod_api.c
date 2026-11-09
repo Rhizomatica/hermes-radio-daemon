@@ -148,6 +148,7 @@ static const char *mode_name(uint16_t m)
     case MODE_AM:    return "AM";
     case MODE_DRM:   return "DRM";
     case MODE_FT8:   return "FT8";
+    case MODE_JS8:   return "JS8";
     case MODE_RTTY:  return "RTTY";
     case MODE_DSTAR: return "DSTAR";
     default:         return "USB";
@@ -158,7 +159,7 @@ static bool mode_value(const char *name, uint16_t *out)
 {
     static const struct { const char *n; uint16_t m; } modes[] = {
         { "LSB", MODE_LSB }, { "USB", MODE_USB }, { "CW", MODE_CW }, { "FM", MODE_FM },
-        { "AM", MODE_AM }, { "DRM", MODE_DRM }, { "FT8", MODE_FT8 }, { "RTTY", MODE_RTTY },
+        { "AM", MODE_AM }, { "DRM", MODE_DRM }, { "FT8", MODE_FT8 }, { "JS8", MODE_JS8 }, { "RTTY", MODE_RTTY },
         { "DSTAR", MODE_DSTAR },
     };
     for (size_t i = 0; name && i < sizeof(modes) / sizeof(modes[0]); i++)

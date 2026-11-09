@@ -119,6 +119,7 @@ static const char *mode_to_string(uint16_t mode)
     case MODE_AM:   return "AM";
     case MODE_DRM:  return "DRM";
     case MODE_FT8:  return "FT8";
+    case MODE_JS8:  return "JS8";
     case MODE_RTTY: return "RTTY";
     case MODE_DSTAR: return "DSTAR";
     default:        return "USB";
@@ -134,6 +135,7 @@ static bool mode_from_string(const char *name, uint16_t *out)
     else if (!strcasecmp(name, "AM"))   *out = MODE_AM;
     else if (!strcasecmp(name, "DRM"))  *out = MODE_DRM;
     else if (!strcasecmp(name, "FT8"))  *out = MODE_FT8;
+    else if (!strcasecmp(name, "JS8"))  *out = MODE_JS8;
     else if (!strcasecmp(name, "RTTY")) *out = MODE_RTTY;
     else if (!strcasecmp(name, "DSTAR")) *out = MODE_DSTAR;
     else                                return false;
@@ -710,6 +712,8 @@ static void handle_ws_command(radio *radio_h, ws_conn_t *c,
         { send_cmd_error(c, cmd, "missing text"); return; }
         /* FT8 carries 77 bits: say so now instead of queueing a message the
          * modulator will drop. */
+        if (radio_h->profiles[radio_h->profile_active_idx].mode == MODE_JS8)
+        { send_cmd_error(c, cmd, "JS8 is receive only for now"); return; }
         if (radio_h->profiles[radio_h->profile_active_idx].mode == MODE_FT8 &&
             !sbitx_ft8_can_encode(text))
         { send_cmd_error(c, cmd, "not a valid FT8 message (free text: 13 characters max, A-Z 0-9 space + - . / ?)"); return; }

@@ -66,8 +66,8 @@ func (h handlers) getLog(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := api.Fields{}
 	mode, dir, call := strings.ToUpper(q.Get("mode")), q.Get("dir"), strings.ToUpper(q.Get("callsign"))
-	if mode != "" && mode != "FT8" && mode != "CW" && mode != "RTTY" && mode != "DSTAR" {
-		f.Add("mode", "one of FT8, CW, RTTY, DSTAR")
+	if mode != "" && mode != "FT8" && mode != "JS8" && mode != "CW" && mode != "RTTY" && mode != "DSTAR" {
+		f.Add("mode", "one of FT8, JS8, CW, RTTY, DSTAR")
 	}
 	if dir != "" && dir != "rx" && dir != "tx" {
 		f.Add("dir", "rx or tx")

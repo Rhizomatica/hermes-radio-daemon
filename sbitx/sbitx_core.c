@@ -449,6 +449,7 @@ static void set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
     case MODE_AM:   mode_str = "AM";   break;
     case MODE_DRM:  mode_str = "DRM";  break;
     case MODE_FT8:  mode_str = "FT8";  break;
+    case MODE_JS8:  mode_str = "JS8";  break;
     case MODE_RTTY: mode_str = "RTTY"; break;
     /* MODE_DSTAR was missing here while cfg_utils.c happily PARSES "DSTAR", so
      * selecting D-STAR silently persisted "USB": the mode survived until the
@@ -1362,6 +1363,7 @@ static int sb_get_mode_name(radio *radio_h, char *out, size_t out_len, uint32_t 
     case MODE_AM:   name = "AM";     break;
     case MODE_RTTY: name = "RTTY";   break;
     case MODE_FT8:  name = "PKTUSB"; break;
+    case MODE_JS8:  name = "PKTUSB"; break;
     case MODE_DRM:  name = "USB";    break;
     case MODE_USB:
     default:        name = "USB";    break;

@@ -94,6 +94,7 @@ static const char *mode_to_hamlib(uint16_t mode)
     case MODE_AM:   return "AM";
     case MODE_DRM:  return "USB";   /* DRM has no hamlib equivalent; rig sits in USB */
     case MODE_FT8:  return "PKTUSB"; /* FT8 reported as data-USB so digital apps pick it up */
+    case MODE_JS8:  return "PKTUSB";
     case MODE_RTTY: return "RTTY";
     default:        return "USB";
     }
