@@ -391,7 +391,11 @@ The station reads its position from the GPS receiver (via gpsd). What the API of
 | Task | Call | Role |
 | --- | --- | --- |
 | Read position, fix and settings | `GET /gps` | readonly |
-| Change logging and reporting | `PATCH /gps/settings` | operator |
+| Change logging | `PATCH /gps/settings` | operator |
+| Read a track over a time range | `GET /gps/track` | readonly |
+| List, download, delete this station's track files | `GET /gps/files`, `GET /gps/files/{name}`, `DELETE /gps/files` | readonly / readonly / operator |
+| Position beacons and SOS | `GET` / `PATCH /gps/beacon`, `POST /gps/beacon/send`, `POST` / `DELETE /gps/sos` | readonly / operator / user |
+| Stations heard, and their last positions | `GET /gps/beacons`, `GET /gps/stations` | readonly |
 | Watch the position live | the `gps` topic on the [WebSocket](#8-real-time-websocket) | readonly |
 
 ### Read the position
@@ -402,10 +406,7 @@ curl -sS "$BASE/gps" -H "Authorization: Bearer $TOKEN"
 ```json
 {
   "fix": "none", "latitude": null, "longitude": null, "altitude_m": null, "at": null,
-  "settings": {
-    "logging": false, "sample_interval_s": 1, "file_period_s": 3600, "email": null,
-    "report": { "enabled": false, "interval_s": 900 }
-  }
+  "settings": { "logging": false, "sample_interval_s": 1, "file_period_s": 3600, "email": null }
 }
 ```
 
@@ -418,39 +419,59 @@ altitude). `at` is the time of the fix (UTC). Coordinates are decimal degrees, a
 are.
 
 ```bash
-# Record positions, and broadcast this station's position every 10 minutes
+# Record the station's track
 curl -sS -X PATCH "$BASE/gps/settings" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"logging":true,"report":{"enabled":true,"interval_s":600}}'
+  -d '{"logging":true}'
 ```
 ```json
-{"logging":true,"sample_interval_s":1,"file_period_s":3600,"email":null,"report":{"enabled":true,"interval_s":600}}
+{"logging":true,"sample_interval_s":1,"file_period_s":3600,"email":null}
 ```
 
 | Field | Meaning | Allowed |
 | --- | --- | --- |
-| `logging` | Record positions to files. | `true` / `false` |
-| `sample_interval_s` | Seconds between recorded positions. | integer, 1 or more |
+| `logging` | Record the station's track, and the tracks of the stations heard by their beacons. | `true` / `false` |
+| `sample_interval_s` | Seconds between recorded positions while moving. | integer, 1 or more |
 | `file_period_s` | Seconds of positions per file. | integer, 60 or more |
 | `email` | Where finished files are sent. | an email address, or `null` to clear |
-| `report.enabled` | Broadcast this station's position over the air so other stations can plot it. Off by default. | `true` / `false` |
-| `report.interval_s` | Seconds between those broadcasts. | integer, 60 or more |
+
+Broadcasting the station's position over the air is the beacon's: `PATCH /gps/beacon`.
 
 Everything is checked before anything is applied, and a bad request changes nothing. A 422 lists every
 bad field:
 
 ```json
-{"code":"invalid","status":422,"errors":{"report.interval_s":["from 60 to 2147483647"],
- "sample_interval_s":["from 1 to 2147483647"],"x":["unknown field"]}}
+{"code":"invalid","status":422,"errors":{"sample_interval_s":["from 1 to 2147483647"],
+ "x":["unknown field"]}}
 ```
+
+### Read a track
+
+A time range of the station's track, oldest first (default: the last day). Points come a page at a time
+(`limit`, default 1000, at most 5000); `next_cursor` is there while there are more.
+
+```bash
+curl -sS "$BASE/gps/track?since=2026-11-09T08:00:00Z&until=2026-11-09T18:00:00Z" \
+  -H "Authorization: Bearer $TOKEN"
+```
+```json
+{"data":[
+  {"at":"2026-11-09T08:00:01.000Z","latitude":38.7123456,"longitude":-9.1234567,"altitude_m":51.3,
+   "accuracy_m":3.5,"fix":"3d","emergency":0},
+  {"at":"2026-11-09T08:05:01.000Z","latitude":38.7123461,"longitude":-9.1234570,"altitude_m":null,
+   "accuracy_m":null,"fix":"2d","emergency":0}],
+ "next_cursor":"MTc5NDIxMTUwMTAwMQ"}
+```
+
+`callsign=B0AB` reads another station's track instead: the position beacons heard from it while logging,
+with their emergency code. A station standing still records a point every 5 minutes, so a gap longer
+than that means no fix (or, for another station, no beacon heard).
 
 ### Not available yet
 
-The spec also defines trips (`GET /gps/trips`, `GET /gps/trip`, `POST /gps/trip/close`), the map of other
-stations (`GET /gps/stations`), position files (`GET /gps/files`, `DELETE /gps/files`) and an emergency
-position message (`POST /gps/sos`). They are **planned**: today they answer **404**. See
-[API-REFERENCE.md](API-REFERENCE.md#tag-gps) for their intended shape. The WebSocket `gps` topic currently
-carries only the station's own position (`change: "self"`), not other stations' (`change: "peers"`).
+Trips (`GET /gps/trips`, `GET /gps/trip`, `POST /gps/trip/close`) are **planned**: today they answer
+**404**. A trip will be a named time range of the track. The WebSocket `gps` topic carries only the
+station's own position (`change: "self"`), not other stations' (`change: "peers"`).
 
 ---
 

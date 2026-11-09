@@ -624,11 +624,6 @@ long radiod_api_gps_track_count(const char *station, int64_t since_ms, int64_t u
     return n < 0 ? RADIOD_API_EINVAL : n;
 }
 
-bool radiod_api_gps_track_stations(char *out, size_t out_len)
-{
-    return gps_track_stations(out, out_len);
-}
-
 bool radiod_api_gps_track_files(char *out, size_t out_len)
 {
     return gps_track_files(out, out_len);

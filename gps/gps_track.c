@@ -569,55 +569,6 @@ long gps_track_count(const char *station, int64_t since_ms, int64_t until_ms)
 
 /* ── listing ──────────────────────────────────────────────────── */
 
-bool gps_track_stations(char *out, size_t out_len)
-{
-    if (!out || out_len == 0)
-        return false;
-    out[0] = '\0';
-    char sdir[PATH_MAX_LEN];
-    pthread_mutex_lock(&g_lock);
-    snprintf(sdir, sizeof sdir, "%s/%s", g_cfg.dir, GPS_TRACK_STATIONS);
-    pthread_mutex_unlock(&g_lock);
-
-    char **names = NULL;
-    int n = 0;
-    DIR *d = opendir(sdir);
-    struct dirent *e;
-    while (d && (e = readdir(d)) && n < FILES_MAX) {
-        char call[GPS_TRACK_CALL_MAX + 1], back[GPS_TRACK_CALL_MAX + 1];
-        size_t len = strlen(e->d_name);
-        if (len > GPS_TRACK_CALL_MAX)
-            continue;
-        memcpy(call, e->d_name, len + 1);
-        for (char *c = call; *c; c++)
-            if (*c == '_')
-                *c = '/';
-        /* only the directories station_dir_name makes */
-        if (!station_dir_name(call, back) || strcmp(back, e->d_name))
-            continue;
-        char **more = realloc(names, (size_t) (n + 1) * sizeof *names);
-        if (!more)
-            break;
-        names = more;
-        names[n++] = strdup(call);
-    }
-    if (d)
-        closedir(d);
-    if (n > 1)
-        qsort(names, (size_t) n, sizeof *names, cmp_names);
-    bool ok = true;
-    size_t used = 0;
-    for (int i = 0; ok && i < n; i++) {
-        int w = snprintf(out + used, out_len - used, "%s\n", names[i]);
-        if (w < 0 || (size_t) w >= out_len - used)
-            ok = false;
-        else
-            used += (size_t) w;
-    }
-    free_names(names, n);
-    return ok;
-}
-
 bool gps_track_files(char *out, size_t out_len)
 {
     if (!out || out_len == 0)

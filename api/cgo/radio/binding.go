@@ -266,16 +266,6 @@ func (binding) GpsTrackCount(station string, sinceMs, untilMs int64) (int, error
 	return n, nil
 }
 
-// The other stations with a track: a callsign a line.
-const gpsTrackStationsMax = 64 << 10
-
-func (binding) GpsTrackStations() []string {
-	buf := C.malloc(gpsTrackStationsMax)
-	defer C.free(buf)
-	C.radiod_api_gps_track_stations((*C.char)(buf), gpsTrackStationsMax)
-	return strings.FieldsFunc(C.GoString((*C.char)(buf)), func(r rune) bool { return r == '\n' })
-}
-
 func (binding) GpsTrackDelete(name string) error {
 	cs := C.CString(name)
 	defer C.free(unsafe.Pointer(cs))

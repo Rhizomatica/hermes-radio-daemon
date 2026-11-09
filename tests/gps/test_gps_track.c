@@ -241,8 +241,9 @@ static void test_period_change(void)
     TEST_ASSERT_EQUAL_INT(1, gps_track_count(NULL, T0_MS + 100000, T0_MS + 300000));
 }
 
-/* Other stations' tracks, by callsign: a file a day, listed, never in this
- * station's files; a name that is no callsign is refused. */
+/* Other stations' tracks, by callsign: a file a day, never in this
+ * station's files, '/' as '_' in its directory; a name that is no callsign
+ * is refused. */
 static void test_stations(void)
 {
     gps_track_point p = { .lat_e7 = 45000000, .lon_e7 = -757000000, .alt_dm = GPS_TRACK_NO_ALT,
@@ -266,9 +267,7 @@ static void test_stations(void)
     TEST_ASSERT_EQUAL_INT(0, count());
     TEST_ASSERT_EQUAL_INT(0, files());
 
-    char out[OUT_MAX], path[512];
-    TEST_ASSERT_TRUE(gps_track_stations(out, sizeof out));
-    TEST_ASSERT_EQUAL_STRING("B0AB/P\nB0AC\n", out);
+    char path[512];
     snprintf(path, sizeof path, "%s/stations/B0AB_P/gps-20261110T000000Z.trk", dir);
     TEST_ASSERT_EQUAL_INT(0, access(path, F_OK));
 }

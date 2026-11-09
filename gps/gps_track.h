@@ -110,10 +110,6 @@ int gps_track_read(const char *station, int64_t since_ms, int64_t until_ms,
 /* How many points a track has at times since_ms..until_ms; -1 as above. */
 long gps_track_count(const char *station, int64_t since_ms, int64_t until_ms);
 
-/* The stations with a track, other than this one, one callsign a line,
- * into out.  False if they do not fit. */
-bool gps_track_stations(char *out, size_t out_len);
-
 /* This station's track files, full paths, oldest first, one a line, into
  * out.  False if they do not fit or the directory cannot be read. */
 bool gps_track_files(char *out, size_t out_len);

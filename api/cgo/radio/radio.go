@@ -298,9 +298,6 @@ type Radio interface {
 	// GpsTrackCount returns how many points a track has at times
 	// sinceMs..untilMs, without reading them: ErrInvalid as GpsTrack.
 	GpsTrackCount(station string, sinceMs, untilMs int64) (int, error)
-	// GpsTrackStations returns the other stations with a track: those
-	// whose position beacons were heard while logging.
-	GpsTrackStations() []string
 	// GpsTrackFiles returns this station's track files (gps/gps_track.h,
 	// /gps/files), full paths, oldest first; each one's name,
 	// gps-YYYYMMDDTHHMMSSZ.trk, is the start of the period it covers.

@@ -627,19 +627,6 @@ func (s *Stub) GpsTrackCount(station string, sinceMs, untilMs int64) (int, error
 	return len(r), err
 }
 
-func (s *Stub) GpsTrackStations() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var out []string
-	for k := range s.tracks {
-		if k != "" {
-			out = append(out, k)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
 // SetGpsTrackFiles sets what GpsTrackFiles returns.
 func (s *Stub) SetGpsTrackFiles(paths ...string) {
 	s.mu.Lock()

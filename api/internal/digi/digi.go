@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -17,6 +18,9 @@ import (
 	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
 )
+
+// digiModes is DigiMode (api-rest.yaml): the modes the log holds.
+var digiModes = []string{"FT8", "JS8", "CW", "RTTY", "DSTAR", "BEACON"}
 
 // Register adds the digital modes' operations.
 func Register(rt *api.Router) {
@@ -66,8 +70,8 @@ func (h handlers) getLog(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := api.Fields{}
 	mode, dir, call := strings.ToUpper(q.Get("mode")), q.Get("dir"), strings.ToUpper(q.Get("callsign"))
-	if mode != "" && mode != "FT8" && mode != "JS8" && mode != "CW" && mode != "RTTY" && mode != "DSTAR" {
-		f.Add("mode", "one of FT8, JS8, CW, RTTY, DSTAR")
+	if mode != "" && !slices.Contains(digiModes, mode) {
+		f.Add("mode", "one of "+strings.Join(digiModes, ", "))
 	}
 	if dir != "" && dir != "rx" && dir != "tx" {
 		f.Add("dir", "rx or tx")

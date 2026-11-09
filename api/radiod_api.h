@@ -233,10 +233,6 @@ int radiod_api_gps_track_read(const char *station, int64_t since_ms, int64_t unt
  * searches a file); RADIOD_API_EINVAL as above. */
 long radiod_api_gps_track_count(const char *station, int64_t since_ms, int64_t until_ms);
 
-/* The other stations with a track, one callsign a line; false when out is
- * too small. */
-bool radiod_api_gps_track_stations(char *out, size_t out_len);
-
 /* This station's track files on disk (/gps/files), full paths, oldest
  * first, separated by '\n'; false when out is too small or the directory
  * cannot be read.  Their format is in gps/gps_track.h. */
