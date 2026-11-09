@@ -281,9 +281,98 @@ static void test_not_a_frame(void)
     TEST_ASSERT_EQUAL_INT(JS8_MSG_RAW, m.kind);
 }
 
+/* Packing: frames JS8Call sent, in its own recordings (tests/fixtures/js8),
+ * come out of js8_msg_pack bit for bit. */
+static void test_pack_as_js8call(void)
+{
+    static const struct { const char *my, *text, *frame; bool fast; int type; } REF[] = {
+        { "KG9B",   "KN4CRD HEARTBEAT SNR -14", "SKflsHSNwzqH", false, JS8_TX_FIRST | JS8_TX_LAST },
+        { "K0OG",   "KN4CRD SNR +02",           "Vk4xfHSNwzaX", false, JS8_TX_FIRST | JS8_TX_LAST },
+        { "VA3QR",  "KN4CRD HEARTBEAT SNR -17", "UctD9HSNwzqE", false, JS8_TX_FIRST | JS8_TX_LAST },
+        { "N5RML",  "K0EIA HEARTBEAT SNR -16",  "VlPJy-uGBfqF", false, JS8_TX_FIRST | JS8_TX_LAST },
+        /* Slow: a data-only frame, JSC, the sender named before the text */
+        { "KN4CRD", "TEST",                     "TrMcT8++++++", true,
+          JS8_TX_FIRST | JS8_TX_LAST | JS8_TX_DATA },
+    };
+    for (size_t i = 0; i < sizeof REF / sizeof REF[0]; i++) {
+        js8_tx_frame f[8];
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, js8_msg_pack(REF[i].my, "", REF[i].text, REF[i].fast, f, 8),
+                                      REF[i].text);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(REF[i].frame, f[0].frame, REF[i].text);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(REF[i].type, f[0].type, REF[i].text);
+    }
+    /* A heartbeat: as the recording's but for its (deprecated) status bits. */
+    js8_tx_frame f[8];
+    js8_msg m;
+    TEST_ASSERT_EQUAL_INT(1, js8_msg_pack("KN4ZXG", "FM16", "@HB HEARTBEAT FM16", false, f, 8));
+    js8_msg_unpack(f[0].frame, f[0].type, &m);
+    TEST_ASSERT_EQUAL_STRING("KN4ZXG: @HB HEARTBEAT FM16", m.text);
+    js8_msg_unpack("2Y-wUW3FOjFp", 3, &m);
+    TEST_ASSERT_EQUAL_STRING("KN4ZXG: @HB HEARTBEAT FM16", m.text);
+}
+
+/* What a line packs into, read back. */
+static int pack_read(const char *my, const char *grid, const char *text, bool fast,
+                     js8_msg *m, int max)
+{
+    js8_tx_frame f[16];
+    int n = js8_msg_pack(my, grid, text, fast, f, 16);
+    for (int i = 0; i < n && i < max; i++)
+        js8_msg_unpack(f[i].frame, f[i].type, &m[i]);
+    return n;
+}
+
+static void test_pack_lines(void)
+{
+    js8_msg m[16];
+    TEST_ASSERT_EQUAL_INT(1, pack_read("CR7BYQ", "IM58", "CQ CQ CQ IM58", false, m, 16));
+    TEST_ASSERT_EQUAL_STRING("CR7BYQ: @ALLCALL CQ CQ CQ IM58", m[0].text);
+    TEST_ASSERT_TRUE(m[0].first && m[0].last);
+
+    /* free text to a station: a directed frame, then the text */
+    TEST_ASSERT_EQUAL_INT(2, pack_read("CR7BYQ", "IM58", "EA1A hello from Lisbon", false, m, 16));
+    TEST_ASSERT_EQUAL_STRING("CR7BYQ: EA1A", m[0].text);
+    TEST_ASSERT_EQUAL_STRING("HELLO FROM LISBON", m[1].text);
+    TEST_ASSERT_TRUE(m[0].first && !m[0].last && !m[1].first && m[1].last);
+
+    /* a buffered command's text ends with its CRC-16 */
+    int n = pack_read("CR7BYQ", "IM58", "EA1A MSG MEET AT 7078", false, m, 16);
+    TEST_ASSERT_TRUE(n >= 2);
+    TEST_ASSERT_EQUAL_STRING("CR7BYQ: EA1A MSG", m[0].text);
+    char text[128] = "";
+    for (int i = 1; i < n; i++)
+        strcat(text, m[i].text);
+    TEST_ASSERT_EQUAL_INT(0, strncmp(text, "MEET AT 7078 ", 13));
+    TEST_ASSERT_EQUAL_INT(13 + 3, (int) strlen(text));
+
+    /* a compound callsign: who, then the command */
+    TEST_ASSERT_EQUAL_INT(2, pack_read("PJ2/K1ABC", "FK52", "EA1A SNR?", false, m, 16));
+    TEST_ASSERT_EQUAL_STRING("PJ2/K1ABC:", m[0].text);
+    TEST_ASSERT_EQUAL_STRING("EA1A SNR?", m[1].text);
+
+    /* a long message: several frames, first and last flagged, the whole
+     * text back, the sender named first */
+    const char *long_text = "hello world, this is a longer message going out in several frames";
+    n = pack_read("CR7BYQ", "IM58", long_text, false, m, 16);
+    TEST_ASSERT_TRUE(n > 2);
+    text[0] = '\0';
+    for (int i = 0; i < n; i++) {
+        TEST_ASSERT_EQUAL(i == 0, m[i].first);
+        TEST_ASSERT_EQUAL(i == n - 1, m[i].last);
+        strcat(text, m[i].text);
+    }
+    TEST_ASSERT_EQUAL_STRING("CR7BYQ: HELLO WORLD, THIS IS A LONGER MESSAGE GOING OUT IN SEVERAL FRAMES",
+                             text);
+    /* nothing to send, or no callsign */
+    TEST_ASSERT_EQUAL_INT(0, pack_read("CR7BYQ", "IM58", "", false, m, 16));
+    TEST_ASSERT_EQUAL_INT(0, pack_read("", "IM58", "CQ", false, m, 16));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
+    RUN_TEST(test_pack_as_js8call);
+    RUN_TEST(test_pack_lines);
     RUN_TEST(test_heartbeat_and_cq);
     RUN_TEST(test_compound);
     RUN_TEST(test_directed);

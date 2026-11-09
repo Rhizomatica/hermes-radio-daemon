@@ -55,4 +55,23 @@ typedef struct {
 /* What frame (twelve characters) with type bits `type` says. */
 void js8_msg_unpack(const char *frame, int type, js8_msg *out);
 
+/* A frame to send: its characters and type bits. */
+typedef struct {
+    char frame[JS8_CHARS + 1];
+    int  type;
+} js8_tx_frame;
+
+/* The frames a line of text goes out in, from mycall in mygrid, as
+ * JS8Call's Varicode::buildMessageFrames builds them: a heartbeat or CQ
+ * ("@HB HEARTBEAT IN51", "CQ CQ CQ IN51"), a directed command
+ * ("EA1A SNR?", "EA1A SNR -12"; compound callsigns as JS8Call's compound
+ * frames), and text, Huffman-coded or JSC-compressed, whichever is
+ * shorter; text with no callsign before it says who it is from
+ * ("CR7BYQ: ...").  A buffered command's text takes JS8Call's checksum.
+ * fast: a submode other than Normal (data frames all JSC).  The first and
+ * last frames carry JS8_TX_FIRST and JS8_TX_LAST.  Returns how many, at
+ * most max; 0 if nothing packs. */
+int js8_msg_pack(const char *mycall, const char *mygrid, const char *text, bool fast,
+                 js8_tx_frame *out, int max);
+
 #endif
