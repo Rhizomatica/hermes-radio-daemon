@@ -1,5 +1,5 @@
 % HERMES: email, files, messages and voice over HF radio (November 2026)
-% A 10-minute talk: ten slides between the title and the thanks.
+% A 10-minute talk: eleven slides between the title and the thanks.
 % Build: make  (pdflatex twice; needs texlive with beamer, metropolis, FiraSans, pgfplots)
 % The theme and palette follow Mercury's deck (vendor/mercury/docs/presentations).
 % Copyright (C) 2026 Rhizomatica
@@ -91,7 +91,7 @@
       \item People use it as they use the internet: \textbf{email}, webmail and Delta Chat on their phone, over the station's \textbf{WiFi}
       \item The station carries the traffic over \textbf{HF} to a gateway, which has an uplink to the internet
       \item Also \textbf{voice}, digital and encrypted where that is permitted, \textbf{broadcast} files, and \textbf{positions} with an emergency call
-      \item \textbf{Free software} from Rhizomatica, funded by ARDC and others; first deployed in the Amazon rainforest
+      \item \textbf{Free software} from Rhizomatica, supported by ARDC grants since 2021; \textbf{hands-on training} so a community runs its own station
     \end{itemize}
     \column{0.42\textwidth}
     \begin{tikzpicture}[node distance=0.32cm,
@@ -107,6 +107,31 @@
         \draw[-{Latex[length=2mm]},hdkgreen,line width=0.8pt] (\a) -- (\b);
     \end{tikzpicture}
   \end{columns}
+\end{frame}
+
+\begin{frame}{Where HERMES runs}
+  \small
+  \begin{columns}[T]
+    \column{0.5\textwidth}
+    \begin{block}{\faTree\ Ecuadorian Amazon}
+      \begin{itemize}
+        \item Waorani Indigenous communities: \hl{nearly 90 radios}, the largest deployment
+        \item Some sites are days away on foot or by boat
+        \item Older residents keep in touch with family in other villages
+      \end{itemize}
+    \end{block}
+    \begin{exampleblock}{\faUsers\ Run by the community}
+      Rhizomatica trains a small group of community members, on site, to install, operate and maintain the station without constant outside support
+    \end{exampleblock}
+    \column{0.46\textwidth}
+    \begin{block}{\faShip\ Bangladesh}
+      Fishing communities, with HERMES on their \textbf{fishing boats}, in a conservation project
+    \end{block}
+    \begin{block}{\faExclamationTriangle\ Central African Republic}
+      \textbf{Early warning} systems
+    \end{block}
+  \end{columns}
+  \src{Source: ARDC, ``Rhizomatica's HERMES and Mercury Expand Open Source HF Communications'', 6 November 2026}
 \end{frame}
 
 \begin{frame}{How a network fits together}
@@ -168,7 +193,7 @@
     \end{itemize}
     \column{0.42\textwidth}
     \begin{block}{Mercury, the link}
-      \footnotesize Seven speed rungs, from MFSK below $-10$ dB SNR to 3.1 kbit/s; a receiver-driven, erasure-coded carousel; a VARA-compatible TNC. It has its own presentation.
+      \footnotesize Free software since May 2026, replacing VARA, a proprietary modem with a paid licence per radio. Seven speed rungs, from MFSK below $-10$ dB SNR to 3.1 kbit/s; a VARA-compatible TNC. It has its own presentation.
     \end{block}
     \begin{block}{Broadcast: one to many}
       \footnotesize Files go out as a \textbf{RaptorQ fountain}: a receiver that hears enough of \emph{any} frames rebuilds the file, wherever it tuned in. No return path: bulletins and updates to a whole region.
@@ -296,10 +321,9 @@
     \column{0.5\textwidth}
     \begin{block}{\faServer\ Platforms}
       \begin{itemize}
-        \item \textbf{Raspberry Pi} 4 and 5, Debian 13, from the HERMES package repository
-        \item \textbf{A phone as the station}: the daemon and Mercury on Sailfish OS and a PinePhone Pro, the radio on USB, the phone's own GPS
-        \item Mercury also on \textbf{Android} and \textbf{iOS} phones, \textbf{macOS} and \textbf{Windows}: the radio on USB everywhere but iOS, which gives apps no USB access
-        \item CAT over USB without kernel drivers, proposed upstream to Hamlib
+        \item \textbf{Raspberry Pi} 4 and 5, Debian 13, from the HERMES package repository; Mercury even on a Pi Zero, with the zBitx
+        \item \textbf{A phone as the station}: the daemon and Mercury on Sailfish OS and a PinePhone Pro, the radio on USB (CAT without kernel drivers, proposed to Hamlib), the phone's own GPS
+        \item Mercury also on \textbf{Android} and \textbf{iOS} phones, \textbf{macOS} and \textbf{Windows}; iOS gives apps no USB access
       \end{itemize}
     \end{block}
   \end{columns}
@@ -319,18 +343,21 @@
       }
     \end{tikzpicture}
     \column{0.52\textwidth}
-    \small
+    \footnotesize
     \begin{block}{\faExchange*\ Store and forward}
-      UUCP and NNCP behind one layer of the station API; an SOS message to chosen recipients
+      UUCP and NNCP behind one layer of the station API; SOS messages
     \end{block}
     \begin{block}{\faDesktop\ One interface}
-      The web interfaces on the station API; the older WebSocket protocol retired
+      The web interfaces on the station API; the old WebSocket retired
     \end{block}
     \begin{block}{\faBroadcastTower\ Sharing the channel}
-      HF channel access between a network's stations; Mercury's optional encryption; trips on the map
+      HF channel access between stations; Mercury's optional encryption
+    \end{block}
+    \begin{block}{\faProjectDiagram\ Other networks}
+      Reticulum over HF (done); Meshtastic, for LoRa networks (in progress)
     \end{block}
   \end{columns}
-  \src{Source: git history of hermes-radio-daemon and Mercury}
+  \src{Source: git history of hermes-radio-daemon and Mercury; ARDC, 6 November 2026}
 \end{frame}
 
 \begin{frame}[plain]
