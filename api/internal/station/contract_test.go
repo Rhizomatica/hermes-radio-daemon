@@ -58,7 +58,8 @@ func noTransports(t *testing.T) {
 // given a value here: fillPath fails the test on a name it does not know,
 // rather than send a wrong kind of value.
 var sample = map[string]string{"profile": "0", "user_id": "999999", "session_id": "999999",
-	"broadcast_id": "nothing-queued.bin", "name": "nothing-received.bin", "job_id": "uucp.B0ZZ.C0000"}
+	"broadcast_id": "nothing-queued.bin", "name": "nothing-received.bin", "job_id": "uucp.B0ZZ.C0000",
+	"trip_id": "999999"}
 
 func fillPath(t *testing.T, p string) string {
 	return pathParam.ReplaceAllStringFunc(p, func(m string) string {
@@ -81,6 +82,12 @@ func snapshot(e *testapi.Env, token string) map[string]string {
 	for _, id := range e.R.Operations() {
 		op := spec.Operations()[id]
 		if op.Method != "GET" || strings.Contains(op.Path, "{") || strings.HasPrefix(op.Path, "/session") {
+			continue
+		}
+		// The trip lifecycle (openTrip/closeTrip) legitimately creates and
+		// closes trips during the run, so the trip GETs are expected to
+		// change; they are checked by their own tests instead.
+		if op.Path == "/gps/trip" || op.Path == "/gps/trips" {
 			continue
 		}
 		r := e.DoAuth("GET", op.Path, "", token)

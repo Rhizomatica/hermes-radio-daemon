@@ -165,6 +165,114 @@ func TestGPSFixFromGpsd(t *testing.T) {
 	}
 }
 
+// Trips: open and close are explicit; closing does not open a new one. The
+// trip appears in the list and is readable by id before and after closing.
+func TestGPSTrips(t *testing.T) {
+	needGoAPI(t)
+	d := startAPIDaemon(t)
+	token := setupAPI(t, d)
+	base := apiBase(d)
+
+	if r := callAuth(t, "GET", base+"/gps/trip", "", token); r.status != 404 || r.body["code"] != "no_open_trip" {
+		t.Fatalf("GET /gps/trip = %d %s", r.status, r.raw)
+	}
+
+	r := callAuth(t, "POST", base+"/gps/trip/open", "", token)
+	if r.status != 200 {
+		t.Fatalf("open = %d %s", r.status, r.raw)
+	}
+	id, _ := r.body["id"].(float64)
+	if id == 0 || r.body["ended_at"] != nil || r.body["point_count"].(float64) != 0 {
+		t.Fatalf("open trip = %s", r.raw)
+	}
+
+	if r := callAuth(t, "POST", base+"/gps/trip/open", "", token); r.status != 409 || r.body["code"] != "trip_open" {
+		t.Fatalf("open while open = %d %s", r.status, r.raw)
+	}
+
+	r = callAuth(t, "GET", base+"/gps/trips", "", token)
+	if r.status != 200 {
+		t.Fatalf("list = %d %s", r.status, r.raw)
+	}
+	if data := r.body["data"].([]any); len(data) != 1 {
+		t.Fatalf("list data = %v", r.body["data"])
+	}
+
+	// Closing does not open a new trip.
+	r = callAuth(t, "POST", base+"/gps/trip/close", "", token)
+	if r.status != 200 || r.body["ended_at"] == nil {
+		t.Fatalf("close = %d %s", r.status, r.raw)
+	}
+	if r := callAuth(t, "GET", base+"/gps/trip", "", token); r.status != 404 {
+		t.Fatalf("after close, GET /gps/trip = %d %s (close must not reopen)", r.status, r.raw)
+	}
+
+	// The closed trip is still in the history and readable by id.
+	if r := callAuth(t, "GET", base+"/gps/trips/"+fmt.Sprintf("%.0f", id), "", token); r.status != 200 {
+		t.Fatalf("get trip = %d %s", r.status, r.raw)
+	}
+	if r := callAuth(t, "GET", base+"/gps/trips/999999", "", token); r.status != 404 {
+		t.Fatalf("get missing trip = %d %s", r.status, r.raw)
+	}
+}
+
+// With gps_enable and a fake gpsd, an open trip records the fixes as its
+// points (the breadcrumb).
+func TestGPSTripRecording(t *testing.T) {
+	needGoAPI(t)
+	_, port, _ := net.SplitHostPort(startFakeGpsd(t))
+	d := startDaemon(t, daemonOpts{core: []string{
+		"api_v2_enable = 1",
+		"gps_enable = 1",
+		"gps_host = 127.0.0.1",
+		"gps_port = " + port,
+	}})
+	token := setupAPI(t, d)
+	base := apiBase(d)
+
+	// Wait for a fix before opening the trip.
+	var r httpResult
+	if !eventually(10*time.Second, func() bool {
+		r = callAuth(t, "GET", base+"/gps", "", token)
+		return r.status == 200 && r.body["fix"] == "3d"
+	}) {
+		t.Fatalf("no 3-D fix within 10 s (last %d %s)", r.status, r.raw)
+	}
+
+	r = callAuth(t, "POST", base+"/gps/trip/open", "", token)
+	if r.status != 200 {
+		t.Fatalf("open = %d %s", r.status, r.raw)
+	}
+	id := r.body["id"].(float64)
+
+	// The recorder captures one point per sample_interval_s (default 1 s).
+	if !eventually(5*time.Second, func() bool {
+		r = callAuth(t, "GET", base+"/gps/trip", "", token)
+		if r.status != 200 {
+			return false
+		}
+		trip, _ := r.body["trip"].(map[string]any)
+		return trip != nil && trip["point_count"].(float64) >= 1
+	}) {
+		t.Fatalf("no recorded point within 5 s (last %d %s)\n--- daemon log ---\n%s", r.status, r.raw, d.Log())
+	}
+	data := r.body["data"].([]any)
+	if len(data) == 0 {
+		t.Fatalf("no points in the current trip: %s", r.raw)
+	}
+	pt := data[0].(map[string]any)
+	if pt["latitude"] != 19.43 || pt["longitude"] != -99.13 {
+		t.Fatalf("recorded point = %s", r.raw)
+	}
+
+	if r := callAuth(t, "POST", base+"/gps/trip/close", "", token); r.status != 200 {
+		t.Fatalf("close = %d %s", r.status, r.raw)
+	}
+	if r := callAuth(t, "GET", base+"/gps/trips/"+fmt.Sprintf("%.0f", id), "", token); r.status != 200 {
+		t.Fatalf("get trip = %d %s", r.status, r.raw)
+	}
+}
+
 // startFakeGpsd runs a minimal gpsd on 127.0.0.1: it greets the reader and
 // then streams a fixed 3-D TPV, so the daemon always has a fix waiting.
 func startFakeGpsd(t *testing.T) string {

@@ -49,7 +49,7 @@ var UUCPSys = "/etc/uucp/sys"
 // callsignRe is BeaconPatch's callsign (the beacon's alphabet, no space).
 var callsignRe = regexp.MustCompile(`^([A-Za-z0-9/.-]{1,9})?$`)
 
-func registerBeacon(rt *api.Router, h handlers) {
+func registerBeacon(rt *api.Router, h *handlers) {
 	rt.Op("getBeacon", h.getBeacon)
 	rt.Op("updateBeacon", h.updateBeacon)
 	rt.Op("sendBeacon", h.sendBeacon)

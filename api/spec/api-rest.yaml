@@ -2079,9 +2079,9 @@ paths:
       summary: The current trip and its recorded positions (the breadcrumb).
       description: |
         The station's open trip: every position fix is stored in the database and listed
-        here, oldest first, so the map can draw the breadcrumb. A trip opens automatically
-        and closes only via `POST /gps/trip/close`, so one is always open; `ended_at` is
-        null until then.
+        here, oldest first, so the map can draw the breadcrumb. A trip opens only via
+        `POST /gps/trip/open` and closes via `POST /gps/trip/close`; `ended_at` is null
+        until then. With no trip open this answers 404.
       x-hermes-role: readonly
       parameters:
         - $ref: "#/components/parameters/Limit"
@@ -2100,15 +2100,42 @@ paths:
                     type: array
                     items: {$ref: "#/components/schemas/GpsPoint"}
                   next_cursor: {type: string}
+        "404":
+          description: No trip is open (`code` = `no_open_trip`).
+          content:
+            application/problem+json:
+              schema: {$ref: "#/components/schemas/Problem"}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /gps/trip/open:
+    post:
+      tags: [gps]
+      operationId: openTrip
+      summary: Open a trip and start recording position fixes in it.
+      description: |
+        Opens a new trip; the next position fix and the ones after are recorded in it.
+        There is at most one open trip: while one is open this answers 409, so close it
+        first (`POST /gps/trip/close`). Closing a trip does not open a new one.
+      x-hermes-role: operator
+      responses:
+        "200":
+          description: The trip that was opened.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Trip"}
+        "409":
+          description: A trip is already open (`code` = `trip_open`).
+          content:
+            application/problem+json:
+              schema: {$ref: "#/components/schemas/Problem"}
         '401': {$ref: '#/components/responses/Unauthorized'}
   /gps/trip/close:
     post:
       tags: [gps]
       operationId: closeTrip
-      summary: Close the current trip and start a new one.
+      summary: Close the open trip.
       description: |
-        Sets `ended_at` on the open trip and starts a new one; the next position fix is
-        recorded in the new trip. Nothing is deleted, so closed trips stay in the history.
+        Sets `ended_at` on the open trip and does not open a new one: open another with
+        `POST /gps/trip/open`. Nothing is deleted, so closed trips stay in the history.
         Returns the trip that was closed.
       x-hermes-role: operator
       responses:

@@ -446,11 +446,11 @@ bad field:
 
 ### Not available yet
 
-The spec also defines trips (`GET /gps/trips`, `GET /gps/trip`, `POST /gps/trip/close`), the map of other
-stations (`GET /gps/stations`), position files (`GET /gps/files`, `DELETE /gps/files`) and an emergency
-position message (`POST /gps/sos`). They are **planned**: today they answer **404**. See
-[API-REFERENCE.md](API-REFERENCE.md#tag-gps) for their intended shape. The WebSocket `gps` topic currently
-carries only the station's own position (`change: "self"`), not other stations' (`change: "peers"`).
+Position files (`GET /gps/files`, `DELETE /gps/files`, `GET /gps/files/{name}`) are **planned**: today they
+answer **404**. See [API-REFERENCE.md](API-REFERENCE.md#tag-gps) for their intended shape. The WebSocket
+`gps` topic currently carries only the station's own position (`change: "self"`), not other stations'
+(`change: "peers"`).
+
 
 ---
 

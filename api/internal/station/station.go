@@ -40,7 +40,7 @@ func newRouter(r rad.Radio, st *store.Store, cfg setup.Config) *api.Router {
 	radio.Register(rt)
 	digi.Register(rt)
 	modem.Register(rt)
-	gps.Register(rt)
+	gps.Register(rt, st)
 	broadcasts.Register(rt)
 	queue.Register(rt)
 	if st != nil {
