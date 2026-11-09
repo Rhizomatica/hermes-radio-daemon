@@ -187,8 +187,6 @@ func (h *handlers) tripWithPoints(w http.ResponseWriter, r *http.Request, trip s
 // ── the recorder: one position fix per sample_interval_s into the open trip ──
 
 func (h *handlers) startRecorder() {
-	h.recMu.Lock()
-	defer h.recMu.Unlock()
 	if h.recOn {
 		return
 	}
@@ -198,8 +196,6 @@ func (h *handlers) startRecorder() {
 }
 
 func (h *handlers) stopRecorder() {
-	h.recMu.Lock()
-	defer h.recMu.Unlock()
 	if !h.recOn {
 		return
 	}

@@ -43,9 +43,8 @@ type handlers struct {
 	mu  *sync.Mutex
 	log *slog.Logger
 
-	// recMu guards the trip recorder's lifecycle; recOn says the goroutine
-	// runs, recStop stops it.
-	recMu   sync.Mutex
+	// recStop/recOn track the trip recorder's lifecycle; they are only
+	// touched while holding mu (openTrip/closeTrip).
 	recStop chan struct{}
 	recOn   bool
 }
