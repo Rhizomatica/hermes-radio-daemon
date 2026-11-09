@@ -151,7 +151,7 @@ static void jw_opt_str(jw *w, const char *key, const char *value, size_t max_cha
 /* Told of every entry logged (digi_log_set_listener). */
 static _Atomic(digi_log_listener) g_listener;
 
-static const char *const g_modes[] = { "FT8", "CW", "RTTY", "DSTAR", "BEACON", NULL };
+static const char *const g_modes[] = { "FT8", "JS8", "CW", "RTTY", "DSTAR", "BEACON", NULL };
 static const char *const g_dirs[]  = { "rx", "tx", NULL };
 
 /* The matching entry of `allowed`, or NULL. Returning the table's own

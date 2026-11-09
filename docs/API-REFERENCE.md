@@ -3508,7 +3508,7 @@ Type: one of `auto`, `vvc`, `lpcnet`, `none`
 <a id="schema-digimode"></a>
 ### DigiMode
 
-Type: one of `FT8`, `CW`, `RTTY`, `DSTAR`, `BEACON`
+Type: one of `FT8`, `JS8`, `CW`, `RTTY`, `DSTAR`, `BEACON`
 
 <a id="schema-digisettings"></a>
 ### DigiSettings
@@ -3766,7 +3766,7 @@ Type: one of `draft`, `queued`, `broadcasting`, `sent`, `delivered`, `failed`, `
 <a id="schema-mode"></a>
 ### Mode
 
-Type: one of `LSB`, `USB`, `CW`, `FM`, `AM`, `DRM`, `FT8`, `RTTY`, `DSTAR`
+Type: one of `LSB`, `USB`, `CW`, `FM`, `AM`, `DRM`, `FT8`, `JS8`, `RTTY`, `DSTAR`
 
 <a id="schema-modemconfig"></a>
 ### ModemConfig

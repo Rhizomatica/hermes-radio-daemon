@@ -38,6 +38,8 @@
 #include "sbitx_alsa.h"
 #include "radio_pipeline.h"
 #include "sbitx_dsp.h"
+#include "js8_tx.h"
+#include "digi_log.h"
 #include "radio_backend.h"
 #include "radio_controls.h"
 
@@ -449,6 +451,7 @@ static void set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
     case MODE_AM:   mode_str = "AM";   break;
     case MODE_DRM:  mode_str = "DRM";  break;
     case MODE_FT8:  mode_str = "FT8";  break;
+    case MODE_JS8:  mode_str = "JS8";  break;
     case MODE_RTTY: mode_str = "RTTY"; break;
     /* MODE_DSTAR was missing here while cfg_utils.c happily PARSES "DSTAR", so
      * selecting D-STAR silently persisted "USB": the mode survived until the
@@ -810,12 +813,16 @@ void io_tick(radio *radio_h)
         static int  digi_idle_ticks = 0;             /* 10 ms each */
         enum { DIGI_UNKEY_HOLD_TICKS = 20 };         /* 200 ms */
         uint16_t m = radio_h->profiles[radio_h->profile_active_idx].mode;
-        bool digi_mode = (m == MODE_FT8 || m == MODE_CW || m == MODE_RTTY);
+        bool digi_mode = (m == MODE_FT8 || m == MODE_JS8 || m == MODE_CW || m == MODE_RTTY);
         bool pending = digi_tx_queue_pending(&radio_h->digi_tx);
+        /* JS8 keys just before its next slot, not through a period of silence */
+        bool slot_near = m != MODE_JS8 ||
+            js8_tx_next_start(js8_tx_submode(radio_h->js8_submodes), digi_log_now()) -
+            digi_log_now() <= JS8_PTT_LEAD_S;
 
         if (!digi_keyed)
         {
-            if (digi_mode && pending && radio_h->txrx_state == IN_RX &&
+            if (digi_mode && pending && slot_near && radio_h->txrx_state == IN_RX &&
                 !radio_h->key_down && !radio_h->swr_protection_enabled)
             {
                 tr_switch(radio_h, IN_TX);
@@ -1362,6 +1369,7 @@ static int sb_get_mode_name(radio *radio_h, char *out, size_t out_len, uint32_t 
     case MODE_AM:   name = "AM";     break;
     case MODE_RTTY: name = "RTTY";   break;
     case MODE_FT8:  name = "PKTUSB"; break;
+    case MODE_JS8:  name = "PKTUSB"; break;
     case MODE_DRM:  name = "USB";    break;
     case MODE_USB:
     default:        name = "USB";    break;

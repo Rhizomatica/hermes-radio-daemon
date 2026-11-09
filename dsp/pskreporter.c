@@ -58,10 +58,11 @@ static unsigned g_datagrams;
 static time_t   g_templates_at;
 static unsigned g_jitter_seed;
 
-/* digi_log's listener: an FT8 sender heard, queued if it is due. */
+/* digi_log's listener: an FT8 or JS8 sender heard, queued if it is due. */
 static void heard(const digi_log_entry *e, double at)
 {
-    if (!e->dir || strcmp(e->dir, "rx") || !e->mode || strcmp(e->mode, "FT8") ||
+    if (!e->dir || strcmp(e->dir, "rx") || !e->mode ||
+        (strcmp(e->mode, "FT8") && strcmp(e->mode, "JS8")) ||
         !e->has_snr || !pskr_call_ok(e->from))
         return;
     uint64_t hz = e->freq_hz + (e->has_offset ? (int64_t) e->offset_hz : 0);
@@ -264,7 +265,7 @@ bool pskreporter_start(radio *radio_h)
     }
     atomic_store(&g_started, true);
     digi_log_set_listener(heard);
-    HLOGI(LOG_C, "reporting FT8 stations heard to %s", radio_h->pskreporter_server);
+    HLOGI(LOG_C, "reporting FT8 and JS8 stations heard to %s", radio_h->pskreporter_server);
     return true;
 }
 

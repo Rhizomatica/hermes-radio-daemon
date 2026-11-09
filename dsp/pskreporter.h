@@ -1,8 +1,8 @@
 /* pskreporter - reports the stations this one decodes to PSKReporter
  * (https://pskreporter.info), as WSJT-X and JS8Call do.
  *
- * With main:pskreporter_enable, every FT8 sender decoded (digi_log's rx
- * entries with a callsign) is queued, once an hour per band at most, and
+ * With main:pskreporter_enable, every FT8 and JS8 sender decoded
+ * (digi_log's rx entries with a callsign) is queued, once an hour per band at most, and
  * the queue goes to the server in one UDP datagram every five minutes or
  * so, never in step with the clock: the spec's rules.  The receiver is
  * main:callsign at the GPS fix, else at main:station_latitude/longitude,

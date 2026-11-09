@@ -2559,7 +2559,7 @@ components:
       enum: [readonly, user, operator, admin]
     Mode:
       type: string
-      enum: [LSB, USB, CW, FM, AM, DRM, FT8, RTTY, DSTAR]
+      enum: [LSB, USB, CW, FM, AM, DRM, FT8, JS8, RTTY, DSTAR]
     Codec:
       type: string
       enum: [auto, vvc, lpcnet, none]
@@ -3788,7 +3788,7 @@ components:
 
     DigiMode:
       type: string
-      enum: [FT8, CW, RTTY, DSTAR, BEACON]
+      enum: [FT8, JS8, CW, RTTY, DSTAR, BEACON]
     DigiEntry:
       type: object
       required: [id, at, mode, dir, frequency_hz]

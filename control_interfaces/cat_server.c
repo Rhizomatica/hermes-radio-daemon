@@ -127,6 +127,7 @@ static char ts_mode_digit(uint16_t mode)
     case MODE_AM:   return TS_MODE_AM;
     case MODE_RTTY: return TS_MODE_FSK;
     case MODE_FT8:
+    case MODE_JS8:
     case MODE_DRM:
     case MODE_USB:
     default:        return TS_MODE_USB;

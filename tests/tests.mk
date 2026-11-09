@@ -54,7 +54,7 @@ TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
             tests/audioio/test_audio_bridge \
             tests/dsp/test_upsample2 tests/dsp/test_stream_resampler tests/dsp/test_mic_filter \
             tests/dsp/test_digi_modes tests/dsp/test_digi_log tests/dsp/test_dstar_voice \
-            tests/dsp/test_rade_voice tests/dsp/test_dstar_clock_cal tests/dsp/test_pskreporter tests/dsp/test_radae_vocoder tests/dsp/test_drm \
+            tests/dsp/test_rade_voice tests/dsp/test_dstar_clock_cal tests/dsp/test_pskreporter tests/dsp/test_js8_frame tests/dsp/test_js8_rx tests/dsp/test_js8_msg tests/dsp/test_js8_decode tests/dsp/test_js8_recordings tests/dsp/test_js8_worker tests/dsp/test_js8_tx tests/dsp/test_radae_vocoder tests/dsp/test_drm \
             tests/sbitx/test_sbitx_buffer \
             tests/common/test_radiod_log tests/common/test_async_file
 # The broadcast plane uses Mercury's codec (libmercury_host.a), so its tests
@@ -266,6 +266,42 @@ tests/dsp/test_dstar_clock_cal: tests/dsp/test_dstar_clock_cal.c dsp/dstar_clock
 
 tests/dsp/test_pskreporter: tests/dsp/test_pskreporter.c dsp/pskreporter_ipfix.c dsp/pskreporter_ipfix.h
 	$(CC) $(TEST_CFLAGS) $< dsp/pskreporter_ipfix.c $(UNITY_SRC) -o $@ -lm
+
+tests/dsp/test_js8_frame: tests/dsp/test_js8_frame.c dsp/js8_frame.c dsp/js8_frame.h dsp/js8_ldpc_tables.h
+	$(CC) $(TEST_CFLAGS) $< dsp/js8_frame.c $(UNITY_SRC) -o $@ -lm
+
+tests/dsp/test_js8_msg: tests/dsp/test_js8_msg.c dsp/js8_msg.c dsp/js8_msg.h dsp/js8_frame.c dsp/js8_frame.h dsp/js8_jsc_words.h
+	$(CC) $(TEST_CFLAGS) $< dsp/js8_msg.c dsp/js8_frame.c $(UNITY_SRC) -o $@ -lpthread -lm
+
+tests/dsp/test_js8_decode: tests/dsp/test_js8_decode.c dsp/js8_decode.c dsp/js8_decode.h dsp/js8_rx.c dsp/ft8_subtract.c dsp/ft8_subtract.h \
+                           dsp/js8_msg.c dsp/js8_frame.c dsp/digi_log.c dsp/digi_log.h \
+                           $(FT8_TEST_SRCS) $(FT8_TEST_LIBS)
+	$(CC) $(TEST_CFLAGS) -w -Idsp $(FT8_LIB_CPPFLAGS) $< dsp/js8_decode.c dsp/js8_rx.c dsp/js8_msg.c dsp/ft8_subtract.c \
+	      dsp/js8_frame.c dsp/digi_log.c $(FT8_TEST_SRCS) $(FT8_TEST_LIBS) $(UNITY_SRC) $(HERMES_LOG_SRC) \
+	      -o $@ -lpthread -lm
+
+tests/dsp/test_js8_recordings: tests/dsp/test_js8_recordings.c dsp/js8_rx.c dsp/js8_msg.c dsp/js8_frame.c dsp/ft8_subtract.c dsp/ft8_subtract.h \
+                              dsp/js8_jsc_words.h tests/fixtures/js8/A_1_4.wav tests/fixtures/js8/A_2_9.wav \
+                              tests/fixtures/js8/A_2_1.wav tests/fixtures/js8/E_1_1.wav $(FT8_TEST_SRCS) $(FT8_TEST_LIBS)
+	$(CC) $(TEST_CFLAGS) -w -Idsp $(FT8_LIB_CPPFLAGS) $< dsp/js8_rx.c dsp/js8_msg.c dsp/js8_frame.c dsp/ft8_subtract.c \
+	      $(FT8_TEST_SRCS) $(FT8_TEST_LIBS) $(UNITY_SRC) -o $@ -lpthread -lm
+
+tests/dsp/test_js8_worker: tests/dsp/test_js8_worker.c dsp/js8_worker.c dsp/js8_worker.h dsp/js8_decode.c dsp/ft8_subtract.c dsp/ft8_subtract.h \
+                           dsp/js8_rx.c dsp/js8_msg.c dsp/js8_frame.c dsp/digi_log.c tests/fixtures/js8/E_1_1.wav \
+                           $(FT8_TEST_SRCS) $(FT8_TEST_LIBS)
+	$(CC) $(TEST_CFLAGS) -w -Idsp -Iradio $(FT8_LIB_CPPFLAGS) $< dsp/js8_worker.c dsp/js8_decode.c dsp/js8_rx.c dsp/ft8_subtract.c \
+	      dsp/js8_msg.c dsp/js8_frame.c dsp/digi_log.c $(FT8_TEST_SRCS) $(FT8_TEST_LIBS) $(UNITY_SRC) \
+	      $(HERMES_LOG_SRC) -o $@ -lpthread -lm
+
+tests/dsp/test_js8_tx: tests/dsp/test_js8_tx.c dsp/js8_tx.c dsp/js8_tx.h dsp/js8_msg.c dsp/js8_rx.c dsp/js8_frame.c \
+                       dsp/ft8_subtract.c dsp/js8_jsc_words.h $(FT8_TEST_SRCS) $(FT8_TEST_LIBS)
+	$(CC) $(TEST_CFLAGS) -w -Idsp $(FT8_LIB_CPPFLAGS) $< dsp/js8_tx.c dsp/js8_msg.c dsp/js8_rx.c dsp/js8_frame.c \
+	      dsp/ft8_subtract.c $(FT8_TEST_SRCS) $(FT8_TEST_LIBS) $(UNITY_SRC) -o $@ -lpthread -lm
+
+tests/dsp/test_js8_rx: tests/dsp/test_js8_rx.c dsp/js8_rx.c dsp/js8_rx.h dsp/js8_frame.c dsp/js8_frame.h dsp/ft8_subtract.c dsp/ft8_subtract.h \
+                       $(FT8_TEST_SRCS) $(FT8_TEST_LIBS)
+	$(CC) $(TEST_CFLAGS) -w -Idsp $(FT8_LIB_CPPFLAGS) $< dsp/js8_rx.c dsp/js8_frame.c dsp/ft8_subtract.c \
+	      $(FT8_TEST_SRCS) $(FT8_TEST_LIBS) $(UNITY_SRC) -o $@ -lpthread -lm
 
 # Links the daemon's own objects: the Opus subset needs its per-object flags.
 tests/dsp/test_radae_vocoder: tests/dsp/test_radae_vocoder.c dsp/radae_vocoder.h dsp/radae_vocoder.o $(OPUS_DNN_OBJS)
