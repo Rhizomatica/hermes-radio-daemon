@@ -20,10 +20,11 @@
 
 #include "radio.h"
 
-/* The spec's server.  What it received from this address shows at
- * https://pskreporter.info/cgi-bin/psk-analysis.pl.  (The spec's test
- * server, pskreporter.info:14739, is no longer reachable: that name is a
- * web proxy now, which carries no UDP.) */
+/* The spec's server.  The spots show on its map,
+ * https://pskreporter.info/pskmap.html (search the receiver's callsign).
+ * The spec's test server, pskreporter.info:14739, is no longer reachable
+ * (that name is a web proxy now, which carries no UDP), and its packet
+ * analysis page showed nothing even for packets the server stored. */
 #define PSKREPORTER_DEFAULT_SERVER  "report.pskreporter.info:4739"
 #define PSKREPORTER_DEFAULT_PORT    "4739"
 
