@@ -39,6 +39,7 @@
 #endif
 #include "voice_crypto.h"
 #include "gps.h"
+#include "pskreporter.h"
 #include "sbitx/sbitx_alsa.h"
 
 #define LOG_C "radiod"
@@ -243,6 +244,9 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
      * and the over-the-air position reports need it too. */
     gps_init(&radio_h);
 
+    /* Reports the stations decoded to PSKReporter (main:pskreporter_enable). */
+    pskreporter_start(&radio_h);
+
     /* The broadcast plane (files, received broadcasts, beacons) as Mercury's
      * broadcast client: on its KISS port, or by direct calls with Mercury
      * inside radiod (main:enable_mercury, started above). */
@@ -302,6 +306,7 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     pthread_join(io_tid, NULL);
     io_started = false;
 
+    pskreporter_shutdown();    /* before the GPS: it reads the fix */
     gps_shutdown();
 
     if (headset_started)
@@ -337,6 +342,7 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
 fail:
     if (io_started)
         pthread_join(io_tid, NULL);
+    pskreporter_shutdown();    /* before the GPS: it reads the fix */
     gps_shutdown();
     if (headset_started)
         audio_headset_shutdown(&radio_h);

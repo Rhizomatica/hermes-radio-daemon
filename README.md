@@ -718,6 +718,11 @@ Uses the vendored `ft8_lib` (`vendor/ft8_lib/`, MIT) in process:
   full, from the callsigns heard so far.
 - `make ft8-bench` builds `tests/dsp/ft8_bench`, which measures all of
   this on a recording.
+- With `pskreporter_enable`, the stations decoded are reported to
+  [PSKReporter](https://pskreporter.info) (`dsp/pskreporter.c`), as WSJT-X
+  does: the receiver is `callsign` at the GPS fix or the station's fixed
+  position, each sender at most once an hour per band, one datagram every
+  five minutes or so.
 
 ### RTTY (Radio Teletype — 45.45 baud FSK)
 

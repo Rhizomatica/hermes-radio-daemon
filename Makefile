@@ -129,6 +129,8 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              dsp/voice_crypto.o \
              dsp/rade_voice.o \
              dsp/dstar_clock_cal.o \
+             dsp/pskreporter.o \
+             dsp/pskreporter_ipfix.o \
              dsp/mic_filter.o \
              dsp/rx_denoise.o \
              sbitx/sbitx_si5351.o \
@@ -204,6 +206,15 @@ HAVE_WEBRTC   ?= $(shell printf '\043include <rtc/rtc.h>\n\043include <opus/opus
 ifeq ($(HAVE_WEBRTC),1)
 gui_interface/webrtc/radio_webrtc.o: EXTRA_CPPFLAGS += -DHAVE_WEBRTC=1 $(WEBRTC_CFLAGS)
 LDFLAGS += $(WEBRTC_LIBS)
+endif
+
+# ── the phone's GPS through geoclue (gps/gps.c, main:gps_source = geoclue) ──
+# Sailfish OS has no gpsd; its GPS is geoclue's hybris provider, on the
+# session bus.  Built when libdbus is installed (pkg-config dbus-1).
+HAVE_GEOCLUE ?= $(shell pkg-config --exists dbus-1 2>/dev/null && echo 1 || echo 0)
+ifeq ($(HAVE_GEOCLUE),1)
+gps/gps.o: EXTRA_CPPFLAGS += -DHAVE_GEOCLUE=1 $(shell pkg-config --cflags dbus-1)
+LDFLAGS += $(shell pkg-config --libs dbus-1)
 endif
 
 # The C API reports the commit it was built from; the stamp changes only
