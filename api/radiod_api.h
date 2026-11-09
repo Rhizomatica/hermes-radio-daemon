@@ -204,6 +204,16 @@ int radiod_api_digi_log(uint64_t after, int max, char *out, size_t out_len);
  * not exist yet); false when out is too small. */
 bool radiod_api_digi_log_files(char *out, size_t out_len);
 
+/* The station's track (gps/gps_track.h): its files on disk, full paths,
+ * oldest first, separated by '\n' (none while main:gps_logging has not
+ * recorded any); false when out is too small or the directory cannot be
+ * read.  Each line of a file is a GpsPoint (api-rest.yaml) and its fix. */
+bool radiod_api_gps_track_files(char *out, size_t out_len);
+
+/* Deletes one track file by name (gps-YYYYMMDDTHHMMSSZ.jsonl, no path).
+ * RADIOD_API_OK, or RADIOD_API_EINVAL for no such track file. */
+int radiod_api_gps_track_delete(const char *name);
+
 /* ── the broadcast plane (modem/bcast_plane.h), as Mercury's client ──
  * Files dropped in tx_dir go on the air; files received appear in rx_dir.
  * The API's Go code reads and writes those directories itself. */

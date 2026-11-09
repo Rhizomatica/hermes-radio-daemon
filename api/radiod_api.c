@@ -28,6 +28,7 @@
 #define LOG_C "api"
 #include "dsp/digi_log.h"
 #include "gps/gps.h"
+#include "gps/gps_track.h"
 #include "websocket/ws_server.h"
 #include "webrtc/radio_webrtc.h"
 #include "beacon.h"
@@ -598,6 +599,16 @@ bool radiod_api_digi_log_files(char *out, size_t out_len)
     if (!out || !out_len)
         return false;
     return digi_log_files(out, out_len);
+}
+
+bool radiod_api_gps_track_files(char *out, size_t out_len)
+{
+    return gps_track_files(out, out_len);
+}
+
+int radiod_api_gps_track_delete(const char *name)
+{
+    return gps_track_delete(name) == 0 ? RADIOD_API_OK : RADIOD_API_EINVAL;
 }
 
 /* ── modem ── */
