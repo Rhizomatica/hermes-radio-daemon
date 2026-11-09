@@ -1,7 +1,10 @@
 #include "monitor.h"
 #include <common/common.h>
 
-#define LOG_LEVEL LOG_INFO
+/* radiod: warnings only; at LOG_INFO every monitor_init (each FT8 decode
+ * pass, every 2 s) printed its block and FFT sizes to stderr, three
+ * journal lines every 2 s. */
+#define LOG_LEVEL LOG_WARN
 #include <ft8/debug.h>
 
 #include <stdlib.h>
