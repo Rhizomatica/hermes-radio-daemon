@@ -135,6 +135,8 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              dsp/js8_msg.o \
              dsp/js8_decode.o \
              dsp/js8_worker.o \
+             dsp/js8_tx.o \
+             dsp/js8_station.o \
              dsp/pskreporter_ipfix.o \
              dsp/mic_filter.o \
              dsp/rx_denoise.o \

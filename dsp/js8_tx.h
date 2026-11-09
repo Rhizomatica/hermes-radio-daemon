@@ -19,6 +19,9 @@
 
 #define JS8_TX_TONE_HZ   1500.0f   /* tone 0's audio frequency, as FT8's here */
 #define JS8_TX_MAX_FRAMES 16       /* a message: 4 minutes in Normal */
+#define JS8_PTT_LEAD_S   0.3       /* key this long before a frame's slot, not sooner */
+#define JS8_TX_GAP_MAX_S 31        /* silence before a frame: up to a Slow period */
+#define JS8_SLOW_TX_S    26        /* a Slow frame: 79 x 0.32 s = 25.3 s */
 
 /* The submode to send in: the first of mask (js8_worker's) in JS8Call's
  * order of preference, Normal first. */

@@ -38,6 +38,8 @@
 #include "sbitx_alsa.h"
 #include "radio_pipeline.h"
 #include "sbitx_dsp.h"
+#include "js8_tx.h"
+#include "digi_log.h"
 #include "radio_backend.h"
 #include "radio_controls.h"
 
@@ -811,12 +813,16 @@ void io_tick(radio *radio_h)
         static int  digi_idle_ticks = 0;             /* 10 ms each */
         enum { DIGI_UNKEY_HOLD_TICKS = 20 };         /* 200 ms */
         uint16_t m = radio_h->profiles[radio_h->profile_active_idx].mode;
-        bool digi_mode = (m == MODE_FT8 || m == MODE_CW || m == MODE_RTTY);
+        bool digi_mode = (m == MODE_FT8 || m == MODE_JS8 || m == MODE_CW || m == MODE_RTTY);
         bool pending = digi_tx_queue_pending(&radio_h->digi_tx);
+        /* JS8 keys just before its next slot, not through a period of silence */
+        bool slot_near = m != MODE_JS8 ||
+            js8_tx_next_start(js8_tx_submode(radio_h->js8_submodes), digi_log_now()) -
+            digi_log_now() <= JS8_PTT_LEAD_S;
 
         if (!digi_keyed)
         {
-            if (digi_mode && pending && radio_h->txrx_state == IN_RX &&
+            if (digi_mode && pending && slot_near && radio_h->txrx_state == IN_RX &&
                 !radio_h->key_down && !radio_h->swr_protection_enabled)
             {
                 tr_switch(radio_h, IN_TX);

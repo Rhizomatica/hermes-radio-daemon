@@ -18,6 +18,7 @@
 #include "radio_backend.h"
 #include "radio_controls.h"
 #include "dsp/sbitx_ft8.h"
+#include "dsp/js8_station.h"
 #include "radio_media.h"
 #include "radio_pipeline.h"
 #include "radio_websocket.h"
@@ -72,12 +73,14 @@ int radiod_api_digi_send(const char *text)
     if (!s_radio || !text)
         return RADIOD_API_ENOTSUP;
     uint16_t mode = s_radio->profiles[s_radio->profile_active_idx].mode;
-    if (mode != MODE_FT8 && mode != MODE_CW && mode != MODE_RTTY)
+    if (mode != MODE_FT8 && mode != MODE_JS8 && mode != MODE_CW && mode != MODE_RTTY)
         return RADIOD_API_ENOTSUP;
     if (strlen(text) >= DIGI_TX_MSG_MAX)
         return RADIOD_API_EINVAL;
     if (mode == MODE_FT8 && !sbitx_ft8_can_encode(text))
         return RADIOD_API_EINVAL;
+    if (mode == MODE_JS8 && !js8_can_send(s_radio, text))
+        return RADIOD_API_EINVAL;   /* no main:callsign, or text that does not pack */
     return digi_tx_queue_push(&s_radio->digi_tx, text) ? RADIOD_API_OK : RADIOD_API_EBUSY;
 }
 

@@ -65,6 +65,8 @@
 #include "sbitx_drm.h"
 #include "sbitx_ft8.h"
 #include "js8_worker.h"
+#include "js8_tx.h"
+#include "js8_station.h"
 #include "sbitx_cw.h"
 #include "sbitx_rtty.h"
 #include "sbitx_dstar.h"
@@ -2543,6 +2545,85 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             fft_m[k]  = fft_in[i];
         }
         digi_tx_sending = ft8_audio_96k_pos < ft8_audio_96k_len;
+    }
+    /* JS8 TX: the message's frames, one a period at JS8Call's start delay
+     * (silence until then), each 79 tones of continuous-phase FSK made
+     * here at 96 kHz a sample at a time: no buffer, even for Slow. */
+    else if (tx_mode == MODE_JS8)
+    {
+        enum { RATE96 = 96000, UP = RATE96 / JS8_SAMPLE_RATE, RAMP96 = RATE96 / 200 };   /* 5 ms */
+        static js8_tx_frame frames[JS8_TX_MAX_FRAMES];
+        static int          nframes = 0, next = 0, sym96 = 1;
+        static js8_submode  sub = JS8_SUB_NORMAL;
+        static int          tones[JS8_NN];
+        static long         gap = 0, pos = 0, len = 0;   /* 96 kHz samples */
+        static double       phase = 0.0, spacing = 0.0;
+
+        if (digi_tx_new_over) {          /* a new over: nothing left of the last */
+            next = nframes;
+            gap = 0;
+            pos = len;
+            digi_tx_new_over = false;
+        }
+        if (gap == 0 && pos >= len) {
+            if (next >= nframes) {
+                char text[DIGI_TX_MSG_MAX], call[JS8_MSG_CALL_MAX], grid[JS8_GRID_LEN + 1];
+                nframes = next = 0;
+                if (digi_tx_queue_pop(&radio_h_dsp->digi_tx, text, sizeof(text))) {
+                    sub = js8_tx_submode(radio_h_dsp->js8_submodes);
+                    if (!js8_station(radio_h_dsp, call, sizeof call, grid))
+                        HLOGE(LOG_C, "JS8 tx: no main:callsign; not sent");
+                    else if ((nframes = js8_msg_pack(call, grid, text, sub != JS8_SUB_NORMAL, frames,
+                                                     JS8_TX_MAX_FRAMES)) <= 0)
+                        HLOGE(LOG_C, "JS8 tx: cannot pack \"%s\"", text);
+                    else
+                        digi_tx_log("JS8", text, JS8_TX_TONE_HZ);
+                    if (nframes < 0)
+                        nframes = 0;
+                }
+            }
+            const js8_submode_params *p = js8_submode_get(sub);
+            if (next < nframes &&
+                js8_encode(frames[next].frame, frames[next].type, p->costas, tones)) {
+                double now = digi_log_now();
+                gap = (long) ((js8_tx_next_start(sub, now) - now) * RATE96);
+                if (gap < 0)
+                    gap = 0;
+                sym96 = p->symbol * UP;
+                spacing = (double) JS8_SAMPLE_RATE / p->symbol;
+                len = (long) JS8_NN * sym96;
+                pos = 0;
+                phase = 0.0;
+                next++;
+            } else {
+                next = nframes;
+            }
+        }
+
+        float g = radio_h_dsp->digi_tx_gain;
+        for (i = MAX_BINS/2; i < MAX_BINS; i++)
+        {
+            float tone = 0.0f;
+            if (gap > 0) {
+                gap--;
+            } else if (pos < len) {
+                phase += 2.0 * M_PI * (JS8_TX_TONE_HZ + tones[pos / sym96] * spacing) / RATE96;
+                if (phase > 2.0 * M_PI)
+                    phase -= 2.0 * M_PI;
+                double ramp = pos < RAMP96 ? 0.5 - 0.5 * cos(M_PI * pos / RAMP96)
+                            : pos >= len - RAMP96 ? 0.5 - 0.5 * cos(M_PI * (len - 1 - pos) / RAMP96)
+                            : 1.0;
+                tone = (float) (ramp * sin(phase));
+                pos++;
+            }
+            tone *= g;
+            if (tone >  1.0f) tone =  1.0f;
+            if (tone < -1.0f) tone = -1.0f;
+            int k = i - MAX_BINS/2;
+            fft_in[i] = (double) tone;
+            fft_m[k]  = fft_in[i];
+        }
+        digi_tx_sending = gap > 0 || pos < len || next < nframes;
     }
     // RTTY TX: FSK modulator. Pulls one message at a time from the
     // websocket digi_tx_queue (filled by `digi_send`); emits silence

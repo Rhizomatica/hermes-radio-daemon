@@ -47,7 +47,7 @@
 #define MODE_FT8  6
 #define MODE_RTTY 7
 #define MODE_DSTAR 8
-#define MODE_JS8  9   /* JS8, main:js8_submodes; receive only for now (dsp/js8_worker.h) */
+#define MODE_JS8  9   /* JS8, main:js8_submodes (dsp/js8_worker.h, dsp/js8_tx.h) */
 
 /* What a profile's digital voice runs (main:digital_voice_codec). RADEv2
  * rides on the profile's SSB mode; D-STAR is a mode of its own, so with

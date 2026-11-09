@@ -6,8 +6,8 @@ Radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-net)
 
 - **`hfsignals` backend** — embedded sBitx/zBitx DSP + ALSA path with all original hardware control (Si5351, GPIO, I2C, WM8731 codec)
 - **`hamlib` backend** — Hamlib CAT/PTT control for IC-7100, IC-7300, FT-710, TS-480 and every other rig Hamlib supports
-- **9 modulation modes**: LSB, USB, CW, **FM** (NBFM), **AM** (broadcast), **DRM** (Digital Radio Mondiale), **FT8**, **JS8** (receive), **RTTY**, plus RADEv2 digital voice on top of USB
-- **Digital text modes**: FT8 (8-FSK), JS8 Normal (receive only for now), CW (Morse) and RTTY (Baudot FSK), CW and RTTY decoded as skimmers (every station in the passband), with unified websocket API and a real outbound text queue (`digi_send`)
+- **9 modulation modes**: LSB, USB, CW, **FM** (NBFM), **AM** (broadcast), **DRM** (Digital Radio Mondiale), **FT8**, **JS8**, **RTTY**, plus RADEv2 digital voice on top of USB
+- **Digital text modes**: FT8 (8-FSK), JS8 (all four submodes), CW (Morse) and RTTY (Baudot FSK), CW and RTTY decoded as skimmers (every station in the passband), with unified websocket API and a real outbound text queue (`digi_send`)
 - **SSB voice DSP chain**: 3-band pre-EQ, wideband compressor, pre-emphasis, DC block, limiter
 - **RX voice DSP chain**: DC block, adaptive noise reduction (libspecbleach), AGC (SLOW/MEDIUM/FAST), soft limiter
 - **Audio bridge** for websocket RX/TX streaming, RX/TX spectrum waterfall, and `.wav` recording — on both backends, sharing the same audio rings. csdr-based polyphase resampler (`audio_bridge.c`) decouples the rig USB codec rate from the daemon ring rate.
@@ -725,7 +725,7 @@ Uses the vendored `ft8_lib` (`vendor/ft8_lib/`, MIT) in process:
   position, each sender at most once an hour per band, one datagram every
   five minutes or so.
 
-### JS8 (JS8Call's keyboard mode, receive)
+### JS8 (JS8Call's keyboard mode)
 
 JS8 as JS8Call sends it, ported from JS8Call-improved (GPL-3.0), in its
 four submodes: Normal (15 s), Fast (10 s), Turbo (6 s) and Slow (30 s),
@@ -745,7 +745,15 @@ those `js8_submodes` names (default `normal`):
   compressed against JSC's 262144-word list) → the digi log as mode
   `JS8`, with the callsigns and grid each frame names.
 - `tests/dsp/test_js8_recordings` decodes JS8Call's own test recordings.
-- JS8 TX is still to come.
+- **TX**: `digi_send` text, as typed in JS8Call (`CQ CQ CQ IM58`,
+  `@HB HEARTBEAT`, `EA1A SNR?`, `EA1A hello`), becomes JS8Call's frames
+  (`js8_msg_pack`, its `buildMessageFrames`: heartbeats, directed commands,
+  compound callsigns, Huffman or JSC text, a buffered command's checksum),
+  from `callsign` in the station's 4-character grid. Each frame goes out
+  in its own UTC period of the first enabled submode, at JS8Call's start
+  delay, so JS8Call's receivers decode it; PTT keys 0.3 s before the slot.
+  The tones are 79 of continuous-phase FSK from 1500 Hz, made a sample at
+  a time on the sBitx.
 
 ### RTTY (Radio Teletype — 45.45 baud FSK)
 
