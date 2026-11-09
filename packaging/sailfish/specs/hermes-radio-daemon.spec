@@ -28,6 +28,8 @@ BuildRequires:  mbelib-neo-devel
 # WebRTC browser audio (rtc.offer, over hermes.v1: the Go layer)
 BuildRequires:  libdatachannel-devel
 BuildRequires:  opus-devel
+# The phone's own GPS, through geoclue (main:gps_source = geoclue)
+BuildRequires:  dbus-devel
 
 %description
 radiod controls a HERMES station's radio (Hamlib rigs and the sBitx),

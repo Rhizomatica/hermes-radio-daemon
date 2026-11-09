@@ -185,11 +185,7 @@ static void send_queued(void)
     socklen_t to_len = 0;
     if (!receiver_now(call, sizeof call, locator, sizeof locator) || !server_now(&to, &to_len))
         return;   /* these spots go: an hour later they are due again */
-#ifdef RADIOD_GIT_HASH
-    snprintf(software, sizeof software, "%s %s", PSKR_SOFTWARE, RADIOD_GIT_HASH);
-#else
-    snprintf(software, sizeof software, "%s", PSKR_SOFTWARE);
-#endif
+    snprintf(software, sizeof software, "%s %s", PSKR_SOFTWARE, radiod_api_version());
     pskr_receiver rx = { .call = call, .locator = locator, .software = software,
                          .antenna = g_radio->pskreporter_antenna };
 

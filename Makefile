@@ -208,6 +208,15 @@ gui_interface/webrtc/radio_webrtc.o: EXTRA_CPPFLAGS += -DHAVE_WEBRTC=1 $(WEBRTC_
 LDFLAGS += $(WEBRTC_LIBS)
 endif
 
+# ── the phone's GPS through geoclue (gps/gps.c, main:gps_source = geoclue) ──
+# Sailfish OS has no gpsd; its GPS is geoclue's hybris provider, on the
+# session bus.  Built when libdbus is installed (pkg-config dbus-1).
+HAVE_GEOCLUE ?= $(shell pkg-config --exists dbus-1 2>/dev/null && echo 1 || echo 0)
+ifeq ($(HAVE_GEOCLUE),1)
+gps/gps.o: EXTRA_CPPFLAGS += -DHAVE_GEOCLUE=1 $(shell pkg-config --cflags dbus-1)
+LDFLAGS += $(shell pkg-config --libs dbus-1)
+endif
+
 # The C API reports the commit it was built from; the stamp changes only
 # with the commit, so the object is rebuilt then and only then.
 RADIOD_GIT_HASH := $(shell git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)

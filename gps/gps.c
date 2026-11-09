@@ -18,6 +18,11 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
+#ifdef HAVE_GEOCLUE
+#include <dirent.h>
+#include <dbus/dbus.h>
+#include <time.h>
+#endif
 
 #include "cfg_utils.h"
 #include "radiod_log.h"
@@ -35,6 +40,8 @@ static _Atomic bool s_thread_running;
 static bool         s_connected; /* reader thread only: gpsd is up */
 static char         s_host[64] = "127.0.0.1";
 static char         s_port[16] = "2947";
+#define GPS_SOURCE_MAX      400   /* "geoclue on unix:path=<a bus path>" */
+static char         s_source[GPS_SOURCE_MAX];   /* where the fix comes from, for the log */
 
 /* The defaults, the spec's (and hermes-sensors'). */
 static void settings_default(radiod_api_gps_settings *s)
@@ -283,7 +290,7 @@ static void gps_connected(void)
     if (!s_connected)
     {
         s_connected = true;
-        HLOGI("gps", "reading the fix from gpsd at %s:%s", s_host, s_port);
+        HLOGI("gps", "reading the fix from %s", s_source);
     }
 }
 
@@ -292,7 +299,7 @@ static void gps_lost(void)
     if (s_connected)
     {
         s_connected = false;
-        HLOGW("gps", "gpsd connection lost; reconnecting");
+        HLOGW("gps", "%s lost; reconnecting", s_source);
     }
     gps_clear_fix();
 }
@@ -366,6 +373,172 @@ static void *gps_thread(void *arg)
     return NULL;
 }
 
+#ifdef HAVE_GEOCLUE
+/* Sailfish OS's GPS (main:gps_source = geoclue): geoclue 0.12's hybris
+ * provider, on the logged-in user's session bus.  Holding a reference on
+ * the provider keeps the GPS on; its position is asked for once a second.
+ * Location must be on in the phone's settings, or it has none. */
+#define GEOCLUE_PROVIDER        "org.freedesktop.Geoclue.Providers.Hybris"
+#define GEOCLUE_PATH            "/org/freedesktop/Geoclue/Providers/Hybris"
+#define GEOCLUE_IFACE           "org.freedesktop.Geoclue"
+#define GEOCLUE_POSITION_IFACE  "org.freedesktop.Geoclue.Position"
+#define GEOCLUE_FIELD_LATITUDE  (1 << 0)   /* GeocluePositionFields */
+#define GEOCLUE_FIELD_LONGITUDE (1 << 1)
+#define GEOCLUE_FIELD_ALTITUDE  (1 << 2)
+#define GEOCLUE_CALL_MS         2000       /* a call's reply timeout */
+#define GEOCLUE_POLL_MS         1000
+#define GEOCLUE_RETRY_MS        5000       /* the bus or the provider, again */
+#define GEOCLUE_STALE_S         30         /* an older position is no fix */
+#define RUN_USER_DIR            "/run/user"
+#define GEOCLUE_PATH_MAX        320        /* /run/user/<name>/dbus/user_bus_socket: a name may be 255 */
+#define GPS_FIX_2D              2          /* gpsd's TPV modes, as the fix carries them */
+#define GPS_FIX_3D              3
+
+static char s_bus[GEOCLUE_PATH_MAX + sizeof "unix:path="];   /* main:gps_dbus_address, or "" to find one */
+
+/* The session bus to use: main:gps_dbus_address, else the first user's
+ * under /run/user (Sailfish's dbus/user_bus_socket, or systemd's bus). */
+static bool geoclue_bus_address(char *out, size_t out_size)
+{
+    if (s_bus[0])
+    {
+        snprintf(out, out_size, "%s", s_bus);
+        return true;
+    }
+    static const char *const sockets[] = { "dbus/user_bus_socket", "bus" };
+    DIR *d = opendir(RUN_USER_DIR);
+    if (!d)
+        return false;
+    bool found = false;
+    struct dirent *e;
+    while (!found && (e = readdir(d)))
+    {
+        if (e->d_name[0] < '1' || e->d_name[0] > '9')   /* a uid, and not root's 0 */
+            continue;
+        for (size_t i = 0; !found && i < sizeof sockets / sizeof sockets[0]; i++)
+        {
+            char path[GEOCLUE_PATH_MAX];
+            snprintf(path, sizeof path, "%s/%s/%s", RUN_USER_DIR, e->d_name, sockets[i]);
+            if (access(path, F_OK) == 0)
+            {
+                snprintf(out, out_size, "unix:path=%s", path);
+                found = true;
+            }
+        }
+    }
+    closedir(d);
+    return found;
+}
+
+/* One call with no arguments; its reply, or NULL. */
+static DBusMessage *geoclue_call(DBusConnection *c, const char *iface, const char *method)
+{
+    DBusMessage *m = dbus_message_new_method_call(GEOCLUE_PROVIDER, GEOCLUE_PATH, iface, method);
+    if (!m)
+        return NULL;
+    DBusError err;
+    dbus_error_init(&err);
+    DBusMessage *r = dbus_connection_send_with_reply_and_block(c, m, GEOCLUE_CALL_MS, &err);
+    dbus_message_unref(m);
+    dbus_error_free(&err);
+    return r;
+}
+
+/* GetPosition's fields, timestamp, latitude, longitude and altitude (its
+ * accuracy struct is not needed). */
+static bool geoclue_position(DBusConnection *c)
+{
+    DBusMessage *r = geoclue_call(c, GEOCLUE_POSITION_IFACE, "GetPosition");
+    if (!r)
+        return false;
+    dbus_int32_t fields = 0, ts = 0;
+    double v[3] = { NAN, NAN, NAN };   /* latitude, longitude, altitude */
+    DBusMessageIter it;
+    bool ok = dbus_message_iter_init(r, &it) &&
+              dbus_message_iter_get_arg_type(&it) == DBUS_TYPE_INT32;
+    if (ok)
+    {
+        dbus_message_iter_get_basic(&it, &fields);
+        ok = dbus_message_iter_next(&it) && dbus_message_iter_get_arg_type(&it) == DBUS_TYPE_INT32;
+    }
+    if (ok)
+    {
+        dbus_message_iter_get_basic(&it, &ts);
+        for (size_t i = 0; ok && i < sizeof v / sizeof v[0]; i++)
+        {
+            ok = dbus_message_iter_next(&it) && dbus_message_iter_get_arg_type(&it) == DBUS_TYPE_DOUBLE;
+            if (ok)
+                dbus_message_iter_get_basic(&it, &v[i]);
+        }
+    }
+    dbus_message_unref(r);
+    if (!ok)
+        return false;
+
+    bool has = (fields & GEOCLUE_FIELD_LATITUDE) && (fields & GEOCLUE_FIELD_LONGITUDE) &&
+               time(NULL) - (time_t) ts < GEOCLUE_STALE_S;
+    bool has_alt = has && (fields & GEOCLUE_FIELD_ALTITUDE);
+    if (has)
+        gps_set_fix(has_alt ? GPS_FIX_3D : GPS_FIX_2D, v[0], v[1], v[2], has_alt, (double) ts, true);
+    else
+        gps_clear_fix();
+    return true;
+}
+
+static void *gps_geoclue_thread(void *arg)
+{
+    (void) arg;
+    while (s_thread_running)
+    {
+        char addr[sizeof s_bus];
+        DBusError err;
+        dbus_error_init(&err);
+        DBusConnection *c = NULL;
+        if (geoclue_bus_address(addr, sizeof addr))
+        {
+            c = dbus_connection_open_private(addr, &err);
+            if (c && !dbus_bus_register(c, &err))
+            {
+                dbus_connection_close(c);
+                dbus_connection_unref(c);
+                c = NULL;
+            }
+        }
+        dbus_error_free(&err);
+        DBusMessage *ref = c ? geoclue_call(c, GEOCLUE_IFACE, "AddReference") : NULL;
+        if (!ref)
+        {
+            if (c)
+            {
+                dbus_connection_close(c);
+                dbus_connection_unref(c);
+            }
+            gps_lost();
+            gps_sleep_ms(GEOCLUE_RETRY_MS);
+            continue;
+        }
+        dbus_message_unref(ref);
+        snprintf(s_source, sizeof s_source, "geoclue on %s", addr);
+        gps_connected();
+
+        while (s_thread_running && geoclue_position(c))
+            gps_sleep_ms(GEOCLUE_POLL_MS);
+
+        DBusMessage *unref = geoclue_call(c, GEOCLUE_IFACE, "RemoveReference");
+        if (unref)
+            dbus_message_unref(unref);
+        dbus_connection_close(c);
+        dbus_connection_unref(c);
+        if (s_thread_running)
+        {
+            gps_lost();
+            gps_sleep_ms(GEOCLUE_RETRY_MS);
+        }
+    }
+    return NULL;
+}
+#endif
+
 void gps_init(radio *radio_h)
 {
     s_radio = radio_h;
@@ -381,11 +554,33 @@ void gps_init(radio *radio_h)
              iniparser_getstring(s_radio->cfg_radio, "main:gps_host", "127.0.0.1"));
     snprintf(s_port, sizeof(s_port), "%s",
              iniparser_getstring(s_radio->cfg_radio, "main:gps_port", "2947"));
+    snprintf(s_source, sizeof(s_source), "gpsd at %s:%s", s_host, s_port);
+    void *(*reader)(void *) = gps_thread;
+    const char *source = iniparser_getstring(s_radio->cfg_radio, "main:gps_source", "gpsd");
+    if (!strcmp(source, "geoclue"))
+    {
+#ifdef HAVE_GEOCLUE
+        snprintf(s_bus, sizeof(s_bus), "%s",
+                 iniparser_getstring(s_radio->cfg_radio, "main:gps_dbus_address", ""));
+        snprintf(s_source, sizeof(s_source), "geoclue");
+        dbus_threads_init_default();
+        reader = gps_geoclue_thread;
+#else
+        HLOGE("gps", "main:gps_source is geoclue, but this radio_daemon was built without "
+                     "libdbus; no GPS");
+        return;
+#endif
+    }
+    else if (strcmp(source, "gpsd"))
+    {
+        HLOGE("gps", "main:gps_source \"%s\" is neither gpsd nor geoclue; no GPS", source);
+        return;
+    }
     s_thread_running = true;
-    if (pthread_create(&s_thread, NULL, gps_thread, NULL) != 0)
+    if (pthread_create(&s_thread, NULL, reader, NULL) != 0)
     {
         s_thread_running = false;
-        HLOGE("gps", "cannot start the gpsd reader thread");
+        HLOGE("gps", "cannot start the GPS reader thread");
     }
 }
 
