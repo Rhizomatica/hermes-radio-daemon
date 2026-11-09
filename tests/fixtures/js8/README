@@ -1,0 +1,7 @@
+JS8 Normal recordings from JS8Call-improved's own decoder tests
+(https://github.com/JS8Call-improved/JS8Call-improved, media/tests/,
+GPL-3.0), 12 kHz mono, 15 s: real traffic, heartbeats and directed
+messages.  JS8Call names them {MODE}_{DEPTH}_{EXPECTED_DECODES}: A is
+Normal; the depth is how hard JS8Call's decoder tries.
+
+tests/dsp/test_js8_recordings decodes them with radiod's JS8 receiver.
