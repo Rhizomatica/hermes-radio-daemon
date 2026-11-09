@@ -735,7 +735,10 @@ those `js8_submodes` names (default `normal`):
   2/15 of a period (Normal: 15 s every 2 s, as FT8). Every submode has
   FT8's frame shape, so ft8_lib's waterfall serves, set to the submode's
   symbol; `dsp/js8_rx.c` searches for JS8's Costas
-  arrays and reads the tones without FT8's Gray map; `dsp/js8_frame.c` is
+  arrays and reads the tones without FT8's Gray map, in JS8Call's three
+  passes: after each, what decoded is subtracted from the audio
+  (`dsp/ft8_subtract.c`, as plain FSK) and the next finds the stations it
+  hid; `dsp/js8_frame.c` is
   JS8's frame (12-bit CRC, the (174,87) LDPC code, which is not FT8's);
   `dsp/js8_msg.c` unpacks what each frame says as JS8Call shows it
   (heartbeats, CQs, directed messages, Huffman-coded text and text

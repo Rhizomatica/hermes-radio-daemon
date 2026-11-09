@@ -10,6 +10,7 @@
 
 #include "unity.h"
 #include "dsp/js8_rx.h"
+#include "dsp/ft8_subtract.h"
 #include "ft8/encode.h"
 #include "ft8/message.h"
 #include "ft8/constants.h"
@@ -151,9 +152,61 @@ static void test_submodes(void)
     }
 }
 
+static float power(const float *a, int n)
+{
+    double p = 0;
+    for (int i = 0; i < n; i++)
+        p += (double) a[i] * a[i];
+    return (float) p;
+}
+
+/* A lone signal in each submode, subtracted where the decoder found it:
+ * what is left is far below what was there. */
+static void test_subtract_clean(void)
+{
+    for (int sub = 0; sub < JS8_SUBMODES; sub++) {
+        const js8_submode_params *p = js8_submode_get((js8_submode) sub);
+        int window = p->period_s * JS8_SAMPLE_RATE;
+        memset(audio, 0, sizeof audio);
+        int t[JS8_NN];
+        js8_encode("CR7BYQ+IN51x", 0, p->costas, t);
+        add_tones_sub(t, JS8_NN, p->symbol, 1200.0f, 0.4f, 0.1f);
+        float before = power(audio, window);
+        js8_rx_result r[MAX_OUT];
+        TEST_ASSERT_EQUAL_INT_MESSAGE(1, js8_rx_decode_sub((js8_submode) sub, audio, window, r, MAX_OUT),
+                                      p->name);
+        uint8_t tones[JS8_NN];
+        for (int k = 0; k < JS8_NN; k++)
+            tones[k] = (uint8_t) t[k];
+        TEST_ASSERT_TRUE(js8_subtract(audio, window, tones, p->symbol, r[0].freq_hz, r[0].time_s));
+        float left_db = 10.0f * log10f(power(audio, window) / before);
+        TEST_ASSERT_TRUE_MESSAGE(left_db < -20.0f, p->name);
+    }
+}
+
+/* A station 6 dB under another and 20 Hz beside it, inside its tones:
+ * the decoder's later passes, with the strong one subtracted, find it. */
+static void test_hidden_station(void)
+{
+    srand(3);
+    noise(1.0f);
+    int a[JS8_NN], b[JS8_NN];
+    js8_encode("Hello-World0", 0, JS8_COSTAS_ORIGINAL, a);
+    js8_encode("CR7BYQ+IN51x", 0, JS8_COSTAS_ORIGINAL, b);
+    float amp0 = sqrtf(2.0f * (2500.0f / 6000.0f) * powf(10.0f, 4.0f / 10.0f));
+    add_tones(a, JS8_NN, 1000.0f, 0.5f, amp0);
+    add_tones(b, JS8_NN, 1020.0f, 0.6f, amp0 * powf(10.0f, -6.0f / 20.0f));
+    js8_rx_result r[MAX_OUT];
+    int n = js8_rx_decode(audio, WINDOW, r, MAX_OUT);
+    TEST_ASSERT_NOT_NULL(find(r, n, "Hello-World0"));
+    TEST_ASSERT_NOT_NULL(find(r, n, "CR7BYQ+IN51x"));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
+    RUN_TEST(test_subtract_clean);
+    RUN_TEST(test_hidden_station);
     RUN_TEST(test_submodes);
     RUN_TEST(test_one_clean);
     RUN_TEST(test_two_in_noise);

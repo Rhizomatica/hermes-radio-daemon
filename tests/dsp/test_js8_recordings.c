@@ -1,8 +1,8 @@
 /* JS8 on real recordings: three of JS8Call's own decoder test files
  * (tests/fixtures/js8/README), one with compressed text, decoded by
  * radiod's JS8 receiver and message layer.  The counts are what this
- * decoder finds today (JS8Call finds 4 and 9 with its deeper passes); a
- * change that finds fewer, or reads a frame differently, fails here.
+ * decoder finds today (JS8Call: 4 and 9); a change that finds fewer, or
+ * reads a frame differently, fails here.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -72,8 +72,10 @@ static void test_a_1_4(void)
 {
     js8_msg m[50];
     int n = decode("tests/fixtures/js8/A_1_4.wav", m, 50);
-    TEST_ASSERT_EQUAL_INT(3, n);
+    TEST_ASSERT_EQUAL_INT(4, n);   /* as JS8Call */
     TEST_ASSERT_TRUE(has(m, n, "KG9B: KN4CRD HEARTBEAT SNR -14"));
+    /* 35 Hz above KG9B and 9 dB under it: decoded once KG9B is subtracted */
+    TEST_ASSERT_TRUE(has(m, n, "VA3QR: KN4CRD HEARTBEAT SNR -17"));
     TEST_ASSERT_TRUE(has(m, n, "K0OG: KN4CRD SNR +02"));
     TEST_ASSERT_TRUE(has(m, n, "KN4ZXG: @HB HEARTBEAT FM16"));
 }

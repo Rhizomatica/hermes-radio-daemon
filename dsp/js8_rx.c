@@ -13,8 +13,10 @@
 
 #include <math.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include "ft8_subtract.h"
 #include "common/monitor.h"
 #include "ft8/decode.h"
 
@@ -25,6 +27,7 @@
 #define JS8_F_MIN_HZ       100.0f
 #define JS8_F_MAX_HZ       3000.0f
 #define JS8_MAX_CANDIDATES 140      /* as radiod's FT8 */
+#define JS8_PASSES         3        /* JS8Call's: two subtractions */
 #define JS8_MIN_SCORE      10
 #define JS8_START_MIN      (-10)    /* candidate start, in symbols, as ft8_lib */
 #define JS8_START_MAX      20
@@ -196,12 +199,11 @@ int js8_rx_decode(const float *audio_12k, int nsamples, js8_rx_result *out, int 
     return js8_rx_decode_sub(JS8_SUB_NORMAL, audio_12k, nsamples, out, max_out);
 }
 
-int js8_rx_decode_sub(js8_submode sub, const float *audio_12k, int nsamples,
-                      js8_rx_result *out, int max_out)
+/* One pass over the audio: what decodes that is not in out[0..count)
+ * yet is added there; the new count. */
+static int decode_pass(const js8_submode_params *p, const float *audio, int nsamples,
+                       js8_rx_result *out, int count, int max_out)
 {
-    const js8_submode_params *p = js8_submode_get(sub);
-    if (!p || !audio_12k || nsamples <= 0 || !out || max_out <= 0)
-        return 0;
     monitor_config_t cfg = {
         .f_min = JS8_F_MIN_HZ, .f_max = JS8_F_MAX_HZ, .sample_rate = JS8_SAMPLE_RATE,
         .time_osr = JS8_TIME_OSR, .freq_osr = JS8_FREQ_OSR,
@@ -212,13 +214,12 @@ int js8_rx_decode_sub(js8_submode sub, const float *audio_12k, int nsamples,
     monitor_t mon;
     monitor_init(&mon, &cfg);
     for (int at = 0; at + mon.block_size <= nsamples; at += mon.block_size)
-        monitor_process(&mon, audio_12k + at);
+        monitor_process(&mon, audio + at);
 
     const int (*costas)[JS8_COSTAS_LEN] = js8_costas(p->costas);
     ftx_candidate_t cands[JS8_MAX_CANDIDATES];
     int ncand = find_candidates(&mon.wf, costas, cands, JS8_MAX_CANDIDATES);
     float noise = noise_db(&mon.wf);
-    int count = 0;
 
     for (int i = 0; i < ncand && count < max_out; i++) {
         float llr[JS8_N];
@@ -244,5 +245,38 @@ int js8_rx_decode_sub(js8_submode sub, const float *audio_12k, int nsamples,
         out[count++] = r;
     }
     monitor_free(&mon);
+    return count;
+}
+
+/* JS8Call's passes: after each, what it decoded is subtracted from the
+ * audio (dsp/ft8_subtract.c, plain FSK), and the next finds the weaker
+ * signals those hid; a pass that finds nothing new ends it. */
+int js8_rx_decode_sub(js8_submode sub, const float *audio_12k, int nsamples,
+                      js8_rx_result *out, int max_out)
+{
+    const js8_submode_params *p = js8_submode_get(sub);
+    if (!p || !audio_12k || nsamples <= 0 || !out || max_out <= 0)
+        return 0;
+    float *work = malloc((size_t) nsamples * sizeof(float));
+    if (!work)
+        return decode_pass(p, audio_12k, nsamples, out, 0, max_out);
+    memcpy(work, audio_12k, (size_t) nsamples * sizeof(float));
+    int count = 0;
+    for (int pass = 0; pass < JS8_PASSES && count < max_out; pass++) {
+        int first_new = count;
+        count = decode_pass(p, work, nsamples, out, count, max_out);
+        if (count == first_new || pass + 1 == JS8_PASSES)
+            break;
+        for (int i = first_new; i < count; i++) {
+            int t[JS8_NN];
+            uint8_t tones[JS8_NN];
+            if (!js8_encode(out[i].frame, out[i].type, p->costas, t))
+                continue;
+            for (int k = 0; k < JS8_NN; k++)
+                tones[k] = (uint8_t) t[k];
+            js8_subtract(work, nsamples, tones, p->symbol, out[i].freq_hz, out[i].time_s);
+        }
+    }
+    free(work);
     return count;
 }
