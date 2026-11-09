@@ -92,7 +92,7 @@
       \item A telecommunication system over HF radio for communities beyond the internet and the phone network
       \item People use it as they use the internet: email, webmail and Delta Chat, over the station's WiFi
       \item The station carries it over HF to a gateway with an internet uplink
-      \item Also voice, digital and encrypted where that is permitted, broadcast files, and positions with an emergency call
+      \item Also voice, digital and encrypted, broadcast files, and positions with an emergency call
       \item Free software from Rhizomatica, supported by ARDC grants since 2021; hands-on training so a community runs its own station
     \end{itemize}
     \column{0.42\textwidth}
@@ -238,7 +238,7 @@
   \src{Source: hermes-radio-daemon README.md; docs/api-design/README.md; api/spec/api-rest.yaml}
 \end{frame}
 
-\begin{frame}{Digital voice, and encryption where it is permitted}
+\begin{frame}{Digital voice and encryption}
   \footnotesize
   \begin{columns}[T]
     \column{0.5\textwidth}
@@ -252,7 +252,6 @@
     \column{0.5\textwidth}
     \begin{block}{\faLock\ Voice encryption (opt-in)}
       \begin{itemize}
-        \item For networks where encryption is permitted
         \item One 256-bit key shared by the network's stations
         \item D-STAR: the voice bits XORed with a ChaCha20 keystream
         \item RADE V2: keyed rotations of the carriers every 40 ms; a late listener locks in about 1 s
