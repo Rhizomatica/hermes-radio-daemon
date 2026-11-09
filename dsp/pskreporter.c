@@ -164,12 +164,26 @@ static bool server_now(struct sockaddr_storage *to, socklen_t *to_len)
     return ok;
 }
 
-/* Everything queued, in as many datagrams as it takes. */
-static void send_queued(void)
+/* Everything queued, in as many datagrams as it takes.  With no callsign,
+ * position or server yet the queue waits (up to PSKR_QUEUE_MAX), so what
+ * was heard before the first GPS fix is still reported. */
+static bool send_queued(void)
 {
     static pskr_spot spots[PSKR_QUEUE_MAX];
+    char call[PSKR_CALL_MAX], locator[PSKR_LOCATOR_MAX], software[PSKR_SOFTWARE_MAX];
+    struct sockaddr_storage to;
+    socklen_t to_len = 0;
+
     pthread_mutex_lock(&g_lock);
     int n = g_queued;
+    pthread_mutex_unlock(&g_lock);
+    if (n == 0)
+        return true;
+    if (!receiver_now(call, sizeof call, locator, sizeof locator) || !server_now(&to, &to_len))
+        return false;
+
+    pthread_mutex_lock(&g_lock);
+    n = g_queued;
     unsigned dropped = g_dropped;
     memcpy(spots, g_queue, (size_t) n * sizeof spots[0]);
     g_queued = 0;
@@ -177,14 +191,6 @@ static void send_queued(void)
     pthread_mutex_unlock(&g_lock);
     if (dropped)
         HLOGW(LOG_C, "%u spots dropped: the queue was full", dropped);
-    if (n == 0)
-        return;
-
-    char call[PSKR_CALL_MAX], locator[PSKR_LOCATOR_MAX], software[PSKR_SOFTWARE_MAX];
-    struct sockaddr_storage to;
-    socklen_t to_len = 0;
-    if (!receiver_now(call, sizeof call, locator, sizeof locator) || !server_now(&to, &to_len))
-        return;   /* these spots go: an hour later they are due again */
     snprintf(software, sizeof software, "%s %s", PSKR_SOFTWARE, radiod_api_version());
     pskr_receiver rx = { .call = call, .locator = locator, .software = software,
                          .antenna = g_radio->pskreporter_antenna };
@@ -200,11 +206,11 @@ static void send_queued(void)
                                  (uint32_t) now, g_sequence, g_id, &taken);
         if (len == 0 || taken == 0) {
             HLOGW(LOG_C, "cannot fit a report in %d bytes", PSKR_DATAGRAM_MAX);
-            return;
+            return false;
         }
         if (sendto(g_sock, dgram, len, 0, (struct sockaddr *) &to, to_len) != (ssize_t) len) {
             HLOGW(LOG_C, "sending to %s: %s", g_radio->pskreporter_server, strerror(errno));
-            return;
+            return false;
         }
         g_sequence += (uint32_t) taken + 1;     /* the data records: spots and the receiver's */
         g_datagrams++;
@@ -213,6 +219,7 @@ static void send_queued(void)
         sent += taken;
     }
     HLOGI(LOG_C, "reported %d stations as %s (%s)", sent, call, locator);
+    return true;
 }
 
 static time_t next_send(time_t from)
@@ -224,14 +231,15 @@ static void *pskreporter_thread(void *arg)
 {
     (void) arg;
     time_t due = next_send(time(NULL));
+    bool sending = true;   /* the last send went: a full queue may go early */
     pthread_mutex_lock(&g_lock);
     while (!g_stop) {
         struct timespec until = { .tv_sec = due };
-        while (!g_stop && g_queued < PSKR_SEND_EARLY && time(NULL) < due)
+        while (!g_stop && (!sending || g_queued < PSKR_SEND_EARLY) && time(NULL) < due)
             if (pthread_cond_timedwait(&g_wake, &g_lock, &until) == ETIMEDOUT)
                 break;
         pthread_mutex_unlock(&g_lock);
-        send_queued();
+        sending = send_queued();
         due = next_send(time(NULL));
         pthread_mutex_lock(&g_lock);
     }
