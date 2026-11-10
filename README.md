@@ -19,6 +19,7 @@ Radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-net)
 - **Station API** (`/api/v2` REST and the `hermes.v1` WebSocket, as specified in `api/spec/`): handlers written in Go (`api/`), linked into the daemon; the daemon's C code owns every socket. Off by default; see [Station API](#station-api-apiv2-hermesv1)
 - **Mercury HF modem inside the daemon** (`enable_mercury`): keyed and fed audio by the daemon directly, its UI traffic on the daemon's websocket
 - **Broadcast plane and position beacons** (`broadcast_enable`): radiod is Mercury's broadcast client, sending files as a RaptorQ carousel from a spool directory, filing the ones it receives, and sending and receiving the HERMES position beacon ([docs/BEACON-FORMAT.md](docs/BEACON-FORMAT.md)); see [Broadcast Plane and Position Beacons](#broadcast-plane-and-position-beacons)
+- **GPS tracks** (`gps_logging`): the station's positions and every station's beacons, recorded in fixed records and read by time range; see [GPS Tracks](#gps-tracks)
 - WAV recording with remote start/stop on both backends
 - INI configuration at `/etc/hermes/core.ini` and `/etc/hermes/user.ini`
 - Optional CPU affinity pinning
@@ -860,8 +861,31 @@ same features either way Mercury runs:
   - it carries `callsign` and the GPS fix, or the fixed
     `station_latitude`/`station_longitude`;
   - received beacons go into the digital-message log (mode `BEACON`) and
-    become their callsign's last-known position, kept in `recording_dir`.
+    become their callsign's last-known position, kept in `recording_dir`;
+    with `gps_logging`, each is also a point of that station's track.
   - The format is [docs/BEACON-FORMAT.md](docs/BEACON-FORMAT.md).
+
+## GPS Tracks
+
+With `gps_logging` (core.ini, or `PATCH /api/v2/gps/settings`), radiod records
+tracks (`gps/gps_track.h`):
+
+- this station's: a point every `gps_sample_interval_s` while it moves, none
+  while it stays within 10 m but one every 5 minutes, and one at once on a new
+  fix type or a fix found again;
+- every other station's, from the position beacons heard from it.
+
+A track is a directory of files, one per period aligned to UTC and named by
+its start (`gps-YYYYMMDDTHHMMSSZ.trk`): `gps_file_period_s` for this
+station's, in `gps_log_dir`, and a day for another's, in
+`gps_log_dir/stations/<CALLSIGN>/`. A point is a fixed 24-byte record (time,
+position, altitude, accuracy, fix, emergency code), so a time range picks its
+files by name and finds its first point by binary search, and counting a
+range's points reads none of them. Past `gps_log_max_mb`, all tracks
+together, the oldest files go.
+
+`GET /api/v2/gps/track` reads a track by time range; a trip is a named time
+range of it.
 
 ## Audio Bridge
 
@@ -1198,6 +1222,10 @@ curl -X PATCH -H 'Content-Type: application/json' \
 | `clearSos` | `DELETE /api/v2/gps/sos`: one beacon says the emergency is over | user |
 | `listBeacons` | `GET /api/v2/gps/beacons`: every station heard by its beacons, newest first | readonly |
 | `listStationPositions` | `GET /api/v2/gps/stations`: the UUCP stations, with their last beacon's position | readonly |
+| `getTrack` | `GET /api/v2/gps/track?since=&until=[&callsign=]`: a track over a time range, oldest first; this station's, or another's from its beacons | readonly |
+| `listGpsFiles` | `GET /api/v2/gps/files`: this station's track files | readonly |
+| `downloadGpsFile` | `GET /api/v2/gps/files/{name}`: one, in its binary format (`gps/gps_track.h`) | readonly |
+| `deleteGpsFiles` | `DELETE /api/v2/gps/files`: all of them | operator |
 | `listQueue` | `GET /api/v2/queue[?station=]`: the jobs waiting on UUCP and NNCP, oldest first ([store-and-forward.md](docs/api-design/store-and-forward.md)) | operator |
 | `cancelJob` | `DELETE /api/v2/queue/{job_id}`, the id as `listQueue` gives it | operator |
 | `callNow` | `POST /api/v2/queue/call` `{"station":"gw"}`: call now, over the transport that reaches it (or `transport`); no station, every station with work | operator |

@@ -25,6 +25,7 @@
 #endif
 
 #include "cfg_utils.h"
+#include "gps_track.h"
 #include "radiod_log.h"
 
 /* The ranges api-rest.yaml gives GpsSettings (GpsSettings in the contract). */
@@ -183,8 +184,10 @@ static bool json_number(const char *json, size_t len, const char *key,
     return true;
 }
 
+/* The fix, and to the track (gps_track.h) with its horizontal accuracy in
+ * metres (NAN if unknown) and its time (the fix's, else now). */
 static void gps_set_fix(int fix, double lat, double lon, double alt,
-                        bool has_alt, double time, bool has_time)
+                        bool has_alt, double time, bool has_time, double accuracy_m)
 {
     pthread_mutex_lock(&s_mutex);
     s_gps.fix.fix = fix;
@@ -201,6 +204,11 @@ static void gps_set_fix(int fix, double lat, double lon, double alt,
     if (s_gps.fix.has_time)
         s_gps.fix.time = time;
     pthread_mutex_unlock(&s_mutex);
+
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    gps_track_fix(fix, lat, lon, alt, has_alt, accuracy_m,
+                  has_time && !isnan(time) ? time : now.tv_sec + now.tv_usec / 1e6);
 }
 
 /* One newline-terminated gpsd JSON object: a TPV becomes the fix. */
@@ -240,7 +248,10 @@ static void gps_handle_line(char *line)
     else if (json_number(line, len, "time", &time))
         has_time = true;
 
-    gps_set_fix(fix, lat, lon, alt, has_alt, time, has_time);
+    double eph = NAN;   /* gpsd's estimated horizontal error, metres */
+    (void) json_number(line, len, "eph", &eph);
+
+    gps_set_fix(fix, lat, lon, alt, has_alt, time, has_time, eph);
 }
 
 /* Connect to gpsd at s_host:s_port; -1 on failure. */
@@ -280,7 +291,7 @@ static void gps_sleep_ms(int ms)
  * a stale fix. */
 static void gps_clear_fix(void)
 {
-    gps_set_fix(0, NAN, NAN, NAN, false, NAN, false);
+    gps_set_fix(0, NAN, NAN, NAN, false, NAN, false, NAN);
 }
 
 /* The reader logs one line per state change, not once a second: up, then
@@ -471,6 +482,20 @@ static bool geoclue_position(DBusConnection *c)
                 dbus_message_iter_get_basic(&it, &v[i]);
         }
     }
+    double accuracy = NAN;   /* the (level, horizontal, vertical) struct's horizontal, metres */
+    if (ok && dbus_message_iter_next(&it) && dbus_message_iter_get_arg_type(&it) == DBUS_TYPE_STRUCT)
+    {
+        DBusMessageIter acc;
+        dbus_message_iter_recurse(&it, &acc);
+        double h;
+        if (dbus_message_iter_get_arg_type(&acc) == DBUS_TYPE_INT32 && dbus_message_iter_next(&acc) &&
+            dbus_message_iter_get_arg_type(&acc) == DBUS_TYPE_DOUBLE)
+        {
+            dbus_message_iter_get_basic(&acc, &h);
+            if (h > 0)
+                accuracy = h;
+        }
+    }
     dbus_message_unref(r);
     if (!ok)
         return false;
@@ -479,7 +504,8 @@ static bool geoclue_position(DBusConnection *c)
                time(NULL) - (time_t) ts < GEOCLUE_STALE_S;
     bool has_alt = has && (fields & GEOCLUE_FIELD_ALTITUDE);
     if (has)
-        gps_set_fix(has_alt ? GPS_FIX_3D : GPS_FIX_2D, v[0], v[1], v[2], has_alt, (double) ts, true);
+        gps_set_fix(has_alt ? GPS_FIX_3D : GPS_FIX_2D, v[0], v[1], v[2], has_alt, (double) ts, true,
+                    accuracy);
     else
         gps_clear_fix();
     return true;
@@ -539,12 +565,38 @@ static void *gps_geoclue_thread(void *arg)
 }
 #endif
 
+/* The track's recorder (gps_track.h) to these settings, its directory and
+ * size cap from core.ini (main:gps_log_dir, main:gps_log_max_mb). */
+static void track_configure(const radiod_api_gps_settings *s)
+{
+    gps_track_config c = {
+        .logging = s->logging,
+        .sample_interval_s = s->sample_interval_s,
+        .file_period_s = s->file_period_s,
+        .max_bytes = (int64_t) GPS_TRACK_MAX_MB_DEFAULT * 1024 * 1024,
+    };
+    snprintf(c.dir, sizeof(c.dir), "%s", GPS_TRACK_DIR_DEFAULT);
+    if (s_radio && s_radio->cfg_radio)
+    {
+        dictionary *ini = s_radio->cfg_radio;
+        const char *dir = iniparser_getstring(ini, "main:gps_log_dir", GPS_TRACK_DIR_DEFAULT);
+        if (dir && *dir)   /* "gps_log_dir =" left empty: the default */
+            snprintf(c.dir, sizeof(c.dir), "%s", dir);
+        int mb = iniparser_getint(ini, "main:gps_log_max_mb", GPS_TRACK_MAX_MB_DEFAULT);
+        if (mb > 0)
+            c.max_bytes = (int64_t) mb * 1024 * 1024;
+    }
+    gps_track_configure(&c);
+}
+
 void gps_init(radio *radio_h)
 {
     s_radio = radio_h;
     pthread_mutex_lock(&s_mutex);
     settings_load(&s_gps.settings);
+    radiod_api_gps_settings settings = s_gps.settings;
     pthread_mutex_unlock(&s_mutex);
+    track_configure(&settings);
 
     if (!s_radio || !s_radio->cfg_radio)
         return;
@@ -612,6 +664,7 @@ int gps_settings_apply(const radiod_api_gps_settings *s)
     pthread_mutex_lock(&s_mutex);
     s_gps.settings = *s;
     pthread_mutex_unlock(&s_mutex);
+    track_configure(s);
 
     if (!s_radio)
         return RADIOD_API_OK;

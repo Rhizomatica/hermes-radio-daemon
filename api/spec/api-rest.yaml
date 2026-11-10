@@ -2072,6 +2072,52 @@ paths:
                     type: array
                     items: {$ref: "#/components/schemas/Station"}
         '401': {$ref: '#/components/responses/Unauthorized'}
+  /gps/track:
+    get:
+      tags: [gps]
+      operationId: getTrack
+      summary: A station's track over a time range, oldest first.
+      description: |
+        This station's positions, recorded while `settings.logging` is on: at most one every
+        `sample_interval_s`, none while the station stays within 10 m of the last point but for
+        one every 5 minutes, and one at once on a new fix type or a fix found again. With
+        `callsign`, that station's position beacons heard while logging (`GET /gps/beacons`
+        lists the stations heard). A track is kept until `main:gps_log_max_mb` (core.ini)
+        removes its oldest files. Version 1 beacons are not authenticated: the position is as
+        the station reports it.
+      x-hermes-role: readonly
+      parameters:
+        - name: since
+          in: query
+          description: The range's start, included. Default a day before now.
+          schema: {type: string, format: date-time}
+        - name: until
+          in: query
+          description: The range's end, included. Default now.
+          schema: {type: string, format: date-time}
+        - name: callsign
+          in: query
+          description: Another station's track. Absent, this station's.
+          schema: {type: string, pattern: "^[A-Za-z0-9./-]{1,15}$"}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 5000, default: 1000}
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: The points in the range.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: "#/components/schemas/GpsPoint"}
+                  next_cursor: {type: string}
+        "422": {$ref: "#/components/responses/Invalid"}
+        '401': {$ref: '#/components/responses/Unauthorized'}
   /gps/trip:
     get:
       tags: [gps]
@@ -2198,7 +2244,10 @@ paths:
     get:
       tags: [gps]
       operationId: listGpsFiles
-      summary: Recorded position files.
+      summary: This station's track files, oldest first.
+      description: |
+        The files `GET /gps/track` reads: one per `file_period_s`, aligned to UTC and named by
+        the period's start (`gps-YYYYMMDDTHHMMSSZ.trk`), which is their `created_at`.
       x-hermes-role: readonly
       responses:
         "200":
@@ -2230,7 +2279,14 @@ paths:
     get:
       tags: [gps]
       operationId: downloadGpsFile
-      summary: Download a position file.
+      summary: Download a track file.
+      description: |
+        An 8-byte header (`HGPS`, the format version 1, the record size 24, two zero bytes),
+        then the points, oldest first, at strictly increasing times, 24 bytes each,
+        little-endian: the time (int64, unix milliseconds), latitude and longitude (int32 each,
+        1e-7 degrees), altitude (int32, decimetres, -2147483648 unknown), horizontal accuracy
+        (uint16, decimetres, 65535 unknown), the fix (uint8: 0 none, 2 2D, 3 3D, 4 set by hand)
+        and the emergency code (uint8). Supports `Range`, to resume a download.
       x-hermes-role: readonly
       responses:
         "200":
@@ -3688,7 +3744,9 @@ components:
         latitude: {type: number}
         longitude: {type: number}
         altitude_m: {type: [number, "null"]}
-        accuracy_m: {type: [number, "null"]}
+        accuracy_m: {type: [number, "null"], description: "Horizontal, metres."}
+        fix: {type: string, enum: [none, "2d", "3d", manual], description: "none: the last known position; manual: set by hand, a fixed station."}
+        emergency: {type: integer, minimum: 0, maximum: 30, description: "A beacon's emergency code (POST /gps/sos), 0 none."}
     Trip:
       type: object
       required: [id, started_at]

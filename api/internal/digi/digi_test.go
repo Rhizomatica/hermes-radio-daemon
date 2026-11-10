@@ -42,6 +42,9 @@ func TestDigiLog(t *testing.T) {
 	if data = e.Do("GET", "/digi/log?callsign=pu2uit&since=2026-10-19T10:02:00Z", "").JSON(t)["data"].([]any); len(data) != 2 {
 		t.Errorf("callsign and since = %v", data)
 	}
+	if r := e.Do("GET", "/digi/log?mode=beacon", ""); r.Status != 200 {
+		t.Errorf("mode=beacon = %d", r.Status)
+	}
 	if r := e.Do("GET", "/digi/log?mode=PSK31&limit=500", ""); r.Status != 422 {
 		t.Errorf("bad filters = %d", r.Status)
 	}

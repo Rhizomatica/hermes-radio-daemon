@@ -28,6 +28,7 @@
 #define LOG_C "api"
 #include "dsp/digi_log.h"
 #include "gps/gps.h"
+#include "gps/gps_track.h"
 #include "websocket/ws_server.h"
 #include "webrtc/radio_webrtc.h"
 #include "beacon.h"
@@ -598,6 +599,49 @@ bool radiod_api_digi_log_files(char *out, size_t out_len)
     if (!out || !out_len)
         return false;
     return digi_log_files(out, out_len);
+}
+
+_Static_assert(sizeof(radiod_api_gps_point) == sizeof(gps_track_point) &&
+               offsetof(radiod_api_gps_point, at_ms) == offsetof(gps_track_point, at_ms) &&
+               offsetof(radiod_api_gps_point, lat_e7) == offsetof(gps_track_point, lat_e7) &&
+               offsetof(radiod_api_gps_point, lon_e7) == offsetof(gps_track_point, lon_e7) &&
+               offsetof(radiod_api_gps_point, alt_dm) == offsetof(gps_track_point, alt_dm) &&
+               offsetof(radiod_api_gps_point, accuracy_dm) == offsetof(gps_track_point, accuracy_dm) &&
+               offsetof(radiod_api_gps_point, fix) == offsetof(gps_track_point, fix) &&
+               offsetof(radiod_api_gps_point, emergency) == offsetof(gps_track_point, emergency),
+               "radiod_api_gps_point is gps_track_point");
+
+int radiod_api_gps_track_read(const char *station, int64_t since_ms, int64_t until_ms,
+                              radiod_api_gps_point *out, int max)
+{
+    int n = gps_track_read(station, since_ms, until_ms, (gps_track_point *) out, max);
+    return n < 0 ? RADIOD_API_EINVAL : n;
+}
+
+long radiod_api_gps_track_count(const char *station, int64_t since_ms, int64_t until_ms)
+{
+    long n = gps_track_count(station, since_ms, until_ms);
+    return n < 0 ? RADIOD_API_EINVAL : n;
+}
+
+bool radiod_api_gps_track_files(char *out, size_t out_len)
+{
+    return gps_track_files(out, out_len);
+}
+
+_Static_assert(RADIOD_API_GPS_TRACK_FILES_MAX == GPS_TRACK_FILES_MAX &&
+               RADIOD_API_GPS_TRACK_PATH_MAX >= GPS_TRACK_DIR_MAX + GPS_TRACK_NAME_LEN + 2,
+               "the C API's track list fits gps_track_files' longest");
+
+int radiod_api_gps_track_delete(const char *name)
+{
+    switch (gps_track_delete(name))
+    {
+    case GPS_TRACK_DELETED:  return RADIOD_API_OK;
+    case GPS_TRACK_ENOENT:   return RADIOD_API_ENOENT;
+    case GPS_TRACK_EIO:      return RADIOD_API_EIO;
+    default:                 return RADIOD_API_EINVAL;
+    }
 }
 
 /* ── modem ── */

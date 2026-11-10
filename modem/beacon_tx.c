@@ -10,6 +10,7 @@
 #include "cfg_utils.h"
 #include "digi_log.h"
 #include "gps.h"
+#include "gps_track.h"
 #include "radiod_log.h"
 
 #define LOG_C "beacon"
@@ -18,6 +19,8 @@
 #define BEACON_LOOP_MS   1000    /* how often the schedule is looked at */
 #define BEACON_TICK_MS   100     /* how often a wait checks for shutdown */
 #define US_PER_MS        1000
+#define MS_PER_S         1000.0
+#define DM_PER_M         10      /* a track point's altitude and accuracy are in decimetres */
 
 /* beacon-stations.tsv: field widths of a line */
 #define STR_(x) #x
@@ -271,6 +274,27 @@ static void log_beacon(const beacon *b, const char *dir, const char *radio_mode,
     digi_log_add(&e);
 }
 
+/* A beacon heard: a point of its station's track (gps_track.h). */
+static void track_beacon(const beacon *b, double at)
+{
+    static const uint8_t fixes[] = {
+        [BEACON_FIX_NONE] = GPS_TRACK_FIX_NONE, [BEACON_FIX_2D] = GPS_TRACK_FIX_2D,
+        [BEACON_FIX_3D] = GPS_TRACK_FIX_3D, [BEACON_FIX_MANUAL] = GPS_TRACK_FIX_MANUAL,
+    };
+    bool full = b->layout == BEACON_LAYOUT_FULL;
+    gps_track_point p = {
+        .at_ms = llround(at * MS_PER_S),
+        .lat_e7 = b->lat_e7,
+        .lon_e7 = b->lon_e7,
+        .alt_dm = full && b->fix_type == BEACON_FIX_3D ? b->alt_m * DM_PER_M : GPS_TRACK_NO_ALT,
+        .accuracy_dm = full && b->accuracy_m != BEACON_ACCURACY_UNKNOWN
+                     ? (uint16_t) (b->accuracy_m * DM_PER_M) : GPS_TRACK_NO_ACC,
+        .fix = full && b->fix_type <= BEACON_FIX_MANUAL ? fixes[b->fix_type] : GPS_TRACK_FIX_NONE,
+        .emergency = (uint8_t) b->emergency,
+    };
+    gps_track_add(b->callsign, &p);
+}
+
 void beacon_on_station_frame(const uint8_t *frame, size_t len, void *user)
 {
     (void) user;
@@ -286,6 +310,7 @@ void beacon_on_station_frame(const uint8_t *frame, size_t len, void *user)
     HLOGI(LOG_C, "heard %s at %.5f %.5f, emergency %d", b.callsign, b.lat_e7 / 1e7,
           b.lon_e7 / 1e7, b.emergency);
     log_beacon(&b, "rx", len == BEACON_COMPACT_BYTES ? "DATAC16" : NULL, now);
+    track_beacon(&b, now);
     beacon_heard(&b, now);
 }
 

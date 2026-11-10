@@ -56,7 +56,8 @@ TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
             tests/dsp/test_digi_modes tests/dsp/test_digi_log tests/dsp/test_dstar_voice \
             tests/dsp/test_rade_voice tests/dsp/test_dstar_clock_cal tests/dsp/test_pskreporter tests/dsp/test_js8_frame tests/dsp/test_js8_rx tests/dsp/test_js8_msg tests/dsp/test_js8_decode tests/dsp/test_js8_recordings tests/dsp/test_js8_worker tests/dsp/test_js8_tx tests/dsp/test_radae_vocoder tests/dsp/test_drm \
             tests/sbitx/test_sbitx_buffer \
-            tests/common/test_radiod_log tests/common/test_async_file
+            tests/common/test_radiod_log tests/common/test_async_file \
+            tests/gps/test_gps_track
 # The broadcast plane uses Mercury's codec (libmercury_host.a), so its tests
 # need the submodule.  Added here: the test rule reads TEST_BINS as it is
 # parsed.
@@ -184,8 +185,10 @@ tests/modem/test_bcast_spool: tests/modem/test_bcast_spool.c modem/bcast_spool.c
 	$(CC) $(TEST_CFLAGS) $(BCAST_TEST_FLAGS) $< modem/bcast_spool.c modem/bcast_link.c $(UNITY_SRC) \
 	      $(HERMES_LOG_SRC) $(MERCURY_LIBS) -o $@ -lpthread -lm
 tests/modem/test_beacon_tx: tests/modem/test_beacon_tx.c modem/beacon_tx.c modem/beacon_tx.h \
-                            modem/beacon.c modem/beacon.h dsp/digi_log.c dsp/digi_log.h
-	$(CC) $(TEST_CFLAGS) -Idsp $< modem/beacon_tx.c modem/beacon.c dsp/digi_log.c $(UNITY_SRC) \
+                            modem/beacon.c modem/beacon.h dsp/digi_log.c dsp/digi_log.h \
+                            gps/gps_track.c gps/gps_track.h
+	$(CC) $(TEST_CFLAGS) -Idsp -Igps $< modem/beacon_tx.c modem/beacon.c dsp/digi_log.c gps/gps_track.c \
+	      $(UNITY_SRC) \
 	      $(HERMES_LOG_SRC) -o $@ -lpthread -lm -liniparser
 
 tests/modem/test_beacon: tests/modem/test_beacon.c modem/beacon.c modem/beacon.h
@@ -292,6 +295,9 @@ tests/dsp/test_js8_worker: tests/dsp/test_js8_worker.c dsp/js8_worker.c dsp/js8_
 	$(CC) $(TEST_CFLAGS) -w -Idsp -Iradio $(FT8_LIB_CPPFLAGS) $< dsp/js8_worker.c dsp/js8_decode.c dsp/js8_rx.c dsp/ft8_subtract.c \
 	      dsp/js8_msg.c dsp/js8_frame.c dsp/digi_log.c $(FT8_TEST_SRCS) $(FT8_TEST_LIBS) $(UNITY_SRC) \
 	      $(HERMES_LOG_SRC) -o $@ -lpthread -lm
+
+tests/gps/test_gps_track: tests/gps/test_gps_track.c gps/gps_track.c gps/gps_track.h
+	$(CC) $(TEST_CFLAGS) $< gps/gps_track.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread -lm
 
 tests/dsp/test_js8_tx: tests/dsp/test_js8_tx.c dsp/js8_tx.c dsp/js8_tx.h dsp/js8_msg.c dsp/js8_rx.c dsp/js8_frame.c \
                        dsp/ft8_subtract.c dsp/js8_jsc_words.h $(FT8_TEST_SRCS) $(FT8_TEST_LIBS)
