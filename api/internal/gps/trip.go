@@ -2,15 +2,16 @@ package gps
 
 // The station's recorded trips (docs/API-REFERENCE.md, tag gps): open and
 // close a trip, list them, and read one back with its breadcrumb points. A
-// trip is opened explicitly and closed explicitly; closing does not open a
-// new one, so at most one trip is open at a time.
+// trip is a named time range of the station's track (track.go), opened
+// explicitly and closed explicitly; closing does not open a new one, so at
+// most one trip is open at a time.
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
@@ -28,30 +29,37 @@ func registerTrips(rt *api.Router, h *handlers) {
 // Trip is Trip (api-rest.yaml).
 type Trip struct {
 	ID         int64   `json:"id"`
+	Name       string  `json:"name"`
 	StartedAt  string  `json:"started_at"`
 	EndedAt    *string `json:"ended_at"`
 	PointCount int     `json:"point_count"`
 }
 
-// GpsPoint is GpsPoint (api-rest.yaml).
-type GpsPoint struct {
-	At        string   `json:"at"`
-	Latitude  float64  `json:"latitude"`
-	Longitude float64  `json:"longitude"`
-	AltitudeM *float64 `json:"altitude_m"`
-	AccuracyM *float64 `json:"accuracy_m"`
+func tripOf(t store.Trip, pointCount int) Trip {
+	return Trip{ID: t.ID, Name: t.Name, StartedAt: t.StartedAt, EndedAt: t.EndedAt, PointCount: pointCount}
 }
 
-func tripOf(t store.Trip) Trip {
-	return Trip{ID: t.ID, StartedAt: t.StartedAt, EndedAt: t.EndedAt, PointCount: t.PointCount}
+// tripTimes is a trip's time range: started_at, and ended_at or now while it
+// is open.
+func tripTimes(t store.Trip) (since, until time.Time, err error) {
+	if since, err = time.Parse(time.RFC3339Nano, t.StartedAt); err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	if t.EndedAt == nil {
+		return since, time.Now(), nil
+	}
+	until, err = time.Parse(time.RFC3339Nano, *t.EndedAt)
+	return since, until, err
 }
 
-func pointOf(p store.TripPoint) GpsPoint {
-	return GpsPoint{At: p.At, Latitude: p.Latitude, Longitude: p.Longitude,
-		AltitudeM: p.AltitudeM, AccuracyM: p.AccuracyM}
+func nextCursor(next time.Time) string {
+	if next.IsZero() {
+		return ""
+	}
+	return api.EncodeCursor(uint64(next.UnixMilli()))
 }
 
-func nextCursor(next int64) string {
+func idCursor(next int64) string {
 	if next == 0 {
 		return ""
 	}
@@ -61,9 +69,9 @@ func nextCursor(next int64) string {
 // tripPage is getCurrentTrip's and getTrip's reply: the trip and one page of
 // its points, oldest first.
 type tripPage struct {
-	Trip       Trip       `json:"trip"`
-	Data       []GpsPoint `json:"data"`
-	NextCursor string     `json:"next_cursor,omitempty"`
+	Trip       Trip    `json:"trip"`
+	Data       []Point `json:"data"`
+	NextCursor string  `json:"next_cursor,omitempty"`
 }
 
 // dbFail answers 500 for a store error.
@@ -71,9 +79,35 @@ func dbFail(w http.ResponseWriter, r *http.Request) {
 	api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
 }
 
+// trackFail answers 500 for a track read error.
+func trackFail(w http.ResponseWriter, r *http.Request, err error) {
+	api.Problem(w, r, http.StatusInternalServerError, "internal", err.Error(), nil)
+}
+
 func (h *handlers) openTrip(w http.ResponseWriter, r *http.Request) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	var in struct {
+		Name string `json:"name"`
+	}
+	if !api.Decode(w, r, &in) {
+		return
+	}
+	name := strings.TrimSpace(in.Name)
+	f := api.Fields{}
+	switch {
+	case name == "":
+		f.Add("name", "a non-empty name")
+	case len(name) > 64:
+		f.Add("name", "at most 64 characters")
+	}
+	if !f.OK() {
+		api.Invalid(w, r, f)
+		return
+	}
+
+	// The trips' own mutex, not h.mu: a slow database write must not delay
+	// the beacon and emergency sends that h.mu guards.
+	h.tripMu.Lock()
+	defer h.tripMu.Unlock()
 	if _, ok, err := h.st.CurrentTrip(r.Context()); err != nil {
 		dbFail(w, r)
 		return
@@ -81,18 +115,21 @@ func (h *handlers) openTrip(w http.ResponseWriter, r *http.Request) {
 		api.Problem(w, r, http.StatusConflict, "trip_open", "a trip is already open; close it first", nil)
 		return
 	}
-	trip, err := h.st.OpenTrip(r.Context())
+	trip, err := h.st.OpenTrip(r.Context(), name)
+	if errors.Is(err, store.ErrTripOpen) {
+		api.Problem(w, r, http.StatusConflict, "trip_open", "a trip is already open; close it first", nil)
+		return
+	}
 	if err != nil {
 		dbFail(w, r)
 		return
 	}
-	h.startRecorder()
-	api.JSON(w, http.StatusOK, tripOf(trip))
+	api.JSON(w, http.StatusOK, tripOf(trip, 0))
 }
 
 func (h *handlers) closeTrip(w http.ResponseWriter, r *http.Request) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.tripMu.Lock()
+	defer h.tripMu.Unlock()
 	cur, ok, err := h.st.CurrentTrip(r.Context())
 	if err != nil {
 		dbFail(w, r)
@@ -107,8 +144,12 @@ func (h *handlers) closeTrip(w http.ResponseWriter, r *http.Request) {
 		dbFail(w, r)
 		return
 	}
-	h.stopRecorder()
-	api.JSON(w, http.StatusOK, tripOf(trip))
+	count, err := h.pointCount(trip)
+	if err != nil {
+		trackFail(w, r, err)
+		return
+	}
+	api.JSON(w, http.StatusOK, tripOf(trip, count))
 }
 
 func (h *handlers) getCurrentTrip(w http.ResponseWriter, r *http.Request) {
@@ -140,9 +181,14 @@ func (h *handlers) listTrips(w http.ResponseWriter, r *http.Request) {
 	}
 	data := make([]Trip, 0, len(trips))
 	for _, t := range trips {
-		data = append(data, tripOf(t))
+		count, err := h.pointCount(t)
+		if err != nil {
+			trackFail(w, r, err)
+			return
+		}
+		data = append(data, tripOf(t, count))
 	}
-	api.JSON(w, http.StatusOK, api.Page[Trip]{Data: data, NextCursor: nextCursor(next)})
+	api.JSON(w, http.StatusOK, api.Page[Trip]{Data: data, NextCursor: idCursor(next)})
 }
 
 func (h *handlers) getTrip(w http.ResponseWriter, r *http.Request) {
@@ -163,6 +209,14 @@ func (h *handlers) getTrip(w http.ResponseWriter, r *http.Request) {
 	h.tripWithPoints(w, r, trip)
 }
 
+func (h *handlers) pointCount(t store.Trip) (int, error) {
+	since, until, err := tripTimes(t)
+	if err != nil {
+		return 0, err
+	}
+	return Count(h.r, "", since, until)
+}
+
 func (h *handlers) tripWithPoints(w http.ResponseWriter, r *http.Request, trip store.Trip) {
 	limit, ok := api.Limit(w, r)
 	if !ok {
@@ -172,72 +226,24 @@ func (h *handlers) tripWithPoints(w http.ResponseWriter, r *http.Request, trip s
 	if !ok {
 		return
 	}
-	points, next, err := h.st.TripPoints(r.Context(), trip.ID, limit, int64(cursor))
+	since, until, err := tripTimes(trip)
 	if err != nil {
-		dbFail(w, r)
+		trackFail(w, r, err)
 		return
 	}
-	data := make([]GpsPoint, 0, len(points))
-	for _, p := range points {
-		data = append(data, pointOf(p))
-	}
-	api.JSON(w, http.StatusOK, tripPage{Trip: tripOf(trip), Data: data, NextCursor: nextCursor(next)})
-}
-
-// ── the recorder: one position fix per sample_interval_s into the open trip ──
-
-func (h *handlers) startRecorder() {
-	if h.recOn {
+	count, err := Count(h.r, "", since, until)
+	if err != nil {
+		trackFail(w, r, err)
 		return
 	}
-	h.recOn = true
-	h.recStop = make(chan struct{})
-	go h.recordLoop(h.recStop)
-}
-
-func (h *handlers) stopRecorder() {
-	if !h.recOn {
+	from := since
+	if cursor != 0 {
+		from = time.UnixMilli(int64(cursor))
+	}
+	points, next, err := Track(h.r, "", from, until, limit)
+	if err != nil {
+		trackFail(w, r, err)
 		return
 	}
-	close(h.recStop)
-	h.recOn = false
-}
-
-func (h *handlers) recordLoop(stop <-chan struct{}) {
-	for {
-		select {
-		case <-stop:
-			return
-		case <-time.After(h.interval()):
-			h.record()
-		}
-	}
-}
-
-// interval is the time between recorded fixes (GpsSettings sample_interval_s,
-// at least one second).
-func (h *handlers) interval() time.Duration {
-	s := h.r.Gps().Settings.SampleIntervalS
-	if s < 1 {
-		s = 1
-	}
-	return time.Duration(s) * time.Second
-}
-
-func (h *handlers) record() {
-	trip, ok, err := h.st.CurrentTrip(context.Background())
-	if err != nil || !ok {
-		return
-	}
-	g := h.r.Gps()
-	if g.Latitude == nil || g.Longitude == nil {
-		return
-	}
-	at := time.Now().UTC().Format(time.RFC3339)
-	if g.At != nil {
-		at = *g.At
-	}
-	_ = h.st.AddTripPoint(context.Background(), trip.ID, store.NewTripPoint{
-		At: at, Latitude: *g.Latitude, Longitude: *g.Longitude, AltitudeM: g.AltitudeM,
-	})
+	api.JSON(w, http.StatusOK, tripPage{Trip: tripOf(trip, count), Data: points, NextCursor: nextCursor(next)})
 }

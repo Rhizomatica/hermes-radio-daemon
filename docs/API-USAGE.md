@@ -396,6 +396,7 @@ The station reads its position from the GPS receiver (via gpsd). What the API of
 | List, download, delete this station's track files | `GET /gps/files`, `GET /gps/files/{name}`, `DELETE /gps/files` | readonly / readonly / operator |
 | Position beacons and SOS | `GET` / `PATCH /gps/beacon`, `POST /gps/beacon/send`, `POST` / `DELETE /gps/sos` | readonly / operator / user |
 | Stations heard, and their last positions | `GET /gps/beacons`, `GET /gps/stations` | readonly |
+| Open, close and read trips (named track ranges) | `POST /gps/trip/open`, `POST /gps/trip/close`, `GET /gps/trip`, `GET /gps/trips`, `GET /gps/trips/{trip_id}` | operator / operator / readonly / readonly / readonly |
 | Watch the position live | the `gps` topic on the [WebSocket](#8-real-time-websocket) | readonly |
 
 ### Read the position
@@ -467,11 +468,32 @@ curl -sS "$BASE/gps/track?since=2026-11-09T08:00:00Z&until=2026-11-09T18:00:00Z"
 with their emergency code. A station standing still records a point every 5 minutes, so a gap longer
 than that means no fix (or, for another station, no beacon heard).
 
+### Record a trip
+
+A trip is a named time range of the station's track, so its breadcrumb is read from the same
+positions as `GET /gps/track`; there is no second recording. Open one with a name (operator), read it
+while it is open, then close it. Closing does not open another, and at most one is open at a time.
+
+```bash
+curl -sS -X POST "$BASE/gps/trip/open" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"Field day"}'
+curl -sS "$BASE/gps/trip" -H "Authorization: Bearer $TOKEN"
+curl -sS -X POST "$BASE/gps/trip/close" -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{"id":1,"name":"Field day","started_at":"2026-11-09T08:00:00.000Z","ended_at":null,"point_count":18}
+```
+
+`GET /gps/trips` lists trips newest first, each with a `point_count` (read without loading the points).
+`GET /gps/trips/{trip_id}` and `GET /gps/trip` page the points oldest first (`limit`, default 50, at
+most 200). Open trips end at now, so their count grows while logging records points.
+
 ### Not available yet
 
-Trips (`GET /gps/trips`, `GET /gps/trip`, `POST /gps/trip/close`) are **planned**: today they answer
-**404**. A trip will be a named time range of the track. The WebSocket `gps` topic carries only the
-station's own position (`change: "self"`), not other stations' (`change: "peers"`).
+The WebSocket `gps` topic carries only the station's own position (`change: "self"`), not other
+stations' (`change: "peers"`).
 
 ---
 

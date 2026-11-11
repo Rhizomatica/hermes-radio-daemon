@@ -84,12 +84,6 @@ func snapshot(e *testapi.Env, token string) map[string]string {
 		if op.Method != "GET" || strings.Contains(op.Path, "{") || strings.HasPrefix(op.Path, "/session") {
 			continue
 		}
-		// The trip lifecycle (openTrip/closeTrip) legitimately creates and
-		// closes trips during the run, so the trip GETs are expected to
-		// change; they are checked by their own tests instead.
-		if op.Path == "/gps/trip" || op.Path == "/gps/trips" {
-			continue
-		}
 		r := e.DoAuth("GET", op.Path, "", token)
 		out[op.Path] = volatile.ReplaceAllString(string(r.Body), "")
 	}

@@ -23,7 +23,10 @@ import (
 // (open/close/list/get) need the store, so they are registered only when st
 // is not nil; radiod's loopback fallback (no database) serves the rest.
 func Register(rt *api.Router, st *store.Store) {
-	h := handlers{r: rt.Radio(), st: st, mu: &sync.Mutex{}, log: logging.New(rt.Radio(), "api.tx")}
+	h := handlers{
+		r: rt.Radio(), st: st, mu: &sync.Mutex{}, tripMu: &sync.Mutex{},
+		log: logging.New(rt.Radio(), "api.tx"),
+	}
 	rt.Op("getGps", h.getGps)
 	rt.Op("updateGpsSettings", h.updateSettings)
 	rt.Op("getTrack", h.getTrack)
@@ -31,6 +34,9 @@ func Register(rt *api.Router, st *store.Store) {
 	rt.Op("downloadGpsFile", h.downloadFile)
 	rt.Op("deleteGpsFiles", h.deleteFiles)
 	registerBeacon(rt, h)
+	if st != nil {
+		registerTrips(rt, &h)
+	}
 
 	// The station's own Gps, pushed as it changes (change: self). Other
 	// stations' positions (change: peers) are not there yet.
@@ -40,15 +46,11 @@ func Register(rt *api.Router, st *store.Store) {
 }
 
 type handlers struct {
-	r   rad.Radio
-	st  *store.Store
-	mu  *sync.Mutex
-	log *slog.Logger
-
-	// recStop/recOn track the trip recorder's lifecycle; they are only
-	// touched while holding mu (openTrip/closeTrip).
-	recStop chan struct{}
-	recOn   bool
+	r      rad.Radio
+	st     *store.Store
+	mu     *sync.Mutex
+	tripMu *sync.Mutex
+	log    *slog.Logger
 }
 
 // ── response schemas (api-rest.yaml components) ──

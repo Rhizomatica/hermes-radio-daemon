@@ -25,30 +25,20 @@ func TestTripLifecycle(t *testing.T) {
 		t.Fatalf("CurrentTrip on empty = ok %v, err %v; want none", ok, err)
 	}
 
-	tr, err := s.OpenTrip(ctx)
+	tr, err := s.OpenTrip(ctx, "Field day")
 	if err != nil {
 		t.Fatalf("OpenTrip: %v", err)
 	}
-	if tr.ID == 0 || tr.StartedAt == "" || tr.EndedAt != nil || tr.PointCount != 0 {
+	if tr.ID == 0 || tr.Name != "Field day" || tr.StartedAt == "" || tr.EndedAt != nil {
 		t.Fatalf("open trip = %+v", tr)
 	}
 	if _, ok, err := s.CurrentTrip(ctx); err != nil || !ok {
 		t.Fatalf("CurrentTrip after open = ok %v, err %v", ok, err)
 	}
 
-	alt := 2240.0
-	for _, p := range []NewTripPoint{
-		{At: "2026-11-09T12:00:00Z", Latitude: 4.5, Longitude: -75.7},
-		{At: "2026-11-09T12:00:01Z", Latitude: 4.6, Longitude: -75.8, AltitudeM: &alt},
-	} {
-		if err := s.AddTripPoint(ctx, tr.ID, p); err != nil {
-			t.Fatalf("AddTripPoint: %v", err)
-		}
-	}
-
-	cur, ok, err := s.CurrentTrip(ctx)
-	if err != nil || !ok || cur.PointCount != 2 {
-		t.Fatalf("CurrentTrip point_count = %v, ok %v, err %v", cur.PointCount, ok, err)
+	// The schema, not just the caller, keeps a second trip from opening.
+	if _, err := s.OpenTrip(ctx, "Another"); !errors.Is(err, ErrTripOpen) {
+		t.Fatalf("second OpenTrip = %v, want ErrTripOpen", err)
 	}
 
 	closed, err := s.CloseTrip(ctx, tr.ID)
@@ -65,49 +55,20 @@ func TestTripLifecycle(t *testing.T) {
 	if _, err := s.CloseTrip(ctx, tr.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("CloseTrip closed again = %v, want sql.ErrNoRows", err)
 	}
-}
 
-func TestTripPointsOrderAndPagination(t *testing.T) {
-	s, ctx := openTrips(t)
-	tr, _ := s.OpenTrip(ctx)
-	for i := 1; i <= 5; i++ {
-		if err := s.AddTripPoint(ctx, tr.ID, NewTripPoint{
-			At: "2026-11-09T12:00:00Z", Latitude: float64(i), Longitude: 0}); err != nil {
-			t.Fatalf("AddTripPoint %d: %v", i, err)
-		}
-	}
-
-	// Oldest first.
-	pts, next, err := s.TripPoints(ctx, tr.ID, 2, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(pts) != 2 || pts[0].Latitude != 1 || pts[1].Latitude != 2 || next != pts[1].ID {
-		t.Fatalf("page 1 = %+v next %d", pts, next)
-	}
-	pts, next, err = s.TripPoints(ctx, tr.ID, 2, next)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(pts) != 2 || pts[0].Latitude != 3 || pts[1].Latitude != 4 || next != pts[1].ID {
-		t.Fatalf("page 2 = %+v next %d", pts, next)
-	}
-	pts, next, err = s.TripPoints(ctx, tr.ID, 2, next)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(pts) != 1 || pts[0].Latitude != 5 || next != 0 {
-		t.Fatalf("page 3 = %+v next %d", pts, next)
+	// A closed trip no longer blocks a new one.
+	if _, err := s.OpenTrip(ctx, "Second"); err != nil {
+		t.Fatalf("OpenTrip after close: %v", err)
 	}
 }
 
 func TestListTripsNewestFirst(t *testing.T) {
 	s, ctx := openTrips(t)
-	a, _ := s.OpenTrip(ctx)
+	a, _ := s.OpenTrip(ctx, "a")
 	if _, err := s.CloseTrip(ctx, a.ID); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := s.OpenTrip(ctx)
+	b, _ := s.OpenTrip(ctx, "b")
 	if _, err := s.CloseTrip(ctx, b.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +77,8 @@ func TestListTripsNewestFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(trips) != 2 || trips[0].ID != b.ID || trips[1].ID != a.ID || next != 0 {
+	if len(trips) != 2 || trips[0].ID != b.ID || trips[0].Name != "b" ||
+		trips[1].ID != a.ID || trips[1].Name != "a" || next != 0 {
 		t.Fatalf("ListTrips = %+v next %d", trips, next)
 	}
 

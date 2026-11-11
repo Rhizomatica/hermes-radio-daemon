@@ -177,16 +177,16 @@ func TestGPSTrips(t *testing.T) {
 		t.Fatalf("GET /gps/trip = %d %s", r.status, r.raw)
 	}
 
-	r := callAuth(t, "POST", base+"/gps/trip/open", "", token)
+	r := callAuth(t, "POST", base+"/gps/trip/open", `{"name":"Field day"}`, token)
 	if r.status != 200 {
 		t.Fatalf("open = %d %s", r.status, r.raw)
 	}
 	id, _ := r.body["id"].(float64)
-	if id == 0 || r.body["ended_at"] != nil || r.body["point_count"].(float64) != 0 {
+	if id == 0 || r.body["name"] != "Field day" || r.body["ended_at"] != nil || r.body["point_count"].(float64) != 0 {
 		t.Fatalf("open trip = %s", r.raw)
 	}
 
-	if r := callAuth(t, "POST", base+"/gps/trip/open", "", token); r.status != 409 || r.body["code"] != "trip_open" {
+	if r := callAuth(t, "POST", base+"/gps/trip/open", `{"name":"Another"}`, token); r.status != 409 || r.body["code"] != "trip_open" {
 		t.Fatalf("open while open = %d %s", r.status, r.raw)
 	}
 
@@ -226,6 +226,7 @@ func TestGPSTripRecording(t *testing.T) {
 		"gps_enable = 1",
 		"gps_host = 127.0.0.1",
 		"gps_port = " + port,
+		"gps_log_dir = " + t.TempDir(),
 	}})
 	token := setupAPI(t, d)
 	base := apiBase(d)
@@ -239,13 +240,17 @@ func TestGPSTripRecording(t *testing.T) {
 		t.Fatalf("no 3-D fix within 10 s (last %d %s)", r.status, r.raw)
 	}
 
-	r = callAuth(t, "POST", base+"/gps/trip/open", "", token)
+	// Open before logging starts, so the track's first point is in the trip.
+	r = callAuth(t, "POST", base+"/gps/trip/open", `{"name":"Recording"}`, token)
 	if r.status != 200 {
 		t.Fatalf("open = %d %s", r.status, r.raw)
 	}
 	id := r.body["id"].(float64)
+	if r = callAuth(t, "PATCH", base+"/gps/settings", `{"logging":true}`, token); r.status != 200 {
+		t.Fatalf("enable logging = %d %s", r.status, r.raw)
+	}
 
-	// The recorder captures one point per sample_interval_s (default 1 s).
+	// The trip reads the track recorded while it is open.
 	if !eventually(5*time.Second, func() bool {
 		r = callAuth(t, "GET", base+"/gps/trip", "", token)
 		if r.status != 200 {

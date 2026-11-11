@@ -2124,10 +2124,12 @@ paths:
       operationId: getCurrentTrip
       summary: The current trip and its recorded positions (the breadcrumb).
       description: |
-        The station's open trip: every position fix is stored in the database and listed
-        here, oldest first, so the map can draw the breadcrumb. A trip opens only via
+        The station's open trip and the points of its track between `started_at` and
+        now, oldest first, so the map can draw the breadcrumb. The points are the
+        station's track (see `GET /gps/track`), not a separate recording: they appear
+        once position logging has recorded them. A trip opens only via
         `POST /gps/trip/open` and closes via `POST /gps/trip/close`; `ended_at` is null
-        until then. With no trip open this answers 404.
+        until then. No trip is open by default, and with none open this answers 404.
       x-hermes-role: readonly
       parameters:
         - $ref: "#/components/parameters/Limit"
@@ -2156,12 +2158,23 @@ paths:
     post:
       tags: [gps]
       operationId: openTrip
-      summary: Open a trip and start recording position fixes in it.
+      summary: Open a named trip over the station's track.
       description: |
-        Opens a new trip; the next position fix and the ones after are recorded in it.
-        There is at most one open trip: while one is open this answers 409, so close it
-        first (`POST /gps/trip/close`). Closing a trip does not open a new one.
+        Opens a trip: a named time range of the station's track, from now until it is
+        closed. Its points are whatever the track records in that range, so logging
+        should be on (`PATCH /gps/settings`). There is at most one open trip, enforced
+        in the database: while one is open this answers 409, so close it first
+        (`POST /gps/trip/close`). Closing a trip does not open a new one.
       x-hermes-role: operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 64, description: "A label for the list and the map, e.g. Field day."}
       responses:
         "200":
           description: The trip that was opened.
@@ -2173,6 +2186,7 @@ paths:
           content:
             application/problem+json:
               schema: {$ref: "#/components/schemas/Problem"}
+        "422": {$ref: "#/components/responses/Invalid"}
         '401': {$ref: '#/components/responses/Unauthorized'}
   /gps/trip/close:
     post:
@@ -2180,9 +2194,10 @@ paths:
       operationId: closeTrip
       summary: Close the open trip.
       description: |
-        Sets `ended_at` on the open trip and does not open a new one: open another with
-        `POST /gps/trip/open`. Nothing is deleted, so closed trips stay in the history.
-        Returns the trip that was closed.
+        Sets `ended_at` on the open trip, ending its time range; it does not open a new
+        one: open another with `POST /gps/trip/open`. The track keeps its points, so
+        closed trips stay in the history. Returns the trip that was closed, with the
+        number of points in its range.
       x-hermes-role: operator
       responses:
         "200":
@@ -2201,6 +2216,9 @@ paths:
       tags: [gps]
       operationId: listTrips
       summary: All recorded trips, newest first.
+      description: |
+        Each trip's `point_count` is the number of points of the station's track in its
+        time range, read without loading them.
       x-hermes-role: readonly
       parameters:
         - $ref: "#/components/parameters/Limit"
@@ -2229,6 +2247,9 @@ paths:
       tags: [gps]
       operationId: getTrip
       summary: A recorded trip and its positions.
+      description: |
+        The trip's points are the station's track between `started_at` and `ended_at`
+        (or now while it is open), oldest first.
       x-hermes-role: readonly
       parameters:
         - $ref: "#/components/parameters/Limit"
@@ -3776,12 +3797,13 @@ components:
         emergency: {type: integer, minimum: 0, maximum: 30, description: "A beacon's emergency code (POST /gps/sos), 0 none."}
     Trip:
       type: object
-      required: [id, started_at]
+      required: [id, name, started_at]
       properties:
         id: {type: integer, format: int64}
+        name: {type: string, maxLength: 64, description: "The label given to POST /gps/trip/open."}
         started_at: {$ref: "#/components/schemas/Timestamp"}
         ended_at: {oneOf: [$ref: "#/components/schemas/Timestamp", type: "null"], description: "Null while the trip is open."}
-        point_count: {type: integer}
+        point_count: {type: integer, description: "Points of the station's track in the trip's time range."}
 
     Event:
       type: object
