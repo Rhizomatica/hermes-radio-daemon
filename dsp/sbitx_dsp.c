@@ -98,21 +98,22 @@ static radio *radio_h_dsp;
 #define MAX_SAMPLE_VALUE 8388607.0 // (2 ^ 23) - 1,  signed(?) 24 bits packed in a SIGNED 32 LE
 
 /* The TX output's scale before the band multiplier and the power level.
- * Voice has ~10 dB of peak-to-average ratio; a constant-envelope signal
- * (RADE's OFDM after its clipper, D-STAR's GMSK through the FM modulator)
- * has ~0 dB, so at the voice scale the PA sees ~10 dB more average power,
+ * Voice has ~10 dB of peak-to-average ratio; digital voice has much less
+ * (RADE's OFDM after its clipper) or none (D-STAR's GMSK through the FM
+ * modulator), so at the voice scale the PA sees ~10 dB more average power,
  * saturates and splatters, and the power level barely changes the output.
- * The constant-envelope scale puts its peak below SSB voice's (~4.5e8 on
- * this radio), and the power level then works over its range.  Measured
- * on the sBitx's own meter at 6.9 MHz (band scale 1.5):
- * - RADEv2 at 400 read about 8 W at 100%, at 500 about 15 W (14-19 W, the
- *   OFDM's level varies), falling steeply below 80%;
- * - D-STAR at 500 read 23 W at 100%, 16 W at 80%, 8 W at 60%, 2.6 W at
- *   40%: its FM signal is always at full magnitude, where RADE's clipped
- *   OFDM averages less.
- * About 20 to 23 W at 100% is what these modes should send. */
-#define TX_SCALE_VOICE             4000.0
-#define TX_SCALE_CONSTANT_ENVELOPE 500.0
+ * Measured with a through-line wattmeter into a dummy load at 7.05 MHz
+ * (band scale 1.5), at 20, 40, 60, 80 and 100%:
+ * - D-STAR at 500 read 0.5, 2.8, 6, 12 and 16 W; at 580, 0.8, 4, 9, 14
+ *   and 17 W. The PA saturates near 17 W, so more drive adds little;
+ * - RADEv2 at 500 read 0.1, 0.8, 1.5, 2.5 and 4.5 W average; at 650,
+ *   0.3, 1.3, 3, 5.8 and 8.5 W. Its peaks run well above the average and
+ *   at 100% they reach the PA's limit; 720 trades a little compression on
+ *   them for about 10 W average (scaled from 650, not measured).
+ * The sBitx's own meter read ~40% above the wattmeter at the top. */
+#define TX_SCALE_VOICE  4000.0
+#define TX_SCALE_RADE    720.0
+#define TX_SCALE_DSTAR   580.0
 
 
 fftw_complex *fft_freq;
@@ -3080,10 +3081,10 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
 
     double multiplier = get_band_multiplier() * (double) radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].power_level_percentage / 100.0;
     RADAE_AMPL_LOG("tx_ssb mult*pct", multiplier);
-    // Digital voice is constant-envelope, RADE (the digital_voice flag) and
-    // D-STAR (its own mode, which the D-STAR codec sets) alike.
-    const double tx_scale = digital_voice || tx_mode_for_sb == MODE_DSTAR
-                          ? TX_SCALE_CONSTANT_ENVELOPE : TX_SCALE_VOICE;
+    // D-STAR is its own mode, which the D-STAR codec sets; RADE is the
+    // digital_voice flag on a voice mode.
+    const double tx_scale = tx_mode_for_sb == MODE_DSTAR ? TX_SCALE_DSTAR
+                          : digital_voice ? TX_SCALE_RADE : TX_SCALE_VOICE;
     for (i = 0; i < MAX_BINS / 2; i++)
     {
         double _ssb_pre = creal(fft_time[i+(MAX_BINS/2)]);
