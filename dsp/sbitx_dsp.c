@@ -109,8 +109,8 @@ static radio *radio_h_dsp;
  * - RADEv2 at 500 read 0.1, 0.8, 1.5, 2.5 and 4.5 W average; at 650,
  *   0.3, 1.3, 3, 5.8 and 8.5 W. Its peaks run well above the average and
  *   at 100% they reach the PA's limit. At 720 it read 2.8 W: the peaks
- *   passed the 24-bit sample range and wrapped around, which the
- *   conversion below now clamps instead.
+ *   passed the 24-bit sample range and wrapped around. With the
+ *   conversion below clamping them, 720 reads 10 W.
  * The sBitx's own meter read ~40% above the wattmeter at the top. */
 #define TX_SCALE_VOICE  4000.0
 #define TX_SCALE_RADE    720.0
