@@ -108,11 +108,11 @@ static radio *radio_h_dsp;
  *   and 17 W. The PA saturates near 17 W, so more drive adds little;
  * - RADEv2 at 500 read 0.1, 0.8, 1.5, 2.5 and 4.5 W average; at 650,
  *   0.3, 1.3, 3, 5.8 and 8.5 W. Its peaks run well above the average and
- *   at 100% they reach the PA's limit; 720 trades a little compression on
- *   them for about 10 W average (scaled from 650, not measured).
+ *   at 100% they reach the PA's limit. At 720 it read 2.8 W: more drive
+ *   lowers the output, so 650 is the top.
  * The sBitx's own meter read ~40% above the wattmeter at the top. */
 #define TX_SCALE_VOICE  4000.0
-#define TX_SCALE_RADE    720.0
+#define TX_SCALE_RADE    650.0
 #define TX_SCALE_DSTAR   580.0
 
 
