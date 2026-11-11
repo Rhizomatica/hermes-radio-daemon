@@ -1,6 +1,6 @@
 # HF channel access: who calls whom, and how a remote asks
 
-2026-11-08 · proposal for review
+2026-11-08 · proposal for review · decisions of 2026-11-11 in §11
 
 A HERMES network shares one HF frequency. Every exchange of mail, messages or files is
 one Mercury ARQ session: one station calls, the other answers, and the channel is busy
@@ -8,8 +8,8 @@ until the session ends. This document proposes how the stations take turns. It c
 both UUCP and NNCP networks, and is meant to replace the gateway's `caller.sh` and
 NNCP's call schedule for calls over the air.
 
-It is a design for discussion: nothing here is built yet, and section 8 is left open on
-purpose.
+It is a design for discussion: nothing here is built yet. Section 8 is left open on
+purpose, and the defaults are set when it is built.
 
 ## 1. What the design has to live with
 
@@ -38,7 +38,8 @@ What happens today, and why it doesn't scale, is in
 - **The one exception is an SOS** (§7).
 
 The gateway is the hub for all traffic: mail and messages between two remotes go
-through it. For NNCP networks, see the open question on email in §11.
+through it. On NNCP networks mail stays addressed to the final station and is relayed
+through the gateway with NNCP's `via`, so it stays encrypted end to end (§11).
 
 ## 3. Two new one-frame messages
 
@@ -123,6 +124,13 @@ Also:
   a second session.
 - **Time windows**, if set in the GUI, limit when cycles run. Outside them the gateway
   neither polls nor calls, except for an SOS.
+- **Voice comes first.** While the gateway's operator is using voice, or the gateway
+  decodes digital voice (RADE, D-STAR) from another station, it neither polls nor calls,
+  and it waits `voice_hold_s` after the last voice before the next cycle. A remote whose
+  operator is using voice doesn't send requests. An SOS still goes through.
+- **No calls without a cause.** The gateway doesn't call a remote that neither asked nor
+  has traffic waiting, not even to check that it's still there. Its position beacons
+  show that.
 - **Listening before transmitting** is Mercury's: it holds a station message while an
   ARQ session is up, and keys it once no decoder is on a frame (after about 10 s of a
   busy channel at most).
@@ -190,6 +198,7 @@ when built.
 | `poll_interval_s` | how often the gateway polls when idle |
 | `request_slots` | K, the request window, and the range the gateway adjusts it in |
 | `windows` | optional time windows for cycles |
+| `voice_hold_s` | how long cycles stay paused after the last voice on the frequency |
 | `priority` | which causes go first, and what may ignore the windows |
 
 ## 10. What replaces what
@@ -204,16 +213,17 @@ when built.
   sub-band at the edge of the passband, so they could arrive during a session, would
   be a later option, and that one would need Mercury.
 
-## 11. Open questions
+## 11. Decisions and open questions
 
+Decided (2026-11-11):
+1. **Email over NNCP in the star:** mail stays addressed to the final station and is
+   relayed through the gateway with NNCP's `via`, so it stays encrypted end to end. Only
+   the gateway and a remote talk on the air.
+2. **Idle stations:** the gateway doesn't call a station that never asks and has no
+   traffic waiting. Its position beacons show it's still there.
+3. **Voice:** cycles pause while an operator is using voice on the frequency (§5).
+
+Still open:
 1. **Colour code:** §8.
-2. **Email over NNCP in the star.** Either:
-   - remotes send all mail to `nncp:gw`, and the gateway delivers it, as UUCP does; or
-   - mail stays addressed to the final station, relayed through the gateway with NNCP's
-     `via`, so it stays encrypted end to end. This one is recommended.
-
-   Either way only the gateway and a remote talk on the air.
-3. **Idle stations:** should the gateway call a station that never asks, now and then,
-   to find out whether it's still there?
-4. **Voice:** should cycles pause while an operator is using voice on the frequency?
-5. **Defaults:** `retries`, the intervals, K.
+2. **Defaults:** `retries`, the intervals, K, `voice_hold_s`. They are set when this is
+   built, each a named default with its reason.
