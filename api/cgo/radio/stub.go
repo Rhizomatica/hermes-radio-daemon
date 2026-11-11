@@ -970,6 +970,7 @@ func (s *Stub) SetBeacon(b Beacon) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b.Emergency, b.Running = s.beacon.Emergency, s.beacon.Running
+	b.SosRecipients = append([]string(nil), b.SosRecipients...)
 	s.beacon = b
 	return nil
 }
@@ -989,6 +990,30 @@ func (s *Stub) SetBeaconEmergency(code int) error {
 	s.beacon.Emergency = code
 	s.beaconSends++
 	return nil
+}
+
+// stubBeaconCompact is a compact beacon's header byte and length
+// (docs/BEACON-FORMAT.md); the stub's frame carries the code in byte 1.
+const (
+	stubBeaconCompact      = 0xE0
+	stubBeaconCompactBytes = 14
+)
+
+func (s *Stub) BeaconFrame(code int) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.beacon.Running {
+		return nil, ErrDown
+	}
+	if code < 0 || code > stubEmergencyOver {
+		return nil, ErrInvalid
+	}
+	if s.beacon.Callsign == "" || s.beacon.StationLatitude == nil {
+		return nil, ErrNoPosition
+	}
+	f := make([]byte, stubBeaconCompactBytes)
+	f[0], f[1] = stubBeaconCompact, byte(code)
+	return f, nil
 }
 
 func (s *Stub) BeaconSendNow() error {

@@ -147,7 +147,6 @@ curl -sS -X GET "$BASE/health"
 | `max_message_bytes` | integer |  |  |
 | `max_spool_bytes` | integer |  |  |
 | `forward_email` | string or null (email) |  |  |
-| `sos_recipients` | array of [UucpName](#schema-uucpname) |  |  |
 | `idle_logout_s` | integer |  | min 60 |
 | `webrtc` | object |  | Browser audio (`api-ws.yaml`, Audio) |
 | `tx_rate_limit` | object |  | Per-user limits on making the station transmit |
@@ -3087,8 +3086,11 @@ curl -sS -X GET "$BASE/gps/files/{name}" \
 
 The position beacons (docs/BEACON-FORMAT.md) carry the code from now on, one every
 `emergency_interval_s` whether beacons are enabled or not, until it is cleared
-(`DELETE /gps/sos`). One goes out at once. The SOS message to `settings.sos_recipients`
-comes with the messages layer.
+(`DELETE /gps/sos`). One goes out at once. The same beacon also goes to each station
+of `sos_recipients` (`GET`/`PATCH /gps/beacon`) over UUCP or NNCP, whichever reaches
+it, to its `dec_beacon` handler, and the station calls at once
+(docs/api-design/store-and-forward.md). Clearing it sends code 31 the same ways.
+What is queued shows in `GET /queue`; a station that can't be queued to is logged.
 
 **Request body** (`application/json`): object
 
@@ -3182,6 +3184,7 @@ curl -sS -X GET "$BASE/gps/beacon" \
 | `station_latitude` | number or null |  | min -90; max 90 |
 | `station_longitude` | number or null |  | min -180; max 180 |
 | `emergency_interval_s` | integer |  | min 30 |
+| `sos_recipients` | array of [UucpName](#schema-uucpname) |  | Each a station in /etc/uucp/sys or /etc/nncp/neigh, by name or alias, once |
 
 **Responses**
 
@@ -3411,6 +3414,7 @@ Type: string
 | `emergency_interval_s` | integer | yes | min 30 |
 | `emergency` | integer | yes | The code set (POST /gps/sos), 0 none; min 0; max 30 |
 | `running` | boolean | yes | Beacons go out: the broadcast plane runs |
+| `sos_recipients` | array of [UucpName](#schema-uucpname) | yes | The stations an SOS also goes to over UUCP or NNCP (POST /gps/sos) |
 
 <a id="schema-beaconheard"></a>
 ### BeaconHeard
@@ -3436,6 +3440,7 @@ Type: string
 | `station_latitude` | number or null |  | min -90; max 90 |
 | `station_longitude` | number or null |  | min -180; max 180 |
 | `emergency_interval_s` | integer |  | min 30 |
+| `sos_recipients` | array of [UucpName](#schema-uucpname) |  | Each a station in /etc/uucp/sys or /etc/nncp/neigh, by name or alias, once |
 
 <a id="schema-broadcast"></a>
 ### Broadcast
@@ -4163,7 +4168,6 @@ Type: one of `readonly`, `user`, `operator`, `admin`
 | `max_message_bytes` | integer |  |  |
 | `max_spool_bytes` | integer |  |  |
 | `forward_email` | string or null (email) |  |  |
-| `sos_recipients` | array of [UucpName](#schema-uucpname) |  |  |
 | `idle_logout_s` | integer |  | min 60 |
 | `webrtc` | object |  | Browser audio (`api-ws.yaml`, Audio) |
 | `tx_rate_limit` | object |  | Per-user limits on making the station transmit |

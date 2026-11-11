@@ -21,6 +21,8 @@
 #define US_PER_MS        1000
 #define MS_PER_S         1000.0
 #define DM_PER_M         10      /* a track point's altitude and accuracy are in decimetres */
+#define DROP_PER_LOOP    16      /* beacons taken from the drop directory per loop */
+#define DROP_FILE_MAX    64      /* a dropped file larger than this is not a beacon */
 
 /* beacon-stations.tsv: field widths of a line */
 #define STR_(x) #x
@@ -28,13 +30,16 @@
 #define LINE_CALL_MAX 31
 #define LINE_ALT_MAX  15
 
+#include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -247,14 +252,21 @@ static void stations_path(char *out, size_t cap)
 
 /* ── the log ──────────────────────────────────────────────────── */
 
-static void log_beacon(const beacon *b, const char *dir, const char *radio_mode, double at)
+/* via: NULL for a beacon on the air, else the transport it came over
+ * ("queue" when not known), which the text names and which has no
+ * frequency. */
+static void log_beacon(const beacon *b, const char *dir, const char *radio_mode, const char *via,
+                       double at)
 {
-    char text[96];
+    char text[96], over[24] = "";
+    if (via)
+        snprintf(over, sizeof over, " via %s", via);
     if (b->emergency)
-        snprintf(text, sizeof text, "%s %.5f %.5f emergency %d", b->callsign,
-                 b->lat_e7 / 1e7, b->lon_e7 / 1e7, b->emergency);
+        snprintf(text, sizeof text, "%s %.5f %.5f emergency %d%s", b->callsign,
+                 b->lat_e7 / 1e7, b->lon_e7 / 1e7, b->emergency, over);
     else
-        snprintf(text, sizeof text, "%s %.5f %.5f", b->callsign, b->lat_e7 / 1e7, b->lon_e7 / 1e7);
+        snprintf(text, sizeof text, "%s %.5f %.5f%s", b->callsign, b->lat_e7 / 1e7,
+                 b->lon_e7 / 1e7, over);
     digi_log_beacon lb = {
         .latitude = b->lat_e7 / 1e7, .longitude = b->lon_e7 / 1e7,
         .emergency = b->emergency,
@@ -269,7 +281,7 @@ static void log_beacon(const beacon *b, const char *dir, const char *radio_mode,
         .mode = "BEACON", .dir = dir, .at = at, .text = text, .from = b->callsign,
         .beacon = &lb,
     };
-    if (g_radio)
+    if (g_radio && !via)
         e.freq_hz = g_radio->profiles[g_radio->profile_active_idx].freq;
     digi_log_add(&e);
 }
@@ -309,9 +321,78 @@ void beacon_on_station_frame(const uint8_t *frame, size_t len, void *user)
     double now = digi_log_now();
     HLOGI(LOG_C, "heard %s at %.5f %.5f, emergency %d", b.callsign, b.lat_e7 / 1e7,
           b.lon_e7 / 1e7, b.emergency);
-    log_beacon(&b, "rx", len == BEACON_COMPACT_BYTES ? "DATAC16" : NULL, now);
+    log_beacon(&b, "rx", len == BEACON_COMPACT_BYTES ? "DATAC16" : NULL, NULL, now);
     track_beacon(&b, now);
     beacon_heard(&b, now);
+}
+
+int beacon_on_queued_frame(const uint8_t *frame, size_t len, const char *via)
+{
+    beacon b;
+    int rc = beacon_decode(frame, len, &b);
+    if (rc != 0)
+        return rc;
+    if (!via)
+        via = "queue";
+    double now = digi_log_now();
+    HLOGI(LOG_C, "%s via %s at %.5f %.5f, emergency %d", b.callsign, via, b.lat_e7 / 1e7,
+          b.lon_e7 / 1e7, b.emergency);
+    log_beacon(&b, "rx", NULL, via, now);
+    track_beacon(&b, now);
+    beacon_heard(&b, now);
+    return 0;
+}
+
+/* The transport a dropped file came over, from the prefix dec_beacon gives
+ * its name ("uucp-...", "nncp-..."); NULL when it has none. */
+static const char *drop_via(const char *name)
+{
+    static const char *const known[] = {"uucp", "nncp"};
+    for (size_t i = 0; i < sizeof known / sizeof known[0]; i++)
+    {
+        size_t n = strlen(known[i]);
+        if (!strncmp(name, known[i], n) && name[n] == '-')
+            return known[i];
+    }
+    return NULL;
+}
+
+int beacon_drop_scan(const char *dir, int max)
+{
+    if (!dir || !dir[0])
+        return 0;
+    DIR *d = opendir(dir);
+    if (!d)
+        return 0;                   /* no handler has dropped anything yet */
+    int taken = 0;
+    struct dirent *e;
+    while (taken < max && (e = readdir(d)) != NULL)
+    {
+        if (e->d_name[0] == '.')
+            continue;               /* ., .., and files dec_beacon is still writing */
+        char path[512];
+        if ((size_t) snprintf(path, sizeof path, "%s/%s", dir, e->d_name) >= sizeof path)
+            continue;
+        int fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+        if (fd < 0)
+            continue;
+        struct stat st;
+        uint8_t buf[DROP_FILE_MAX + 1];
+        ssize_t n = -1;
+        if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
+            n = read(fd, buf, sizeof buf);
+        close(fd);
+        if (n < 0)
+            continue;               /* not a regular file: left alone */
+        int rc = n > DROP_FILE_MAX ? BEACON_E_SHORT : beacon_on_queued_frame(buf, (size_t) n, drop_via(e->d_name));
+        if (rc != 0)
+            HLOGW(LOG_C, "dropped %s from %s: not a beacon (%zd bytes, error %d)", e->d_name, dir, n, rc);
+        if (unlink(path) != 0)
+            HLOGW(LOG_C, "cannot remove %s: %s", path, strerror(errno));
+        taken++;
+    }
+    closedir(d);
+    return taken;
 }
 
 /* ── sending ──────────────────────────────────────────────────── */
@@ -344,6 +425,17 @@ int beacon_emergency(void)
 void beacon_send_now(void)
 {
     atomic_store(&g_send_now, true);
+}
+
+int beacon_build_now(int code, uint8_t *frame, size_t frame_len)
+{
+    if (code < 0 || code > BEACON_EMERGENCY_COMPACT_MAX)
+        return BEACON_E_RANGE;
+    radiod_api_gps g;
+    gps_latest(&g);
+    beacon_config cfg = cfg_now();
+    beacon_position pos = beacon_pick_position(&g.fix, &cfg);
+    return beacon_build_frame(&cfg, &pos, code, 0, frame, frame_len);
 }
 
 static bool send_one(int code, uint8_t seq)
@@ -384,7 +476,7 @@ static bool send_one(int code, uint8_t seq)
     }
     beacon b;
     if (beacon_decode(frame, (size_t) n, &b) == 0)
-        log_beacon(&b, "tx", "DATAC16", digi_log_now());
+        log_beacon(&b, "tx", "DATAC16", NULL, digi_log_now());
     return true;
 }
 
@@ -421,6 +513,8 @@ static void *beacon_thread(void *arg)
         pthread_mutex_unlock(&g_st_lock);
         if (dirty && !beacon_stations_save(path))
             HLOGW(LOG_C, "cannot save %s", path);
+
+        beacon_drop_scan(c.drop_dir, DROP_PER_LOOP);
 
         for (int i = 0; i < BEACON_LOOP_MS / BEACON_TICK_MS && atomic_load(&g_running); i++)
             usleep(BEACON_TICK_MS * US_PER_MS);
@@ -474,11 +568,14 @@ void beacon_service_stop(void)
 void beacon_reconfigure(const beacon_config *cfg)
 {
     pthread_mutex_lock(&g_cfg_lock);
-    char dir[sizeof g_cfg.state_dir];
+    char dir[sizeof g_cfg.state_dir], drop[sizeof g_cfg.drop_dir];
     memcpy(dir, g_cfg.state_dir, sizeof dir);
+    memcpy(drop, g_cfg.drop_dir, sizeof drop);
     g_cfg = *cfg;
     if (atomic_load(&g_started))
         memcpy(g_cfg.state_dir, dir, sizeof dir);   /* the table stays where it was loaded from */
+    if (!cfg->drop_dir[0])
+        memcpy(g_cfg.drop_dir, drop, sizeof drop);  /* the API doesn't set it */
     pthread_mutex_unlock(&g_cfg_lock);
 }
 

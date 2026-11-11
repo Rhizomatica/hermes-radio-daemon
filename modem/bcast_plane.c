@@ -44,6 +44,7 @@ bool bcast_plane_start(radio *radio_h)
     bc.fixed_lon = radio_h->station_longitude;
     bc.emergency_interval_s = radio_h->beacon_emergency_interval_s;
     snprintf(bc.state_dir, sizeof bc.state_dir, "%s", radio_h->recording_dir);
+    snprintf(bc.drop_dir, sizeof bc.drop_dir, "%s", BEACON_DROP_DIR);
 
     /* the receivers first, so nothing the link hears finds them missing */
     g_spool = bcast_spool_start(&sc);

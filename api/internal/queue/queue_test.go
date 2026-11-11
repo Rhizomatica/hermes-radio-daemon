@@ -8,7 +8,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/queue"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/testapi"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/transport"
 )
@@ -71,7 +70,7 @@ func env(t *testing.T) (*testapi.Env, *fake) {
 		t.Fatal(err)
 	}
 	f := &fake{}
-	queue.NewRunner = func() transport.Runner { return f }
+	transport.NewRunner = func() transport.Runner { return f }
 	return testapi.New(t), f
 }
 

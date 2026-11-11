@@ -500,6 +500,7 @@ func (binding) Beacon() Beacon {
 		Enabled: bool(b.enabled), IntervalS: int(b.interval_s),
 		Callsign: cstr(b.callsign[:]), EmergencyIntervalS: int(b.emergency_interval_s),
 		Emergency: int(b.emergency), Running: bool(b.running),
+		SosRecipients: strings.FieldsFunc(cstr(b.sos_recipients[:]), isListSep),
 	}
 	if bool(b.has_station_position) {
 		lat, lon := float64(b.station_latitude), float64(b.station_longitude)
@@ -525,7 +526,27 @@ func (binding) SetBeacon(in Beacon) error {
 	b.enabled = C.bool(in.Enabled)
 	b.interval_s = C.int(in.IntervalS)
 	b.emergency_interval_s = C.int(in.EmergencyIntervalS)
+	list := strings.Join(in.SosRecipients, ",")
+	if len(list) >= len(b.sos_recipients) {
+		return ErrInvalid
+	}
+	for i := 0; i < len(list); i++ {
+		b.sos_recipients[i] = C.char(list[i])
+	}
 	return codeErr(int(C.radiod_api_beacon_set(&b)))
+}
+
+func (binding) BeaconFrame(code int) ([]byte, error) {
+	var buf [C.RADIOD_API_BEACON_FRAME_MAX]C.uint8_t
+	var n C.size_t
+	switch rc := int(C.radiod_api_beacon_frame(C.int(code), &buf[0], C.size_t(len(buf)), &n)); rc {
+	case 0:
+		return C.GoBytes(unsafe.Pointer(&buf[0]), C.int(n)), nil
+	case -1:
+		return nil, ErrNoPosition
+	default:
+		return nil, codeErr(rc)
+	}
 }
 
 func (binding) SetBeaconEmergency(code int) error {

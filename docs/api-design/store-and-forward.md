@@ -1,7 +1,9 @@
 # Store and forward: UUCP and NNCP behind one layer
 
-> **Proposal, 2026-11-06; its three decisions taken the same day (at the end).** Nothing
-> here is implemented yet.
+> **Proposal, 2026-11-06; its three decisions taken the same day (at the end).** Built
+> so far: the layer and the queue endpoints (step 1 of "Order of work", the station
+> endpoints still to come), and the SOS over it with `dec_beacon` and its drop
+> directory (step 2).
 
 Stations exchange files, commands and email in store-and-forward jobs: a job waits in a
 queue until the station calls, or is called by, the station it is for. HERMES stations do

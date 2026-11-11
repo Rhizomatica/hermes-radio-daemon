@@ -2305,8 +2305,11 @@ paths:
       description: |
         The position beacons (docs/BEACON-FORMAT.md) carry the code from now on, one every
         `emergency_interval_s` whether beacons are enabled or not, until it is cleared
-        (`DELETE /gps/sos`). One goes out at once. The SOS message to `settings.sos_recipients`
-        comes with the messages layer.
+        (`DELETE /gps/sos`). One goes out at once. The same beacon also goes to each station
+        of `sos_recipients` (`GET`/`PATCH /gps/beacon`) over UUCP or NNCP, whichever reaches
+        it, to its `dec_beacon` handler, and the station calls at once
+        (docs/api-design/store-and-forward.md). Clearing it sends code 31 the same ways.
+        What is queued shows in `GET /queue`; a station that can't be queued to is logged.
       x-hermes-role: user
       requestBody:
         content:
@@ -3314,7 +3317,7 @@ components:
         received_at: {$ref: "#/components/schemas/Timestamp"}
     Beacon:
       type: object
-      required: [enabled, interval_s, callsign, station_latitude, station_longitude, emergency_interval_s, emergency, running]
+      required: [enabled, interval_s, callsign, station_latitude, station_longitude, emergency_interval_s, emergency, running, sos_recipients]
       properties:
         enabled: {type: boolean, default: false, description: "Send this station's position at interval_s, so other stations can plot it on the map."}
         interval_s: {type: integer, minimum: 60, default: 900, description: "Seconds between regular beacons."}
@@ -3324,6 +3327,11 @@ components:
         emergency_interval_s: {type: integer, minimum: 30}
         emergency: {type: integer, minimum: 0, maximum: 30, description: "The code set (POST /gps/sos), 0 none."}
         running: {type: boolean, description: "Beacons go out: the broadcast plane runs."}
+        sos_recipients:
+          type: array
+          maxItems: 8
+          items: {$ref: "#/components/schemas/UucpName"}
+          description: "The stations an SOS also goes to over UUCP or NNCP (POST /gps/sos)."
     BeaconPatch:
       type: object
       properties:
@@ -3333,6 +3341,11 @@ components:
         station_latitude: {type: [number, "null"], minimum: -90, maximum: 90}
         station_longitude: {type: [number, "null"], minimum: -180, maximum: 180}
         emergency_interval_s: {type: integer, minimum: 30}
+        sos_recipients:
+          type: array
+          maxItems: 8
+          items: {$ref: "#/components/schemas/UucpName"}
+          description: "Each a station in /etc/uucp/sys or /etc/nncp/neigh, by name or alias, once."
     BeaconHeard:
       type: object
       required: [callsign, latitude, longitude, emergency, fix, heard_at]
@@ -3656,9 +3669,6 @@ components:
         max_message_bytes: {type: integer}
         max_spool_bytes: {type: integer}
         forward_email: {type: [string, "null"], format: email}
-        sos_recipients:
-          type: array
-          items: {$ref: "#/components/schemas/UucpName"}
         idle_logout_s: {type: integer, minimum: 60}
         webrtc:
           type: object

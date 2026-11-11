@@ -60,6 +60,8 @@ dkms.conf
 # Generated test binaries
 # unit test binaries (tests/tests.mk), and the SANITIZE they were built with
 /tests/*/test_*
+/tests/modem/dec_beacon_t
+/tests/modem/dec_beacon.drop/
 !/tests/*/test_*.c
 /tests/.sanitize
 # make ft8-bench
@@ -67,6 +69,7 @@ dkms.conf
 
 # Build outputs
 /radio_daemon
+/dec_beacon
 /radio_client
 /ws_client
 /dstar_crypt_sim

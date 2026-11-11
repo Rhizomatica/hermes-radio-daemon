@@ -864,6 +864,18 @@ same features either way Mercury runs:
     become their callsign's last-known position, kept in `recording_dir`;
     with `gps_logging`, each is also a point of that station's track.
   - The format is [docs/BEACON-FORMAT.md](docs/BEACON-FORMAT.md).
+- **The SOS over UUCP and NNCP:** an emergency code set over the API also goes
+  to each station of `sos_recipients`, as the same compact beacon, over the
+  transport that reaches it, and this station calls at once. Clearing it sends
+  "emergency over" (code 31) the same way.
+  - At the other station, UUCP or NNCP runs `dec_beacon` (installed with
+    radiod), which leaves the frame in `/var/spool/hermes/in/dec_beacon/`;
+    radiod there takes it within a second, as a beacon heard on the air, with
+    "via uucp" or "via nncp" in the log.
+  - The handler takes no arguments, since the sender chooses them. The
+    directory must be writable by the user each transport runs handlers as,
+    and readable by radiod; the installer sets that up, and allows `dec_beacon`
+    in UUCP's `commands` and NNCP's handlers.
 
 ## GPS Tracks
 
@@ -1215,11 +1227,11 @@ curl -X PATCH -H 'Content-Type: application/json' \
 | `listReceivedBroadcasts` | `GET /api/v2/broadcasts/received`, newest first | readonly |
 | `downloadReceivedBroadcast` | `GET /api/v2/broadcasts/received/{name}` | readonly |
 | `deleteReceivedBroadcast` | `DELETE /api/v2/broadcasts/received/{name}` | operator |
-| `getBeacon` | `GET /api/v2/gps/beacon`: on or off, interval, callsign, fixed position, emergency interval and code | readonly |
+| `getBeacon` | `GET /api/v2/gps/beacon`: on or off, interval, callsign, fixed position, emergency interval and code, SOS recipients | readonly |
 | `updateBeacon` | `PATCH /api/v2/gps/beacon` (saved in core.ini): `enabled`, `interval_s` and the rest | operator |
 | `sendBeacon` | `POST /api/v2/gps/beacon/send`: one beacon now | user |
-| `sendSos` | `POST /api/v2/gps/sos` `{"code":1}`: beacons carry the emergency code, at the emergency interval | user |
-| `clearSos` | `DELETE /api/v2/gps/sos`: one beacon says the emergency is over | user |
+| `sendSos` | `POST /api/v2/gps/sos` `{"code":1}`: beacons carry the emergency code, at the emergency interval; the beacon also goes to `sos_recipients` over UUCP or NNCP | user |
+| `clearSos` | `DELETE /api/v2/gps/sos`: one beacon says the emergency is over, on the air and to `sos_recipients` | user |
 | `listBeacons` | `GET /api/v2/gps/beacons`: every station heard by its beacons, newest first | readonly |
 | `listStationPositions` | `GET /api/v2/gps/stations`: the UUCP stations, with their last beacon's position | readonly |
 | `getTrack` | `GET /api/v2/gps/track?since=&until=[&callsign=]`: a track over a time range, oldest first; this station's, or another's from its beacons | readonly |

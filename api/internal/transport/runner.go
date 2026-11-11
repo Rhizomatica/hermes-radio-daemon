@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 )
 
 // RunTimeout bounds a queueing program (uux, uucp, nncp-exec, nncp-file,
@@ -46,4 +48,18 @@ func (ExecRunner) Start(name string, args ...string) error {
 	}
 	go func() { _ = cmd.Wait() }() // reaped when the call ends
 	return nil
+}
+
+// NewRunner runs the transports' programs for ForRadio, a variable for the
+// tests.
+var NewRunner = func() Runner { return ExecRunner{} }
+
+// ForRadio is the layer with the station's current settings (core.ini).
+func ForRadio(r rad.Radio) *Layer {
+	t := r.Transport()
+	return New(Settings{
+		Prefer:           Kind(t.Prefer),
+		UucicoAirOptions: t.UucicoAirOptions,
+		UucicoTCPSystems: t.UucicoTCPSystems,
+	}, NewRunner())
 }

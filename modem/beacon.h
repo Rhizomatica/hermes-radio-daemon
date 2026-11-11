@@ -30,6 +30,12 @@
 
 #define BEACON_CALL_MAX       9     /* characters, SSID included */
 
+/* Where dec_beacon (handlers/dec_beacon.c) leaves the beacons that came
+ * over UUCP or NNCP: built into both, so not a setting. */
+#ifndef BEACON_DROP_DIR
+#define BEACON_DROP_DIR "/var/spool/hermes/in/dec_beacon"
+#endif
+
 #define BEACON_LAT_MAX_DEG    90.0
 #define BEACON_LON_MAX_DEG    180.0
 

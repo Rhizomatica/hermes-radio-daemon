@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+#include <ctype.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -747,6 +748,7 @@ int radiod_api_beacon_get(radiod_api_beacon *out)
     out->station_latitude = s_radio->station_latitude;
     out->station_longitude = s_radio->station_longitude;
     out->emergency_interval_s = s_radio->beacon_emergency_interval_s;
+    snprintf(out->sos_recipients, sizeof out->sos_recipients, "%s", s_radio->sos_recipients);
     int saved = iniparser_getint(s_radio->cfg_radio, "main:beacon_emergency", 0);
     pthread_mutex_unlock(&s_radio->cfg_mutex);
     out->running = beacon_running();
@@ -758,9 +760,24 @@ int radiod_api_beacon_get(radiod_api_beacon *out)
     return RADIOD_API_OK;
 }
 
+_Static_assert(RADIOD_API_SOS_RECIPIENTS_LEN == RADIO_SOS_RECIPIENTS_LEN &&
+               RADIOD_API_BEACON_FRAME_MAX == BEACON_FULL_BYTES,
+               "the C API's beacon sizes are radiod's");
+
+/* A recipient list: station names (A-Z a-z 0-9 _ -) and commas, and it fits. */
+static bool recipients_ok(const char *s)
+{
+    if (strnlen(s, RADIOD_API_SOS_RECIPIENTS_LEN) >= RADIOD_API_SOS_RECIPIENTS_LEN)
+        return false;
+    for (; *s; s++)
+        if (!isalnum((unsigned char) *s) && *s != '_' && *s != '-' && *s != ',')
+            return false;
+    return true;
+}
+
 int radiod_api_beacon_set(const radiod_api_beacon *in)
 {
-    if (!in || !s_radio)
+    if (!in || !s_radio || !recipients_ok(in->sos_recipients))
         return RADIOD_API_EINVAL;
     uint8_t packed[6];
     if ((in->callsign[0] && !beacon_call_pack(in->callsign, packed)) ||
@@ -788,6 +805,7 @@ int radiod_api_beacon_set(const radiod_api_beacon *in)
     cfg_set(s_radio, s_radio->cfg_radio, "main:station_latitude", lat);
     cfg_set(s_radio, s_radio->cfg_radio, "main:station_longitude", lon);
     cfg_set(s_radio, s_radio->cfg_radio, "main:beacon_emergency_interval_s", every);
+    cfg_set(s_radio, s_radio->cfg_radio, "main:sos_recipients", in->sos_recipients);
     s_radio->cfg_radio_dirty = true;
 
     pthread_mutex_lock(&s_radio->cfg_mutex);
@@ -798,6 +816,7 @@ int radiod_api_beacon_set(const radiod_api_beacon *in)
     s_radio->station_latitude = in->has_station_position ? in->station_latitude : 0;
     s_radio->station_longitude = in->has_station_position ? in->station_longitude : 0;
     s_radio->beacon_emergency_interval_s = in->emergency_interval_s;
+    snprintf(s_radio->sos_recipients, sizeof s_radio->sos_recipients, "%s", in->sos_recipients);
     pthread_mutex_unlock(&s_radio->cfg_mutex);
 
 #ifdef HAVE_MERCURY
@@ -835,6 +854,23 @@ int radiod_api_beacon_send_now(void)
     if (!beacon_service_running())
         return RADIOD_API_EDOWN;
     beacon_send_now();
+    return RADIOD_API_OK;
+#else
+    return RADIOD_API_EDOWN;
+#endif
+}
+
+int radiod_api_beacon_frame(int code, uint8_t *out, size_t cap, size_t *len)
+{
+    if (!out || !len || code < 0 || code > BEACON_EMERGENCY_COMPACT_MAX || cap < BEACON_COMPACT_BYTES)
+        return RADIOD_API_EINVAL;
+#ifdef HAVE_MERCURY
+    if (!beacon_service_running())
+        return RADIOD_API_EDOWN;
+    int n = beacon_build_now(code, out, BEACON_COMPACT_BYTES);
+    if (n < 0)
+        return n == BEACON_E_RANGE ? RADIOD_API_ENOENT : RADIOD_API_EINVAL;
+    *len = (size_t) n;
     return RADIOD_API_OK;
 #else
     return RADIOD_API_EDOWN;

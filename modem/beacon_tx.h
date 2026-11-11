@@ -11,7 +11,10 @@
  *
  * Receiving: each valid beacon goes into the digital-message log (mode
  * BEACON) and becomes its callsign's last-known position, kept in
- * <main:state_dir>/beacon-stations.tsv across restarts.
+ * <main:state_dir>/beacon-stations.tsv across restarts.  Beacons also
+ * arrive over UUCP or NNCP (an SOS sent to main:sos_recipients): the
+ * dec_beacon handler drops each in BEACON_DROP_DIR, and the beacon thread
+ * takes them from there as if heard on the air.
  *
  * Copyright (C) 2026 Rhizomatica
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -31,6 +34,7 @@
 #define BEACON_STATIONS_MAX 256
 
 
+
 typedef struct {
     bool   enabled;                 /* main:beacon_enable: the regular beacons */
     int    interval_s;              /* main:beacon_interval_s */
@@ -39,6 +43,7 @@ typedef struct {
     double fixed_lat, fixed_lon;
     int    emergency_interval_s;
     char   state_dir[512];
+    char   drop_dir[256];           /* BEACON_DROP_DIR; "" none */
 } beacon_config;
 
 /* What a beacon is built from: a position, its source and the code. */
@@ -80,6 +85,21 @@ int  beacon_set_emergency(int code);
 int  beacon_emergency(void);
 /* Send one beacon now (on top of the schedule). */
 void beacon_send_now(void);
+
+/* The compact beacon this station would send now with code (0..31), for the
+ * SOS that goes over UUCP or NNCP; returns its length, or a BEACON_E_*
+ * (BEACON_E_RANGE: no callsign, or no position). */
+int  beacon_build_now(int code, uint8_t *frame, size_t frame_len);
+
+/* A beacon that came over a store-and-forward transport (via: "uucp",
+ * "nncp", or NULL when not known): logged, and taken as its station's
+ * position, as one heard on the air.  0, or a BEACON_E_*. */
+int  beacon_on_queued_frame(const uint8_t *frame, size_t len, const char *via);
+
+/* Take the beacons waiting in dir (BEACON_DROP_DIR), at most max:
+ * each is handled as beacon_on_queued_frame does and removed.  Returns how
+ * many were taken.  The beacon thread calls it. */
+int  beacon_drop_scan(const char *dir, int max);
 
 /* The stations heard, newest first; returns how many (up to max). */
 int  beacon_stations(beacon_station *out, int max);
