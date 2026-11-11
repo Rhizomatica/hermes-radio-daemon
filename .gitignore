@@ -85,4 +85,3 @@ dkms.conf
 
 # the self-check's database
 /api/data/
-tests/sbitx/test_swr_guard

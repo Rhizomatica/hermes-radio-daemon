@@ -34,7 +34,6 @@
 #include "sbitx_core.h"
 #include "sbitx_i2c.h"
 #include "sbitx_gpio.h"
-#include "swr_guard.h"
 #include "sbitx_si5351.h"
 #include "sbitx_alsa.h"
 #include "radio_pipeline.h"
@@ -180,7 +179,20 @@ uint32_t get_ref_power(radio *radio_h)
 
 static uint32_t get_swr(radio *radio_h)
 {
-    return swr_guard_swr_x10(radio_h->fwd_power, radio_h->ref_power);
+    uint32_t vfwd = radio_h->fwd_power;
+    uint32_t vref = radio_h->ref_power;
+    uint32_t vswr;
+
+    // no division by zero
+    if (vref == vfwd)
+        vfwd++;
+
+    if (vref > vfwd)
+		vswr = 100;
+	else
+		vswr = (10*(vfwd + vref))/(vfwd-vref);
+
+    return vswr;
 }
 
 static void set_reflected_threshold(radio *radio_h, uint32_t ref_threshold)
@@ -507,15 +519,18 @@ void lpf_set(radio *radio_h)
 /* Set around the SWR trip: unkey at once, without playing out the tail. */
 static _Atomic bool tr_switch_urgent = false;
 
-/* Readings over the limit, less those under it, in this transmission. */
-static uint16_t swr_guard_count = 0;
-
 void swr_protection_check(radio *radio_h)
 {
     uint32_t vswr = get_swr(radio_h);
 
-    if (swr_guard_step(&swr_guard_count, radio_h->fwd_power, radio_h->ref_power,
-                       radio_h->reflected_threshold, REF_PEAK_REMOVAL))
+    static uint16_t peak_removal_counter = 0;
+
+    if (vswr > radio_h->reflected_threshold && radio_h->ref_power)
+        peak_removal_counter++;
+    else
+        peak_removal_counter = 0;
+
+    if (peak_removal_counter > REF_PEAK_REMOVAL)
     {
         HLOGW(LOG_C, "SWR protection tripped: SWR %.1f over the limit of %.1f, "
               "forward %.1f W; TX is off until the protection is reset",
@@ -525,7 +540,7 @@ void swr_protection_check(radio *radio_h)
         tr_switch(radio_h, IN_RX);
         tr_switch_urgent = false;
         radio_h->swr_protection_enabled = true;
-        swr_guard_count = 0;
+        peak_removal_counter = 0;
         radio_h->send_ws_update = true;
         radio_h->tone_generation = 0;
     }
@@ -762,7 +777,6 @@ void io_tick(radio *radio_h)
     }
     if ( !(ticks % 3) && radio_h->txrx_state == IN_RX )
     {
-        swr_guard_count = 0;   // each transmission starts clean
         // we hold the power values in case of high-swr protection enabled
         if (radio_h->swr_protection_enabled != true)
         {
