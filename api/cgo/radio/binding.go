@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"strings"
 	"time"
 	"unsafe"
@@ -212,6 +213,73 @@ func (binding) DigiLogFiles() []string {
 		return nil
 	}
 	return strings.Split(C.GoString(&buf[0]), "\n")
+}
+
+// The track can hold years of files: the list's buffer grows until it
+// fits, up to RADIOD_API_GPS_TRACK_LIST_MAX, which the longest list does.
+const gpsTrackListFirst = 64 << 10
+
+// errTrackList: the track's directory could not be read.
+var errTrackList = errors.New("the track's directory cannot be read")
+
+func (binding) GpsTrackFiles() ([]string, error) {
+	for size := C.size_t(gpsTrackListFirst); ; size *= 4 {
+		if size > C.RADIOD_API_GPS_TRACK_LIST_MAX {
+			size = C.RADIOD_API_GPS_TRACK_LIST_MAX
+		}
+		buf := C.malloc(size)
+		ok := C.radiod_api_gps_track_files((*C.char)(buf), size)
+		s := C.GoString((*C.char)(buf))
+		C.free(buf)
+		if ok {
+			return strings.FieldsFunc(s, func(r rune) bool { return r == '\n' }), nil
+		}
+		if size == C.RADIOD_API_GPS_TRACK_LIST_MAX {
+			return nil, errTrackList // it fits there: the directory itself failed
+		}
+	}
+}
+
+func (binding) GpsTrack(station string, sinceMs, untilMs int64, max int) ([]GpsPoint, error) {
+	if max <= 0 {
+		return nil, nil
+	}
+	cs := C.CString(station)
+	defer C.free(unsafe.Pointer(cs))
+	pts := make([]C.radiod_api_gps_point, max)
+	n := int(C.radiod_api_gps_track_read(cs, C.int64_t(sinceMs), C.int64_t(untilMs), &pts[0], C.int(max)))
+	if n < 0 {
+		return nil, codeErr(n)
+	}
+	out := make([]GpsPoint, n)
+	for i, p := range pts[:n] {
+		out[i] = GpsPoint{
+			AtMs: int64(p.at_ms), LatE7: int32(p.lat_e7), LonE7: int32(p.lon_e7),
+			AltDm: int32(p.alt_dm), AccuracyDm: uint16(p.accuracy_dm),
+			Fix: uint8(p.fix), Emergency: uint8(p.emergency),
+		}
+	}
+	return out, nil
+}
+
+func (binding) GpsTrackCount(station string, sinceMs, untilMs int64) (int, error) {
+	cs := C.CString(station)
+	defer C.free(unsafe.Pointer(cs))
+	n := int(C.radiod_api_gps_track_count(cs, C.int64_t(sinceMs), C.int64_t(untilMs)))
+	if n < 0 {
+		return 0, codeErr(n)
+	}
+	return n, nil
+}
+
+func (binding) GpsTrackDelete(name string) error {
+	cs := C.CString(name)
+	defer C.free(unsafe.Pointer(cs))
+	if rc := int(C.radiod_api_gps_track_delete(cs)); rc == C.RADIOD_API_ENOENT {
+		return ErrNotFound
+	} else {
+		return codeErr(rc)
+	}
 }
 
 func (binding) DigiLog(after uint64, max int) []jsontext.Value {

@@ -1,0 +1,433 @@
+% HERMES: email, files, messages and voice over HF radio (November 2026)
+% A 10-minute talk: thirteen slides between the title and the thanks, two of them pictures.
+% Build: make  (pdflatex twice; needs texlive with beamer, metropolis, FiraSans, pgfplots)
+% The theme and palette follow Mercury's deck (vendor/mercury/docs/presentations).
+% Copyright (C) 2026 Rhizomatica
+% SPDX-License-Identifier: CC-BY-SA-4.0
+\documentclass[aspectratio=169,10pt]{beamer}
+
+\usetheme[progressbar=frametitle,numbering=fraction,sectionpage=none,block=fill]{metropolis}
+\usepackage[sfdefault,lining]{FiraSans}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{booktabs,array,colortbl,multirow}
+\usepackage{tikz,pgfplots}
+\usetikzlibrary{arrows.meta,positioning,calc,shapes.geometric,fit,backgrounds}
+\pgfplotsset{compat=1.18}
+\usepackage{fontawesome5}
+
+% ---- the HERMES palette (hermes.radio) ------------------------------------
+\definecolor{hcream}{HTML}{FFF6C0}
+\definecolor{hcreamdk}{HTML}{F6E9A4}
+\definecolor{hgreen}{HTML}{96B863}
+\definecolor{hdkgreen}{HTML}{5E743E}
+\definecolor{horange}{HTML}{FF6600}
+\definecolor{hblack}{HTML}{1E1D1D}
+\definecolor{hmauve}{HTML}{CD97BD}
+\definecolor{hdkmauve}{HTML}{A17895}
+
+\setbeamercolor{normal text}{fg=hblack,bg=hcream}
+\setbeamercolor{background canvas}{bg=hcream}
+\setbeamercolor{frametitle}{fg=white,bg=hdkgreen}
+\setbeamercolor{progress bar}{fg=horange,bg=hgreen}
+\setbeamercolor{title separator}{fg=horange}
+\setbeamercolor{alerted text}{fg=horange}
+\setbeamercolor{example text}{fg=hdkgreen}
+\setbeamercolor{block title}{fg=white,bg=hdkgreen}
+\setbeamercolor{block body}{fg=hblack,bg=hcreamdk}
+\setbeamercolor{block title alerted}{fg=white,bg=horange}
+\setbeamercolor{block body alerted}{fg=hblack,bg=hcreamdk}
+\setbeamercolor{block title example}{fg=white,bg=hdkmauve}
+\setbeamercolor{block body example}{fg=hblack,bg=hcreamdk}
+\setbeamercolor{itemize item}{fg=hdkgreen}
+\setbeamercolor{itemize subitem}{fg=horange}
+\setbeamercolor{page number in head/foot}{fg=hdkgreen}
+\setbeamerfont{frametitle}{series=\bfseries,size=\large}
+\setbeamerfont{section title}{series=\bfseries}
+\setbeamertemplate{itemize item}{\color{hdkgreen}\scriptsize$\blacktriangleright$}
+\setbeamertemplate{itemize subitem}{\color{horange}\tiny$\bullet$}
+\makeatletter
+\setlength{\metropolis@titleseparator@linewidth}{1.5pt}
+\setlength{\metropolis@progressonsectionpage@linewidth}{2pt}
+\makeatother
+
+% Sources sit on the bottom edge, outside the text area, so they take no room.
+\newcommand{\src}[1]{\begin{tikzpicture}[remember picture,overlay]
+  \node[anchor=south west,inner sep=0,font=\tiny,text=hdkmauve] at ($(current page.south west)+(0.42cm,0.2cm)$) {#1};
+\end{tikzpicture}}
+\newcommand{\hl}[1]{{\color{horange}\bfseries #1}}
+% A photo or screenshot with a thin frame: \photo{width or height spec}{file}
+\newcommand{\photo}[2]{{\setlength{\fboxsep}{0pt}\setlength{\fboxrule}{0.6pt}\color{hdkgreen}\fbox{\includegraphics[#1]{#2}}}}
+
+\title{HERMES}
+\subtitle{High-Frequency Emergency and Rural Multimedia Exchange System}
+\author{Rhizomatica}
+\date{November 2026}
+
+\begin{document}
+
+% ---- title ------------------------------------------------------------------
+\begin{frame}[plain]
+  \begin{tikzpicture}[remember picture,overlay]
+    \fill[hcream] (current page.south west) rectangle (current page.north east);
+    \node[anchor=north east,inner sep=0] at (current page.north east)
+      {\includegraphics[height=\paperheight]{img/foliage-strip.jpg}};
+    \node[anchor=north west,inner sep=0] at ($(current page.north west)+(1.0cm,-0.9cm)$)
+      {\includegraphics[height=2.6cm]{img/hermes-logo.png}};
+    \node[anchor=north west,text width=11.2cm,inner sep=0,align=left] at ($(current page.north west)+(1.0cm,-3.8cm)$) {%
+      {\fontsize{38}{40}\selectfont\bfseries HERMES}\par\vspace{0.25em}
+      {\color{horange}\rule{3.5cm}{2.5pt}}\par\vspace{0.6em}
+      {\large High-Frequency Emergency and Rural\\ Multimedia Exchange System}\par\vspace{0.3em}
+      {\normalsize Email, files, messages and voice over HF radio,\\ where there is no internet}\par\vspace{0.9em}
+      {\small\color{hdkgreen}\bfseries Rhizomatica \quad\textbullet\quad free software \quad\textbullet\quad November 2026}\par
+      {\scriptsize\color{hdkmauve}github.com/Rhizomatica \quad\textbullet\quad hermes.radio}};
+  \end{tikzpicture}
+\end{frame}
+
+\begin{frame}{Overview}
+  \small
+  \begin{columns}[T]
+    \column{0.56\textwidth}
+    \begin{itemize}
+      \item A telecommunication system over HF radio for communities beyond the internet and the phone network
+      \item People use it as they use the internet: email, webmail and Delta Chat, over the station's WiFi
+      \item The station carries it over HF to a gateway with an internet uplink
+      \item Also voice, digital and encrypted, broadcast files, and positions with an emergency call
+      \item Free software from Rhizomatica, supported by ARDC grants since 2021; hands-on training so a community runs its own station
+    \end{itemize}
+    \column{0.42\textwidth}
+    \centering
+    \photo{width=\linewidth}{img/web-ui.png}\par\smallskip
+    {\scriptsize\color{hdkmauve} The station's web interface: voice, messages, e-mail, the radio, schedules, GPS}
+  \end{columns}
+  \src{Screenshot: hermes-gui}
+\end{frame}
+
+\begin{frame}{Where HERMES runs}
+  \centering
+  \photo{height=2.55cm}{img/field-operator.jpg}\hfill
+  \photo{height=2.55cm}{img/field-rooftop-antenna.jpg}\hfill
+  \photo{height=2.55cm}{img/field-antenna.jpg}\hfill
+  \photo{height=2.55cm}{img/field-bangladesh-training.jpg}\par\medskip
+  \footnotesize\raggedright
+  \begin{columns}[T]
+    \column{0.36\textwidth}
+    \begin{block}{\faTree\ Ecuadorian Amazon}
+      Waorani Indigenous communities: nearly 90 radios, the largest deployment; some sites days away on foot or by boat. Older residents keep in touch with family in other villages
+    \end{block}
+    \column{0.29\textwidth}
+    \begin{block}{\faShip\ Bangladesh}
+      Fishing communities, HERMES on their fishing boats, in a conservation project
+    \end{block}
+    \begin{block}{\faExclamationTriangle\ Central African Rep.}
+      Early warning systems
+    \end{block}
+    \column{0.31\textwidth}
+    \begin{exampleblock}{\faUsers\ Run by the community}
+      Rhizomatica trains a small group of community members, on site, to install, operate and maintain the station without constant outside support
+    \end{exampleblock}
+  \end{columns}
+  \src{Source: ARDC, 6 November 2026. Photos: Rhizomatica (Ecuadorian Amazon; training for fishing boats in Bangladesh)}
+\end{frame}
+
+\begin{frame}{In the field}
+  \centering
+  \begin{minipage}[t]{0.55\textwidth}\centering
+    \photo{width=0.98\linewidth}{img/field-river.jpg}\par\smallskip
+    {\small Getting there:} {\small days on foot or by boat}
+  \end{minipage}\hfill
+  \begin{minipage}[t]{0.42\textwidth}\centering
+    \photo{width=0.98\linewidth}{img/field-solar.jpg}\par\smallskip
+    {\small Power:} {\small a solar panel and a battery}
+  \end{minipage}
+  \par\bigskip
+  {\small The station is installed with the community, which then runs it: the radio, the antenna, the power and the computer}
+  \src{Photos: Rhizomatica, Ecuadorian Amazon}
+\end{frame}
+
+\begin{frame}{HF: the ionosphere as the relay}
+  \begin{columns}[c]
+    \column{0.47\textwidth}
+    \centering
+    \begin{tikzpicture}[x=0.64cm,y=0.64cm,
+        ray/.style={line width=1.1pt,-{Latex[length=2mm]}},
+        lay/.style={font=\scriptsize,anchor=east,text=hblack}]
+      % the layers of the ionosphere
+      \fill[hmauve!25] (0,1.3) rectangle (9,1.8);
+      \fill[hmauve!40] (0,2.3) rectangle (9,2.8);
+      \fill[hmauve!60] (0,3.6) rectangle (9,4.6);
+      \node[lay] at (9,1.55) {D \,60--90 km};
+      \node[lay] at (9,2.55) {E \,90--150 km};
+      \node[lay] at (9,4.35) {F \,150--400 km};
+      % the ground
+      \fill[hgreen!60] (0,-0.35) rectangle (9,0);
+      \draw[hdkgreen,line width=0.8pt] (0,0) -- (9,0);
+      % NVIS: nearly straight up, back down all around
+      \foreach \d in {-1.0,-0.45,0.45,1.0,1.6}
+        \draw[ray,horange] (1.6,0) -- (1.6+\d/2,3.9) -- (1.6+\d,0);
+      % one long hop at a low angle
+      \draw[ray,hdkgreen] (1.6,0) -- (5.1,4.0) -- (8.6,0);
+      % the ground wave
+      \draw[ray,hdkmauve] (1.6,0.12) -- (2.9,0.12);
+      \fill[hblack] (1.6,0) circle (2.2pt);
+      \fill[hblack] (8.6,0) circle (2.2pt);
+      \node[font=\scriptsize,anchor=north] at (1.6,-0.38) {station};
+      \node[font=\scriptsize,anchor=north] at (8.6,-0.38) {far station};
+      \node[font=\scriptsize\color{horange},anchor=south] at (1.6,4.65) {NVIS};
+      \node[font=\scriptsize\color{hdkgreen},anchor=south] at (5.1,4.65) {one hop, $15^\circ$ up};
+      \node[font=\scriptsize\color{hdkmauve},anchor=north] at (3.9,-0.38) {ground wave};
+      % distance along the ground, 250 km a unit, from the station
+      \draw[hblack,line width=0.5pt] (0,-1.15) -- (9,-1.15);
+      \foreach \km in {-250,0,500,1000,1500}
+        \draw[hblack,line width=0.5pt] ({1.6+\km/250},-1.05) -- ({1.6+\km/250},-1.25)
+          node[below,font=\tiny] {\km};
+      \node[font=\tiny,anchor=north east] at (9,-1.25) {km};
+    \end{tikzpicture}
+    \column{0.51\textwidth}
+    \footnotesize
+    \begin{itemize}
+      \item HF is 3 to 30 MHz. The ionosphere, ionised by the sun, bends it back to Earth: no towers, satellites or cables between stations
+      \item NVIS (near vertical incidence skywave): sent almost straight up, on about 2 to 10 MHz, it comes down all around, out to some 400 km, over mountains and forest
+      \item Lower, one hop goes further: about 1750 km at $15^\circ$ above the horizon, up to about 4000 km close to it
+      \item It changes over the day: the D layer absorbs low frequencies in daylight and fades at night, and the usable frequencies fall after dark, so stations change frequency through the day
+      \item Fading and multipath: the modem adapts its speed, and repeats only what was lost
+    \end{itemize}
+  \end{columns}
+  \src{Distances to scale; heights not}
+\end{frame}
+
+\begin{frame}{How a network fits together}
+  \centering
+  \begin{tikzpicture}[
+      box/.style={draw=hdkgreen,fill=white,rounded corners=2pt,align=center,font=\footnotesize,line width=0.8pt,inner sep=5pt},
+      acc/.style={box,fill=hgreen!45},
+      lnk/.style={{Latex[length=2.2mm]}-{Latex[length=2.2mm]},line width=1pt},
+      lab/.style={font=\footnotesize,fill=hcream,inner sep=1.5pt}]
+    \node[box,fill=hcreamdk,text width=2.2cm] (net) at (0,0) {\faGlobe\ \textbf{Internet}};
+    \node[acc,text width=5.2cm] (cs) at (6,0) {\textbf{Central server} (hermes.radio)\\the network's door to internet e-mail};
+    \node[acc,text width=6.2cm] (gw) at (6,-1.85) {\textbf{Gateway station}\\an internet link; calls its remote stations over HF};
+    \foreach \x/\n in {1.45/a,6/b,10.55/c}
+      \node[box,text width=3.9cm] (r\n) at (\x,-4.2) {\textbf{Remote station}\\e-mail, modem, radio,\\WiFi for the users};
+    \draw[lnk,hdkgreen] (net) -- (cs) node[lab,midway,above] {e-mail};
+    \draw[lnk,hdkmauve] (cs) -- (gw) node[lab,midway,right] {VPN};
+    \foreach \n in {a,b,c} \draw[lnk,horange] (gw) -- (r\n);
+    \node[lab,text=horange] at (6,-3.05) {\textbf{HF radio}};
+  \end{tikzpicture}
+  \par\bigskip
+  {\footnotesize The central server queues mail for each gateway. The gateway collects it every few minutes, and calls its remote stations over HF on a schedule.}
+  \src{Source: hermes-installer documentation}
+\end{frame}
+
+\begin{frame}{A station}
+  \small
+  \begin{columns}[T]
+    \column{0.46\textwidth}
+    \begin{itemize}
+      \item A small computer: a Raspberry Pi
+      \item An SSB transceiver: the sBitx or zBitx, or any radio a computer can control (IC-7100, IC-7300, FT-710, ...)
+      \item An antenna, solar power, a WiFi access point; optionally GPS
+      \item A mail server, a store-and-forward queue, the Mercury modem, the radio software and a web interface
+      \item One installer image for every station
+    \end{itemize}
+    \column{0.52\textwidth}
+    \centering
+    \photo{height=3.75cm}{img/station-installed.jpg}\par\smallskip
+    \photo{height=2.3cm}{img/station-sbitx.jpg}\hfill
+    \begin{minipage}[b]{0.36\linewidth}\scriptsize\raggedright\color{hdkmauve}
+      Above: a station on a community wall.\\ Left: the sBitx, with the HERMES interface on its screen
+    \end{minipage}
+  \end{columns}
+  \src{Photos: Rhizomatica}
+\end{frame}
+
+\begin{frame}{Data over HF: store and forward, and broadcast}
+  \small
+  \begin{columns}[T]
+    \column{0.55\textwidth}
+    \begin{itemize}
+      \item Store and forward: mail and files wait at the station and go at the next call, so nothing needs the link up all the time
+      \item UUCP carries them by default: robust, and it resumes interrupted transfers. NNCP, encrypted and authenticated, is the alternative
+      \item The link is Mercury, with ARQ (automatic repeat request): a file arrives intact, or the sender is told it did not
+    \end{itemize}
+    \column{0.42\textwidth}
+    \begin{block}{Mercury, the modem}
+      \footnotesize Free software since May 2026, replacing VARA, a proprietary modem with a paid licence per radio. It adapts its speed to the channel, from a robust mode that works below the noise ($-10$ dB SNR) up to 3.1 kbit/s. It has its own presentation.
+    \end{block}
+    \begin{block}{Broadcast: one to many}
+      \footnotesize Files go out under a fountain code (RaptorQ): enough of \emph{any} frames rebuild the file, whenever a receiver tuned in. No return path needed: bulletins and updates to a whole region.
+    \end{block}
+  \end{columns}
+  \src{Source: hermes-installer documentation; Mercury's presentation; hermes-broadcast}
+\end{frame}
+
+\begin{frame}{The radio daemon}
+  \small
+  \begin{columns}[T]
+    \column{0.52\textwidth}
+    \begin{itemize}
+      \item One program runs the station's radio: control, signal processing, voice, digital modes and the modem
+      \item It drives the sBitx and zBitx hardware itself, or any radio with a computer control (CAT) port
+      \item The Mercury modem runs inside it: no audio cables or sound loopback between modem and radio
+      \item The web interface, the apps and the radio's live audio come through one secure web address, with users and roles
+    \end{itemize}
+    \column{0.46\textwidth}
+    \begin{tikzpicture}[node distance=0.26cm,
+        box/.style={draw=hdkgreen,fill=white,rounded corners=2pt,minimum width=5.0cm,minimum height=0.56cm,font=\scriptsize,line width=0.8pt},
+        acc/.style={box,fill=hgreen!45,font=\scriptsize\bfseries}]
+      \node[box] (ui) {Web interface \,·\, apps};
+      \node[acc,below=of ui] (api) {Secure web access \,·\, live audio};
+      \node[acc,below=of api] (core) {Voice \,·\, digital modes \,·\, modem \,·\, broadcast};
+      \node[acc,below=of core] (dsp) {Signal processing: SSB, AM, FM, CW, DRM};
+      \node[box,below=of dsp] (be) {sBitx directly \,|\, other radios by CAT};
+      \node[box,below=of be,fill=hcreamdk] (rad) {Transceiver \faBroadcastTower};
+      \foreach \a/\b in {ui/api,api/core,core/dsp,dsp/be,be/rad}
+        \draw[{Latex[length=2mm]}-{Latex[length=2mm]},hdkgreen,line width=0.8pt] (\a) -- (\b);
+    \end{tikzpicture}
+  \end{columns}
+  \src{Source: hermes-radio-daemon}
+\end{frame}
+
+\begin{frame}{Digital voice and encryption}
+  \small
+  \begin{columns}[T]
+    \column{0.5\textwidth}
+    \begin{block}{\faMicrophone\ Two digital voice codecs}
+      \begin{itemize}
+        \item RADE V2 (FreeDV): neural-network digital voice, made for weak and fading HF channels
+        \item D-STAR: compatible with D-STAR radios
+        \item One switch between analogue and digital voice
+      \end{itemize}
+    \end{block}
+    \column{0.5\textwidth}
+    \begin{block}{\faLock\ Voice encryption (opt-in)}
+      \begin{itemize}
+        \item One 256-bit key shared by the network's stations
+        \item D-STAR: the voice encrypted with ChaCha20
+        \item RADE V2: the key scrambles the modem signal itself; a late listener locks on in about a second
+      \end{itemize}
+    \end{block}
+  \end{columns}
+  \smallskip
+  \begin{exampleblock}{On air, October 2026}
+    \footnotesize Both codecs, encrypted and clear, with the right key, the wrong key and none, and a listener joining mid-over: all passed. Listeners heard no difference between encrypted and clear speech.
+  \end{exampleblock}
+  \src{Source: hermes-radio-daemon}
+\end{frame}
+
+\begin{frame}{Digital text modes and reception reports}
+  \small
+  \begin{columns}[T]
+    \column{0.46\textwidth}
+    \begin{itemize}
+      \item FT8: receive and send, decoding weak signals under stronger ones
+      \item JS8: keyboard-to-keyboard messages, at all four speeds
+      \item CW and RTTY skimmers: every station in the passband at once
+      \item Stations heard reported to PSKReporter, at the station's GPS position
+      \item DRM: digital broadcast, received and sent
+    \end{itemize}
+    \column{0.52\textwidth}
+    \centering
+    \photo{width=\linewidth}{img/radiod-ft8-map.jpg}\par\smallskip
+    {\scriptsize\color{hdkmauve} The station's map: FT8 stations heard, placed by their locators}
+  \end{columns}
+  \src{Source: hermes-radio-daemon}
+\end{frame}
+
+\begin{frame}{Positions over the air}
+  \small
+  \begin{columns}[T]
+    \column{0.5\textwidth}
+    \begin{block}{\faMapMarker*\ Position beacons}
+      \begin{itemize}
+        \item A station sends its position on a schedule: from its GPS, or a fixed position typed in
+        \item Every station heard is listed with its last position, and drawn on a map
+      \end{itemize}
+    \end{block}
+    \begin{alertblock}{\faExclamationTriangle\ SOS}
+      An emergency code set by a user goes out in every beacon, more often, until the emergency is declared over
+    \end{alertblock}
+    \column{0.5\textwidth}
+    \begin{block}{\faRoute\ Tracks}
+      \begin{itemize}
+        \item The station's own track, and every other station's from its beacons
+        \item A point every few seconds while moving; one every 5 minutes while still
+        \item A trip is a stretch of time on a track, shown on the map
+      \end{itemize}
+    \end{block}
+  \end{columns}
+  \src{Source: hermes-radio-daemon}
+\end{frame}
+
+\begin{frame}{Testing and platforms}
+  \small
+  \begin{columns}[T]
+    \column{0.5\textwidth}
+    \begin{block}{\faVial\ Testing}
+      \begin{itemize}
+        \item Automated tests on every change, on PCs and on the ARM boards the stations use
+        \item Each part alone, the whole program on a simulated radio, and checks for memory and threading errors
+        \item HF channels simulated with fading and noise
+        \item On air: sBitx, IC-7100 and FT-710 stations
+      \end{itemize}
+    \end{block}
+    \column{0.5\textwidth}
+    \begin{block}{\faServer\ Platforms}
+      \begin{itemize}
+        \item Raspberry Pi 4 and 5, from the HERMES package repository; Mercury even on a Pi Zero, with the zBitx
+        \item A phone as the station: the radio software and Mercury on Sailfish OS and a PinePhone Pro, the radio on USB, the phone's own GPS
+        \item Mercury also on Android and iOS phones, macOS and Windows; iOS gives apps no USB access
+      \end{itemize}
+    \end{block}
+  \end{columns}
+  \src{Source: hermes-radio-daemon; Mercury}
+\end{frame}
+
+\begin{frame}{2026, and what comes next}
+  \begin{columns}[T]
+    \column{0.46\textwidth}
+    \begin{tikzpicture}
+      \foreach \v/\l/\y in {90/{radios in the Waorani\\ communities}/0,
+                            12/{stations in a network\\ installed in November}/-1.15,
+                            580/{commits to the radio\\ software since April}/-2.3,
+                            1468/{commits to Mercury since its rewrite}/-3.45}{
+        \node[anchor=east,font=\fontsize{26}{26}\selectfont\bfseries,text=horange] at (1.7,\y) {\v};
+        \node[anchor=west,text width=3.7cm,align=left,font=\footnotesize] at (1.95,\y) {\l};
+      }
+    \end{tikzpicture}
+    \column{0.52\textwidth}
+    \footnotesize
+    \begin{block}{\faExchange*\ Messages and files}
+      One way to send mail and files, whichever link a network uses; an SOS message to chosen contacts
+    \end{block}
+    \begin{block}{\faMap\ Maps and trips}
+      A station's journeys, drawn on the map
+    \end{block}
+    \begin{block}{\faBroadcastTower\ Sharing the frequency}
+      The stations of a network taking turns on one channel; optional encryption in Mercury
+    \end{block}
+    \begin{block}{\faProjectDiagram\ Other networks}
+      Reticulum over HF, done; Meshtastic, to reach LoRa networks, in progress
+    \end{block}
+  \end{columns}
+  \src{Source: git history of hermes-radio-daemon and Mercury; ARDC, 6 November 2026}
+\end{frame}
+
+\begin{frame}[plain]
+  \begin{tikzpicture}[remember picture,overlay]
+    \fill[hcream] (current page.south west) rectangle (current page.north east);
+    \node[anchor=north east,inner sep=0] at (current page.north east)
+      {\includegraphics[height=\paperheight]{img/foliage-strip.jpg}};
+    \node[anchor=north west,inner sep=0] at ($(current page.north west)+(1.0cm,-1.0cm)$)
+      {\includegraphics[height=2.2cm]{img/hermes-logo.png}};
+    \node[anchor=north west,text width=8.6cm,inner sep=0] at ($(current page.north west)+(1.0cm,-4.0cm)$) {%
+      {\fontsize{30}{32}\selectfont\bfseries THANK YOU}\par\vspace{0.25em}
+      {\color{horange}\rule{3.5cm}{2.5pt}}\par\vspace{0.8em}
+      \small
+      \faGithub\ \ github.com/Rhizomatica\par\vspace{0.3em}
+      \faGlobe\ \ hermes.radio \quad\textbullet\quad rhizomatica.org/hermes\par\vspace{0.3em}
+      \faEnvelope\ \ lists.riseup.net/www/info/hermes-general\par\vspace{1.0em}
+      {\scriptsize\color{hdkmauve}HERMES is free software.\\ This presentation: CC BY-SA 4.0.}};
+  \end{tikzpicture}
+\end{frame}
+
+\end{document}

@@ -225,7 +225,7 @@ type patch struct {
 }
 
 var modes = map[string]bool{"LSB": true, "USB": true, "CW": true, "FM": true, "AM": true,
-	"DRM": true, "FT8": true, "RTTY": true, "DSTAR": true}
+	"DRM": true, "FT8": true, "JS8": true, "RTTY": true, "DSTAR": true}
 
 // parsePatch checks every field before anything is applied. withProfile
 // allows the "profile" key (radio.set). Unknown keys fail.
@@ -262,7 +262,7 @@ func parsePatch(raw map[string]jsontext.Value, withProfile bool) (patch, api.Fie
 		case "mode":
 			var m string
 			if json.Unmarshal(raw[key], &m) != nil || !modes[strings.ToUpper(m)] {
-				f.Add(key, "one of LSB, USB, CW, FM, AM, DRM, FT8, RTTY, DSTAR")
+				f.Add(key, "one of LSB, USB, CW, FM, AM, DRM, FT8, JS8, RTTY, DSTAR")
 			} else {
 				m = strings.ToUpper(m)
 				p.mode = &m

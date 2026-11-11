@@ -31,7 +31,8 @@ lists every package.
 | File | |
 |---|---|
 | `specs/hermes-radio-daemon.spec` | radiod, with mercury linked in and WebRTC audio built in, and the Go API layer (`/api/v2`, `hermes.v1`) when Go is on the PATH (see below); without it `/api/v2` answers 503, and the browser pages and WebRTC audio cannot reach radiod |
-| `specs/mercury.spec` | the standalone mercury modem (its own audio and Hamlib), for running mercury without radiod, from a mercuryv2 snapshot; and `mercury-ui`, Mercury's Fyne GUI with the modem built in, in the app list as Mercury, when Go is on the PATH |
+| `specs/mercury.spec` | the standalone mercury modem (its own audio and Hamlib), for running mercury without radiod, from a mercury release; and `mercury-ui`, Mercury's Fyne GUI with the modem built in, in the app list as Mercury, when Go is on the PATH |
+| `patches/` | fixes to a packaged release that its next release will carry: `mercury-glfw-wayland-touch.patch`, mercury #512 and #513, without which no tap reaches `mercury-ui` |
 | `mercury-ui.desktop`, `icons/` | the app list entry for `mercury-ui`, and mercury's icon (`gui_interface/fyne-ui/mercury-ui.png`) scaled to the launcher's sizes with `convert -resize NxN -strip` |
 | `specs/*.spec` | the libraries radiod needs that the Sailfish repositories do not carry: fftw, iniparser, hamlib, i2c-tools, csdr, libspecbleach, mbelib-neo, and libjuice and libdatachannel for browser audio |
 | `radiod.service` | the systemd unit, with a wakelock (see below) |
@@ -110,10 +111,10 @@ The EGL and GLES2 headers come from the Khronos registries, at the commits
 the spec names (`fetch-sources.sh`): Sailfish carries the libraries, through
 libhybris, but not their headers.
 
-mercury is a snapshot of `mercuryv2` past the 1.9.22 tag
-(`1.9.22+git<date>.<count>.<hash>`), since the tag predates the Sailfish UI
-build. Once a release carries it, the spec goes back to the release tag's
-own (`sailfish/mercury.spec` in the tag archive).
+mercury is a release: `Version` and `%global commit` (the release tag's
+commit) in `specs/mercury.spec`, 1.9.23 now. The release tag's own
+`sailfish/mercury.spec` builds the modem only; this one adds `mercury-ui`.
+To package the next release, change those two lines.
 
 ## CAT without a kernel driver
 

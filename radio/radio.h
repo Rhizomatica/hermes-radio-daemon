@@ -47,6 +47,7 @@
 #define MODE_FT8  6
 #define MODE_RTTY 7
 #define MODE_DSTAR 8
+#define MODE_JS8  9   /* JS8, main:js8_submodes (dsp/js8_worker.h, dsp/js8_tx.h) */
 
 /* What a profile's digital voice runs (main:digital_voice_codec). RADEv2
  * rides on the profile's SSB mode; D-STAR is a mode of its own, so with
@@ -455,6 +456,16 @@ typedef struct {
     bool   has_station_position;
     double station_latitude, station_longitude;
     int    beacon_emergency_interval_s;
+    /* PSKReporter (dsp/pskreporter.h): main:pskreporter_enable reports the
+     * stations decoded, from main:callsign at this station's position, to
+     * main:pskreporter_server ("host[:port]"), naming
+     * main:pskreporter_antenna if set. */
+    bool pskreporter_enable;
+    char pskreporter_server[128];
+    char pskreporter_antenna[64];
+    /* JS8 (dsp/js8_worker.h): which submodes MODE_JS8 decodes, a bit per
+     * js8_submode, from main:js8_submodes ("normal,slow"). */
+    unsigned js8_submodes;
     /* The store-and-forward layer (api/internal/transport): the transport
      * for a station both UUCP and NNCP reach (main:transport_prefer), and
      * uucico's options on a call over the radio (main:uucico_air_options,

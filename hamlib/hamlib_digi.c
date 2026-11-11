@@ -33,6 +33,9 @@
 #include "../dsp/sbitx_cw.h"
 #include "../dsp/sbitx_ft8.h"
 #include "../dsp/digi_log.h"
+#include "../dsp/js8_worker.h"
+#include "../dsp/js8_tx.h"
+#include "../dsp/js8_station.h"
 #include <sys/time.h>
 #include "../dsp/sbitx_rtty.h"
 #include "../dsp/sbitx_radae.h"
@@ -236,6 +239,12 @@ typedef struct {
     char tx_text[DIGI_TX_MSG_MAX];
     const char *tx_rest;
     uint16_t tx_rest_mode;
+    /* The JS8 message going out, a frame a period: frames [js8_next,
+     * js8_nframes) are still to send, in js8_sub. */
+    js8_tx_frame js8_frames[JS8_TX_MAX_FRAMES];
+    int          js8_nframes, js8_next;
+    js8_submode  js8_sub;
+    resamp_state js8_to_ring;
 } hamlib_digi_state;
 
 static hamlib_digi_state g_state;
@@ -309,6 +318,7 @@ static void tx_drop(hamlib_digi_state *s)
 {
     s->tx_pend_len = s->tx_pend_pos = 0;
     s->tx_rest = NULL;
+    s->js8_next = s->js8_nframes;   /* the rest of a JS8 message goes too */
 }
 
 /* The next part's text: the rest of the message in this mode, or the next
@@ -389,6 +399,53 @@ static void do_ft8_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz
     if (!tx_pend_set(s, &s->ft8_to_ring, ft8_audio, (size_t) n12, 12000, ring_rate))
         return;
     digi_spool_log("FT8", "tx", freq_hz, text, FT8_TX_TONE_HZ);
+}
+
+/* JS8: the message's frames, each in its own period at JS8Call's start
+ * delay (the silence up to it, then the frame), so JS8Call's receivers,
+ * which decode the UTC periods, hear them. */
+static void do_js8_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz)
+{
+    static float js8_audio[(JS8_TX_GAP_MAX_S + JS8_SLOW_TX_S) * JS8_SAMPLE_RATE];
+    radio *radio_h = s->radio_h;
+
+    if (tx_pend_busy(s))
+        return;
+    if (s->js8_next >= s->js8_nframes) {
+        char text[DIGI_TX_MSG_MAX], call[JS8_MSG_CALL_MAX], grid[JS8_GRID_LEN + 1];
+        if (!digi_tx_queue_pop(&radio_h->digi_tx, text, sizeof(text)))
+            return;
+        if (!js8_station(radio_h, call, sizeof call, grid)) {
+            HLOGE(LOG_C, "JS8 tx: no main:callsign; not sent");
+            return;
+        }
+        s->js8_sub = js8_tx_submode(radio_h->js8_submodes);
+        s->js8_nframes = js8_msg_pack(call, grid, text, s->js8_sub != JS8_SUB_NORMAL,
+                                      s->js8_frames, JS8_TX_MAX_FRAMES);
+        s->js8_next = 0;
+        if (s->js8_nframes <= 0) {
+            HLOGE(LOG_C, "JS8 tx: cannot pack \"%s\"", text);
+            return;
+        }
+        digi_spool_log("JS8", "tx", freq_hz, text, (int) JS8_TX_TONE_HZ);
+    }
+    double now = digi_log_now();
+    int gap = (int) ((js8_tx_next_start(s->js8_sub, now) - now) * JS8_SAMPLE_RATE);
+    if (gap < 0)
+        gap = 0;
+    if (gap > JS8_TX_GAP_MAX_S * JS8_SAMPLE_RATE)
+        gap = JS8_TX_GAP_MAX_S * JS8_SAMPLE_RATE;
+    memset(js8_audio, 0, (size_t) gap * sizeof(float));
+    int cap = (int) (sizeof(js8_audio) / sizeof(js8_audio[0])) - gap;
+    int n = js8_tx_frame_audio(&s->js8_frames[s->js8_next], s->js8_sub, JS8_TX_TONE_HZ,
+                               js8_audio + gap, cap);
+    if (n <= 0 || !tx_pend_set(s, &s->js8_to_ring, js8_audio, (size_t) (gap + n), JS8_SAMPLE_RATE,
+                               ring_rate)) {
+        s->js8_next = s->js8_nframes;
+        return;
+    }
+    s->js8_next++;
+    s->digi_tx_start = time(NULL);   /* DIGI_TX_MAX_SECS: a stall, not a long message */
 }
 
 static void do_rtty_tx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz,
@@ -519,6 +576,15 @@ static void do_ft8_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz
                 (s->ft8_rx_buf_n - shift) * sizeof(float));
         s->ft8_rx_buf_n -= shift;
     }
+}
+
+/* JS8: ~100 ms at a time to its worker, which keeps the windows. */
+static void do_js8_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz)
+{
+    float audio[DIGI_DECODE_RATE / 10 + 64];
+    size_t n = pull_rx_12k(s, ring_rate, ring_rate / 10, audio, sizeof audio / sizeof audio[0]);
+    if (n)
+        js8_worker_feed(audio, (int) n, digi_log_now(), freq_hz);
 }
 
 static void do_rtty_rx(hamlib_digi_state *s, uint32_t ring_rate, uint32_t freq_hz,
@@ -1034,7 +1100,8 @@ static void *hamlib_digi_thread(void *radio_h_v)
             continue;
         }
 
-        if (mode != MODE_FT8 && mode != MODE_CW && mode != MODE_RTTY && mode != MODE_DSTAR) {
+        if (mode != MODE_FT8 && mode != MODE_JS8 && mode != MODE_CW && mode != MODE_RTTY &&
+            mode != MODE_DSTAR) {
             /* Left the digital modes while still auto-keyed (e.g. profile
              * switched mid-TX): drop PTT so we never stick in transmit. */
             if (s->digi_auto_tx) {
@@ -1070,7 +1137,10 @@ static void *hamlib_digi_thread(void *radio_h_v)
          * (digi_auto_tx stays false, so it is never auto-unkeyed). */
         if (!in_tx && !s->digi_auto_tx &&
             digi_tx_queue_pending(&radio_h->digi_tx) &&
-            !radio_h->swr_protection_enabled) {
+            !radio_h->swr_protection_enabled &&
+            (mode != MODE_JS8 ||   /* JS8: only just before the next slot */
+             js8_tx_next_start(js8_tx_submode(radio_h->js8_submodes), digi_log_now()) -
+             digi_log_now() <= JS8_PTT_LEAD_S)) {
             radio_backend_set_txrx_state(radio_h, IN_TX);
             s->digi_auto_tx = true;
             s->digi_tx_start = time(NULL);
@@ -1086,6 +1156,9 @@ static void *hamlib_digi_thread(void *radio_h_v)
                 break;
             case MODE_FT8:
                 do_ft8_tx(s, ring_rate, freq_hz);
+                break;
+            case MODE_JS8:
+                do_js8_tx(s, ring_rate, freq_hz);
                 break;
             case MODE_RTTY:
                 do_rtty_tx(s, ring_rate, freq_hz,
@@ -1140,6 +1213,9 @@ static void *hamlib_digi_thread(void *radio_h_v)
             case MODE_FT8:
                 do_ft8_rx(s, ring_rate, freq_hz);
                 break;
+            case MODE_JS8:
+                do_js8_rx(s, ring_rate, freq_hz);
+                break;
             case MODE_RTTY:
                 do_rtty_rx(s, ring_rate, freq_hz, radio_h->rtty_baud, radio_h->rtty_shift);
                 break;
@@ -1158,6 +1234,7 @@ static void *hamlib_digi_thread(void *radio_h_v)
     resamp_free(&s->cw_to_ring);
     resamp_free(&s->rtty_to_ring);
     resamp_free(&s->ft8_to_ring);
+    resamp_free(&s->js8_to_ring);
     resamp_free(&s->ring_to_12k);
     resamp_free(&s->ring_to_radae_speech);
     resamp_free(&s->radae_modem_to_ring);

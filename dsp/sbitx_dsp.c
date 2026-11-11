@@ -64,6 +64,9 @@
 #include "sbitx_radae.h"
 #include "sbitx_drm.h"
 #include "sbitx_ft8.h"
+#include "js8_worker.h"
+#include "js8_tx.h"
+#include "js8_station.h"
 #include "sbitx_cw.h"
 #include "sbitx_rtty.h"
 #include "sbitx_dstar.h"
@@ -93,6 +96,23 @@ static radio *radio_h_dsp;
 #define TUNED_BINS 512
 
 #define MAX_SAMPLE_VALUE 8388607.0 // (2 ^ 23) - 1,  signed(?) 24 bits packed in a SIGNED 32 LE
+
+/* The TX output's scale before the band multiplier and the power level.
+ * Voice has ~10 dB of peak-to-average ratio; a constant-envelope signal
+ * (RADE's OFDM after its clipper, D-STAR's GMSK through the FM modulator)
+ * has ~0 dB, so at the voice scale the PA sees ~10 dB more average power,
+ * saturates and splatters, and the power level barely changes the output.
+ * The constant-envelope scale puts its peak below SSB voice's (~4.5e8 on
+ * this radio), and the power level then works over its range.  Measured
+ * on the sBitx's own meter at 6.9 MHz (band scale 1.5):
+ * - RADEv2 at 400 read about 8 W at 100%, at 500 about 15 W (14-19 W, the
+ *   OFDM's level varies), falling steeply below 80%;
+ * - D-STAR at 500 read 23 W at 100%, 16 W at 80%, 8 W at 60%, 2.6 W at
+ *   40%: its FM signal is always at full magnitude, where RADE's clipped
+ *   OFDM averages less.
+ * About 20 to 23 W at 100% is what these modes should send. */
+#define TX_SCALE_VOICE             4000.0
+#define TX_SCALE_CONSTANT_ENVELOPE 500.0
 
 
 fftw_complex *fft_freq;
@@ -1325,7 +1345,7 @@ static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, in
     static stream_resampler dec;
     static bool dec_ready = false;
 
-    if (mode != MODE_FT8 && mode != MODE_CW && mode != MODE_RTTY)
+    if (mode != MODE_FT8 && mode != MODE_JS8 && mode != MODE_CW && mode != MODE_RTTY)
         return;
 
     /* Decimate 96 kHz -> 12 kHz with the filter state kept across blocks.
@@ -1348,6 +1368,9 @@ static void dsp_digi_rx_decode(uint16_t mode, const float *audio96k, int n96, in
     else if (mode == MODE_RTTY) {
         sbitx_rtty_rx_feed(out12, n12, radio_h_dsp->rtty_baud, radio_h_dsp->rtty_shift,
                            digi_rtty_line_cb, &freq_khz);
+    }
+    else if (mode == MODE_JS8) {   /* its worker keeps the windows */
+        js8_worker_feed(out12, n12, digi_log_now(), (uint64_t) freq_khz * 1000);
     }
     else if (mode == MODE_FT8) {
         static bool inited = false;
@@ -2141,8 +2164,8 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
         sbitx_drm_rx_stop();            /* out of DRM: Dream's receiver goes */
     }
 
-    // STEP 7.8: FT8 mode - SSB demod + optional decode
-    if (rx_mode == MODE_FT8)
+    // STEP 7.8: FT8 and JS8 - SSB demod + optional decode
+    if (rx_mode == MODE_FT8 || rx_mode == MODE_JS8)
     {
         rx_mode = MODE_USB;
     }
@@ -2539,6 +2562,85 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             fft_m[k]  = fft_in[i];
         }
         digi_tx_sending = ft8_audio_96k_pos < ft8_audio_96k_len;
+    }
+    /* JS8 TX: the message's frames, one a period at JS8Call's start delay
+     * (silence until then), each 79 tones of continuous-phase FSK made
+     * here at 96 kHz a sample at a time: no buffer, even for Slow. */
+    else if (tx_mode == MODE_JS8)
+    {
+        enum { RATE96 = 96000, UP = RATE96 / JS8_SAMPLE_RATE, RAMP96 = RATE96 / 200 };   /* 5 ms */
+        static js8_tx_frame frames[JS8_TX_MAX_FRAMES];
+        static int          nframes = 0, next = 0, sym96 = 1;
+        static js8_submode  sub = JS8_SUB_NORMAL;
+        static int          tones[JS8_NN];
+        static long         gap = 0, pos = 0, len = 0;   /* 96 kHz samples */
+        static double       phase = 0.0, spacing = 0.0;
+
+        if (digi_tx_new_over) {          /* a new over: nothing left of the last */
+            next = nframes;
+            gap = 0;
+            pos = len;
+            digi_tx_new_over = false;
+        }
+        if (gap == 0 && pos >= len) {
+            if (next >= nframes) {
+                char text[DIGI_TX_MSG_MAX], call[JS8_MSG_CALL_MAX], grid[JS8_GRID_LEN + 1];
+                nframes = next = 0;
+                if (digi_tx_queue_pop(&radio_h_dsp->digi_tx, text, sizeof(text))) {
+                    sub = js8_tx_submode(radio_h_dsp->js8_submodes);
+                    if (!js8_station(radio_h_dsp, call, sizeof call, grid))
+                        HLOGE(LOG_C, "JS8 tx: no main:callsign; not sent");
+                    else if ((nframes = js8_msg_pack(call, grid, text, sub != JS8_SUB_NORMAL, frames,
+                                                     JS8_TX_MAX_FRAMES)) <= 0)
+                        HLOGE(LOG_C, "JS8 tx: cannot pack \"%s\"", text);
+                    else
+                        digi_tx_log("JS8", text, JS8_TX_TONE_HZ);
+                    if (nframes < 0)
+                        nframes = 0;
+                }
+            }
+            const js8_submode_params *p = js8_submode_get(sub);
+            if (next < nframes &&
+                js8_encode(frames[next].frame, frames[next].type, p->costas, tones)) {
+                double now = digi_log_now();
+                gap = (long) ((js8_tx_next_start(sub, now) - now) * RATE96);
+                if (gap < 0)
+                    gap = 0;
+                sym96 = p->symbol * UP;
+                spacing = (double) JS8_SAMPLE_RATE / p->symbol;
+                len = (long) JS8_NN * sym96;
+                pos = 0;
+                phase = 0.0;
+                next++;
+            } else {
+                next = nframes;
+            }
+        }
+
+        float g = radio_h_dsp->digi_tx_gain;
+        for (i = MAX_BINS/2; i < MAX_BINS; i++)
+        {
+            float tone = 0.0f;
+            if (gap > 0) {
+                gap--;
+            } else if (pos < len) {
+                phase += 2.0 * M_PI * (JS8_TX_TONE_HZ + tones[pos / sym96] * spacing) / RATE96;
+                if (phase > 2.0 * M_PI)
+                    phase -= 2.0 * M_PI;
+                double ramp = pos < RAMP96 ? 0.5 - 0.5 * cos(M_PI * pos / RAMP96)
+                            : pos >= len - RAMP96 ? 0.5 - 0.5 * cos(M_PI * (len - 1 - pos) / RAMP96)
+                            : 1.0;
+                tone = (float) (ramp * sin(phase));
+                pos++;
+            }
+            tone *= g;
+            if (tone >  1.0f) tone =  1.0f;
+            if (tone < -1.0f) tone = -1.0f;
+            int k = i - MAX_BINS/2;
+            fft_in[i] = (double) tone;
+            fft_m[k]  = fft_in[i];
+        }
+        digi_tx_sending = gap > 0 || pos < len || next < nframes;
     }
     // RTTY TX: FSK modulator. Pulls one message at a time from the
     // websocket digi_tx_queue (filled by `digi_send`); emits silence
@@ -2978,10 +3080,10 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
 
     double multiplier = get_band_multiplier() * (double) radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].power_level_percentage / 100.0;
     RADAE_AMPL_LOG("tx_ssb mult*pct", multiplier);
-    // DV is constant-envelope (PAR ~0 dB) where voice has ~10 dB PAR, so at
-    // equal peak the PA sees ~10 dB more average power and splatters. Scale
-    // DV so its peak lands below SSB voice peak (~4.5e8 on this radio).
-    const double tx_scale = digital_voice ? 400.0 : 4000.0;
+    // Digital voice is constant-envelope, RADE (the digital_voice flag) and
+    // D-STAR (its own mode, which the D-STAR codec sets) alike.
+    const double tx_scale = digital_voice || tx_mode_for_sb == MODE_DSTAR
+                          ? TX_SCALE_CONSTANT_ENVELOPE : TX_SCALE_VOICE;
     for (i = 0; i < MAX_BINS / 2; i++)
     {
         double _ssb_pre = creal(fft_time[i+(MAX_BINS/2)]);

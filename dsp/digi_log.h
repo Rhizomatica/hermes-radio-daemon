@@ -55,7 +55,7 @@ typedef struct {
 } digi_log_beacon;
 
 typedef struct {
-    const char *mode;        /* "FT8", "CW", "RTTY", "DSTAR", "BEACON" */
+    const char *mode;        /* "FT8", "JS8", "CW", "RTTY", "DSTAR", "BEACON" */
     const char *dir;         /* "rx" or "tx" */
     uint64_t    freq_hz;     /* dial frequency */
     double      at;          /* unix time in seconds; 0 = now */
@@ -81,6 +81,12 @@ void digi_log_set_max_bytes(long max_bytes);
  * drops the entry. An entry whose mode or dir is not one of the values
  * above is refused with a warning rather than logged under a wrong label. */
 void digi_log_add(const digi_log_entry *e);
+
+/* One function told of every entry logged, after it is logged, on the
+ * logging thread, with its time resolved (unix seconds); NULL for none.
+ * It must be quick: the decoders wait for it. */
+typedef void (*digi_log_listener)(const digi_log_entry *e, double at);
+void digi_log_set_listener(digi_log_listener fn);
 
 /* Log a D-STAR header, received or sent, from its raw bytes (at least
  * DIGI_LOG_DSTAR_HEADER_MIN of them: flags, rpt1, rpt2, urcall, mycall,

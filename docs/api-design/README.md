@@ -184,6 +184,8 @@ A message can instead be a **broadcast** to an area, sent once over Mercury's br
 
 A message can also be **LXMF**, to any Reticulum address, from the user's own LXMF address. The station is a Reticulum transport and propagation node for phones on its Wi-Fi, and links to other stations over Mercury ARQ, with calls that share the line with UUCP (`transport` on calls and schedules). See [reticulum.md](reticulum.md).
 
+To another station, a message (and the SOS, and any other file or command) goes as a store-and-forward job over UUCP or NNCP, through one layer that works the same over both. See [store-and-forward.md](store-and-forward.md).
+
 The scripts' calls should stop going through HTTP, so that no unauthenticated route is needed. `iwatch` calls `GET /api/unpack/<file>` for every incoming message, `caller.sh` reads `/api/caller` and `/api/frequency/alias/{alias}`, and `mailkill.sh` reads `/api/sys/language`. The plan was hermes-api CLI commands (`php artisan hermes:unpack`, `hermes:schedule-now`, `hermes:setting language`); with the backend in radiod, what replaces them is open (Open questions). Until then those routes stay open, to localhost only.
 
 ## Database redesign

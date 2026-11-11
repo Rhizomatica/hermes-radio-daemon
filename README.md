@@ -6,8 +6,8 @@ Radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-net)
 
 - **`hfsignals` backend** — embedded sBitx/zBitx DSP + ALSA path with all original hardware control (Si5351, GPIO, I2C, WM8731 codec)
 - **`hamlib` backend** — Hamlib CAT/PTT control for IC-7100, IC-7300, FT-710, TS-480 and every other rig Hamlib supports
-- **8 modulation modes**: LSB, USB, CW, **FM** (NBFM), **AM** (broadcast), **DRM** (Digital Radio Mondiale), **FT8**, **RTTY**, plus RADEv2 digital voice on top of USB
-- **Digital text modes**: FT8 (8-FSK), CW (Morse) and RTTY (Baudot FSK), CW and RTTY decoded as skimmers (every station in the passband), with unified websocket API and a real outbound text queue (`digi_send`)
+- **9 modulation modes**: LSB, USB, CW, **FM** (NBFM), **AM** (broadcast), **DRM** (Digital Radio Mondiale), **FT8**, **JS8**, **RTTY**, plus RADEv2 digital voice on top of USB
+- **Digital text modes**: FT8 (8-FSK), JS8 (all four submodes), CW (Morse) and RTTY (Baudot FSK), CW and RTTY decoded as skimmers (every station in the passband), with unified websocket API and a real outbound text queue (`digi_send`)
 - **SSB voice DSP chain**: 3-band pre-EQ, wideband compressor, pre-emphasis, DC block, limiter
 - **RX voice DSP chain**: DC block, adaptive noise reduction (libspecbleach), AGC (SLOW/MEDIUM/FAST), soft limiter
 - **Audio bridge** for websocket RX/TX streaming, RX/TX spectrum waterfall, and `.wav` recording — on both backends, sharing the same audio rings. csdr-based polyphase resampler (`audio_bridge.c`) decouples the rig USB codec rate from the daemon ring rate.
@@ -19,6 +19,7 @@ Radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-net)
 - **Station API** (`/api/v2` REST and the `hermes.v1` WebSocket, as specified in `api/spec/`): handlers written in Go (`api/`), linked into the daemon; the daemon's C code owns every socket. Off by default; see [Station API](#station-api-apiv2-hermesv1)
 - **Mercury HF modem inside the daemon** (`enable_mercury`): keyed and fed audio by the daemon directly, its UI traffic on the daemon's websocket
 - **Broadcast plane and position beacons** (`broadcast_enable`): radiod is Mercury's broadcast client, sending files as a RaptorQ carousel from a spool directory, filing the ones it receives, and sending and receiving the HERMES position beacon ([docs/BEACON-FORMAT.md](docs/BEACON-FORMAT.md)); see [Broadcast Plane and Position Beacons](#broadcast-plane-and-position-beacons)
+- **GPS tracks** (`gps_logging`): the station's positions and every station's beacons, recorded in fixed records and read by time range; see [GPS Tracks](#gps-tracks)
 - WAV recording with remote start/stop on both backends
 - INI configuration at `/etc/hermes/core.ini` and `/etc/hermes/user.ini`
 - Optional CPU affinity pinning
@@ -562,7 +563,7 @@ enable_ptt = 1
 | Field | Values | Description |
 |-------|--------|-------------|
 | `freq` | Hz (integer) | Operating frequency |
-| `mode` | `USB`, `LSB`, `CW`, `FM`, `AM`, `DRM`, `FT8`, `RTTY` | Modulation mode |
+| `mode` | `USB`, `LSB`, `CW`, `FM`, `AM`, `DRM`, `FT8`, `JS8`, `RTTY` | Modulation mode |
 | `operating_mode` | 0=full voice, 1=loopback, 2=controls only | I/O mode |
 | `bpf_low` | Hz | Low edge of DSP bandpass filter |
 | `bpf_high` | Hz | High edge of DSP bandpass filter |
@@ -587,6 +588,7 @@ enable_ptt = 1
 | AM | 50 | 10000 | 20 kHz (broadcast audio) |
 | DRM | 0 | 5200 | the channel centred on the dial, +-bpf_high: 10.4 kHz for the 10 kHz channel |
 | FT8 | 50 | 3000 | 3.0 kHz (SSB-based) |
+| JS8 | 50 | 3000 | 3.0 kHz (SSB-based) |
 | CW | 500 | 900 | ~400 Hz around pitch (700 Hz) |
 | RTTY | 1300 | 1700 | ~400 Hz around mark/space (1585/1415 Hz) |
 
@@ -718,6 +720,41 @@ Uses the vendored `ft8_lib` (`vendor/ft8_lib/`, MIT) in process:
   full, from the callsigns heard so far.
 - `make ft8-bench` builds `tests/dsp/ft8_bench`, which measures all of
   this on a recording.
+- With `pskreporter_enable`, the stations decoded (FT8 and JS8) are reported to
+  [PSKReporter](https://pskreporter.info) (`dsp/pskreporter.c`), as WSJT-X
+  does: the receiver is `callsign` at the GPS fix or the station's fixed
+  position, each sender at most once an hour per band, one datagram every
+  five minutes or so.
+
+### JS8 (JS8Call's keyboard mode)
+
+JS8 as JS8Call sends it, ported from JS8Call-improved (GPL-3.0), in its
+four submodes: Normal (15 s), Fast (10 s), Turbo (6 s) and Slow (30 s),
+those `js8_submodes` names (default `normal`):
+- **RX**: `dsp/js8_worker.c` keeps the newest 32 s of audio and, on its
+  own thread off the DSP core, decodes each submode's period of it every
+  2/15 of a period (Normal: 15 s every 2 s, as FT8). Every submode has
+  FT8's frame shape, so ft8_lib's waterfall serves, set to the submode's
+  symbol; `dsp/js8_rx.c` searches for JS8's Costas
+  arrays and reads the tones without FT8's Gray map, in JS8Call's three
+  passes: after each, what decoded is subtracted from the audio
+  (`dsp/ft8_subtract.c`, as plain FSK) and the next finds the stations it
+  hid; `dsp/js8_frame.c` is
+  JS8's frame (12-bit CRC, the (174,87) LDPC code, which is not FT8's);
+  `dsp/js8_msg.c` unpacks what each frame says as JS8Call shows it
+  (heartbeats, CQs, directed messages, Huffman-coded text and text
+  compressed against JSC's 262144-word list) → the digi log as mode
+  `JS8`, with the callsigns and grid each frame names.
+- `tests/dsp/test_js8_recordings` decodes JS8Call's own test recordings.
+- **TX**: `digi_send` text, as typed in JS8Call (`CQ CQ CQ IM58`,
+  `@HB HEARTBEAT`, `EA1A SNR?`, `EA1A hello`), becomes JS8Call's frames
+  (`js8_msg_pack`, its `buildMessageFrames`: heartbeats, directed commands,
+  compound callsigns, Huffman or JSC text, a buffered command's checksum),
+  from `callsign` in the station's 4-character grid. Each frame goes out
+  in its own UTC period of the first enabled submode, at JS8Call's start
+  delay, so JS8Call's receivers decode it; PTT keys 0.3 s before the slot.
+  The tones are 79 of continuous-phase FSK from 1500 Hz, made a sample at
+  a time on the sBitx.
 
 ### RTTY (Radio Teletype — 45.45 baud FSK)
 
@@ -824,8 +861,31 @@ same features either way Mercury runs:
   - it carries `callsign` and the GPS fix, or the fixed
     `station_latitude`/`station_longitude`;
   - received beacons go into the digital-message log (mode `BEACON`) and
-    become their callsign's last-known position, kept in `recording_dir`.
+    become their callsign's last-known position, kept in `recording_dir`;
+    with `gps_logging`, each is also a point of that station's track.
   - The format is [docs/BEACON-FORMAT.md](docs/BEACON-FORMAT.md).
+
+## GPS Tracks
+
+With `gps_logging` (core.ini, or `PATCH /api/v2/gps/settings`), radiod records
+tracks (`gps/gps_track.h`):
+
+- this station's: a point every `gps_sample_interval_s` while it moves, none
+  while it stays within 10 m but one every 5 minutes, and one at once on a new
+  fix type or a fix found again;
+- every other station's, from the position beacons heard from it.
+
+A track is a directory of files, one per period aligned to UTC and named by
+its start (`gps-YYYYMMDDTHHMMSSZ.trk`): `gps_file_period_s` for this
+station's, in `gps_log_dir`, and a day for another's, in
+`gps_log_dir/stations/<CALLSIGN>/`. A point is a fixed 24-byte record (time,
+position, altitude, accuracy, fix, emergency code), so a time range picks its
+files by name and finds its first point by binary search, and counting a
+range's points reads none of them. Past `gps_log_max_mb`, all tracks
+together, the oldest files go.
+
+`GET /api/v2/gps/track` reads a track by time range; a trip is a named time
+range of it.
 
 ## Audio Bridge
 
@@ -1162,6 +1222,10 @@ curl -X PATCH -H 'Content-Type: application/json' \
 | `clearSos` | `DELETE /api/v2/gps/sos`: one beacon says the emergency is over | user |
 | `listBeacons` | `GET /api/v2/gps/beacons`: every station heard by its beacons, newest first | readonly |
 | `listStationPositions` | `GET /api/v2/gps/stations`: the UUCP stations, with their last beacon's position | readonly |
+| `getTrack` | `GET /api/v2/gps/track?since=&until=[&callsign=]`: a track over a time range, oldest first; this station's, or another's from its beacons | readonly |
+| `listGpsFiles` | `GET /api/v2/gps/files`: this station's track files | readonly |
+| `downloadGpsFile` | `GET /api/v2/gps/files/{name}`: one, in its binary format (`gps/gps_track.h`) | readonly |
+| `deleteGpsFiles` | `DELETE /api/v2/gps/files`: all of them | operator |
 | `listQueue` | `GET /api/v2/queue[?station=]`: the jobs waiting on UUCP and NNCP, oldest first ([store-and-forward.md](docs/api-design/store-and-forward.md)) | operator |
 | `cancelJob` | `DELETE /api/v2/queue/{job_id}`, the id as `listQueue` gives it | operator |
 | `callNow` | `POST /api/v2/queue/call` `{"station":"gw"}`: call now, over the transport that reaches it (or `transport`); no station, every station with work | operator |

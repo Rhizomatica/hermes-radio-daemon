@@ -1,8 +1,5 @@
-%global commit 57fb7a15
-%global gitdate 20261108
-# git rev-list --count %{commit}: it grows along the branch, so a later
-# commit always sorts newer, even on the same day (the hash alone may not)
-%global gitcount 1432
+# The commit of mercury's release tag, v1.9.23
+%global commit 09f258f8
 # The Khronos EGL, GLES2 and KHR headers mercury-ui builds against
 # (Sailfish carries the libraries, through libhybris, but not the headers)
 %global egl_registry db3425b8246136faccb5e2782b5694960bd6edf1
@@ -11,16 +8,14 @@
 # on the PATH; --define 'have_go 0' or 1 decides it outright.
 %{!?have_go:%global have_go %(command -v go >/dev/null 2>&1 && echo 1 || echo 0)}
 Name:           mercury
-# A snapshot of mercuryv2 past the 1.9.22 tag, for mercury-ui: the tag
-# predates sailfish/build-mercury-ui.sh and the Wayland/GLES2 build tags.
-# Back to the release tag's own spec (sailfish/mercury.spec in the tag
-# archive) once a release carries them.
-Version:        1.9.22+git%{gitdate}.%{gitcount}.%{commit}
-Release:        1
+# The 1.9.23 release, the first tag with sailfish/build-mercury-ui.sh;
+# sorts newer than the 1.9.22+git snapshot before it.
+Version:        1.9.23
+Release:        3
 Summary:        HF modem for store-and-forward communication
 License:        GPL-3.0-or-later
 URL:            https://github.com/Rhizomatica/mercury
-# git clone of mercuryv2 at %{commit}, .git left out (fetch-sources.sh)
+# git clone of mercury at %{commit}, .git left out (fetch-sources.sh)
 Source0:        mercury-%{commit}.tar.gz
 Source1:        khronos-egl-%{egl_registry}.tar.gz
 Source2:        khronos-gl-%{gl_registry}.tar.gz
@@ -32,6 +27,10 @@ Source5:        mercury-ui-108.png
 Source6:        mercury-ui-128.png
 Source7:        mercury-ui-172.png
 Source8:        mercury-ui-256.png
+# mercury #512 and #513 (after 1.9.23): the vendored GLFW takes Wayland touch
+# as the left mouse button (without it no tap reaches mercury-ui on Sailfish),
+# and its upstreamTreeSHA follows the patched tree so Go rebuilds it
+Patch0:         mercury-glfw-wayland-touch.patch
 BuildRequires:  hamlib-devel
 BuildRequires:  alsa-lib-devel
 BuildRequires:  pulseaudio-devel
@@ -59,6 +58,7 @@ not need the mercury package. A technology preview on Sailfish OS
 
 %prep
 %setup -q -n mercury-%{commit}
+%patch0 -p1
 %if %{have_go}
 mkdir -p khronos
 tar -xzf %{SOURCE1} -C khronos

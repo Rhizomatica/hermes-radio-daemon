@@ -1,5 +1,6 @@
 // Package gps serves the station's GPS REST operations (api-rest.yaml, tag
-// gps) and the hermes.v1 gps topic, from the fix radiod reads from gpsd.
+// gps) and the hermes.v1 gps topic, from the fix radiod reads from gpsd, and
+// the station tracks radiod records (track.go).
 package gps
 
 import (
@@ -25,10 +26,11 @@ func Register(rt *api.Router, st *store.Store) {
 	h := handlers{r: rt.Radio(), st: st, mu: &sync.Mutex{}, log: logging.New(rt.Radio(), "api.tx")}
 	rt.Op("getGps", h.getGps)
 	rt.Op("updateGpsSettings", h.updateSettings)
-	registerBeacon(rt, &h)
-	if st != nil {
-		registerTrips(rt, &h)
-	}
+	rt.Op("getTrack", h.getTrack)
+	rt.Op("listGpsFiles", h.listFiles)
+	rt.Op("downloadGpsFile", h.downloadFile)
+	rt.Op("deleteGpsFiles", h.deleteFiles)
+	registerBeacon(rt, h)
 
 	// The station's own Gps, pushed as it changes (change: self). Other
 	// stations' positions (change: peers) are not there yet.

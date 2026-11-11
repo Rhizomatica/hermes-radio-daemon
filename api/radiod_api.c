@@ -18,6 +18,7 @@
 #include "radio_backend.h"
 #include "radio_controls.h"
 #include "dsp/sbitx_ft8.h"
+#include "dsp/js8_station.h"
 #include "radio_media.h"
 #include "radio_pipeline.h"
 #include "radio_websocket.h"
@@ -27,6 +28,7 @@
 #define LOG_C "api"
 #include "dsp/digi_log.h"
 #include "gps/gps.h"
+#include "gps/gps_track.h"
 #include "websocket/ws_server.h"
 #include "webrtc/radio_webrtc.h"
 #include "beacon.h"
@@ -72,12 +74,14 @@ int radiod_api_digi_send(const char *text)
     if (!s_radio || !text)
         return RADIOD_API_ENOTSUP;
     uint16_t mode = s_radio->profiles[s_radio->profile_active_idx].mode;
-    if (mode != MODE_FT8 && mode != MODE_CW && mode != MODE_RTTY)
+    if (mode != MODE_FT8 && mode != MODE_JS8 && mode != MODE_CW && mode != MODE_RTTY)
         return RADIOD_API_ENOTSUP;
     if (strlen(text) >= DIGI_TX_MSG_MAX)
         return RADIOD_API_EINVAL;
     if (mode == MODE_FT8 && !sbitx_ft8_can_encode(text))
         return RADIOD_API_EINVAL;
+    if (mode == MODE_JS8 && !js8_can_send(s_radio, text))
+        return RADIOD_API_EINVAL;   /* no main:callsign, or text that does not pack */
     return digi_tx_queue_push(&s_radio->digi_tx, text) ? RADIOD_API_OK : RADIOD_API_EBUSY;
 }
 
@@ -148,6 +152,7 @@ static const char *mode_name(uint16_t m)
     case MODE_AM:    return "AM";
     case MODE_DRM:   return "DRM";
     case MODE_FT8:   return "FT8";
+    case MODE_JS8:   return "JS8";
     case MODE_RTTY:  return "RTTY";
     case MODE_DSTAR: return "DSTAR";
     default:         return "USB";
@@ -158,7 +163,7 @@ static bool mode_value(const char *name, uint16_t *out)
 {
     static const struct { const char *n; uint16_t m; } modes[] = {
         { "LSB", MODE_LSB }, { "USB", MODE_USB }, { "CW", MODE_CW }, { "FM", MODE_FM },
-        { "AM", MODE_AM }, { "DRM", MODE_DRM }, { "FT8", MODE_FT8 }, { "RTTY", MODE_RTTY },
+        { "AM", MODE_AM }, { "DRM", MODE_DRM }, { "FT8", MODE_FT8 }, { "JS8", MODE_JS8 }, { "RTTY", MODE_RTTY },
         { "DSTAR", MODE_DSTAR },
     };
     for (size_t i = 0; name && i < sizeof(modes) / sizeof(modes[0]); i++)
@@ -594,6 +599,49 @@ bool radiod_api_digi_log_files(char *out, size_t out_len)
     if (!out || !out_len)
         return false;
     return digi_log_files(out, out_len);
+}
+
+_Static_assert(sizeof(radiod_api_gps_point) == sizeof(gps_track_point) &&
+               offsetof(radiod_api_gps_point, at_ms) == offsetof(gps_track_point, at_ms) &&
+               offsetof(radiod_api_gps_point, lat_e7) == offsetof(gps_track_point, lat_e7) &&
+               offsetof(radiod_api_gps_point, lon_e7) == offsetof(gps_track_point, lon_e7) &&
+               offsetof(radiod_api_gps_point, alt_dm) == offsetof(gps_track_point, alt_dm) &&
+               offsetof(radiod_api_gps_point, accuracy_dm) == offsetof(gps_track_point, accuracy_dm) &&
+               offsetof(radiod_api_gps_point, fix) == offsetof(gps_track_point, fix) &&
+               offsetof(radiod_api_gps_point, emergency) == offsetof(gps_track_point, emergency),
+               "radiod_api_gps_point is gps_track_point");
+
+int radiod_api_gps_track_read(const char *station, int64_t since_ms, int64_t until_ms,
+                              radiod_api_gps_point *out, int max)
+{
+    int n = gps_track_read(station, since_ms, until_ms, (gps_track_point *) out, max);
+    return n < 0 ? RADIOD_API_EINVAL : n;
+}
+
+long radiod_api_gps_track_count(const char *station, int64_t since_ms, int64_t until_ms)
+{
+    long n = gps_track_count(station, since_ms, until_ms);
+    return n < 0 ? RADIOD_API_EINVAL : n;
+}
+
+bool radiod_api_gps_track_files(char *out, size_t out_len)
+{
+    return gps_track_files(out, out_len);
+}
+
+_Static_assert(RADIOD_API_GPS_TRACK_FILES_MAX == GPS_TRACK_FILES_MAX &&
+               RADIOD_API_GPS_TRACK_PATH_MAX >= GPS_TRACK_DIR_MAX + GPS_TRACK_NAME_LEN + 2,
+               "the C API's track list fits gps_track_files' longest");
+
+int radiod_api_gps_track_delete(const char *name)
+{
+    switch (gps_track_delete(name))
+    {
+    case GPS_TRACK_DELETED:  return RADIOD_API_OK;
+    case GPS_TRACK_ENOENT:   return RADIOD_API_ENOENT;
+    case GPS_TRACK_EIO:      return RADIOD_API_EIO;
+    default:                 return RADIOD_API_EINVAL;
+    }
 }
 
 /* ── modem ── */

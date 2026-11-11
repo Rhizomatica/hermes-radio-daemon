@@ -18,6 +18,10 @@ typedef struct
     int time_osr;            ///< Number of time subdivisions
     int freq_osr;            ///< Number of frequency subdivisions
     ftx_protocol_t protocol; ///< Protocol: FT4 or FT8
+    /* radiod: a symbol length and a slot other than the protocol's (JS8's
+     * submodes); 0 keeps the protocol's own. */
+    float symbol_period;     ///< Symbol length in seconds, or 0
+    float slot_time;         ///< Seconds of audio the waterfall holds, or 0
 } monitor_config_t;
 
 /// FT4/FT8 monitor object that manages DSP processing of incoming audio data

@@ -204,6 +204,51 @@ int radiod_api_digi_log(uint64_t after, int max, char *out, size_t out_len);
  * not exist yet); false when out is too small. */
 bool radiod_api_digi_log_files(char *out, size_t out_len);
 
+/* Station tracks (gps/gps_track.h): this station's position fixes while
+ * main:gps_logging is on, and every position beacon heard from another. */
+
+/* A point of a track. */
+typedef struct {
+    int64_t  at_ms;         /* unix milliseconds, UTC */
+    int32_t  lat_e7;        /* 1e-7 degrees */
+    int32_t  lon_e7;
+    int32_t  alt_dm;        /* decimetres; RADIOD_API_GPS_NO_ALT unknown */
+    uint16_t accuracy_dm;   /* horizontal; RADIOD_API_GPS_NO_ACC unknown */
+    uint8_t  fix;           /* 0 none (last known), 2 2D, 3 3D, 4 set by hand */
+    uint8_t  emergency;     /* a beacon's emergency code, 0 none */
+} radiod_api_gps_point;
+
+#define RADIOD_API_GPS_NO_ALT INT32_MIN
+#define RADIOD_API_GPS_NO_ACC UINT16_MAX
+
+/* The points of a track (station NULL or "": this station's; else a
+ * callsign) at times since_ms..until_ms, both included, oldest first, at
+ * most max into out.  How many; RADIOD_API_EINVAL for a name that is no
+ * callsign.  The points of a track have strictly increasing times, so the
+ * next page starts 1 ms after the last point's. */
+int radiod_api_gps_track_read(const char *station, int64_t since_ms, int64_t until_ms,
+                              radiod_api_gps_point *out, int max);
+
+/* How many points a track has at times since_ms..until_ms (two binary
+ * searches a file); RADIOD_API_EINVAL as above. */
+long radiod_api_gps_track_count(const char *station, int64_t since_ms, int64_t until_ms);
+
+/* This station's track files on disk (/gps/files), full paths, oldest
+ * first, separated by '\n': the newest RADIOD_API_GPS_TRACK_FILES_MAX, none
+ * while there is no directory yet.  False when out is too small (it never is
+ * at RADIOD_API_GPS_TRACK_LIST_MAX) or the directory cannot be read.  Their
+ * format is in gps/gps_track.h. */
+#define RADIOD_API_GPS_TRACK_FILES_MAX 65536
+#define RADIOD_API_GPS_TRACK_PATH_MAX  (256 + 32)   /* the directory, a name and the '\n' */
+#define RADIOD_API_GPS_TRACK_LIST_MAX  \
+    ((size_t) RADIOD_API_GPS_TRACK_FILES_MAX * RADIOD_API_GPS_TRACK_PATH_MAX + 1)
+bool radiod_api_gps_track_files(char *out, size_t out_len);
+
+/* Deletes one of this station's track files by name (gps-...trk, no path):
+ * RADIOD_API_OK; RADIOD_API_EINVAL for no track file's name, RADIOD_API_ENOENT
+ * for no such file, RADIOD_API_EIO when it cannot be removed. */
+int radiod_api_gps_track_delete(const char *name);
+
 /* ── the broadcast plane (modem/bcast_plane.h), as Mercury's client ──
  * Files dropped in tx_dir go on the air; files received appear in rx_dir.
  * The API's Go code reads and writes those directories itself. */
