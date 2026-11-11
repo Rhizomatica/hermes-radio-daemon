@@ -1149,6 +1149,9 @@ static void swr_protection_check(radio *radio_h)
     /* Require several consecutive readings above threshold (~300 ms at 100 ms poll) */
     if (peak_counter > 3)
     {
+        HLOGW(LOG_C, "SWR protection tripped: SWR %.1f over the limit of %.1f; "
+              "TX is off until the protection is reset",
+              vswr / 10.0, radio_h->reflected_threshold / 10.0);
         tr_switch(radio_h, IN_RX);
         radio_h->swr_protection_enabled = true;
         peak_counter = 0;

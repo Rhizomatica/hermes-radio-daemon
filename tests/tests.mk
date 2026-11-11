@@ -44,7 +44,7 @@ endif
 
 TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
             tests/radio/test_controls tests/radio/test_dv_codec tests/radio/test_ptt_owner \
-            tests/radio/test_profile_rules \
+            tests/radio/test_profile_rules tests/sbitx/test_swr_guard \
             tests/hamlib/test_hamlib_ptt tests/hamlib/test_hamlib_conf \
             tests/control_interfaces/test_rig_server \
             tests/gui_interface/test_ui_hub tests/gui_interface/test_ws_server \
@@ -113,6 +113,9 @@ tests/radio/test_compat_surface: tests/radio/test_compat_surface.c control_inter
                                  radio/radio_pipeline.c radio/radio_pipeline.h radio/radio_backend.h radio/radio.h \
                                  common/shm_utils.h include/sbitx_io.h include/radio_cmds.h
 	$(CC) $(TEST_CFLAGS) $< $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread
+
+tests/sbitx/test_swr_guard: tests/sbitx/test_swr_guard.c sbitx/swr_guard.h
+	$(CC) $(TEST_CFLAGS) -Isbitx $< $(UNITY_SRC) -o $@
 
 tests/radio/test_controls: tests/radio/test_controls.c radio/radio_controls.c radio/radio_controls.h \
                            radio/radio_backend.c radio/radio_backend.h control_interfaces/cat_server.c \
