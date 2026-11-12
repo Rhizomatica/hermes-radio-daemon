@@ -532,6 +532,10 @@ void swr_protection_check(radio *radio_h)
 
     if (peak_removal_counter > REF_PEAK_REMOVAL)
     {
+        HLOGW(LOG_C, "SWR protection tripped: SWR %.1f over the limit of %.1f, "
+              "forward %.1f W; TX is off until the protection is reset",
+              vswr / 10.0, radio_h->reflected_threshold / 10.0,
+              get_fwd_power(radio_h) / 10.0);
         tr_switch_urgent = true;
         tr_switch(radio_h, IN_RX);
         tr_switch_urgent = false;
