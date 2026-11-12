@@ -1,6 +1,7 @@
 package gps_test
 
 import (
+	"net/url"
 	"strconv"
 	"testing"
 	"time"
@@ -146,5 +147,55 @@ func TestTripReadsTrack(t *testing.T) {
 	}
 	if got := r.JSON(t)["data"].([]any)[0].(map[string]any)["point_count"].(float64); got != 2 {
 		t.Fatalf("list point_count = %v, want 2", got)
+	}
+}
+
+// A trip's points page like the track's: points that share a timestamp are
+// neither skipped nor repeated when a page boundary falls inside that run.
+func TestTripPagesSameTime(t *testing.T) {
+	e := testapi.NewAuth(t)
+	e.SeedUser("admin", "password", "admin")
+	token := e.Login("admin", "password")
+
+	open := openTrip(t, e, token, "Same time")
+	start, err := time.Parse(time.RFC3339Nano, open["started_at"].(string))
+	if err != nil {
+		t.Fatalf("started_at = %v: %v", open["started_at"], err)
+	}
+	at := start.UnixMilli()
+	pts := make([]rad.GpsPoint, 3)
+	for i := range pts {
+		pts[i] = rad.GpsPoint{AtMs: at, LatE7: int32(194300000 + i)}
+	}
+	e.Radio.SetGpsTrack("", pts...)
+
+	q := "/gps/trips/" + tripID(t, open) + "?limit=1"
+	r := e.DoAuth("GET", q, "", token)
+	if r.Status != 200 {
+		t.Fatalf("get = %d %s", r.Status, r.Body)
+	}
+	j := r.JSON(t)
+	var got []float64
+	for {
+		for _, p := range j["data"].([]any) {
+			got = append(got, p.(map[string]any)["latitude"].(float64))
+		}
+		next, _ := j["next_cursor"].(string)
+		if next == "" {
+			break
+		}
+		r = e.DoAuth("GET", q+"&cursor="+url.QueryEscape(next), "", token)
+		if r.Status != 200 {
+			t.Fatalf("page = %d %s", r.Status, r.Body)
+		}
+		j = r.JSON(t)
+	}
+	if len(got) != len(pts) {
+		t.Fatalf("points over the pages = %v, want %d", got, len(pts))
+	}
+	for i, lat := range got {
+		if want := float64(194300000+i) / 1e7; lat != want {
+			t.Errorf("point %d = %v, want %v", i, lat, want)
+		}
 	}
 }

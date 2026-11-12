@@ -61,6 +61,40 @@ func TestTrackRangeAndPages(t *testing.T) {
 	}
 }
 
+// Points that share a timestamp are a run: pages must neither skip nor
+// repeat one when the run crosses a page boundary.
+func TestTrackPagesSameTime(t *testing.T) {
+	e := testapi.New(t)
+	at := t0.UnixMilli()
+	pts := make([]rad.GpsPoint, 5)
+	for i := range pts {
+		pts[i] = rad.GpsPoint{AtMs: at, LatE7: int32(387000000 + i)}
+	}
+	e.Radio.SetGpsTrack("", pts...)
+
+	q := "/gps/track?since=2026-11-09T00:00:00Z&until=2026-11-09T00:00:00Z&limit=2"
+	var got []float64
+	j := e.Do("GET", q, "").JSON(t)
+	for {
+		for _, p := range j["data"].([]any) {
+			got = append(got, p.(map[string]any)["latitude"].(float64))
+		}
+		next, _ := j["next_cursor"].(string)
+		if next == "" {
+			break
+		}
+		j = e.Do("GET", q+"&cursor="+url.QueryEscape(next), "").JSON(t)
+	}
+	if len(got) != len(pts) {
+		t.Fatalf("points over the pages = %v, want %d", got, len(pts))
+	}
+	for i, lat := range got {
+		if want := float64(387000000+i) / 1e7; lat != want {
+			t.Errorf("point %d = %v, want %v", i, lat, want)
+		}
+	}
+}
+
 func TestTrackDefaultsAndCallsign(t *testing.T) {
 	e := testapi.New(t)
 	now := time.Now()

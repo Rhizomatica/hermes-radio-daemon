@@ -52,13 +52,6 @@ func tripTimes(t store.Trip) (since, until time.Time, err error) {
 	return since, until, err
 }
 
-func nextCursor(next time.Time) string {
-	if next.IsZero() {
-		return ""
-	}
-	return api.EncodeCursor(uint64(next.UnixMilli()))
-}
-
 func idCursor(next int64) string {
 	if next == 0 {
 		return ""
@@ -108,13 +101,6 @@ func (h *handlers) openTrip(w http.ResponseWriter, r *http.Request) {
 	// the beacon and emergency sends that h.mu guards.
 	h.tripMu.Lock()
 	defer h.tripMu.Unlock()
-	if _, ok, err := h.st.CurrentTrip(r.Context()); err != nil {
-		dbFail(w, r)
-		return
-	} else if ok {
-		api.Problem(w, r, http.StatusConflict, "trip_open", "a trip is already open; close it first", nil)
-		return
-	}
 	trip, err := h.st.OpenTrip(r.Context(), name)
 	if errors.Is(err, store.ErrTripOpen) {
 		api.Problem(w, r, http.StatusConflict, "trip_open", "a trip is already open; close it first", nil)
@@ -124,7 +110,12 @@ func (h *handlers) openTrip(w http.ResponseWriter, r *http.Request) {
 		dbFail(w, r)
 		return
 	}
-	api.JSON(w, http.StatusOK, tripOf(trip, 0))
+	count, err := h.pointCount(trip)
+	if err != nil {
+		trackFail(w, r, err)
+		return
+	}
+	api.JSON(w, http.StatusOK, tripOf(trip, count))
 }
 
 func (h *handlers) closeTrip(w http.ResponseWriter, r *http.Request) {
@@ -140,6 +131,11 @@ func (h *handlers) closeTrip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	trip, err := h.st.CloseTrip(r.Context(), cur.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Another process closed it between the read and the update.
+		api.Problem(w, r, http.StatusConflict, "no_open_trip", "no trip is open", nil)
+		return
+	}
 	if err != nil {
 		dbFail(w, r)
 		return
@@ -236,14 +232,22 @@ func (h *handlers) tripWithPoints(w http.ResponseWriter, r *http.Request, trip s
 		trackFail(w, r, err)
 		return
 	}
-	from := since
+	from, skip := since, 0
 	if cursor != 0 {
-		from = time.UnixMilli(int64(cursor))
+		from, skip = decodeTrackCursor(cursor)
 	}
-	points, next, err := Track(h.r, "", from, until, limit)
+	// A page's cursor must not reach outside the trip's range.
+	if from.Before(since) {
+		from, skip = since, 0
+	}
+	points, next, nextSkip, err := trackFrom(h.r, "", from, until, skip, limit)
 	if err != nil {
 		trackFail(w, r, err)
 		return
 	}
-	api.JSON(w, http.StatusOK, tripPage{Trip: tripOf(trip, count), Data: points, NextCursor: nextCursor(next)})
+	page := tripPage{Trip: tripOf(trip, count), Data: points}
+	if !next.IsZero() {
+		page.NextCursor = encodeTrackCursor(next, nextSkip)
+	}
+	api.JSON(w, http.StatusOK, page)
 }
