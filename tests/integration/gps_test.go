@@ -285,6 +285,11 @@ func tripRecording(t *testing.T, ahead time.Duration) {
 		t.Fatalf("recorded point = %s", r.raw)
 	}
 
+	// GET /gps/track with no range ends at now on the track clock too.
+	if r := callAuth(t, "GET", base+"/gps/track", "", token); r.status != 200 || len(r.body["data"].([]any)) == 0 {
+		t.Fatalf("track, default range = %d %s", r.status, r.raw)
+	}
+
 	if r := callAuth(t, "POST", base+"/gps/trip/close", "", token); r.status != 200 {
 		t.Fatalf("close = %d %s", r.status, r.raw)
 	}

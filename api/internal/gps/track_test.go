@@ -243,3 +243,20 @@ func TestTrackRunTooLong(t *testing.T) {
 		t.Fatalf("page past the skip count = %d %s", r.Status, r.Body)
 	}
 }
+
+// With no range given, this station's track ends at now on the track clock:
+// on a station whose system clock is behind the GPS, the points are found.
+func TestTrackDefaultRangeOnTheTrackClock(t *testing.T) {
+	e := testapi.New(t)
+	ahead := time.Now().Add(24 * time.Hour)
+	e.Radio.SetGpsClock(ahead)
+	e.Radio.SetGpsTrack("", rad.GpsPoint{AtMs: ahead.Add(-time.Minute).UnixMilli(), Fix: rad.GpsFix3D})
+	if data := e.Do("GET", "/gps/track", "").JSON(t)["data"].([]any); len(data) != 1 {
+		t.Fatalf("default range found %d points, want the one a minute ago on the track clock", len(data))
+	}
+	// Another station's beacons stay on the system clock.
+	e.Radio.SetGpsTrack("B0AB", rad.GpsPoint{AtMs: time.Now().Add(-time.Minute).UnixMilli()})
+	if data := e.Do("GET", "/gps/track?callsign=B0AB", "").JSON(t)["data"].([]any); len(data) != 1 {
+		t.Fatalf("callsign default range found %d points, want 1", len(data))
+	}
+}

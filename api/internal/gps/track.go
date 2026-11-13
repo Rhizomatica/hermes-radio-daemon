@@ -164,7 +164,13 @@ func Counts(r rad.Radio, station string, since, until []time.Time) ([]int, error
 func (h handlers) getTrack(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := api.Fields{}
+	// The defaults end at now on the clock the track was stamped with: this
+	// station's points are on the track clock (GPS time once radiod has had
+	// a fix), other stations' beacons on the system clock they came in by.
 	now := time.Now()
+	if q.Get("callsign") == "" {
+		now = time.UnixMilli(h.r.GpsClockMs())
+	}
 	since, until := now.Add(-trackSpanDefault), now
 	for key, dst := range map[string]*time.Time{"since": &since, "until": &until} {
 		if s := q.Get(key); s != "" {

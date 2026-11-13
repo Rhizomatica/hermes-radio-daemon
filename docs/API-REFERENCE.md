@@ -2848,7 +2848,7 @@ the station reports it.
 | Name | In | Type | Required | Notes |
 | --- | --- | --- | --- | --- |
 | `since` | query | string (date-time) |  | The range's start, included. Default a day before now. |
-| `until` | query | string (date-time) |  | The range's end, included. Default now. |
+| `until` | query | string (date-time) |  | The range's end, included. Default now: for this station's track, on the track's clock (see `Trip.started_at`), so a station whose system clock is off still finds its points; for another station's (`callsign`), on the system clock its beacons were received by. |
 | `callsign` | query | string |  | Another station's track. Absent, this station's.; pattern `^[A-Za-z0-9./-]{1,15}$` |
 | `limit` | query | integer |  | min 1; max 5000; default `1000` |
 | `cursor` | query | string |  | The `next_cursor` of the previous page. |

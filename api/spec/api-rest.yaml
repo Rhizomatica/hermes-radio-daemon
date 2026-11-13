@@ -2093,7 +2093,11 @@ paths:
           schema: {type: string, format: date-time}
         - name: until
           in: query
-          description: The range's end, included. Default now.
+          description: |
+            The range's end, included. Default now: for this station's track, on the
+            track's clock (see `Trip.started_at`), so a station whose system clock is off
+            still finds its points; for another station's (`callsign`), on the system clock
+            its beacons were received by.
           schema: {type: string, format: date-time}
         - name: callsign
           in: query
