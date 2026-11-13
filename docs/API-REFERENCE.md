@@ -3088,9 +3088,14 @@ The position beacons (docs/BEACON-FORMAT.md) carry the code from now on, one eve
 `emergency_interval_s` whether beacons are enabled or not, until it is cleared
 (`DELETE /gps/sos`). One goes out at once. The same beacon also goes to each station
 of `sos_recipients` (`GET`/`PATCH /gps/beacon`) over UUCP or NNCP, whichever reaches
-it, to its `dec_beacon` handler, and the station calls at once
-(docs/api-design/store-and-forward.md). Clearing it sends code 31 the same ways.
-What is queued shows in `GET /queue`; a station that can't be queued to is logged.
+it, to its `dec_beacon` handler with the time it was set, and the station calls each
+of them in turn, by name (docs/api-design/store-and-forward.md). A call already in
+progress is waited for, up to an hour; after that the jobs go with the next call.
+Clearing it sends code 31 the same ways; a recipient applies the SOS and the code 31
+in the order they were set, however they arrive. Without the broadcast plane
+(`running` false) no beacon goes on the air and the SOS goes to `sos_recipients`
+only; with neither, this answers 503. What is queued shows in `GET /queue`; a station
+that can't be queued to is logged.
 
 **Request body** (`application/json`): object
 
@@ -3105,7 +3110,7 @@ What is queued shows in `GET /queue`; a station that can't be queued to is logge
 | 202 | Set, and the first beacon queued. | `application/json` [Beacon](#schema-beacon) |
 | 401 | Not logged in, or the session ended (`code` = `unauthenticated`). | `application/problem+json` [Problem](#schema-problem) |
 | 422 | Validation failed (`code` = `invalid`; `errors` per field). | `application/problem+json` [Problem](#schema-problem) |
-| 503 | Mercury is not running, so there is no modem to ask (`code` = `not_running`). | `application/problem+json` [Problem](#schema-problem) |
+| 503 | Neither the broadcast plane runs nor are there `sos_recipients`, so the SOS would reach no one (`code` = `not_running`). | `application/problem+json` [Problem](#schema-problem) |
 
 **Example**
 
@@ -3126,13 +3131,16 @@ curl -sS -X POST "$BASE/gps/sos" \
 - Role: **user**
 - Status: **implemented**
 
+Code 31 goes on the air and to `sos_recipients`, as the SOS did. Clearing with no
+code set sends nothing, and of two clears at once only one sends it.
+
 **Responses**
 
 | Status | Meaning | Body |
 | --- | --- | --- |
 | 200 | Cleared. | `application/json` [Beacon](#schema-beacon) |
 | 401 | Not logged in, or the session ended (`code` = `unauthenticated`). | `application/problem+json` [Problem](#schema-problem) |
-| 503 | Mercury is not running, so there is no modem to ask (`code` = `not_running`). | `application/problem+json` [Problem](#schema-problem) |
+| 503 | Neither the broadcast plane runs nor are there `sos_recipients` (`code` = `not_running`). | `application/problem+json` [Problem](#schema-problem) |
 
 **Example**
 
@@ -3414,7 +3422,7 @@ Type: string
 | `emergency_interval_s` | integer | yes | min 30 |
 | `emergency` | integer | yes | The code set (POST /gps/sos), 0 none; min 0; max 30 |
 | `running` | boolean | yes | Beacons go out: the broadcast plane runs |
-| `sos_recipients` | array of [UucpName](#schema-uucpname) | yes | The stations an SOS also goes to over UUCP or NNCP (POST /gps/sos) |
+| `sos_recipients` | array of [UucpName](#schema-uucpname) | yes | The stations an SOS also goes to over UUCP or NNCP (POST /gps/sos), with or without the broadcast plane |
 
 <a id="schema-beaconheard"></a>
 ### BeaconHeard

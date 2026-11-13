@@ -123,6 +123,18 @@ static void test_names_the_transport(void)
     TEST_ASSERT_TRUE_MESSAGE(!strncmp(name, "nncp-", 5) || !strncmp(name, "queue-", 6), name);
 }
 
+/* The send time, its one argument, leads the name after the transport, so
+ * radiod takes the beacons in the order they were sent. */
+static void test_names_the_send_time(void)
+{
+    uint8_t f[BEACON_COMPACT_BYTES];
+    size_t n = frame(f, sizeof f);
+    TEST_ASSERT_EQUAL_INT(0, run(f, n, "UU_MACHINE=B0AA", "1794567402356"));
+    char name[256];
+    TEST_ASSERT_EQUAL_INT(1, dropped(name, sizeof name));
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, strncmp(name, "uucp-1794567402356-", 19), name);
+}
+
 static void test_refused(void)
 {
     uint8_t f[BEACON_COMPACT_BYTES], big[BEACON_FULL_BYTES + 1] = {0};
@@ -133,6 +145,8 @@ static void test_refused(void)
     TEST_ASSERT_EQUAL_INT(1, run(big, sizeof big, NULL, NULL));
     TEST_ASSERT_EQUAL_INT(1, run("", 0, NULL, NULL));
     TEST_ASSERT_EQUAL_INT(1, run(f, n, NULL, "/etc/passwd"));   /* arguments come from the sender */
+    TEST_ASSERT_EQUAL_INT(1, run(f, n, NULL, "12-3"));          /* only digits */
+    TEST_ASSERT_EQUAL_INT(1, run(f, n, NULL, "1234567890123456")); /* too long for a time */
     TEST_ASSERT_EQUAL_INT(0, dropped(NULL, 0));
 
     char cmd[600];
@@ -146,6 +160,7 @@ int main(void)
     UNITY_BEGIN();
     RUN_TEST(test_left_for_radiod);
     RUN_TEST(test_names_the_transport);
+    RUN_TEST(test_names_the_send_time);
     RUN_TEST(test_refused);
     int rc = UNITY_END();
     char cmd[600];

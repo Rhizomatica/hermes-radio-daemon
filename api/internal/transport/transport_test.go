@@ -341,3 +341,17 @@ func TestNoTransport(t *testing.T) {
 		t.Errorf("Queue = %v %v", jobs, err)
 	}
 }
+
+// A snapshot reads the stations once: a run of routes and calls doesn't
+// read /etc/uucp/sys and /etc/nncp again for each.
+func TestSnapshotReadsStationsOnce(t *testing.T) {
+	station(t, ptr(sysFile), nil)
+	snap := New(Settings{}, newFake()).Snapshot()
+	write(t, UUCPSys, "system B0ZZ\n") // changed after the snapshot
+	if _, _, addr, err := snap.Route("gw"); err != nil || addr != "B0AA" {
+		t.Errorf("snapshot Route(gw) = %q %v, want the stations as they were", addr, err)
+	}
+	if _, _, _, err := New(Settings{}, newFake()).Route("gw"); !errors.Is(err, ErrUnknownStation) {
+		t.Errorf("a new layer reads the file again: %v", err)
+	}
+}

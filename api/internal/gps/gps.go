@@ -20,7 +20,7 @@ import (
 
 // Register adds the GPS operations and the gps topic.
 func Register(rt *api.Router) {
-	h := handlers{r: rt.Radio(), mu: &sync.Mutex{}, log: logging.New(rt.Radio(), "api.tx")}
+	h := handlers{r: rt.Radio(), mu: &sync.Mutex{}, sos: &sosState{}, log: logging.New(rt.Radio(), "api.tx")}
 	rt.Op("getGps", h.getGps)
 	rt.Op("updateGpsSettings", h.updateSettings)
 	rt.Op("getTrack", h.getTrack)
@@ -39,6 +39,7 @@ func Register(rt *api.Router) {
 type handlers struct {
 	r   rad.Radio
 	mu  *sync.Mutex
+	sos *sosState
 	log *slog.Logger
 }
 

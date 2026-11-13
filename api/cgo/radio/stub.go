@@ -981,14 +981,13 @@ const stubEmergencyOver = 31
 func (s *Stub) SetBeaconEmergency(code int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.beacon.Running {
-		return ErrDown
-	}
 	if code < 0 || code >= stubEmergencyOver {
 		return ErrInvalid
 	}
 	s.beacon.Emergency = code
-	s.beaconSends++
+	if s.beacon.Running { // only the plane sends on the air
+		s.beaconSends++
+	}
 	return nil
 }
 
@@ -1002,9 +1001,6 @@ const (
 func (s *Stub) BeaconFrame(code int) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.beacon.Running {
-		return nil, ErrDown
-	}
 	if code < 0 || code > stubEmergencyOver {
 		return nil, ErrInvalid
 	}

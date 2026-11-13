@@ -2307,9 +2307,14 @@ paths:
         `emergency_interval_s` whether beacons are enabled or not, until it is cleared
         (`DELETE /gps/sos`). One goes out at once. The same beacon also goes to each station
         of `sos_recipients` (`GET`/`PATCH /gps/beacon`) over UUCP or NNCP, whichever reaches
-        it, to its `dec_beacon` handler, and the station calls at once
-        (docs/api-design/store-and-forward.md). Clearing it sends code 31 the same ways.
-        What is queued shows in `GET /queue`; a station that can't be queued to is logged.
+        it, to its `dec_beacon` handler with the time it was set, and the station calls each
+        of them in turn, by name (docs/api-design/store-and-forward.md). A call already in
+        progress is waited for, up to an hour; after that the jobs go with the next call.
+        Clearing it sends code 31 the same ways; a recipient applies the SOS and the code 31
+        in the order they were set, however they arrive. Without the broadcast plane
+        (`running` false) no beacon goes on the air and the SOS goes to `sos_recipients`
+        only; with neither, this answers 503. What is queued shows in `GET /queue`; a station
+        that can't be queued to is logged.
       x-hermes-role: user
       requestBody:
         content:
@@ -2326,11 +2331,18 @@ paths:
               schema: {$ref: "#/components/schemas/Beacon"}
         '401': {$ref: '#/components/responses/Unauthorized'}
         "422": {$ref: "#/components/responses/Invalid"}
-        "503": {$ref: "#/components/responses/NotRunning"}
+        "503":
+          description: Neither the broadcast plane runs nor are there `sos_recipients`, so the SOS would reach no one (`code` = `not_running`).
+          content:
+            application/problem+json:
+              schema: {$ref: "#/components/schemas/Problem"}
     delete:
       tags: [gps]
       operationId: clearSos
       summary: Clear the emergency code; one beacon says the emergency is over (code 31).
+      description: |
+        Code 31 goes on the air and to `sos_recipients`, as the SOS did. Clearing with no
+        code set sends nothing, and of two clears at once only one sends it.
       x-hermes-role: user
       responses:
         "200":
@@ -2339,7 +2351,11 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/Beacon"}
         '401': {$ref: '#/components/responses/Unauthorized'}
-        "503": {$ref: "#/components/responses/NotRunning"}
+        "503":
+          description: Neither the broadcast plane runs nor are there `sos_recipients` (`code` = `not_running`).
+          content:
+            application/problem+json:
+              schema: {$ref: "#/components/schemas/Problem"}
   /gps/beacon:
     get:
       tags: [gps]
@@ -3331,7 +3347,7 @@ components:
           type: array
           maxItems: 8
           items: {$ref: "#/components/schemas/UucpName"}
-          description: "The stations an SOS also goes to over UUCP or NNCP (POST /gps/sos)."
+          description: "The stations an SOS also goes to over UUCP or NNCP (POST /gps/sos), with or without the broadcast plane."
     BeaconPatch:
       type: object
       properties:

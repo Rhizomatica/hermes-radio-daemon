@@ -866,16 +866,24 @@ same features either way Mercury runs:
   - The format is [docs/BEACON-FORMAT.md](docs/BEACON-FORMAT.md).
 - **The SOS over UUCP and NNCP:** an emergency code set over the API also goes
   to each station of `sos_recipients`, as the same compact beacon, over the
-  transport that reaches it, and this station calls at once. Clearing it sends
-  "emergency over" (code 31) the same way.
+  transport that reaches it, and this station calls each of them in turn, by
+  name. A call already in progress is waited for, up to an hour. Clearing it
+  sends "emergency over" (code 31) the same way. This works without the
+  broadcast plane too: then no beacon goes on the air, and the SOS goes to
+  `sos_recipients` only.
   - At the other station, UUCP or NNCP runs `dec_beacon` (installed with
     radiod), which leaves the frame in `/var/spool/hermes/in/dec_beacon/`;
     radiod there takes it within a second, as a beacon heard on the air, with
-    "via uucp" or "via nncp" in the log.
-  - The handler takes no arguments, since the sender chooses them. The
-    directory must be writable by the user each transport runs handlers as,
-    and readable by radiod; the installer sets that up, and allows `dec_beacon`
-    in UUCP's `commands` and NNCP's handlers.
+    "via uucp" or "via nncp" in the log, broadcast plane or not.
+  - The handler's one argument is the time the SOS was set (unix
+    milliseconds, digits only, since the sender chooses it). radiod takes the
+    beacons in that order, so an SOS and its "emergency over" apply in the
+    order they were set, however the transports deliver them.
+  - The directory must be writable by the user each transport runs handlers
+    as, and readable and writable by radiod, which removes each file it takes
+    (one it cannot read or remove is logged once and left alone); the
+    installer sets that up, and allows `dec_beacon` in UUCP's `commands` and
+    NNCP's handlers.
 
 ## GPS Tracks
 

@@ -98,6 +98,18 @@ type backend interface {
 type Layer struct {
 	s        Settings
 	backends []backend
+	// fixed, when set, is Stations' answer (Snapshot): the configuration
+	// read once for a run of calls.
+	fixed []Station
+}
+
+// Snapshot is the layer with its stations read now and kept: Route, Exec,
+// SendFile and Call on it read /etc/uucp/sys and /etc/nncp once, not on
+// every call, for a run of them (an SOS to several stations).
+func (l *Layer) Snapshot() *Layer {
+	c := *l
+	c.fixed = l.Stations()
+	return &c
 }
 
 // New returns the layer over the station's UUCP and NNCP, run through run.
@@ -143,6 +155,9 @@ func (l *Layer) Self() string {
 // Stations are the stations this one reaches. UUCP's names come first; an
 // NNCP neighbour is the same station when its name is a UUCP name or alias.
 func (l *Layer) Stations() []Station {
+	if l.fixed != nil {
+		return l.fixed
+	}
 	var out []*Station
 	for _, b := range l.backends {
 		if !b.present() {

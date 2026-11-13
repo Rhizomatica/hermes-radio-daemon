@@ -107,9 +107,13 @@ separately, with the deployed stations' `.hmp` still read).
 
 - `POST /gps/sos` sets the emergency code. The beacon carries it on the air, as it does
   now.
-- radiod also sends the compact beacon with `Exec(dest, "dec_beacon", payload)` to each
-  station of `sos_recipients`, then `Call(dest)`, so the alarm leaves at once, over
-  whichever transport reaches that station.
+- radiod also sends the compact beacon with `Exec(dest, "dec_beacon", [sent], payload)`
+  to each station of `sos_recipients`, then `Call(dest)` for each in turn (waiting for a
+  call in progress, one call at a time on the link), so the alarm leaves at once, over
+  whichever transport reaches that station. `sent` is when the code was set, unix
+  milliseconds: the recipient applies the beacons in that order, so an SOS and its
+  "emergency over" can't swap on the way.
+- It doesn't need the broadcast plane, at either end.
 - `DELETE /gps/sos` does the same with code 31, emergency over.
 - `sos_recipients` moves from the station settings to the beacon settings
   (`GET`/`PATCH /gps/beacon`, `core.ini` `sos_recipients`), with the rest of what the SOS

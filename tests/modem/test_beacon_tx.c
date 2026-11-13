@@ -10,11 +10,11 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <utime.h>
 
 #include "unity.h"
 #include "test_util.h"
 #include "modem/beacon_tx.h"
-#include "modem/bcast_link.h"
 #include "dsp/digi_log.h"
 
 /* ── stubs ── */
@@ -23,14 +23,6 @@ void gps_latest(radiod_api_gps *out) { *out = g_gps; }
 int cfg_set(radio *r, dictionary *ini, const char *entry, const char *val)
 {
     (void) r; (void) ini; (void) entry; (void) val;
-    return 0;
-}
-static uint8_t g_sent[64];
-static size_t  g_sent_len;
-int bcast_link_send_station_frame(const uint8_t *frame, size_t len)
-{
-    memcpy(g_sent, frame, len);
-    g_sent_len = len;
     return 0;
 }
 
@@ -210,7 +202,7 @@ static void test_build_now(void)
     beacon_reconfigure(&c);
     memset(&g_gps, 0, sizeof g_gps);
     uint8_t f[BEACON_COMPACT_BYTES];
-    TEST_ASSERT_EQUAL_INT(BEACON_E_RANGE, beacon_build_now(2, f, sizeof f));   /* no position */
+    TEST_ASSERT_EQUAL_INT(BEACON_E_NO_SOURCE, beacon_build_now(2, f, sizeof f));   /* no position */
 
     c.has_fixed = true;
     c.fixed_lat = 4.5;
@@ -231,7 +223,7 @@ static void test_queued_into_log(void)
     beacon b = heard("B0AC", 4.5, 2);
     uint8_t f[BEACON_COMPACT_BYTES];
     TEST_ASSERT_EQUAL_INT(BEACON_COMPACT_BYTES, beacon_encode(&b, f, sizeof f));
-    TEST_ASSERT_EQUAL_INT(0, beacon_on_queued_frame(f, sizeof f, "nncp"));
+    TEST_ASSERT_EQUAL_INT(0, beacon_on_queued_frame(f, sizeof f, "nncp", 0));
     char *json = digi_log_last_json(1);
     TEST_ASSERT_NOT_NULL(json);
     TEST_ASSERT_NOT_NULL_MESSAGE(strstr(json, "emergency 2 via nncp"), json);
@@ -243,7 +235,7 @@ static void test_queued_into_log(void)
     TEST_ASSERT_EQUAL_INT(2, s[0].emergency);
 
     uint8_t junk[BEACON_COMPACT_BYTES] = { 0xE0 };
-    TEST_ASSERT_EQUAL_INT(BEACON_E_CALLSIGN, beacon_on_queued_frame(junk, sizeof junk, NULL));
+    TEST_ASSERT_EQUAL_INT(BEACON_E_CALLSIGN, beacon_on_queued_frame(junk, sizeof junk, NULL, 0));
 }
 
 static void put(const char *dir, const char *name, const void *data, size_t len)
@@ -306,6 +298,69 @@ static void test_drop_scan(void)
     TEST_ASSERT_EQUAL_INT(0, beacon_drop_scan(drop, 1));
 }
 
+/* An SOS and its "emergency over" apply in the order they were sent, by
+ * the time in dec_beacon's names, whatever order they arrive in. */
+static void test_drop_order(void)
+{
+    char drop[300];
+    snprintf(drop, sizeof drop, "%s/order", g_dir);
+    TEST_REQUIRE(mkdir(drop, 0770) == 0);
+    beacon sos = heard("B0AE", 3.0, 1), over = heard("B0AE", 3.0, BEACON_EMERGENCY_OVER);
+    uint8_t fs[BEACON_COMPACT_BYTES], fo[BEACON_COMPACT_BYTES];
+    TEST_ASSERT_EQUAL_INT(BEACON_COMPACT_BYTES, beacon_encode(&sos, fs, sizeof fs));
+    TEST_ASSERT_EQUAL_INT(BEACON_COMPACT_BYTES, beacon_encode(&over, fo, sizeof fo));
+
+    /* in one scan: the "over" sorts after the SOS, though its name sorts first */
+    put(drop, "nncp-1700000002000-9.0-1", fo, sizeof fo);
+    put(drop, "uucp-1700000001000-9.0-2", fs, sizeof fs);
+    TEST_ASSERT_EQUAL_INT(2, beacon_drop_scan(drop, 16));
+    beacon_station s[4];
+    TEST_ASSERT_EQUAL_INT(1, beacon_stations(s, 4));
+    TEST_ASSERT_EQUAL_INT(BEACON_EMERGENCY_OVER, s[0].emergency);
+
+    /* across scans: an SOS sent before the "over" doesn't undo it */
+    put(drop, "uucp-1700000000500-9.0-3", fs, sizeof fs);
+    TEST_ASSERT_EQUAL_INT(1, beacon_drop_scan(drop, 16));
+    TEST_ASSERT_EQUAL_INT(1, beacon_stations(s, 4));
+    TEST_ASSERT_EQUAL_INT(BEACON_EMERGENCY_OVER, s[0].emergency);
+}
+
+/* A file that cannot be removed is handled once and then left alone, not
+ * again every second; an unfinished one dec_beacon left long ago goes. */
+static void test_drop_stuck_and_stale(void)
+{
+    char drop[300];
+    snprintf(drop, sizeof drop, "%s/stuck", g_dir);
+    TEST_REQUIRE(mkdir(drop, 0770) == 0);
+    beacon b = heard("B0AF", 3.0, 1);
+    uint8_t f[BEACON_COMPACT_BYTES];
+    TEST_ASSERT_EQUAL_INT(BEACON_COMPACT_BYTES, beacon_encode(&b, f, sizeof f));
+
+    put(drop, ".uucp-1-9.0-1", f, sizeof f);
+    char path[512];
+    snprintf(path, sizeof path, "%s/.uucp-1-9.0-1", drop);
+    struct utimbuf old = { .actime = 1, .modtime = 1 };
+    TEST_REQUIRE(utime(path, &old) == 0);
+    put(drop, "uucp-1700000000000-9.0-2", f, sizeof f);
+
+    TEST_REQUIRE(chmod(drop, 0550) == 0);   /* nothing can be removed */
+    if (access(path, W_OK) == 0 && geteuid() == 0)
+    {
+        chmod(drop, 0770);
+        TEST_IGNORE_MESSAGE("root removes files from a read-only directory");
+    }
+    uint64_t id = digi_log_latest_id();
+    TEST_ASSERT_EQUAL_INT(1, beacon_drop_scan(drop, 16));
+    TEST_ASSERT_TRUE(digi_log_latest_id() > id);
+    id = digi_log_latest_id();
+    TEST_ASSERT_EQUAL_INT(0, beacon_drop_scan(drop, 16));   /* not again */
+    TEST_ASSERT_EQUAL_UINT64(id, digi_log_latest_id());
+
+    TEST_REQUIRE(chmod(drop, 0770) == 0);
+    beacon_drop_scan(drop, 16);
+    TEST_ASSERT_FALSE(there(drop, ".uucp-1-9.0-1"));        /* the unfinished one, long ago */
+}
+
 static void test_emergency_codes(void)
 {
     TEST_ASSERT_EQUAL_INT(0, beacon_set_emergency(2));
@@ -333,6 +388,8 @@ int main(void)
     RUN_TEST(test_build_now);
     RUN_TEST(test_queued_into_log);
     RUN_TEST(test_drop_scan);
+    RUN_TEST(test_drop_order);
+    RUN_TEST(test_drop_stuck_and_stale);
     RUN_TEST(test_emergency_codes);
     int rc = UNITY_END();
 

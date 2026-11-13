@@ -29,6 +29,7 @@
 #define RADIOD_API_EPROTECT -8    /* the SWR protection has tripped: reset it first */
 #define RADIOD_API_ENOPTT   -9    /* this client does not hold PTT */
 #define RADIOD_API_EDOWN    -10   /* the broadcast plane is not running */
+#define RADIOD_API_ERANGE   -11   /* a value out of the range its format carries */
 
 /* ── radio ── */
 
@@ -328,9 +329,10 @@ int radiod_api_beacon_send_now(void);
 
 /* The compact beacon this station would send now with code (0..31; 31 is
  * "emergency over"), for the SOS that also goes over UUCP or NNCP to
- * sos_recipients.  Its length goes in *len.  EINVAL for a code out of
- * range or out too small, ENOENT when there is no callsign or no position,
- * EDOWN when the plane is not running. */
+ * sos_recipients, with or without the broadcast plane.  Its length goes in
+ * *len.  EINVAL for a code out of range or out too small, ENOENT when there
+ * is no callsign or no position, ERANGE for a position the beacon cannot
+ * carry. */
 int radiod_api_beacon_frame(int code, uint8_t *out, size_t cap, size_t *len);
 
 typedef struct {

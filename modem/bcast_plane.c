@@ -35,16 +35,8 @@ bool bcast_plane_start(radio *radio_h)
     /* Mercury inside radiod: direct calls, not its KISS port */
     lc.in_process = radio_h->enable_mercury ? mercury_link_bcast_host() : NULL;
 
-    beacon_config bc = {0};
-    bc.enabled = radio_h->beacon_enable;
-    bc.interval_s = radio_h->beacon_interval_s;
-    snprintf(bc.callsign, sizeof bc.callsign, "%.9s", radio_h->callsign);
-    bc.has_fixed = radio_h->has_station_position;
-    bc.fixed_lat = radio_h->station_latitude;
-    bc.fixed_lon = radio_h->station_longitude;
-    bc.emergency_interval_s = radio_h->beacon_emergency_interval_s;
-    snprintf(bc.state_dir, sizeof bc.state_dir, "%s", radio_h->recording_dir);
-    snprintf(bc.drop_dir, sizeof bc.drop_dir, "%s", BEACON_DROP_DIR);
+    beacon_config bc;
+    beacon_config_of(radio_h, &bc);
 
     /* the receivers first, so nothing the link hears finds them missing */
     g_spool = bcast_spool_start(&sc);
@@ -54,7 +46,9 @@ bool bcast_plane_start(radio *radio_h)
         .on_station_frame = beacon_on_station_frame,
     };
     g_link = bcast_link_start(&lc, &ops);
-    if (!g_link)
+    if (g_link)
+        beacon_set_sender(bcast_link_send_station_frame);
+    else
     {
         HLOGE(LOG_C, "the broadcast plane could not start");
         bcast_plane_stop();
@@ -72,6 +66,7 @@ bool bcast_plane_running(void)
 void bcast_plane_stop(void)
 {
     atomic_store(&g_running, false);
+    beacon_set_sender(NULL);
     if (g_link)
         bcast_link_stop();
     if (g_beacon)

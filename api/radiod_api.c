@@ -33,13 +33,13 @@
 #include "websocket/ws_server.h"
 #include "webrtc/radio_webrtc.h"
 #include "beacon.h"
+#include "beacon_tx.h"
 #ifdef HAVE_MERCURY
 #include "mercury_link.h"
 #include "mercury_host.h"
 #include "bcast_link.h"
 #include "bcast_plane.h"
 #include "bcast_spool.h"
-#include "beacon_tx.h"
 #endif
 
 #ifndef RADIOD_GIT_HASH
@@ -749,14 +749,9 @@ int radiod_api_beacon_get(radiod_api_beacon *out)
     out->station_longitude = s_radio->station_longitude;
     out->emergency_interval_s = s_radio->beacon_emergency_interval_s;
     snprintf(out->sos_recipients, sizeof out->sos_recipients, "%s", s_radio->sos_recipients);
-    int saved = iniparser_getint(s_radio->cfg_radio, "main:beacon_emergency", 0);
     pthread_mutex_unlock(&s_radio->cfg_mutex);
     out->running = beacon_running();
-#ifdef HAVE_MERCURY
-    out->emergency = out->running ? beacon_emergency() : saved;
-#else
-    out->emergency = saved;
-#endif
+    out->emergency = beacon_emergency();   /* set with or without the plane (the receiver loads it) */
     return RADIOD_API_OK;
 }
 
@@ -819,33 +814,20 @@ int radiod_api_beacon_set(const radiod_api_beacon *in)
     snprintf(s_radio->sos_recipients, sizeof s_radio->sos_recipients, "%s", in->sos_recipients);
     pthread_mutex_unlock(&s_radio->cfg_mutex);
 
-#ifdef HAVE_MERCURY
-    if (beacon_service_running())
-    {
-        beacon_config c = {0};
-        c.enabled = in->enabled;
-        c.interval_s = in->interval_s;
-        snprintf(c.callsign, sizeof c.callsign, "%.*s", BEACON_CALL_MAX, in->callsign);
-        c.has_fixed = in->has_station_position;
-        c.fixed_lat = in->station_latitude;
-        c.fixed_lon = in->station_longitude;
-        c.emergency_interval_s = in->emergency_interval_s;
-        beacon_reconfigure(&c);
-    }
-#endif
+    /* the SOS over UUCP or NNCP builds its beacon from these, plane or not */
+    beacon_config c;
+    pthread_mutex_lock(&s_radio->cfg_mutex);
+    beacon_config_of(s_radio, &c);
+    pthread_mutex_unlock(&s_radio->cfg_mutex);
+    beacon_reconfigure(&c);
     return RADIOD_API_OK;
 }
 
 int radiod_api_beacon_set_emergency(int code)
 {
-#ifdef HAVE_MERCURY
-    if (!beacon_service_running())
-        return RADIOD_API_EDOWN;
+    /* Set and saved with or without the plane: without it no beacon goes
+     * on the air, and the SOS goes to sos_recipients only. */
     return beacon_set_emergency(code) == 0 ? RADIOD_API_OK : RADIOD_API_EINVAL;
-#else
-    (void) code;
-    return RADIOD_API_EDOWN;
-#endif
 }
 
 int radiod_api_beacon_send_now(void)
@@ -864,25 +846,16 @@ int radiod_api_beacon_frame(int code, uint8_t *out, size_t cap, size_t *len)
 {
     if (!out || !len || code < 0 || code > BEACON_EMERGENCY_COMPACT_MAX || cap < BEACON_COMPACT_BYTES)
         return RADIOD_API_EINVAL;
-#ifdef HAVE_MERCURY
-    if (!beacon_service_running())
-        return RADIOD_API_EDOWN;
     int n = beacon_build_now(code, out, BEACON_COMPACT_BYTES);
     if (n < 0)
-        return n == BEACON_E_RANGE ? RADIOD_API_ENOENT : RADIOD_API_EINVAL;
+        return n == BEACON_E_NO_SOURCE ? RADIOD_API_ENOENT : RADIOD_API_ERANGE;
     *len = (size_t) n;
     return RADIOD_API_OK;
-#else
-    return RADIOD_API_EDOWN;
-#endif
 }
 
 int radiod_api_beacon_stations(radiod_api_beacon_station *out, int max)
 {
     if (!out || max <= 0)
-        return 0;
-#ifdef HAVE_MERCURY
-    if (!beacon_service_running())
         return 0;
     beacon_station st[BEACON_STATIONS_MAX];
     int n = beacon_stations(st, max < BEACON_STATIONS_MAX ? max : BEACON_STATIONS_MAX);
@@ -899,9 +872,6 @@ int radiod_api_beacon_stations(radiod_api_beacon_station *out, int max)
         out[i].heard_at = st[i].heard_at;
     }
     return n;
-#else
-    return 0;
-#endif
 }
 
 int radiod_api_transport_get(radiod_api_transport *out)

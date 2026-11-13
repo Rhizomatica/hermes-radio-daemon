@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
@@ -203,21 +204,43 @@ func (h handlers) sendSos(w http.ResponseWriter, r *http.Request) {
 		api.Invalid(w, r, api.Fields{"code": {"1 to " + strconv.Itoa(SosMax)}})
 		return
 	}
+	h.sos.set.Lock()
+	defer h.sos.set.Unlock()
+	if !h.sosGoesOut(w, r) {
+		return
+	}
 	if down(w, r, h.r.SetBeaconEmergency(code)) {
 		p, _ := api.PrincipalFrom(r)
 		h.log.Warn("radio.tx emergency beacon", "user", p.UserID, "code", code)
-		go h.sosQueue(code)
+		go h.sosQueue(code, time.Now())
 		api.JSON(w, http.StatusAccepted, beaconOf(h.r.Beacon()))
 	}
 }
 
+// sosGoesOut is whether an SOS reaches anyone: on the air (the broadcast
+// plane runs) or to sos_recipients over UUCP or NNCP. False after
+// answering 503 when neither.
+func (h handlers) sosGoesOut(w http.ResponseWriter, r *http.Request) bool {
+	if b := h.r.Beacon(); b.Running || len(b.SosRecipients) > 0 {
+		return true
+	}
+	return down(w, r, rad.ErrDown)
+}
+
 func (h handlers) clearSos(w http.ResponseWriter, r *http.Request) {
+	// The read and the clear are one step: of two clears at once, only the
+	// first finds an emergency, so one "emergency over" goes out.
+	h.sos.set.Lock()
+	defer h.sos.set.Unlock()
+	if !h.sosGoesOut(w, r) {
+		return
+	}
 	was := h.r.Beacon().Emergency
 	if down(w, r, h.r.SetBeaconEmergency(0)) {
 		p, _ := api.PrincipalFrom(r)
 		h.log.Warn("radio.tx emergency over", "user", p.UserID)
 		if was != 0 {
-			go h.sosQueue(SosOver)
+			go h.sosQueue(SosOver, time.Now())
 		}
 		api.JSON(w, http.StatusOK, beaconOf(h.r.Beacon()))
 	}

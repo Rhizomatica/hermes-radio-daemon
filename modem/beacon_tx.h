@@ -33,7 +33,10 @@
 
 #define BEACON_STATIONS_MAX 256
 
-
+/* beacon_build_frame and beacon_build_now: no callsign, or no position to
+ * send (neither a GPS fix nor a fixed position). Apart from the codec's
+ * BEACON_E_* (beacon.h), which mean a value it cannot carry. */
+#define BEACON_E_NO_SOURCE  (-16)
 
 typedef struct {
     bool   enabled;                 /* main:beacon_enable: the regular beacons */
@@ -42,9 +45,11 @@ typedef struct {
     bool   has_fixed;               /* the station's fixed position */
     double fixed_lat, fixed_lon;
     int    emergency_interval_s;
-    char   state_dir[512];
-    char   drop_dir[256];           /* BEACON_DROP_DIR; "" none */
+    char   state_dir[512];          /* where beacon-stations.tsv is kept */
 } beacon_config;
+
+/* The beacon settings radiod has (core.ini). */
+void beacon_config_of(const radio *radio_h, beacon_config *out);
 
 /* What a beacon is built from: a position, its source and the code. */
 typedef struct {
@@ -66,12 +71,25 @@ typedef struct {
     double   heard_at;              /* unix seconds */
 } beacon_station;
 
-/* Start the sender (its thread) and load the stations heard before. */
+/* The receiver, started by radiod whether or not the broadcast plane runs:
+ * it loads the stations heard before and keeps their table saved, sets the
+ * emergency code saved in core.ini, and takes the beacons dec_beacon drops
+ * in BEACON_DROP_DIR (an SOS over UUCP or NNCP needs no broadcast plane). */
+bool beacon_receiver_start(radio *radio_h);
+void beacon_receiver_stop(void);
+
+/* What sends a beacon frame on the air: the broadcast plane's link
+ * (bcast_link_send_station_frame), set while the plane runs, NULL when not.
+ * 0, or an errno (ENOTCONN when Mercury is not connected). */
+typedef int (*beacon_sender)(const uint8_t *frame, size_t len);
+void beacon_set_sender(beacon_sender send);
+
+/* Start the sender (its thread), part of the broadcast plane. */
 bool beacon_service_start(radio *radio_h, const beacon_config *cfg);
 void beacon_service_stop(void);
 
 /* Change the switch, the intervals, the callsign or the fixed position
- * while the service runs (the API does). */
+ * (the API does). */
 void beacon_reconfigure(const beacon_config *cfg);
 bool beacon_service_running(void);
 
@@ -79,26 +97,31 @@ bool beacon_service_running(void);
 void beacon_on_station_frame(const uint8_t *frame, size_t len, void *user);
 
 /* Set the emergency code (1..30) and send at once; 0 clears it, sending one
- * beacon with code 31 (emergency over).  Saved as main:beacon_emergency.
- * EINVAL out of range. */
+ * beacon with code 31 (emergency over).  Saved as main:beacon_emergency,
+ * also while the sender is not running (the SOS then goes over UUCP or NNCP
+ * only).  EINVAL out of range. */
 int  beacon_set_emergency(int code);
 int  beacon_emergency(void);
 /* Send one beacon now (on top of the schedule). */
 void beacon_send_now(void);
 
 /* The compact beacon this station would send now with code (0..31), for the
- * SOS that goes over UUCP or NNCP; returns its length, or a BEACON_E_*
- * (BEACON_E_RANGE: no callsign, or no position). */
+ * SOS that goes over UUCP or NNCP; returns its length, BEACON_E_NO_SOURCE
+ * without a callsign or a position, or another BEACON_E_* for a position
+ * the beacon cannot carry. */
 int  beacon_build_now(int code, uint8_t *frame, size_t frame_len);
 
 /* A beacon that came over a store-and-forward transport (via: "uucp",
- * "nncp", or NULL when not known): logged, and taken as its station's
- * position, as one heard on the air.  0, or a BEACON_E_*. */
-int  beacon_on_queued_frame(const uint8_t *frame, size_t len, const char *via);
+ * "nncp", or NULL when not known), sent at sent_at (unix seconds; 0 when
+ * not known, taken as now): logged, and taken as its station's position
+ * as one heard on the air at sent_at, so one that arrives after a newer
+ * report from its station doesn't replace it.  0, or a BEACON_E_*. */
+int  beacon_on_queued_frame(const uint8_t *frame, size_t len, const char *via, double sent_at);
 
-/* Take the beacons waiting in dir (BEACON_DROP_DIR), at most max:
- * each is handled as beacon_on_queued_frame does and removed.  Returns how
- * many were taken.  The beacon thread calls it. */
+/* Take the beacons waiting in dir (BEACON_DROP_DIR), at most max, oldest
+ * sent first: each is handled as beacon_on_queued_frame does and removed.
+ * A file that cannot be read or removed is logged once and left alone.
+ * Returns how many were taken.  The receiver's thread calls it. */
 int  beacon_drop_scan(const char *dir, int max);
 
 /* The stations heard, newest first; returns how many (up to max). */

@@ -540,9 +540,9 @@ func (binding) BeaconFrame(code int) ([]byte, error) {
 	var buf [C.RADIOD_API_BEACON_FRAME_MAX]C.uint8_t
 	var n C.size_t
 	switch rc := int(C.radiod_api_beacon_frame(C.int(code), &buf[0], C.size_t(len(buf)), &n)); rc {
-	case 0:
+	case C.RADIOD_API_OK:
 		return C.GoBytes(unsafe.Pointer(&buf[0]), C.int(n)), nil
-	case -1:
+	case C.RADIOD_API_ENOENT:
 		return nil, ErrNoPosition
 	default:
 		return nil, codeErr(rc)

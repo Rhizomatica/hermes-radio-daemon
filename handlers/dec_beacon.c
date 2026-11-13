@@ -4,11 +4,15 @@
  *
  * It reads one beacon frame (docs/BEACON-FORMAT.md) from standard input and
  * leaves it in BEACON_DROP_DIR, where radiod takes it as if heard on the
- * air.  It takes no arguments: they come from the other station, so none
- * may choose a path.  The file is written under a name starting with '.'
- * and renamed when complete, so radiod never reads half of one.  Its name
- * says which transport brought it: uuxqt sets UU_MACHINE, nncp-exec
- * NNCP_SENDER.
+ * air.  Its one argument, optional, is when the sender set it, unix
+ * milliseconds: radiod takes the beacons in that order, so an SOS and its
+ * "emergency over" apply in the order they were set however the transports
+ * deliver them.  The argument comes from the other station, so it is only
+ * ever digits and never chooses a path.  The file is written under a name
+ * starting with '.' and renamed when complete, so radiod never reads half
+ * of one.  Its name, <via>-<sent ms>-<received>-<pid>, says which transport
+ * brought it (uuxqt sets UU_MACHINE, nncp-exec NNCP_SENDER) and when it was
+ * sent (the time it came when the sender didn't say).
  *
  * Exit status 0 when the beacon was left for radiod, 1 otherwise; the
  * transport then reports the failure to the sender as it does for any
@@ -37,6 +41,21 @@
  * directory through its group. */
 #define FILE_MODE 0660
 
+/* The send time's digits: unix milliseconds have 13 until the year 2286. */
+#define SENT_DIGITS_MAX 15
+
+#define MS_PER_S  1000LL
+#define NS_PER_MS 1000000L
+
+/* The send time, unix ms, from the argument; -1 when it is not one. */
+static long long sent_ms(const char *arg)
+{
+    size_t n = strlen(arg);
+    if (n == 0 || n > SENT_DIGITS_MAX || strspn(arg, "0123456789") != n)
+        return -1;
+    return strtoll(arg, NULL, 10);
+}
+
 static const char *via(void)
 {
     if (getenv("UU_MACHINE"))
@@ -48,10 +67,10 @@ static const char *via(void)
 
 int main(int argc, char **argv)
 {
-    (void) argv;
-    if (argc > 1)
+    long long sent = 0;
+    if (argc > 2 || (argc == 2 && (sent = sent_ms(argv[1])) < 0))
     {
-        fprintf(stderr, "dec_beacon: takes no arguments\n");
+        fprintf(stderr, "dec_beacon: takes one argument at most, the send time in unix milliseconds\n");
         return 1;
     }
     unsigned char buf[FRAME_MAX + 1];
@@ -85,10 +104,12 @@ int main(int argc, char **argv)
 
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
-    char name[64], tmp[sizeof name + 1], path[sizeof BEACON_DROP_DIR + sizeof tmp + 1];
+    if (sent == 0)
+        sent = (long long) ts.tv_sec * MS_PER_S + ts.tv_nsec / NS_PER_MS;
+    char name[80], tmp[sizeof name + 1], path[sizeof BEACON_DROP_DIR + sizeof tmp + 1];
     char final[sizeof path];
-    snprintf(name, sizeof name, "%s-%lld.%09ld-%ld", via(), (long long) ts.tv_sec, ts.tv_nsec,
-             (long) getpid());
+    snprintf(name, sizeof name, "%s-%lld-%lld.%09ld-%ld", via(), sent, (long long) ts.tv_sec,
+             ts.tv_nsec, (long) getpid());
     snprintf(tmp, sizeof tmp, ".%s", name);
     snprintf(path, sizeof path, "%s/%s", BEACON_DROP_DIR, tmp);
     snprintf(final, sizeof final, "%s/%s", BEACON_DROP_DIR, name);
