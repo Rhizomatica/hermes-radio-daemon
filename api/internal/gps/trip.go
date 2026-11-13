@@ -24,11 +24,6 @@ const (
 	// tripNameMax is a trip name's length in characters (api-rest.yaml
 	// Trip.name maxLength): enough for a label in a list or on the map.
 	tripNameMax = 64
-
-	// fixTimeStep is the resolution of the fix time radiod reports (whole
-	// seconds). A trip ends at the end of that second, so a point the track
-	// recorded later in the same second is still in it.
-	fixTimeStep = time.Second
 )
 
 func registerTrips(rt *api.Router, h *handlers) {
@@ -50,30 +45,17 @@ type Trip struct {
 	PointCount *int `json:"point_count,omitempty"`
 }
 
-func tripOf(t store.Trip, pointCount int) Trip {
-	return Trip{ID: t.ID, Name: t.Name, StartedAt: t.StartedAt, EndedAt: t.EndedAt, PointCount: &pointCount}
+// tripOf is a trip with its point count (nil: left out).
+func tripOf(t store.Trip, pointCount *int) Trip {
+	return Trip{ID: t.ID, Name: t.Name, StartedAt: t.StartedAt, EndedAt: t.EndedAt, PointCount: pointCount}
 }
 
-// trackNow is now on the track's clock. The track stamps each point with the
-// GPS fix's time when the fix has one, and with the system clock only
-// otherwise, so a trip's bounds take the same clock: on a station whose
-// system clock is off, the system time would put the trip beside its own
-// points. The fix time is whole seconds, so it is the start of the current
-// second.
+// trackNow is now on the track's clock, the one its points are stamped
+// with: the GPS time while radiod has had a GPS fix, the system clock
+// before. A trip's bounds take the same clock, so on a station whose system
+// clock is off the trip still covers its own points.
 func (h *handlers) trackNow() time.Time {
-	g := h.r.Gps()
-	if g.Fix != "none" && g.At != nil {
-		if t, err := time.Parse(time.RFC3339Nano, *g.At); err == nil {
-			return t
-		}
-	}
-	return time.Now()
-}
-
-// trackEnd is the end of the track's current second: where a trip closed now
-// ends, and where an open trip's range ends.
-func (h *handlers) trackEnd() time.Time {
-	return h.trackNow().Truncate(fixTimeStep).Add(fixTimeStep - time.Millisecond)
+	return time.UnixMilli(h.r.GpsClockMs())
 }
 
 // tripTimes is a trip's time range: started_at, and ended_at or now on the
@@ -83,7 +65,7 @@ func (h *handlers) tripTimes(t store.Trip) (since, until time.Time, err error) {
 		return time.Time{}, time.Time{}, err
 	}
 	if t.EndedAt == nil {
-		return since, h.trackEnd(), nil
+		return since, h.trackNow(), nil
 	}
 	until, err = time.Parse(time.RFC3339Nano, *t.EndedAt)
 	return since, until, err
@@ -104,14 +86,17 @@ type tripPage struct {
 	NextCursor string  `json:"next_cursor,omitempty"`
 }
 
-// dbFail answers 500 for a store error.
-func dbFail(w http.ResponseWriter, r *http.Request) {
+// dbFail logs a store error and answers 500.
+func (h *handlers) dbFail(w http.ResponseWriter, r *http.Request, err error) {
+	h.log.Error("gps trip: database", "op", r.Pattern, "err", err)
 	api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
 }
 
-// trackFail answers 500 for a track read error.
-func trackFail(w http.ResponseWriter, r *http.Request, err error) {
-	api.Problem(w, r, http.StatusInternalServerError, "internal", err.Error(), nil)
+// trackFail logs a track read error (or a stored time that won't parse) and
+// answers 500.
+func (h *handlers) trackFail(w http.ResponseWriter, r *http.Request, err error) {
+	h.log.Error("gps trip: track", "op", r.Pattern, "err", err)
+	api.Problem(w, r, http.StatusInternalServerError, "internal", "the track could not be read", nil)
 }
 
 func (h *handlers) openTrip(w http.ResponseWriter, r *http.Request) {
@@ -139,6 +124,16 @@ func (h *handlers) openTrip(w http.ResponseWriter, r *http.Request) {
 	h.tripMu.Lock()
 	defer h.tripMu.Unlock()
 
+	// Refuse before touching logging, so a refused open changes nothing. The
+	// schema's index still refuses a trip another process opened meanwhile.
+	if _, open, err := h.st.CurrentTrip(r.Context()); err != nil {
+		h.dbFail(w, r, err)
+		return
+	} else if open {
+		api.Problem(w, r, http.StatusConflict, "trip_open", "a trip is already open; close it first", nil)
+		return
+	}
+
 	// A trip's points are the track's, so the track must be recording.
 	wasLogging, err := h.setLogging(true)
 	if err != nil {
@@ -156,7 +151,7 @@ func (h *handlers) openTrip(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, store.ErrTripOpen) {
 			api.Problem(w, r, http.StatusConflict, "trip_open", "a trip is already open; close it first", nil)
 		} else {
-			dbFail(w, r)
+			h.dbFail(w, r, err)
 		}
 		return
 	}
@@ -185,9 +180,9 @@ func (h *handlers) tripReply(trip store.Trip) Trip {
 	count, err := h.pointCount(trip)
 	if err != nil {
 		h.log.Warn("gps trip: no point count", "trip", trip.ID, "err", err)
-		return Trip{ID: trip.ID, Name: trip.Name, StartedAt: trip.StartedAt, EndedAt: trip.EndedAt}
+		return tripOf(trip, nil)
 	}
-	return tripOf(trip, count)
+	return tripOf(trip, &count)
 }
 
 func (h *handlers) closeTrip(w http.ResponseWriter, r *http.Request) {
@@ -195,21 +190,26 @@ func (h *handlers) closeTrip(w http.ResponseWriter, r *http.Request) {
 	defer h.tripMu.Unlock()
 	cur, ok, err := h.st.CurrentTrip(r.Context())
 	if err != nil {
-		dbFail(w, r)
+		h.dbFail(w, r, err)
 		return
 	}
 	if !ok {
 		api.Problem(w, r, http.StatusConflict, "no_open_trip", "no trip is open", nil)
 		return
 	}
-	trip, err := h.st.CloseTrip(r.Context(), cur.ID, h.trackEnd())
+	// Not before the start: the clock moves when the first fix corrects it.
+	end := h.trackNow()
+	if since, err := time.Parse(time.RFC3339Nano, cur.StartedAt); err == nil && end.Before(since) {
+		end = since
+	}
+	trip, err := h.st.CloseTrip(r.Context(), cur.ID, end)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Another process closed it between the read and the update.
 		api.Problem(w, r, http.StatusConflict, "no_open_trip", "no trip is open", nil)
 		return
 	}
 	if err != nil {
-		dbFail(w, r)
+		h.dbFail(w, r, err)
 		return
 	}
 	api.JSON(w, http.StatusOK, h.tripReply(trip))
@@ -218,7 +218,7 @@ func (h *handlers) closeTrip(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) getCurrentTrip(w http.ResponseWriter, r *http.Request) {
 	cur, ok, err := h.st.CurrentTrip(r.Context())
 	if err != nil {
-		dbFail(w, r)
+		h.dbFail(w, r, err)
 		return
 	}
 	if !ok {
@@ -239,17 +239,25 @@ func (h *handlers) listTrips(w http.ResponseWriter, r *http.Request) {
 	}
 	trips, next, err := h.st.ListTrips(r.Context(), limit, int64(cursor))
 	if err != nil {
-		dbFail(w, r)
+		h.dbFail(w, r, err)
 		return
 	}
-	data := make([]Trip, 0, len(trips))
-	for _, t := range trips {
-		count, err := h.pointCount(t)
-		if err != nil {
-			trackFail(w, r, err)
+	// Every trip's point count in one pass over the track's files.
+	since, until := make([]time.Time, len(trips)), make([]time.Time, len(trips))
+	for i, t := range trips {
+		if since[i], until[i], err = h.tripTimes(t); err != nil {
+			h.trackFail(w, r, err)
 			return
 		}
-		data = append(data, tripOf(t, count))
+	}
+	counts, err := Counts(h.r, "", since, until)
+	if err != nil {
+		h.trackFail(w, r, err)
+		return
+	}
+	data := make([]Trip, len(trips))
+	for i, t := range trips {
+		data[i] = tripOf(t, &counts[i])
 	}
 	api.JSON(w, http.StatusOK, api.Page[Trip]{Data: data, NextCursor: idCursor(next)})
 }
@@ -266,7 +274,7 @@ func (h *handlers) getTrip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		dbFail(w, r)
+		h.dbFail(w, r, err)
 		return
 	}
 	h.tripWithPoints(w, r, trip)
@@ -291,12 +299,12 @@ func (h *handlers) tripWithPoints(w http.ResponseWriter, r *http.Request, trip s
 	}
 	since, until, err := h.tripTimes(trip)
 	if err != nil {
-		trackFail(w, r, err)
+		h.trackFail(w, r, err)
 		return
 	}
 	count, err := Count(h.r, "", since, until)
 	if err != nil {
-		trackFail(w, r, err)
+		h.trackFail(w, r, err)
 		return
 	}
 	from, skip := since, 0
@@ -309,10 +317,10 @@ func (h *handlers) tripWithPoints(w http.ResponseWriter, r *http.Request, trip s
 	}
 	points, next, nextSkip, err := trackFrom(h.r, "", from, until, skip, limit)
 	if err != nil {
-		trackFail(w, r, err)
+		h.trackFail(w, r, err)
 		return
 	}
-	page := tripPage{Trip: tripOf(trip, count), Data: points}
+	page := tripPage{Trip: tripOf(trip, &count), Data: points}
 	if !next.IsZero() {
 		page.NextCursor = encodeTrackCursor(next, nextSkip)
 	}

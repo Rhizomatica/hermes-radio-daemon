@@ -238,29 +238,46 @@ func TestTripTurnsLoggingOn(t *testing.T) {
 	}
 }
 
-// A trip's bounds are on the track's clock: the GPS fix's time, not the
-// system clock, so a station whose system clock is off still finds its points.
-func TestTripUsesTheFixClock(t *testing.T) {
+// A trip's bounds are on the track's clock, the one its points are stamped
+// with (the GPS time), not the system clock, so a station whose system clock
+// is off still finds its points.
+func TestTripUsesTheTrackClock(t *testing.T) {
 	e := testapi.NewAuth(t)
 	e.SeedUser("admin", "password", "admin")
 	token := e.Login("admin", "password")
 
-	lat, lon, fixAt := 4.6, -74.1, "2030-01-01T00:00:00Z"
-	e.Radio.SetGpsFix("3d", &lat, &lon, nil, &fixAt)
-	at := time.Date(2030, 1, 1, 0, 0, 0, 500*int(time.Millisecond), time.UTC).UnixMilli()
-	e.Radio.SetGpsTrack("", rad.GpsPoint{AtMs: at, LatE7: 46000000, LonE7: -741000000, Fix: rad.GpsFix3D})
-
+	base := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	e.Radio.SetGpsClock(base)
 	trip := openTrip(t, e, token, "Clock")
-	if trip["started_at"] != "2030-01-01T00:00:00.000Z" {
-		t.Fatalf("started_at = %v, want the fix's time", trip["started_at"])
+	if s, _ := trip["started_at"].(string); !strings.HasPrefix(s, "2030-01-01T00:00:00.") {
+		t.Fatalf("started_at = %v, want the track's clock", trip["started_at"])
 	}
-	// The point recorded later in the fix's second is in the open trip.
+	e.Radio.SetGpsTrack("", rad.GpsPoint{AtMs: base.Add(500 * time.Millisecond).UnixMilli(), Fix: rad.GpsFix3D})
+	e.Radio.SetGpsClock(base.Add(time.Second))
+
 	if r := e.DoAuth("GET", "/gps/trip", "", token); r.Status != 200 || len(r.JSON(t)["data"].([]any)) != 1 {
 		t.Fatalf("open trip points = %d %s", r.Status, r.Body)
 	}
 	r := e.DoAuth("POST", "/gps/trip/close", "", token)
-	if j := r.JSON(t); r.Status != 200 || j["ended_at"] != "2030-01-01T00:00:00.999Z" || j["point_count"].(float64) != 1 {
+	j := r.JSON(t)
+	if s, _ := j["ended_at"].(string); r.Status != 200 || !strings.HasPrefix(s, "2030-01-01T00:00:01.") || j["point_count"].(float64) != 1 {
 		t.Fatalf("close = %d %s", r.Status, r.Body)
+	}
+}
+
+// A clock that moves back while a trip is open (a first fix correcting a
+// system clock that was ahead) closes the trip at its start, never before.
+func TestTripCloseNotBeforeStart(t *testing.T) {
+	e := testapi.NewAuth(t)
+	e.SeedUser("admin", "password", "admin")
+	token := e.Login("admin", "password")
+
+	e.Radio.SetGpsClock(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	trip := openTrip(t, e, token, "Back")
+	e.Radio.SetGpsClock(time.Date(2029, 1, 1, 0, 0, 0, 0, time.UTC))
+	r := e.DoAuth("POST", "/gps/trip/close", "", token)
+	if j := r.JSON(t); r.Status != 200 || j["ended_at"] != trip["started_at"] {
+		t.Fatalf("close = %d %s, want ended_at %v", r.Status, r.Body, trip["started_at"])
 	}
 }
 
@@ -279,5 +296,43 @@ func TestTripNameLength(t *testing.T) {
 	}
 	if r := e.DoAuth("POST", "/gps/trip/open", `{"name":"`+long+`ç"}`, token); r.Status != 422 {
 		t.Fatalf("65 characters = %d %s", r.Status, r.Body)
+	}
+}
+
+// The trip list counts every trip's points in one pass over the track.
+func TestTripListCountsInOnePass(t *testing.T) {
+	e := testapi.NewAuth(t)
+	e.SeedUser("admin", "password", "admin")
+	token := e.Login("admin", "password")
+
+	base := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	var pts []rad.GpsPoint
+	for i := 0; i < 3; i++ {
+		e.Radio.SetGpsClock(base.Add(time.Duration(10*i) * time.Minute))
+		openTrip(t, e, token, "trip "+strconv.Itoa(i))
+		for k := 0; k <= i; k++ {
+			at := base.Add(time.Duration(10*i)*time.Minute + time.Duration(k+1)*time.Second)
+			pts = append(pts, rad.GpsPoint{AtMs: at.UnixMilli(), Fix: rad.GpsFix3D})
+		}
+		e.Radio.SetGpsClock(base.Add(time.Duration(10*i+5) * time.Minute))
+		if r := e.DoAuth("POST", "/gps/trip/close", "", token); r.Status != 200 {
+			t.Fatalf("close = %d %s", r.Status, r.Body)
+		}
+	}
+	e.Radio.SetGpsTrack("", pts...)
+
+	before := e.Radio.TrackCountCalls()
+	r := e.DoAuth("GET", "/gps/trips", "", token)
+	if r.Status != 200 {
+		t.Fatalf("list = %d %s", r.Status, r.Body)
+	}
+	data := r.JSON(t)["data"].([]any)
+	for i, want := range []float64{3, 2, 1} { // newest first
+		if got := data[i].(map[string]any)["point_count"]; got != want {
+			t.Errorf("trip %d point_count = %v, want %v", i, got, want)
+		}
+	}
+	if calls := e.Radio.TrackCountCalls() - before; calls != 1 {
+		t.Errorf("track count passes = %d, want 1", calls)
 	}
 }

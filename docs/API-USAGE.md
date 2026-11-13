@@ -489,8 +489,9 @@ The open answers the new trip:
 {"id":1,"name":"Field day","started_at":"2026-11-09T08:00:00.000Z","ended_at":null,"point_count":0}
 ```
 
-A trip's times are on the track's clock, the GPS fix's time while there is a fix, as the track's
-points are, so a station with a wrong system clock still finds its points.
+A trip's times are on the track's clock, the one its points are stamped with: the system clock
+corrected by the last GPS fix's time. A station with a wrong system clock still finds its points,
+once it has had a fix since radiod started.
 
 `GET /gps/trips` lists trips newest first, each with a `point_count` (read without loading the points).
 `GET /gps/trips/{trip_id}` and `GET /gps/trip` page the points oldest first (`limit`, default 50, at

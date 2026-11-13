@@ -233,6 +233,12 @@ int radiod_api_gps_track_read(const char *station, int64_t since_ms, int64_t unt
  * searches a file); RADIOD_API_EINVAL as above. */
 long radiod_api_gps_track_count(const char *station, int64_t since_ms, int64_t until_ms);
 
+/* radiod_api_gps_track_count for n ranges at once (since_ms[j]..until_ms[j]
+ * into out[j]), in one pass over the track's files. 0, or RADIOD_API_EINVAL
+ * as above. */
+int radiod_api_gps_track_counts(const char *station, int n, const int64_t *since_ms,
+                                const int64_t *until_ms, long *out);
+
 /* This station's track files on disk (/gps/files), full paths, oldest
  * first, separated by '\n': the newest RADIOD_API_GPS_TRACK_FILES_MAX, none
  * while there is no directory yet.  False when out is too small (it never is
@@ -378,6 +384,10 @@ typedef struct {
 
 /* The latest fix and the settings; never blocks on gpsd. */
 void radiod_api_gps_get(radiod_api_gps *out);
+
+/* Now on the track's clock, unix milliseconds (gps_clock in gps/gps.h): the
+ * clock this station's track points are stamped with. */
+int64_t radiod_api_gps_clock_ms(void);
 
 /* Apply the whole settings (all fields), validate the spec's ranges and
  * save to the configuration.  EINVAL outside the ranges. */

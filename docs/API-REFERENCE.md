@@ -2956,8 +2956,8 @@ curl -sS -X POST "$BASE/gps/trip/open" \
 - Role: **operator**
 - Status: **implemented**
 
-Sets `ended_at` on the open trip to the end of the current second on the track's
-clock (see `Trip`), ending its time range; it does not open a new one: open
+Sets `ended_at` on the open trip to now on the track's clock (see `Trip`), never
+before `started_at`, ending its time range; it does not open a new one: open
 another with `POST /gps/trip/open`. Position logging stays as it is. Returns
 the trip that was closed, with the number of points in its range.
 
@@ -4346,7 +4346,7 @@ Type: one of `uucp`, `nncp`, `reticulum`
 | --- | --- | --- | --- |
 | `id` | integer (int64) | yes |  |
 | `name` | string | yes | The label given to POST /gps/trip/open; max length 64 |
-| `started_at` | [Timestamp](#schema-timestamp) | yes | When the trip opened, on the track's clock: the GPS fix's time while there is a fix with a time, the system clock otherwise. The track stamps its points the same way, so a trip finds its points even when the system clock is off |
+| `started_at` | [Timestamp](#schema-timestamp) | yes | When the trip opened, on the track's clock: the clock the track stamps its points with. That is the system clock corrected by the GPS time of radiod's last gpsd fix (the correction is kept after the fix is lost), so a trip finds its points even when the system clock is off. Before radiod's first gpsd fix it is the system clock, so on a station whose system clock is off, a trip opened before that first fix starts at the wrong time |
 | `ended_at` | [Timestamp](#schema-timestamp) or null |  | When the trip closed, on the track's clock as `started_at`; null while the trip is open |
 | `point_count` | integer |  | Points of the station's track in the trip's time range. Absent only in the reply to an open or close whose trip changed but whose track could not be read just then; read the trip again for it |
 

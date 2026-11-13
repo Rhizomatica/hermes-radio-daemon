@@ -219,9 +219,16 @@ func TestGPSTrips(t *testing.T) {
 // With gps_enable and a fake gpsd, an open trip records the fixes as its
 // points (the breadcrumb). The fake moves, since the track only records a
 // point when the station has moved (or its fix changed) or at its heartbeat.
+// Also with the GPS time a day ahead of the system clock: the trip's bounds
+// are on the track's clock, so it still finds its points.
 func TestGPSTripRecording(t *testing.T) {
 	needGoAPI(t)
-	_, port, _ := net.SplitHostPort(startFakeGpsdPath(t, movingFix))
+	t.Run("same clock", func(t *testing.T) { tripRecording(t, 0) })
+	t.Run("GPS a day ahead", func(t *testing.T) { tripRecording(t, 24*time.Hour) })
+}
+
+func tripRecording(t *testing.T, ahead time.Duration) {
+	_, port, _ := net.SplitHostPort(startFakeGpsdAt(t, movingFix, ahead))
 	d := startDaemon(t, daemonOpts{core: []string{
 		"api_v2_enable = 1",
 		"gps_enable = 1",
@@ -248,6 +255,10 @@ func TestGPSTripRecording(t *testing.T) {
 		t.Fatalf("open = %d %s", r.status, r.raw)
 	}
 	id := r.body["id"].(float64)
+	started, err := time.Parse(time.RFC3339Nano, r.body["started_at"].(string))
+	if want := time.Now().Add(ahead); err != nil || started.Sub(want).Abs() > time.Minute {
+		t.Fatalf("started_at = %v, want about %v (the GPS time)", r.body["started_at"], want.UTC())
+	}
 	if r = callAuth(t, "GET", base+"/gps", "", token); r.status != 200 {
 		t.Fatalf("GET /gps = %d %s", r.status, r.raw)
 	} else if s, _ := r.body["settings"].(map[string]any); s == nil || s["logging"] != true {
@@ -293,6 +304,13 @@ func startFakeGpsd(t *testing.T) string {
 // that needs the track to record points can make the station move.
 func startFakeGpsdPath(t *testing.T, path func(n int) (lat, lon float64)) string {
 	t.Helper()
+	return startFakeGpsdAt(t, path, 0)
+}
+
+// startFakeGpsdAt is startFakeGpsdPath whose TPV times are ahead of the
+// system clock by ahead, as a station's GPS time is when its clock is off.
+func startFakeGpsdAt(t *testing.T, path func(n int) (lat, lon float64), ahead time.Duration) string {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -304,7 +322,7 @@ func startFakeGpsdPath(t *testing.T, path func(n int) (lat, lon float64)) string
 			if err != nil {
 				return
 			}
-			go serveFakeGpsd(conn, path)
+			go serveFakeGpsd(conn, path, ahead)
 		}
 	}()
 	return ln.Addr().String()
@@ -319,7 +337,7 @@ func movingFix(n int) (lat, lon float64) {
 	return 19.4303, -99.13
 }
 
-func serveFakeGpsd(conn net.Conn, path func(n int) (lat, lon float64)) {
+func serveFakeGpsd(conn net.Conn, path func(n int) (lat, lon float64), ahead time.Duration) {
 	defer conn.Close()
 	// The client's ?WATCH is fire-and-forget; drain it so the socket stays clear.
 	go func() {
@@ -334,21 +352,21 @@ func serveFakeGpsd(conn net.Conn, path func(n int) (lat, lon float64)) {
 		return
 	}
 	for n := 0; ; n++ {
-		if _, err := conn.Write([]byte(fakeTPV(n, path))); err != nil {
+		if _, err := conn.Write([]byte(fakeTPV(n, path, ahead))); err != nil {
 			return
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
 }
 
-func fakeTPV(n int, path func(n int) (lat, lon float64)) string {
+func fakeTPV(n int, path func(n int) (lat, lon float64), ahead time.Duration) string {
 	lat, lon := 19.43, -99.13
 	if path != nil {
 		lat, lon = path(n)
 	}
 	// Sub-second precision: the track's times are milliseconds, and a whole
 	// second rounds a fix down to before the trip that opened mid-second.
-	at := time.Now().UTC().Format(time.RFC3339Nano)
+	at := time.Now().Add(ahead).UTC().Format(time.RFC3339Nano)
 	return fmt.Sprintf(`{"class":"TPV","device":"fake","mode":3,"lat":%.7f,"lon":%.7f,"alt":2240.000,"altMSL":2240.000,"time":%q}`+"\n", lat, lon, at)
 }
 

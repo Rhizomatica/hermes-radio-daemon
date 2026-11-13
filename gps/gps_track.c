@@ -631,6 +631,46 @@ long gps_track_count(const char *station, int64_t since_ms, int64_t until_ms)
     return scan(station, since_ms, until_ms, NULL, 0);
 }
 
+int gps_track_counts(const char *station, int n, const int64_t *since_ms,
+                     const int64_t *until_ms, long *out)
+{
+    char base[GPS_TRACK_DIR_MAX], dir[PATH_MAX_LEN];
+    pthread_mutex_lock(&g_lock);
+    memcpy(base, g_cfg.dir, sizeof base);
+    pthread_mutex_unlock(&g_lock);
+    if (n < 0 || (n > 0 && (!since_ms || !until_ms || !out)) ||
+        !track_dir(base, station, dir, sizeof dir))
+        return -1;
+    for (int j = 0; j < n; j++)
+        out[j] = 0;
+    if (n == 0)
+        return 0;
+
+    /* One listing and one open a file for all the ranges, as scan does for
+     * one: a file holds its start up to the start of the file after next. */
+    char **names;
+    int k = list_names(dir, &names);
+    for (int i = 0; i < k; i++) {
+        int64_t start = name_ms(names[i]), end = i + 2 < k ? name_ms(names[i + 2]) : INT64_MAX;
+        char path[PATH_MAX_LEN];
+        if (snprintf(path, sizeof path, "%s/%s", dir, names[i]) >= (int) sizeof path)
+            continue;
+        int fd = -1;
+        long len = 0;
+        for (int j = 0; j < n; j++) {
+            if (since_ms[j] > until_ms[j] || end <= since_ms[j] || start > until_ms[j])
+                continue;
+            if (fd < 0 && (fd = open_track(path, &len)) < 0)
+                break;
+            out[j] += search(fd, len, until_ms[j], true) - search(fd, len, since_ms[j], false);
+        }
+        if (fd >= 0)
+            close(fd);
+    }
+    free_names(names, k > 0 ? k : 0);
+    return 0;
+}
+
 /* ── listing ──────────────────────────────────────────────────── */
 
 bool gps_track_files(char *out, size_t out_len)

@@ -40,6 +40,11 @@ const (
 	trackCursorSkipMask = 1<<trackCursorSkipBits - 1
 )
 
+// errTrackRun is a run of points sharing one millisecond longer than a page
+// cursor's skip count can step over (trackCursorSkipBits): the next page
+// would repeat points, so paging stops with this error instead.
+var errTrackRun = errors.New("too many track points share one time to page through")
+
 // Point is GpsPoint.
 type Point struct {
 	At        string   `json:"at"`
@@ -117,6 +122,9 @@ func trackFrom(r rad.Radio, station string, since, until time.Time, skip, limit 
 		if last == at {
 			nextSkip += skip // still in the run the previous page returned
 		}
+		if nextSkip > trackCursorSkipMask {
+			return nil, time.Time{}, 0, errTrackRun
+		}
 	}
 	out := make([]Point, len(pts))
 	for i, p := range pts {
@@ -138,6 +146,19 @@ func decodeTrackCursor(v uint64) (time.Time, int) {
 // reading them (a trip's point_count). rad.ErrInvalid as Track.
 func Count(r rad.Radio, station string, since, until time.Time) (int, error) {
 	return r.GpsTrackCount(station, since.UnixMilli(), until.UnixMilli())
+}
+
+// Counts is Count for many ranges at once, in one pass over the track's
+// files (a page of trips' point_count).
+func Counts(r rad.Radio, station string, since, until []time.Time) ([]int, error) {
+	s, u := make([]int64, len(since)), make([]int64, len(until))
+	for i := range since {
+		s[i] = since[i].UnixMilli()
+	}
+	for i := range until {
+		u[i] = until[i].UnixMilli()
+	}
+	return r.GpsTrackCounts(station, s, u)
 }
 
 func (h handlers) getTrack(w http.ResponseWriter, r *http.Request) {
@@ -179,7 +200,11 @@ func (h handlers) getTrack(w http.ResponseWriter, r *http.Request) {
 	}
 	skip := 0
 	if from != 0 {
-		since, skip = decodeTrackCursor(from)
+		// A cursor never reaches before since: an old or foreign one would
+		// otherwise read the track from 1970.
+		if at, n := decodeTrackCursor(from); !at.Before(since) {
+			since, skip = at, n
+		}
 	}
 	pts, next, nextSkip, err := trackFrom(h.r, station, since, until, skip, limit)
 	if errors.Is(err, rad.ErrInvalid) {

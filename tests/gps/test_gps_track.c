@@ -187,6 +187,19 @@ static void test_ranges(void)
     TEST_ASSERT_EQUAL_INT(0, gps_track_count(NULL, until, since));
     TEST_ASSERT_EQUAL_INT(0, gps_track_count(NULL, 0, T0_MS - 1));
 
+    /* the same ranges counted in one pass, as a page of trips is */
+    int64_t s4[] = { since, T0_MS + 100000, T0_MS + 101000, until, 0 };
+    int64_t u4[] = { until, T0_MS + 100000, T0_MS + 109000, since, T0_MS - 1 };
+    long c4[5] = { -1, -1, -1, -1, -1 };
+    TEST_ASSERT_EQUAL_INT(0, gps_track_counts(NULL, 5, s4, u4, c4));
+    TEST_ASSERT_EQUAL_INT(31, c4[0]);
+    TEST_ASSERT_EQUAL_INT(1, c4[1]);
+    TEST_ASSERT_EQUAL_INT(0, c4[2]);
+    TEST_ASSERT_EQUAL_INT(0, c4[3]);
+    TEST_ASSERT_EQUAL_INT(0, c4[4]);
+    TEST_ASSERT_EQUAL_INT(0, gps_track_counts(NULL, 0, NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL_INT(-1, gps_track_counts("../x", 1, s4, u4, c4));
+
     int got = 0;
     for (int64_t from = since; ; ) {
         int n = gps_track_read(NULL, from, until, pts + got, 7);

@@ -272,6 +272,32 @@ func (binding) GpsTrackCount(station string, sinceMs, untilMs int64) (int, error
 	return n, nil
 }
 
+func (binding) GpsTrackCounts(station string, sinceMs, untilMs []int64) ([]int, error) {
+	n := len(sinceMs)
+	if n != len(untilMs) {
+		return nil, ErrInvalid
+	}
+	if n == 0 {
+		return []int{}, nil
+	}
+	cs := C.CString(station)
+	defer C.free(unsafe.Pointer(cs))
+	since := make([]C.int64_t, n)
+	until := make([]C.int64_t, n)
+	for i := range sinceMs {
+		since[i], until[i] = C.int64_t(sinceMs[i]), C.int64_t(untilMs[i])
+	}
+	got := make([]C.long, n)
+	if rc := int(C.radiod_api_gps_track_counts(cs, C.int(n), &since[0], &until[0], &got[0])); rc < 0 {
+		return nil, codeErr(rc)
+	}
+	out := make([]int, n)
+	for i, v := range got {
+		out[i] = int(v)
+	}
+	return out, nil
+}
+
 func (binding) GpsTrackDelete(name string) error {
 	cs := C.CString(name)
 	defer C.free(unsafe.Pointer(cs))
@@ -313,6 +339,8 @@ func isoTime(sec float64) string {
 	nsec := int64((sec - float64(int64(sec))) * 1e9)
 	return time.Unix(int64(sec), nsec).UTC().Format(time.RFC3339)
 }
+
+func (binding) GpsClockMs() int64 { return int64(C.radiod_api_gps_clock_ms()) }
 
 func (binding) Gps() Gps {
 	var g C.radiod_api_gps
