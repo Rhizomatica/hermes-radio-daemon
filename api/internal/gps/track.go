@@ -29,7 +29,21 @@ const (
 	pointTimeLayout   = "2006-01-02T15:04:05.000Z07:00"
 	trackFilePrefix   = "gps-" // gps_track.h: gps-YYYYMMDDTHHMMSSZ.trk
 	trackFileStamp    = "20060102T150405Z"
+
+	// A track page's cursor packs the last point's time and how many points
+	// sharing that time were already returned. A track's times repeat
+	// (simultaneous fixes share a millisecond), so the time alone is not a
+	// position: without the count the next page would skip or repeat them.
+	// The count is 16 bits, far more than a millisecond can hold, and caps
+	// what a crafted cursor can make the reader allocate.
+	trackCursorSkipBits = 16
+	trackCursorSkipMask = 1<<trackCursorSkipBits - 1
 )
+
+// errTrackRun is a run of points sharing one millisecond longer than a page
+// cursor's skip count can step over (trackCursorSkipBits): the next page
+// would repeat points, so paging stops with this error instead.
+var errTrackRun = errors.New("too many track points share one time to page through")
 
 // Point is GpsPoint.
 type Point struct {
@@ -75,23 +89,57 @@ func pointOf(p rad.GpsPoint) Point {
 // the time the next page starts at (zero when there are no more).
 // rad.ErrInvalid when station is no callsign.
 func Track(r rad.Radio, station string, since, until time.Time, limit int) ([]Point, time.Time, error) {
+	pts, next, _, err := trackFrom(r, station, since, until, 0, limit)
+	return pts, next, err
+}
+
+// trackFrom is Track starting after the first skip points at exactly since
+// (the points a previous page already returned from that time). It also
+// returns how many of the page's trailing points share its last time, which
+// becomes the next page's skip. A zero next time means there are no more.
+func trackFrom(r rad.Radio, station string, since, until time.Time, skip, limit int) ([]Point, time.Time, int, error) {
 	if limit <= 0 {
-		return []Point{}, time.Time{}, nil
+		return []Point{}, time.Time{}, 0, nil
 	}
-	pts, err := r.GpsTrack(station, since.UnixMilli(), until.UnixMilli(), limit+1)
+	at := since.UnixMilli()
+	// Fetch the skipped points too, so a full page of new points follows them.
+	pts, err := r.GpsTrack(station, at, until.UnixMilli(), limit+1+skip)
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, time.Time{}, 0, err
+	}
+	for i := 0; i < skip && len(pts) > 0 && pts[0].AtMs == at; i++ {
+		pts = pts[1:]
 	}
 	var next time.Time
+	nextSkip := 0
 	if len(pts) > limit {
 		pts = pts[:limit]
-		next = time.UnixMilli(pts[limit-1].AtMs + 1) // a track's times only go forward
+		last := pts[limit-1].AtMs
+		next = time.UnixMilli(last)
+		for i := len(pts) - 1; i >= 0 && pts[i].AtMs == last; i-- {
+			nextSkip++
+		}
+		if last == at {
+			nextSkip += skip // still in the run the previous page returned
+		}
+		if nextSkip > trackCursorSkipMask {
+			return nil, time.Time{}, 0, errTrackRun
+		}
 	}
 	out := make([]Point, len(pts))
 	for i, p := range pts {
 		out[i] = pointOf(p)
 	}
-	return out, next, nil
+	return out, next, nextSkip, nil
+}
+
+// encodeTrackCursor and decodeTrackCursor make a track page position opaque.
+func encodeTrackCursor(at time.Time, skip int) string {
+	return api.EncodeCursor(uint64(at.UnixMilli())<<trackCursorSkipBits | uint64(skip&trackCursorSkipMask))
+}
+
+func decodeTrackCursor(v uint64) (time.Time, int) {
+	return time.UnixMilli(int64(v >> trackCursorSkipBits)), int(v & trackCursorSkipMask)
 }
 
 // Count is how many points a track has at times since..until, without
@@ -100,10 +148,29 @@ func Count(r rad.Radio, station string, since, until time.Time) (int, error) {
 	return r.GpsTrackCount(station, since.UnixMilli(), until.UnixMilli())
 }
 
+// Counts is Count for many ranges at once, in one pass over the track's
+// files (a page of trips' point_count).
+func Counts(r rad.Radio, station string, since, until []time.Time) ([]int, error) {
+	s, u := make([]int64, len(since)), make([]int64, len(until))
+	for i := range since {
+		s[i] = since[i].UnixMilli()
+	}
+	for i := range until {
+		u[i] = until[i].UnixMilli()
+	}
+	return r.GpsTrackCounts(station, s, u)
+}
+
 func (h handlers) getTrack(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := api.Fields{}
+	// The defaults end at now on the clock the track was stamped with: this
+	// station's points are on the track clock (GPS time once radiod has had
+	// a fix), other stations' beacons on the system clock they came in by.
 	now := time.Now()
+	if q.Get("callsign") == "" {
+		now = time.UnixMilli(h.r.GpsClockMs())
+	}
 	since, until := now.Add(-trackSpanDefault), now
 	for key, dst := range map[string]*time.Time{"since": &since, "until": &until} {
 		if s := q.Get(key); s != "" {
@@ -133,14 +200,19 @@ func (h handlers) getTrack(w http.ResponseWriter, r *http.Request) {
 		api.Invalid(w, r, f)
 		return
 	}
-	from, ok := api.DecodeCursor(w, r) // the time the page starts at, unix ms
+	from, ok := api.DecodeCursor(w, r) // the previous page's last position
 	if !ok {
 		return
 	}
+	skip := 0
 	if from != 0 {
-		since = time.UnixMilli(int64(from))
+		// A cursor never reaches before since: an old or foreign one would
+		// otherwise read the track from 1970.
+		if at, n := decodeTrackCursor(from); !at.Before(since) {
+			since, skip = at, n
+		}
 	}
-	pts, next, err := Track(h.r, station, since, until, limit)
+	pts, next, nextSkip, err := trackFrom(h.r, station, since, until, skip, limit)
 	if errors.Is(err, rad.ErrInvalid) {
 		api.Invalid(w, r, api.Fields{"callsign": {"a callsign: letters, digits, '-', '/' and '.'"}})
 		return
@@ -151,7 +223,7 @@ func (h handlers) getTrack(w http.ResponseWriter, r *http.Request) {
 	}
 	page := api.Page[Point]{Data: pts}
 	if !next.IsZero() {
-		page.NextCursor = api.EncodeCursor(uint64(next.UnixMilli()))
+		page.NextCursor = encodeTrackCursor(next, nextSkip)
 	}
 	api.JSON(w, http.StatusOK, page)
 }
