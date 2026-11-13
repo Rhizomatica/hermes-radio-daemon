@@ -87,7 +87,7 @@ func startAPIDaemon(t *testing.T, extra ...string) *Daemon {
 	return startDaemon(t, daemonOpts{core: append([]string{"api_v2_enable = 1"}, extra...)})
 }
 
-// The admin a station starts with (api/internal/setup/default_admin.go).
+// The admin a station starts with (api/internal/setup/root.go).
 const (
 	defaultAdminUser = "root"
 	defaultAdminPass = "caduceu"

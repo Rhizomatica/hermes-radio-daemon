@@ -12,6 +12,10 @@ import (
 // On a fresh database it also marks first-boot setup done, so the station
 // is reachable as soon as it is installed. An existing account is left as
 // it is. Reports whether it created root.
+//
+// Root keeps the documented station default password. Because the account
+// is immutable and is re-seeded if it disappears, that credential cannot be
+// rotated or revoked through the API.
 func EnsureRoot(ctx context.Context, st *store.Store) (bool, error) {
 	if _, err := st.UserByUsername(ctx, store.RootUsername); err == nil {
 		return false, nil
@@ -29,6 +33,9 @@ func EnsureRoot(ctx context.Context, st *store.Store) (bool, error) {
 		}, map[string]string{"setup.done": "1"})
 		if err == nil {
 			return true, nil
+		}
+		if errors.Is(err, store.ErrUsernameTaken) {
+			return false, nil // another startup seeded root first
 		}
 		if !errors.Is(err, store.ErrSetupDone) {
 			return false, err
