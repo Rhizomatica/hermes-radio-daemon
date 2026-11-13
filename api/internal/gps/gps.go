@@ -24,7 +24,7 @@ import (
 // is not nil; radiod's loopback fallback (no database) serves the rest.
 func Register(rt *api.Router, st *store.Store) {
 	h := handlers{
-		r: rt.Radio(), st: st, mu: &sync.Mutex{}, tripMu: &sync.Mutex{},
+		r: rt.Radio(), st: st, mu: &sync.Mutex{}, tripMu: &sync.Mutex{}, sos: &sosState{},
 		log: logging.New(rt.Radio(), "api.tx"),
 	}
 	rt.Op("getGps", h.getGps)
@@ -50,6 +50,7 @@ type handlers struct {
 	st     *store.Store
 	mu     *sync.Mutex
 	tripMu *sync.Mutex
+	sos    *sosState
 	log    *slog.Logger
 }
 

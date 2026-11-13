@@ -601,6 +601,8 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     }
     i = iniparser_getint(ini, "main:beacon_emergency_interval_s", BEACON_EMERGENCY_INTERVAL_DEFAULT_S);
     radio_h->beacon_emergency_interval_s = i >= BEACON_EMERGENCY_INTERVAL_MIN_S ? i : BEACON_EMERGENCY_INTERVAL_MIN_S;
+    s = iniparser_getstring(ini, "main:sos_recipients", "");
+    snprintf(radio_h->sos_recipients, sizeof(radio_h->sos_recipients), "%s", s);
 
     radio_h->pskreporter_enable = iniparser_getboolean(ini, "main:pskreporter_enable", 0) != 0;
     s = iniparser_getstring(ini, "main:pskreporter_server", PSKREPORTER_DEFAULT_SERVER);

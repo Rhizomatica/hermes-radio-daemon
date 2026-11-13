@@ -25,6 +25,8 @@ var (
 	ErrNoPTT        = errors.New("this client does not hold PTT")
 	ErrDown         = errors.New("the broadcast plane is not running")
 	ErrNotFound     = errors.New("no such file")
+	ErrNoPosition   = errors.New("no callsign or no position to send")
+	ErrRange        = errors.New("a value out of the range its format carries")
 )
 
 // FromC is how Go reads JSON that radiod or mercury wrote. Its text can
@@ -204,6 +206,9 @@ type Beacon struct {
 	EmergencyIntervalS int
 	Emergency          int  // the code set, 0 none
 	Running            bool // beacons go out (the broadcast plane runs)
+	// SosRecipients are the stations an SOS also goes to over UUCP or
+	// NNCP (main:sos_recipients).
+	SosRecipients []string
 }
 
 // BeaconStation is a station heard by its beacons: its last report.
@@ -359,14 +364,20 @@ type Radio interface {
 	BroadcastFileInfo(file string) (sendName string, framesLimit int64)
 
 	// Beacon is the beacon settings; SetBeacon saves and applies the
-	// callsign, fixed position and emergency interval (ErrInvalid out of
-	// range). SetBeaconEmergency sets the code (1..30) or clears it (0),
-	// BeaconSendNow sends one; both ErrDown while the broadcast plane is
-	// not running. BeaconStations is the stations heard, newest first.
+	// callsign, fixed position, emergency interval and SOS recipients
+	// (ErrInvalid out of range). SetBeaconEmergency sets the code (1..30)
+	// or clears it (0), with or without the broadcast plane (without it no
+	// beacon goes on the air); BeaconSendNow sends one, ErrDown while the
+	// plane is not running. BeaconFrame is the compact beacon the station
+	// would send now with code (0..31), for the SOS over UUCP or NNCP:
+	// ErrNoPosition without a callsign or a position, ErrRange for a
+	// position the beacon cannot carry. BeaconStations is the stations
+	// heard, newest first.
 	Beacon() Beacon
 	SetBeacon(Beacon) error
 	SetBeaconEmergency(code int) error
 	BeaconSendNow() error
+	BeaconFrame(code int) ([]byte, error)
 	BeaconStations() []BeaconStation
 
 	// Transport is the store-and-forward layer's settings (core.ini).
@@ -437,6 +448,8 @@ func codeErr(rc int) error {
 		return ErrNoPTT
 	case -10:
 		return ErrDown
+	case -11:
+		return ErrRange
 	default:
 		return ErrNotSupported
 	}

@@ -29,6 +29,7 @@
 #define RADIOD_API_EPROTECT -8    /* the SWR protection has tripped: reset it first */
 #define RADIOD_API_ENOPTT   -9    /* this client does not hold PTT */
 #define RADIOD_API_EDOWN    -10   /* the broadcast plane is not running */
+#define RADIOD_API_ERANGE   -11   /* a value out of the range its format carries */
 
 /* ── radio ── */
 
@@ -295,6 +296,13 @@ void radiod_api_broadcast_file_info(const char *file, char *send_name, size_t ca
 
 /* ── position beacons (modem/beacon_tx.h, docs/BEACON-FORMAT.md) ── */
 
+/* sos_recipients: up to 8 station names of 32 characters, commas between
+ * them (radio.h RADIO_SOS_RECIPIENTS_LEN). */
+#define RADIOD_API_SOS_RECIPIENTS_LEN 272
+
+/* The longest beacon frame (the full layout, beacon.h BEACON_FULL_BYTES). */
+#define RADIOD_API_BEACON_FRAME_MAX 26
+
 typedef struct {
     bool   enabled;              /* main:beacon_enable: the regular beacons */
     int    interval_s;           /* main:beacon_interval_s */
@@ -304,13 +312,17 @@ typedef struct {
     int    emergency_interval_s;
     int    emergency;            /* the code set, 0 none */
     bool   running;              /* beacons go out (the broadcast plane runs) */
+    /* main:sos_recipients: the stations an SOS also goes to over UUCP or
+     * NNCP, comma-separated station names */
+    char   sos_recipients[RADIOD_API_SOS_RECIPIENTS_LEN];
 } radiod_api_beacon;
 
 int radiod_api_beacon_get(radiod_api_beacon *out);
 
-/* Save the switch, the intervals, the callsign and the fixed position
- * (core.ini) and apply them; EINVAL for a callsign the beacon cannot carry,
- * a position out of range or an interval under its minimum. */
+/* Save the switch, the intervals, the callsign, the fixed position and the
+ * SOS recipients (core.ini) and apply them; EINVAL for a callsign the beacon
+ * cannot carry, a position out of range, an interval under its minimum or
+ * a recipient list with anything but names and commas. */
 int radiod_api_beacon_set(const radiod_api_beacon *in);
 
 /* Set the emergency code (1..30) and send at once; 0 clears it (one beacon
@@ -320,6 +332,14 @@ int radiod_api_beacon_set_emergency(int code);
 
 /* Send one beacon now; EDOWN when the plane is not running. */
 int radiod_api_beacon_send_now(void);
+
+/* The compact beacon this station would send now with code (0..31; 31 is
+ * "emergency over"), for the SOS that also goes over UUCP or NNCP to
+ * sos_recipients, with or without the broadcast plane.  Its length goes in
+ * *len.  EINVAL for a code out of range or out too small, ENOENT when there
+ * is no callsign or no position, ERANGE for a position the beacon cannot
+ * carry. */
+int radiod_api_beacon_frame(int code, uint8_t *out, size_t cap, size_t *len);
 
 typedef struct {
     char   callsign[16];

@@ -59,7 +59,7 @@ MM_FSK_OBJS       = $(MM_FSK_SRCS:.c=.o)
 
 .PHONY: all clean install test go-test integration-test check-symbols FORCE
 
-all: radio_daemon radio_client
+all: radio_daemon radio_client dec_beacon
 
 # ── daemon-level objects ────────────────────────────────────────
 DAEMON_TOP_OBJS = radio_daemon.o \
@@ -80,6 +80,7 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   dsp/stream_resampler.o \
                   dsp/digi_log.o \
                   modem/beacon.o \
+                  modem/beacon_tx.o \
                   audioio/audio_headset.o \
                   modem/shm_audio.o \
                   modem/loop_audio.o \
@@ -163,8 +164,7 @@ DAEMON_TOP_OBJS += modem/mercury_link.o
 modem/mercury_link.o: EXTRA_CPPFLAGS += -I$(MERCURY_DIR)/host
 # The broadcast plane, as Mercury's broadcast client: the carousel is
 # Mercury's own codec (datalink_broadcast/bcast_file.h, in libmercury_host.a).
-DAEMON_TOP_OBJS += modem/bcast_link.o modem/bcast_spool.o modem/bcast_plane.o \
-                   modem/beacon_tx.o
+DAEMON_TOP_OBJS += modem/bcast_link.o modem/bcast_spool.o modem/bcast_plane.o
 modem/bcast_link.o: EXTRA_CPPFLAGS += -I$(MERCURY_DIR)/datalink_broadcast
 api/radiod_api.o: EXTRA_CPPFLAGS += -I$(MERCURY_DIR)/host
 # One kiss_fft in the binary: freedv's (same structs, MAXFACTORS and float
@@ -285,6 +285,11 @@ $(OPUS_DNN_OBJS): CFLAGS := $(filter-out -Ofast,$(CFLAGS)) -O2
 	      $< -o $@
 
 # ── client ──────────────────────────────────────────────────────
+# The handler UUCP and NNCP run for a beacon from another station (an SOS);
+# it hands the frame to radiod through BEACON_DROP_DIR.
+dec_beacon: handlers/dec_beacon.c modem/beacon.c modem/beacon.h
+	$(CC) $(CFLAGS) -Imodem handlers/dec_beacon.c modem/beacon.c -o dec_beacon
+
 radio_client: utils/sbitx_client.c utils/sbitx_io.c common/shm_utils.c common/help.h \
               include/sbitx_io.h include/radio_cmds.h
 	$(CC) $(CFLAGS) utils/sbitx_client.c utils/sbitx_io.c common/shm_utils.c \
@@ -320,9 +325,10 @@ include tests/tests.mk
 prefix     ?= /usr
 sysconfdir ?= /etc
 
-install: radio_daemon radio_client
+install: radio_daemon radio_client dec_beacon
 	install -D -m 755 radio_daemon  $(DESTDIR)$(prefix)/bin/radio_daemon
 	install -D -m 755 radio_client  $(DESTDIR)$(prefix)/bin/radio_client
+	install -D -m 755 dec_beacon    $(DESTDIR)$(prefix)/bin/dec_beacon
 	install -D -m 644 radiod.service $(DESTDIR)/etc/systemd/system/radiod.service
 	# radio_client answers to sbitx_client too. Forced: installing this
 	# controller replaces hermes-net's sbitx_client binary, just as
@@ -360,9 +366,9 @@ install: radio_daemon radio_client
 
 # ── clean ───────────────────────────────────────────────────────
 clean:
-	rm -f radio_daemon radio_client ws_client dstar_crypt_sim rade_crypt_sim \
+	rm -f radio_daemon radio_client dec_beacon ws_client dstar_crypt_sim rade_crypt_sim \
 	      utils/dstar_crypt_sim.[od] utils/rade_crypt_sim.[od] \
-	      $(DAEMON_OBJS) $(DAEMON_OBJS:.o=.d) $(TEST_BINS) $(TEST_STAMP) \
+	      $(DAEMON_OBJS) $(DAEMON_OBJS:.o=.d) $(TEST_BINS) tests/modem/dec_beacon_t $(TEST_STAMP) \
 	      $(GO_API_LIB) $(GO_API_DIR)/libhermes_api.h .radiod_version
 
 # Auto-generated header dependencies (from -MMD). Hyphen: ignore on first build.

@@ -50,7 +50,7 @@ TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
             tests/gui_interface/test_ui_hub tests/gui_interface/test_ws_server \
             tests/gui_interface/test_webrtc_sdp \
             tests/modem/test_rtp_audio tests/modem/test_modem_audio tests/modem/test_beacon \
-            tests/modem/test_beacon_tx \
+            tests/modem/test_beacon_tx tests/modem/test_dec_beacon \
             tests/audioio/test_audio_bridge \
             tests/dsp/test_upsample2 tests/dsp/test_stream_resampler tests/dsp/test_mic_filter \
             tests/dsp/test_digi_modes tests/dsp/test_digi_log tests/dsp/test_dstar_voice \
@@ -190,6 +190,15 @@ tests/modem/test_beacon_tx: tests/modem/test_beacon_tx.c modem/beacon_tx.c modem
 	$(CC) $(TEST_CFLAGS) -Idsp -Igps $< modem/beacon_tx.c modem/beacon.c dsp/digi_log.c gps/gps_track.c \
 	      $(UNITY_SRC) \
 	      $(HERMES_LOG_SRC) -o $@ -lpthread -lm -liniparser
+
+# The handler, built to drop into the test's own directory.
+DEC_BEACON_TEST_DIR = $(CURDIR)/tests/modem/dec_beacon.drop
+DEC_BEACON_TEST_FLAGS = -DBEACON_DROP_DIR='"$(DEC_BEACON_TEST_DIR)"'
+tests/modem/dec_beacon_t: handlers/dec_beacon.c modem/beacon.c modem/beacon.h
+	$(CC) $(TEST_CFLAGS) $(DEC_BEACON_TEST_FLAGS) -Imodem handlers/dec_beacon.c modem/beacon.c -o $@
+tests/modem/test_dec_beacon: tests/modem/test_dec_beacon.c tests/modem/dec_beacon_t modem/beacon.c modem/beacon.h
+	$(CC) $(TEST_CFLAGS) $(DEC_BEACON_TEST_FLAGS) -DDEC_BEACON_BIN='"$(CURDIR)/tests/modem/dec_beacon_t"' \
+	      $< modem/beacon.c $(UNITY_SRC) -o $@
 
 tests/modem/test_beacon: tests/modem/test_beacon.c modem/beacon.c modem/beacon.h
 	$(CC) $(TEST_CFLAGS) $< modem/beacon.c $(UNITY_SRC) -o $@

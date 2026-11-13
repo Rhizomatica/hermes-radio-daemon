@@ -39,6 +39,7 @@
 #endif
 #include "voice_crypto.h"
 #include "gps.h"
+#include "beacon_tx.h"
 #include "pskreporter.h"
 #include "js8_worker.h"
 #include "sbitx/sbitx_alsa.h"
@@ -157,6 +158,7 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
 #endif
     cpu_set_t unpinned_cpus;
     bool websocket_started = false;
+    bool beacon_started = false;
     bool shm_started = false;
     bool headset_started = false;
 
@@ -245,6 +247,10 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
      * and the over-the-air position reports need it too. */
     gps_init(&radio_h);
 
+    /* Beacons heard (their table) and those an SOS brings over UUCP or NNCP
+     * (BEACON_DROP_DIR): with or without the broadcast plane. */
+    beacon_started = beacon_receiver_start(&radio_h);
+
     /* Reports the stations decoded to PSKReporter (main:pskreporter_enable). */
     pskreporter_start(&radio_h);
     js8_worker_set_submodes(radio_h.js8_submodes);
@@ -330,6 +336,8 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     if (mercury_started)
         mercury_link_stop();
 #endif
+    if (beacon_started)
+        beacon_receiver_stop();     /* after the plane: it saves the table last */
     modem_audio_shutdown();         /* after every modem transport */
     if (media_started)
         radio_media_shutdown(&radio_h, &capture_tid, &playback_tid);
@@ -366,6 +374,8 @@ fail:
     if (mercury_started)
         mercury_link_stop();
 #endif
+    if (beacon_started)
+        beacon_receiver_stop();     /* after the plane: it saves the table last */
     modem_audio_shutdown();         /* after every modem transport */
     if (media_started)
         radio_media_shutdown(&radio_h, &capture_tid, &playback_tid);

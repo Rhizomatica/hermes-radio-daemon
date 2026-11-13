@@ -1,7 +1,9 @@
 # Store and forward: UUCP and NNCP behind one layer
 
-> **Proposal, 2026-11-06; its three decisions taken the same day (at the end).** Nothing
-> here is implemented yet.
+> **Proposal, 2026-11-06; its three decisions taken the same day (at the end).** Built
+> so far: the layer and the queue endpoints (step 1 of "Order of work", the station
+> endpoints still to come), and the SOS over it with `dec_beacon` and its drop
+> directory (step 2).
 
 Stations exchange files, commands and email in store-and-forward jobs: a job waits in a
 queue until the station calls, or is called by, the station it is for. HERMES stations do
@@ -105,9 +107,13 @@ separately, with the deployed stations' `.hmp` still read).
 
 - `POST /gps/sos` sets the emergency code. The beacon carries it on the air, as it does
   now.
-- radiod also sends the compact beacon with `Exec(dest, "dec_beacon", payload)` to each
-  station of `sos_recipients`, then `Call(dest)`, so the alarm leaves at once, over
-  whichever transport reaches that station.
+- radiod also sends the compact beacon with `Exec(dest, "dec_beacon", [sent], payload)`
+  to each station of `sos_recipients`, then `Call(dest)` for each in turn (waiting for a
+  call in progress, one call at a time on the link), so the alarm leaves at once, over
+  whichever transport reaches that station. `sent` is when the code was set, unix
+  milliseconds: the recipient applies the beacons in that order, so an SOS and its
+  "emergency over" can't swap on the way.
+- It doesn't need the broadcast plane, at either end.
 - `DELETE /gps/sos` does the same with code 31, emergency over.
 - `sos_recipients` moves from the station settings to the beacon settings
   (`GET`/`PATCH /gps/beacon`, `core.ini` `sos_recipients`), with the rest of what the SOS

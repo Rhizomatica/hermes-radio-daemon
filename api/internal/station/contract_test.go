@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/queue"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/testapi"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/transport"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/spec"
@@ -48,7 +47,7 @@ func noTransports(t *testing.T) {
 	transport.NNCPNeigh = filepath.Join(dir, "neigh")
 	transport.NNCPCallsign = filepath.Join(dir, "nncp-callsign")
 	transport.ProcDir = filepath.Join(dir, "proc")
-	queue.NewRunner = func() transport.Runner { return noRunner{} }
+	transport.NewRunner = func() transport.Runner { return noRunner{} }
 }
 
 // sample is the value for a {param}, by name. profile 0 exists on the stub

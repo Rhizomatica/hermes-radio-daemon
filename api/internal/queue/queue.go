@@ -15,9 +15,6 @@ import (
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/transport"
 )
 
-// NewRunner runs the transports' programs, a variable for the tests.
-var NewRunner = func() transport.Runner { return transport.ExecRunner{} }
-
 type handlers struct {
 	r   rad.Radio
 	log *slog.Logger
@@ -32,14 +29,7 @@ func Register(rt *api.Router) {
 }
 
 // layer is the transport layer with the station's current settings.
-func (h handlers) layer() *transport.Layer {
-	t := h.r.Transport()
-	return transport.New(transport.Settings{
-		Prefer:           transport.Kind(t.Prefer),
-		UucicoAirOptions: t.UucicoAirOptions,
-		UucicoTCPSystems: t.UucicoTCPSystems,
-	}, NewRunner())
-}
+func (h handlers) layer() *transport.Layer { return transport.ForRadio(h.r) }
 
 // Job is QueueJob.
 type Job struct {

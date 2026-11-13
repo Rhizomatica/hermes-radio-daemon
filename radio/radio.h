@@ -29,6 +29,10 @@
 #define CFG_SSL_CERT "/etc/ssl/certs/hermes.radio.crt"
 #define CFG_SSL_KEY "/etc/ssl/private/hermes.radio.key"
 
+/* main:sos_recipients: up to 8 station names of 32 characters, commas
+ * between them (api-rest.yaml UucpName). */
+#define RADIO_SOS_RECIPIENTS_LEN 272
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <pthread.h>
@@ -456,6 +460,9 @@ typedef struct {
     bool   has_station_position;
     double station_latitude, station_longitude;
     int    beacon_emergency_interval_s;
+    /* The stations an SOS is also sent to over UUCP or NNCP, comma-separated
+     * (main:sos_recipients; api/internal/gps). */
+    char   sos_recipients[RADIO_SOS_RECIPIENTS_LEN];
     /* PSKReporter (dsp/pskreporter.h): main:pskreporter_enable reports the
      * stations decoded, from main:callsign at this station's position, to
      * main:pskreporter_server ("host[:port]"), naming
