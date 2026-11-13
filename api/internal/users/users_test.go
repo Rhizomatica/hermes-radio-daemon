@@ -21,6 +21,9 @@ func TestCreateAndListUsers(t *testing.T) {
 	if j := r.JSON(t); j["username"] != "bob" || j["role"] != "user" || j["display_name"] != "Bob" {
 		t.Fatalf("created = %v", j)
 	}
+	if j := r.JSON(t); j["avatar"] != nil || j["lxmf_address"] != nil {
+		t.Fatalf("avatar/lxmf_address should be null: %v", j)
+	}
 	// Duplicate username → 409.
 	if r := e.DoAuth("POST", "/users", `{"username":"bob","password":"password1"}`, at); r.Status != 409 {
 		t.Fatalf("duplicate = %d, want 409", r.Status)

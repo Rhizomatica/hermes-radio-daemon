@@ -1,8 +1,10 @@
 package users
 
 import (
+	"database/sql"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"net/http"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
@@ -16,7 +18,8 @@ func (h *handlers) update(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.loadUser(w, r, id); !ok {
+	u, ok := h.loadUser(w, r, id)
+	if !ok {
 		return
 	}
 	p, _ := api.PrincipalFrom(r)
@@ -45,7 +48,7 @@ func (h *handlers) update(w http.ResponseWriter, r *http.Request) {
 	var patch store.UserPatch
 	if v, present := raw["display_name"]; present {
 		var s string
-		if json.Unmarshal(v, &s) != nil || len(s) > 64 {
+		if json.Unmarshal(v, &s) != nil || !validDisplayName(s) {
 			f.Add("display_name", "a string of at most 64 characters")
 		} else {
 			patch.DisplayName = &s
@@ -103,7 +106,35 @@ func (h *handlers) update(w http.ResponseWriter, r *http.Request) {
 		api.Invalid(w, r, f)
 		return
 	}
+
+	// Refuse to leave the station without an enabled admin. This is a
+	// service-level guard, not a field error.
+	if u.Role == "admin" && !u.Disabled {
+		newRole, newDisabled := u.Role, u.Disabled
+		if patch.Role != nil {
+			newRole = *patch.Role
+		}
+		if patch.Disabled != nil {
+			newDisabled = *patch.Disabled
+		}
+		if newRole != "admin" || newDisabled {
+			n, err := h.store.CountActiveAdmins(r.Context())
+			if err != nil {
+				api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
+				return
+			}
+			if n <= 1 {
+				api.Problem(w, r, http.StatusForbidden, "forbidden", "cannot remove the last active admin", nil)
+				return
+			}
+		}
+	}
+
 	u, err := h.store.UpdateUser(r.Context(), id, patch)
+	if errors.Is(err, sql.ErrNoRows) {
+		api.Problem(w, r, http.StatusNotFound, "not_found", "no such user", nil)
+		return
+	}
 	if err != nil {
 		api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
 		return
@@ -124,7 +155,26 @@ func (h *handlers) delete(w http.ResponseWriter, r *http.Request) {
 		api.Problem(w, r, http.StatusForbidden, "forbidden", "root cannot be deleted", nil)
 		return
 	}
-	if err := h.store.DeleteUser(r.Context(), id); err != nil {
+	p, _ := api.PrincipalFrom(r)
+	if p.UserID == id {
+		api.Problem(w, r, http.StatusForbidden, "forbidden", "you cannot delete your own account", nil)
+		return
+	}
+	if u.Role == "admin" && !u.Disabled {
+		n, err := h.store.CountActiveAdmins(r.Context())
+		if err != nil {
+			api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
+			return
+		}
+		if n <= 1 {
+			api.Problem(w, r, http.StatusForbidden, "forbidden", "cannot delete the last active admin", nil)
+			return
+		}
+	}
+	if err := h.store.DeleteUser(r.Context(), id); errors.Is(err, sql.ErrNoRows) {
+		api.Problem(w, r, http.StatusNotFound, "not_found", "no such user", nil)
+		return
+	} else if err != nil {
 		api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
 		return
 	}
@@ -174,7 +224,10 @@ func (h *handlers) setPassword(w http.ResponseWriter, r *http.Request) {
 		api.Problem(w, r, http.StatusInternalServerError, "internal", "cannot hash the password", nil)
 		return
 	}
-	if err := h.store.SetPasswordHash(r.Context(), id, hash); err != nil {
+	if err := h.store.SetPasswordHash(r.Context(), id, hash); errors.Is(err, sql.ErrNoRows) {
+		api.Problem(w, r, http.StatusNotFound, "not_found", "no such user", nil)
+		return
+	} else if err != nil {
 		api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
 		return
 	}

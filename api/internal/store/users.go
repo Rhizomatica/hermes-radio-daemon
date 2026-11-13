@@ -101,7 +101,9 @@ func (s *Store) UserByUsername(ctx context.Context, username string) (User, erro
 // ListUsers returns one page of users ordered by id, and the id to use as
 // the next cursor (0 on the last page).
 func (s *Store) ListUsers(ctx context.Context, limit int, cursor int64) ([]User, int64, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+userCols+` FROM users WHERE id > ? ORDER BY id ASC LIMIT ?`, cursor, limit)
+	// One extra row tells whether another page follows, so a full last page
+	// does not hand out a cursor to an empty one.
+	rows, err := s.db.QueryContext(ctx, `SELECT `+userCols+` FROM users WHERE id > ? ORDER BY id ASC LIMIT ?`, cursor, limit+1)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -118,10 +120,19 @@ func (s *Store) ListUsers(ctx context.Context, limit int, cursor int64) ([]User,
 		return nil, 0, err
 	}
 	var next int64
-	if len(out) == limit {
+	if len(out) > limit {
+		out = out[:limit]
 		next = out[len(out)-1].ID
 	}
 	return out, next, nil
+}
+
+// CountActiveAdmins returns how many users are admins and not disabled.
+func (s *Store) CountActiveAdmins(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM users WHERE role = 'admin' AND disabled = 0`).Scan(&n)
+	return n, err
 }
 
 // UpdateUser applies a partial update and returns the stored row.

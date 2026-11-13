@@ -464,7 +464,7 @@ People with an account (and a mailbox) on this station.
 | [`getUser`](#op-getuser) | `GET /users/{user_id}` | readonly | implemented |
 | [`updateUser`](#op-updateuser) | `PATCH /users/{user_id}` | user | implemented |
 | [`deleteUser`](#op-deleteuser) | `DELETE /users/{user_id}` | admin | implemented |
-| [`setPassword`](#op-setpassword) | `PUT /users/{user_id}/password` | user | implemented |
+| [`setPassword`](#op-setpassword) | `PUT /users/{user_id}/password` | readonly | implemented |
 | [`setAvatar`](#op-setavatar) | `PUT /users/{user_id}/avatar` | user | planned |
 | [`removeAvatar`](#op-removeavatar) | `DELETE /users/{user_id}/avatar` | user | planned |
 | [`exportLxmfIdentity`](#op-exportlxmfidentity) | `POST /users/{user_id}/lxmf-identity/export` | user | planned |
@@ -657,7 +657,7 @@ curl -sS -X DELETE "$BASE/users/2" \
 
 **Set a password (the user, with the current one; or an admin). Updates the mailbox too.** (`setPassword`)
 
-- Role: **user**
+- Role: **readonly**
 - Status: **implemented**
 
 > **In this build:** The mailbox password is not updated yet: the station's email helper is not wired in. Only the login password changes.

@@ -111,6 +111,47 @@ func TestUsersCRUD(t *testing.T) {
 	}
 }
 
+func TestListUsersExactLastPageHasNoCursor(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	for _, name := range []string{"alice", "bob"} {
+		if _, err := s.CreateUser(ctx, NewUser{Username: name, PasswordHash: "h", Role: "user"}); err != nil {
+			t.Fatalf("CreateUser %s: %v", name, err)
+		}
+	}
+	page, next, err := s.ListUsers(ctx, 2, 0)
+	if err != nil || len(page) != 2 {
+		t.Fatalf("ListUsers = %d rows, err %v", len(page), err)
+	}
+	if next != 0 {
+		t.Fatalf("ListUsers next = %d, want 0 on a full last page", next)
+	}
+}
+
+func TestCountActiveAdmins(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	if n, err := s.CountActiveAdmins(ctx); err != nil || n != 0 {
+		t.Fatalf("CountActiveAdmins empty = %d, %v", n, err)
+	}
+	if _, err := s.CreateUser(ctx, NewUser{Username: "admin", PasswordHash: "h", Role: "admin"}); err != nil {
+		t.Fatalf("CreateUser admin: %v", err)
+	}
+	if _, err := s.CreateUser(ctx, NewUser{Username: "other", PasswordHash: "h", Role: "admin"}); err != nil {
+		t.Fatalf("CreateUser other: %v", err)
+	}
+	if n, err := s.CountActiveAdmins(ctx); err != nil || n != 2 {
+		t.Fatalf("CountActiveAdmins = %d, %v", n, err)
+	}
+	disabled := true
+	if _, err := s.UpdateUser(ctx, 2, UserPatch{Disabled: &disabled}); err != nil {
+		t.Fatalf("UpdateUser disable: %v", err)
+	}
+	if n, err := s.CountActiveAdmins(ctx); err != nil || n != 1 {
+		t.Fatalf("CountActiveAdmins after disable = %d, %v", n, err)
+	}
+}
+
 func TestCreateUserDuplicateIsTyped(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t)

@@ -440,7 +440,7 @@ paths:
       tags: [users]
       operationId: setPassword
       summary: Set a password (the user, with the current one; or an admin). Updates the mailbox too.
-      x-hermes-role: user
+      x-hermes-role: readonly
       requestBody:
         required: true
         content:

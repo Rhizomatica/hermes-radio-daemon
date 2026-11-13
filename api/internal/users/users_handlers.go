@@ -62,7 +62,7 @@ func (h *handlers) create(w http.ResponseWriter, r *http.Request) {
 	if !roles[role] {
 		f.Add("role", "readonly, user, operator or admin")
 	}
-	if req.DisplayName != nil && len(*req.DisplayName) > 64 {
+	if req.DisplayName != nil && !validDisplayName(*req.DisplayName) {
 		f.Add("display_name", "at most 64 characters")
 	}
 	if req.Locale != nil && !locales[*req.Locale] {

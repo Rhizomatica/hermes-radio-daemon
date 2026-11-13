@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/auth"
@@ -144,7 +145,7 @@ func (h *handlers) run(w http.ResponseWriter, r *http.Request) {
 	if len(req.Admin.Password) < 8 {
 		f.Add("admin.password", "at least 8 characters")
 	}
-	if req.Admin.DisplayName != nil && len(*req.Admin.DisplayName) > 64 {
+	if req.Admin.DisplayName != nil && utf8.RuneCountInString(*req.Admin.DisplayName) > 64 {
 		f.Add("admin.display_name", "at most 64 characters")
 	}
 	if !f.OK() {

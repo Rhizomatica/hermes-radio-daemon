@@ -10,22 +10,25 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"unicode/utf8"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/store"
 )
 
-// User is api-rest.yaml's User schema. avatar and lxmf_address are not
-// served: there is no avatar support, and Reticulum is not implemented.
+// User is api-rest.yaml's User schema. Avatar and LXMFAddress are always
+// null today: there is no avatar support, and Reticulum is not implemented.
 type User struct {
 	ID          int64   `json:"id"`
 	Username    string  `json:"username"`
 	DisplayName *string `json:"display_name"`
+	Avatar      *string `json:"avatar"`
 	Role        string  `json:"role"`
 	Locale      *string `json:"locale"`
 	Phone       *string `json:"phone"`
 	Location    *string `json:"location"`
 	Disabled    bool    `json:"disabled"`
+	LXMFAddress *string `json:"lxmf_address"`
 	LastLoginAt *string `json:"last_login_at"`
 	CreatedAt   string  `json:"created_at"`
 	UpdatedAt   string  `json:"updated_at"`
@@ -39,6 +42,12 @@ func Of(u store.User) User {
 		LastLoginAt: u.LastLoginAt, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt,
 	}
 }
+
+const maxDisplayName = 64
+
+// validDisplayName reports whether s fits api-rest.yaml's display_name
+// maxLength, counted in characters rather than bytes.
+func validDisplayName(s string) bool { return utf8.RuneCountInString(s) <= maxDisplayName }
 
 var (
 	usernameRe = regexp.MustCompile(`^[a-z0-9._-]{1,32}$`)
