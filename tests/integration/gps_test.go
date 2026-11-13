@@ -165,9 +165,156 @@ func TestGPSFixFromGpsd(t *testing.T) {
 	}
 }
 
+// Trips: open and close are explicit; closing does not open a new one. The
+// trip appears in the list and is readable by id before and after closing.
+func TestGPSTrips(t *testing.T) {
+	needGoAPI(t)
+	d := startAPIDaemon(t)
+	token := setupAPI(t, d)
+	base := apiBase(d)
+
+	if r := callAuth(t, "GET", base+"/gps/trip", "", token); r.status != 404 || r.body["code"] != "no_open_trip" {
+		t.Fatalf("GET /gps/trip = %d %s", r.status, r.raw)
+	}
+
+	r := callAuth(t, "POST", base+"/gps/trip/open", `{"name":"Field day"}`, token)
+	if r.status != 200 {
+		t.Fatalf("open = %d %s", r.status, r.raw)
+	}
+	id, _ := r.body["id"].(float64)
+	if id == 0 || r.body["name"] != "Field day" || r.body["ended_at"] != nil || r.body["point_count"].(float64) != 0 {
+		t.Fatalf("open trip = %s", r.raw)
+	}
+
+	if r := callAuth(t, "POST", base+"/gps/trip/open", `{"name":"Another"}`, token); r.status != 409 || r.body["code"] != "trip_open" {
+		t.Fatalf("open while open = %d %s", r.status, r.raw)
+	}
+
+	r = callAuth(t, "GET", base+"/gps/trips", "", token)
+	if r.status != 200 {
+		t.Fatalf("list = %d %s", r.status, r.raw)
+	}
+	if data := r.body["data"].([]any); len(data) != 1 {
+		t.Fatalf("list data = %v", r.body["data"])
+	}
+
+	// Closing does not open a new trip.
+	r = callAuth(t, "POST", base+"/gps/trip/close", "", token)
+	if r.status != 200 || r.body["ended_at"] == nil {
+		t.Fatalf("close = %d %s", r.status, r.raw)
+	}
+	if r := callAuth(t, "GET", base+"/gps/trip", "", token); r.status != 404 {
+		t.Fatalf("after close, GET /gps/trip = %d %s (close must not reopen)", r.status, r.raw)
+	}
+
+	// The closed trip is still in the history and readable by id.
+	if r := callAuth(t, "GET", base+"/gps/trips/"+fmt.Sprintf("%.0f", id), "", token); r.status != 200 {
+		t.Fatalf("get trip = %d %s", r.status, r.raw)
+	}
+	if r := callAuth(t, "GET", base+"/gps/trips/999999", "", token); r.status != 404 {
+		t.Fatalf("get missing trip = %d %s", r.status, r.raw)
+	}
+}
+
+// With gps_enable and a fake gpsd, an open trip records the fixes as its
+// points (the breadcrumb). The fake moves, since the track only records a
+// point when the station has moved (or its fix changed) or at its heartbeat.
+// Also with the GPS time a day ahead of the system clock: the trip's bounds
+// are on the track's clock, so it still finds its points.
+func TestGPSTripRecording(t *testing.T) {
+	needGoAPI(t)
+	t.Run("same clock", func(t *testing.T) { tripRecording(t, 0) })
+	t.Run("GPS a day ahead", func(t *testing.T) { tripRecording(t, 24*time.Hour) })
+}
+
+func tripRecording(t *testing.T, ahead time.Duration) {
+	_, port, _ := net.SplitHostPort(startFakeGpsdAt(t, movingFix, ahead))
+	d := startDaemon(t, daemonOpts{core: []string{
+		"api_v2_enable = 1",
+		"gps_enable = 1",
+		"gps_host = 127.0.0.1",
+		"gps_port = " + port,
+		"gps_log_dir = " + t.TempDir(),
+	}})
+	token := setupAPI(t, d)
+	base := apiBase(d)
+
+	// Wait for a fix before opening the trip.
+	var r httpResult
+	if !eventually(10*time.Second, func() bool {
+		r = callAuth(t, "GET", base+"/gps", "", token)
+		return r.status == 200 && r.body["fix"] == "3d"
+	}) {
+		t.Fatalf("no 3-D fix within 10 s (last %d %s)", r.status, r.raw)
+	}
+
+	// Logging is off; opening the trip turns it on, so the track's first
+	// point is in the trip.
+	r = callAuth(t, "POST", base+"/gps/trip/open", `{"name":"Recording"}`, token)
+	if r.status != 200 {
+		t.Fatalf("open = %d %s", r.status, r.raw)
+	}
+	id := r.body["id"].(float64)
+	started, err := time.Parse(time.RFC3339Nano, r.body["started_at"].(string))
+	if want := time.Now().Add(ahead); err != nil || started.Sub(want).Abs() > time.Minute {
+		t.Fatalf("started_at = %v, want about %v (the GPS time)", r.body["started_at"], want.UTC())
+	}
+	if r = callAuth(t, "GET", base+"/gps", "", token); r.status != 200 {
+		t.Fatalf("GET /gps = %d %s", r.status, r.raw)
+	} else if s, _ := r.body["settings"].(map[string]any); s == nil || s["logging"] != true {
+		t.Fatalf("logging after open = %s", r.raw)
+	}
+
+	// The trip reads the track recorded while it is open.
+	if !eventually(5*time.Second, func() bool {
+		r = callAuth(t, "GET", base+"/gps/trip", "", token)
+		if r.status != 200 {
+			return false
+		}
+		trip, _ := r.body["trip"].(map[string]any)
+		return trip != nil && trip["point_count"].(float64) >= 1
+	}) {
+		t.Fatalf("no recorded point within 5 s (last %d %s)\n--- daemon log ---\n%s", r.status, r.raw, d.Log())
+	}
+	data := r.body["data"].([]any)
+	if len(data) == 0 {
+		t.Fatalf("no points in the current trip: %s", r.raw)
+	}
+	pt := data[0].(map[string]any)
+	if lat := pt["latitude"].(float64); (lat != 19.43 && lat != 19.4303) || pt["longitude"] != -99.13 {
+		t.Fatalf("recorded point = %s", r.raw)
+	}
+
+	// GET /gps/track with no range ends at now on the track clock too.
+	if r := callAuth(t, "GET", base+"/gps/track", "", token); r.status != 200 || len(r.body["data"].([]any)) == 0 {
+		t.Fatalf("track, default range = %d %s", r.status, r.raw)
+	}
+
+	if r := callAuth(t, "POST", base+"/gps/trip/close", "", token); r.status != 200 {
+		t.Fatalf("close = %d %s", r.status, r.raw)
+	}
+	if r := callAuth(t, "GET", base+"/gps/trips/"+fmt.Sprintf("%.0f", id), "", token); r.status != 200 {
+		t.Fatalf("get trip = %d %s", r.status, r.raw)
+	}
+}
+
 // startFakeGpsd runs a minimal gpsd on 127.0.0.1: it greets the reader and
 // then streams a fixed 3-D TPV, so the daemon always has a fix waiting.
 func startFakeGpsd(t *testing.T) string {
+	t.Helper()
+	return startFakeGpsdPath(t, nil)
+}
+
+// startFakeGpsdPath is startFakeGpsd whose n-th TPV is at path(n), so a test
+// that needs the track to record points can make the station move.
+func startFakeGpsdPath(t *testing.T, path func(n int) (lat, lon float64)) string {
+	t.Helper()
+	return startFakeGpsdAt(t, path, 0)
+}
+
+// startFakeGpsdAt is startFakeGpsdPath whose TPV times are ahead of the
+// system clock by ahead, as a station's GPS time is when its clock is off.
+func startFakeGpsdAt(t *testing.T, path func(n int) (lat, lon float64), ahead time.Duration) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -180,13 +327,22 @@ func startFakeGpsd(t *testing.T) string {
 			if err != nil {
 				return
 			}
-			go serveFakeGpsd(conn)
+			go serveFakeGpsd(conn, path, ahead)
 		}
 	}()
 	return ln.Addr().String()
 }
 
-func serveFakeGpsd(conn net.Conn) {
+// movingFix is the station's position for the n-th TPV: two points ~33 m
+// apart, so each sample interval's fix counts as a move and is recorded.
+func movingFix(n int) (lat, lon float64) {
+	if n%2 == 0 {
+		return 19.43, -99.13
+	}
+	return 19.4303, -99.13
+}
+
+func serveFakeGpsd(conn net.Conn, path func(n int) (lat, lon float64), ahead time.Duration) {
 	defer conn.Close()
 	// The client's ?WATCH is fire-and-forget; drain it so the socket stays clear.
 	go func() {
@@ -200,17 +356,23 @@ func serveFakeGpsd(conn net.Conn) {
 	if _, err := conn.Write([]byte(`{"class":"VERSION","release":"3.25","proto_major":3,"proto_minor":14}` + "\n")); err != nil {
 		return
 	}
-	for {
-		if _, err := conn.Write([]byte(fakeTPV())); err != nil {
+	for n := 0; ; n++ {
+		if _, err := conn.Write([]byte(fakeTPV(n, path, ahead))); err != nil {
 			return
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
 }
 
-func fakeTPV() string {
-	at := time.Now().UTC().Format(time.RFC3339)
-	return fmt.Sprintf(`{"class":"TPV","device":"fake","mode":3,"lat":19.430000,"lon":-99.130000,"alt":2240.000,"altMSL":2240.000,"time":%q}`+"\n", at)
+func fakeTPV(n int, path func(n int) (lat, lon float64), ahead time.Duration) string {
+	lat, lon := 19.43, -99.13
+	if path != nil {
+		lat, lon = path(n)
+	}
+	// Sub-second precision: the track's times are milliseconds, and a whole
+	// second rounds a fix down to before the trip that opened mid-second.
+	at := time.Now().Add(ahead).UTC().Format(time.RFC3339Nano)
+	return fmt.Sprintf(`{"class":"TPV","device":"fake","mode":3,"lat":%.7f,"lon":%.7f,"alt":2240.000,"altMSL":2240.000,"time":%q}`+"\n", lat, lon, at)
 }
 
 // parseINI reads a flat [section] key = value file into a map keyed by

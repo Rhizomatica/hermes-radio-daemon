@@ -115,6 +115,12 @@ int gps_track_read(const char *station, int64_t since_ms, int64_t until_ms,
 /* How many points a track has at times since_ms..until_ms; -1 as above. */
 long gps_track_count(const char *station, int64_t since_ms, int64_t until_ms);
 
+/* gps_track_count for n ranges at once (since_ms[j]..until_ms[j] into
+ * out[j]), listing the track's files once and opening each once: a page of
+ * trips counts its points in one pass.  0; -1 as above. */
+int gps_track_counts(const char *station, int n, const int64_t *since_ms,
+                     const int64_t *until_ms, long *out);
+
 /* This station's track files, full paths, oldest first, one a line, into
  * out: the newest GPS_TRACK_FILES_MAX of them.  None while the directory does
  * not exist yet.  False if they do not fit or the directory cannot be read. */

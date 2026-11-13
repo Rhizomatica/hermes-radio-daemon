@@ -33,6 +33,8 @@ var problemTitles = map[string]string{
 	"conflict":               "Conflict",
 	"too_large":              "Too large",
 	"listen_mode_unsuitable": "Listen mode unsuitable",
+	"no_open_trip":           "No trip is open",
+	"trip_open":              "A trip is already open",
 	"internal":               "Internal error",
 }
 

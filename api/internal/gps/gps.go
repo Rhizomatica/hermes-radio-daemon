@@ -15,12 +15,18 @@ import (
 	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/logging"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/store"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/spec"
 )
 
-// Register adds the GPS operations and the gps topic.
-func Register(rt *api.Router) {
-	h := handlers{r: rt.Radio(), mu: &sync.Mutex{}, sos: &sosState{}, log: logging.New(rt.Radio(), "api.tx")}
+// Register adds the GPS operations and the gps topic. The trip operations
+// (open/close/list/get) need the store, so they are registered only when st
+// is not nil; radiod's loopback fallback (no database) serves the rest.
+func Register(rt *api.Router, st *store.Store) {
+	h := handlers{
+		r: rt.Radio(), st: st, mu: &sync.Mutex{}, tripMu: &sync.Mutex{}, sos: &sosState{},
+		log: logging.New(rt.Radio(), "api.tx"),
+	}
 	rt.Op("getGps", h.getGps)
 	rt.Op("updateGpsSettings", h.updateSettings)
 	rt.Op("getTrack", h.getTrack)
@@ -28,6 +34,9 @@ func Register(rt *api.Router) {
 	rt.Op("downloadGpsFile", h.downloadFile)
 	rt.Op("deleteGpsFiles", h.deleteFiles)
 	registerBeacon(rt, h)
+	if st != nil {
+		registerTrips(rt, &h)
+	}
 
 	// The station's own Gps, pushed as it changes (change: self). Other
 	// stations' positions (change: peers) are not there yet.
@@ -37,10 +46,12 @@ func Register(rt *api.Router) {
 }
 
 type handlers struct {
-	r   rad.Radio
-	mu  *sync.Mutex
-	sos *sosState
-	log *slog.Logger
+	r      rad.Radio
+	st     *store.Store
+	mu     *sync.Mutex
+	tripMu *sync.Mutex
+	sos    *sosState
+	log    *slog.Logger
 }
 
 // ── response schemas (api-rest.yaml components) ──

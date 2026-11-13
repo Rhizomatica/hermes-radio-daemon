@@ -2,10 +2,12 @@ package gps_test
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -58,6 +60,40 @@ func TestTrackRangeAndPages(t *testing.T) {
 	}
 	if last := j["data"].([]any); last[len(last)-1].(map[string]any)["at"] != "2026-11-09T00:06:00.000Z" {
 		t.Errorf("last page = %v", last)
+	}
+}
+
+// Points that share a timestamp are a run: pages must neither skip nor
+// repeat one when the run crosses a page boundary.
+func TestTrackPagesSameTime(t *testing.T) {
+	e := testapi.New(t)
+	at := t0.UnixMilli()
+	pts := make([]rad.GpsPoint, 5)
+	for i := range pts {
+		pts[i] = rad.GpsPoint{AtMs: at, LatE7: int32(387000000 + i)}
+	}
+	e.Radio.SetGpsTrack("", pts...)
+
+	q := "/gps/track?since=2026-11-09T00:00:00Z&until=2026-11-09T00:00:00Z&limit=2"
+	var got []float64
+	j := e.Do("GET", q, "").JSON(t)
+	for {
+		for _, p := range j["data"].([]any) {
+			got = append(got, p.(map[string]any)["latitude"].(float64))
+		}
+		next, _ := j["next_cursor"].(string)
+		if next == "" {
+			break
+		}
+		j = e.Do("GET", q+"&cursor="+url.QueryEscape(next), "").JSON(t)
+	}
+	if len(got) != len(pts) {
+		t.Fatalf("points over the pages = %v, want %d", got, len(pts))
+	}
+	for i, lat := range got {
+		if want := float64(387000000+i) / 1e7; lat != want {
+			t.Errorf("point %d = %v, want %v", i, lat, want)
+		}
 	}
 }
 
@@ -169,5 +205,58 @@ func TestGpsFilesFailures(t *testing.T) {
 	e.Radio.SetGpsTrackFiles(stuck)
 	if r := e.Do("DELETE", "/gps/files", ""); r.Status != 500 {
 		t.Errorf("DELETE of a file that cannot be removed = %d %s", r.Status, r.Body)
+	}
+}
+
+// cursorOf is a page cursor as the API makes them, over a raw position.
+func cursorOf(pos uint64) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatUint(pos, 10)))
+}
+
+// A cursor before since (an old plain-time one decodes to 1970) does not
+// widen the range: the page starts at since.
+func TestTrackCursorStaysInRange(t *testing.T) {
+	e := testapi.New(t)
+	e.Radio.SetGpsTrack("", minutes(10)...)
+	q := "/gps/track?since=2026-11-09T00:02:00Z&until=2026-11-09T00:06:00Z&limit=2"
+	old := cursorOf(uint64(t0.UnixMilli()))
+	j := e.Do("GET", q+"&cursor="+url.QueryEscape(old), "").JSON(t)
+	if data := j["data"].([]any); len(data) != 2 || data[0].(map[string]any)["at"] != "2026-11-09T00:02:00.000Z" {
+		t.Fatalf("page from an old cursor = %v", j)
+	}
+}
+
+// A run of points at one time longer than the cursor's skip count can step
+// over stops with an error rather than wrap and repeat points.
+func TestTrackRunTooLong(t *testing.T) {
+	e := testapi.New(t)
+	const skipMax = 1<<16 - 1 // track.go trackCursorSkipMask
+	at := t0.UnixMilli()
+	pts := make([]rad.GpsPoint, skipMax+2)
+	for i := range pts {
+		pts[i] = rad.GpsPoint{AtMs: at}
+	}
+	e.Radio.SetGpsTrack("", pts...)
+	q := "/gps/track?since=2026-11-09T00:00:00Z&until=2026-11-09T00:00:00Z&limit=1"
+	c := cursorOf(uint64(at)<<16 | skipMax)
+	if r := e.Do("GET", q+"&cursor="+url.QueryEscape(c), ""); r.Status != 500 {
+		t.Fatalf("page past the skip count = %d %s", r.Status, r.Body)
+	}
+}
+
+// With no range given, this station's track ends at now on the track clock:
+// on a station whose system clock is behind the GPS, the points are found.
+func TestTrackDefaultRangeOnTheTrackClock(t *testing.T) {
+	e := testapi.New(t)
+	ahead := time.Now().Add(24 * time.Hour)
+	e.Radio.SetGpsClock(ahead)
+	e.Radio.SetGpsTrack("", rad.GpsPoint{AtMs: ahead.Add(-time.Minute).UnixMilli(), Fix: rad.GpsFix3D})
+	if data := e.Do("GET", "/gps/track", "").JSON(t)["data"].([]any); len(data) != 1 {
+		t.Fatalf("default range found %d points, want the one a minute ago on the track clock", len(data))
+	}
+	// Another station's beacons stay on the system clock.
+	e.Radio.SetGpsTrack("B0AB", rad.GpsPoint{AtMs: time.Now().Add(-time.Minute).UnixMilli()})
+	if data := e.Do("GET", "/gps/track?callsign=B0AB", "").JSON(t)["data"].([]any); len(data) != 1 {
+		t.Fatalf("callsign default range found %d points, want 1", len(data))
 	}
 }

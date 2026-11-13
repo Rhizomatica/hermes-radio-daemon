@@ -36,6 +36,11 @@ static radio           *s_radio;
 static pthread_mutex_t  s_mutex = PTHREAD_MUTEX_INITIALIZER;
 static radiod_api_gps   s_gps;
 
+/* The track's clock (gps_clock): the GPS time minus the system clock, from
+ * the last gpsd fix with a time, kept after the fix is lost. Under s_mutex. */
+static double s_clock_offset_s;
+static bool   s_has_clock_offset;
+
 static pthread_t    s_thread;
 static _Atomic bool s_thread_running;
 static bool         s_connected; /* reader thread only: gpsd is up */
@@ -184,11 +189,37 @@ static bool json_number(const char *json, size_t len, const char *key,
     return true;
 }
 
-/* The fix, and to the track (gps_track.h) with its horizontal accuracy in
- * metres (NAN if unknown) and its time (the fix's, else now). */
-static void gps_set_fix(int fix, double lat, double lon, double alt,
-                        bool has_alt, double time, bool has_time, double accuracy_m)
+static double system_now(void)
 {
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    return now.tv_sec + now.tv_usec / 1e6;
+}
+
+/* gps_clock with s_mutex held. */
+static double clock_locked(double system)
+{
+    return s_has_clock_offset ? system + s_clock_offset_s : system;
+}
+
+double gps_clock(void)
+{
+    double system = system_now();
+    pthread_mutex_lock(&s_mutex);
+    double t = clock_locked(system);
+    pthread_mutex_unlock(&s_mutex);
+    return t;
+}
+
+/* The fix, and to the track (gps_track.h) with its horizontal accuracy in
+ * metres (NAN if unknown) and its time: the fix's, else gps_clock. A fix
+ * whose time is the GPS's (gps_time: gpsd's, not geoclue's, which is the
+ * system clock's) also sets the clock. */
+static void gps_set_fix(int fix, double lat, double lon, double alt,
+                        bool has_alt, double time, bool has_time, bool gps_time,
+                        double accuracy_m)
+{
+    double system = system_now();
     pthread_mutex_lock(&s_mutex);
     s_gps.fix.fix = fix;
     s_gps.fix.has_position = fix != 0 && isfinite(lat) && isfinite(lon);
@@ -203,12 +234,15 @@ static void gps_set_fix(int fix, double lat, double lon, double alt,
     s_gps.fix.has_time = has_time && !isnan(time);
     if (s_gps.fix.has_time)
         s_gps.fix.time = time;
+    if (s_gps.fix.has_time && gps_time && fix != 0)
+    {
+        s_clock_offset_s = time - system;
+        s_has_clock_offset = true;
+    }
+    double at = s_gps.fix.has_time ? time : clock_locked(system);
     pthread_mutex_unlock(&s_mutex);
 
-    struct timeval now;
-    gettimeofday(&now, NULL);
-    gps_track_fix(fix, lat, lon, alt, has_alt, accuracy_m,
-                  has_time && !isnan(time) ? time : now.tv_sec + now.tv_usec / 1e6);
+    gps_track_fix(fix, lat, lon, alt, has_alt, accuracy_m, at);
 }
 
 /* One newline-terminated gpsd JSON object: a TPV becomes the fix. */
@@ -251,7 +285,7 @@ static void gps_handle_line(char *line)
     double eph = NAN;   /* gpsd's estimated horizontal error, metres */
     (void) json_number(line, len, "eph", &eph);
 
-    gps_set_fix(fix, lat, lon, alt, has_alt, time, has_time, eph);
+    gps_set_fix(fix, lat, lon, alt, has_alt, time, has_time, true, eph);
 }
 
 /* Connect to gpsd at s_host:s_port; -1 on failure. */
@@ -291,7 +325,7 @@ static void gps_sleep_ms(int ms)
  * a stale fix. */
 static void gps_clear_fix(void)
 {
-    gps_set_fix(0, NAN, NAN, NAN, false, NAN, false, NAN);
+    gps_set_fix(0, NAN, NAN, NAN, false, NAN, false, false, NAN);
 }
 
 /* The reader logs one line per state change, not once a second: up, then
@@ -505,7 +539,7 @@ static bool geoclue_position(DBusConnection *c)
     bool has_alt = has && (fields & GEOCLUE_FIELD_ALTITUDE);
     if (has)
         gps_set_fix(has_alt ? GPS_FIX_3D : GPS_FIX_2D, v[0], v[1], v[2], has_alt, (double) ts, true,
-                    accuracy);
+                    false, accuracy);
     else
         gps_clear_fix();
     return true;

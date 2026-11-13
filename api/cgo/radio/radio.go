@@ -304,6 +304,9 @@ type Radio interface {
 	// GpsTrackCount returns how many points a track has at times
 	// sinceMs..untilMs, without reading them: ErrInvalid as GpsTrack.
 	GpsTrackCount(station string, sinceMs, untilMs int64) (int, error)
+	// GpsTrackCounts is GpsTrackCount for many ranges at once (one pass
+	// over the track's files), a count for each range, in order.
+	GpsTrackCounts(station string, sinceMs, untilMs []int64) ([]int, error)
 	// GpsTrackFiles returns this station's track files (gps/gps_track.h,
 	// /gps/files), full paths, oldest first, the newest 65536 of them (none
 	// before the directory exists); each one's name, gps-YYYYMMDDTHHMMSSZ.trk,
@@ -342,6 +345,10 @@ type Radio interface {
 
 	// Gps is the station's own position and fix, and its GPS settings.
 	Gps() Gps
+	// GpsClockMs is now, unix milliseconds, on the clock this station's
+	// track points are stamped with (gps_clock in gps/gps.h): the system
+	// clock corrected by the last GPS fix's time.
+	GpsClockMs() int64
 	// SetGpsSettings applies the whole GPS settings (already validated by
 	// the handler). ErrInvalid outside the spec's ranges.
 	SetGpsSettings(GpsSettings) error

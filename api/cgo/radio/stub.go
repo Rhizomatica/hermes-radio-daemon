@@ -34,28 +34,30 @@ type Stub struct {
 	tracks        map[string][]GpsPoint
 	modem         jsontext.Value
 	// the broadcast plane and beacons: off until SetBroadcast
-	bcast       Broadcast
-	bcastErr    error
-	beacon      Beacon
-	stations    []BeaconStation
-	beaconSends int
-	transport   TransportSettings
-	gps         Gps
-	listen      string // mercury's listen mode
-	busy        string // "arq", "broadcast" or ""
-	link        bool   // an ARQ session up
-	chat        []ChatLine
-	gainDB      float64
-	wfall       bool
-	logs        []string
-	Sent        map[int64][][]byte // frames by connection; 0 = broadcast
-	closed      map[int64]WSCloseFrame
-	pttOwner    int64 // the hermes.v1 connection holding PTT, 0 for none
-	digiSent    []string
-	recRX       bool
-	recTX       bool
-	spectrum    map[[2]int64]bool
-	rtc         map[int64]RTCSession
+	bcast           Broadcast
+	bcastErr        error
+	beacon          Beacon
+	stations        []BeaconStation
+	beaconSends     int
+	transport       TransportSettings
+	gps             Gps
+	gpsClock        time.Duration // GpsClockMs's offset from the system clock
+	trackCountCalls int           // GpsTrackCounts calls, for tests
+	listen          string        // mercury's listen mode
+	busy            string        // "arq", "broadcast" or ""
+	link            bool          // an ARQ session up
+	chat            []ChatLine
+	gainDB          float64
+	wfall           bool
+	logs            []string
+	Sent            map[int64][][]byte // frames by connection; 0 = broadcast
+	closed          map[int64]WSCloseFrame
+	pttOwner        int64 // the hermes.v1 connection holding PTT, 0 for none
+	digiSent        []string
+	recRX           bool
+	recTX           bool
+	spectrum        map[[2]int64]bool
+	rtc             map[int64]RTCSession
 	// RTCMax is how many WebRTC sessions the stub takes (radiod's
 	// main:webrtc_max_sessions); 0 for none, as radiod without WebRTC.
 	RTCMax int
@@ -628,6 +630,31 @@ func (s *Stub) GpsTrackCount(station string, sinceMs, untilMs int64) (int, error
 	return len(r), err
 }
 
+func (s *Stub) GpsTrackCounts(station string, sinceMs, untilMs []int64) ([]int, error) {
+	if len(sinceMs) != len(untilMs) {
+		return nil, ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.trackCountCalls++
+	out := make([]int, len(sinceMs))
+	for i := range sinceMs {
+		r, err := s.gpsRange(station, sinceMs[i], untilMs[i])
+		if err != nil {
+			return nil, err
+		}
+		out[i] = len(r)
+	}
+	return out, nil
+}
+
+// TrackCountCalls is how many times GpsTrackCounts was called.
+func (s *Stub) TrackCountCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.trackCountCalls
+}
+
 // SetGpsTrackFiles sets what GpsTrackFiles returns.
 func (s *Stub) SetGpsTrackFiles(paths ...string) {
 	s.mu.Lock()
@@ -714,6 +741,19 @@ func (s *Stub) SetGpsFix(fix string, lat, lon, alt *float64, at *string) {
 	s.gps.Fix = fix
 	s.gps.Latitude, s.gps.Longitude, s.gps.AltitudeM, s.gps.At = lat, lon, alt, at
 	s.mu.Unlock()
+}
+
+// SetGpsClock puts the track's clock at t now; it then runs on from there.
+func (s *Stub) SetGpsClock(t time.Time) {
+	s.mu.Lock()
+	s.gpsClock = time.Until(t)
+	s.mu.Unlock()
+}
+
+func (s *Stub) GpsClockMs() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return time.Now().Add(s.gpsClock).UnixMilli()
 }
 
 func (s *Stub) Gps() Gps {

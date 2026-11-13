@@ -29,6 +29,13 @@ void gps_shutdown(void);
 /* The latest fix and the settings, safe from any thread. */
 void gps_latest(radiod_api_gps *out);
 
+/* Now, unix seconds, on the track's clock: the clock its points are stamped
+ * with. The system clock corrected by the GPS time of the last gpsd fix with
+ * a time (the correction is kept after the fix is lost), the system clock
+ * before the first. Trips (api/internal/gps/trip.go) take their bounds from
+ * it, so a station whose system clock is off still finds its own points. */
+double gps_clock(void);
+
 /* Validate the settings against the spec's ranges and, if valid, apply and
  * save them to core.ini.  Returns a RADIOD_API_* code. */
 int gps_settings_apply(const radiod_api_gps_settings *s);

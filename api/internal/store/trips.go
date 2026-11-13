@@ -1,0 +1,144 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+// tripTimeLayout is how started_at and ended_at are stored: UTC with
+// milliseconds, as the column default writes them, so they sort as text.
+const tripTimeLayout = "2006-01-02T15:04:05.000Z"
+
+func tripTime(at time.Time) string { return at.UTC().Format(tripTimeLayout) }
+
+var (
+	// ErrTripOpen is returned when an open trip already exists.
+	ErrTripOpen = errors.New("a trip is already open")
+)
+
+// Trip is one row of the trips table. EndedAt is nil while the trip is open.
+type Trip struct {
+	ID        int64
+	Name      string
+	StartedAt string
+	EndedAt   *string
+}
+
+const tripCols = "id, name, started_at, ended_at"
+
+// OpenTrip inserts a new open trip (ended_at null) starting at at, and
+// returns it. The caller gives the time so that it is on the track's clock.
+func (s *Store) OpenTrip(ctx context.Context, name string, at time.Time) (Trip, error) {
+	res, err := s.db.ExecContext(ctx, `INSERT INTO trips (name, started_at) VALUES (?, ?)`, name, tripTime(at))
+	if err != nil {
+		if isUniqueViolation(err) {
+			return Trip{}, ErrTripOpen
+		}
+		return Trip{}, fmt.Errorf("open trip: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return Trip{}, err
+	}
+	return s.TripByID(ctx, id)
+}
+
+// CurrentTrip returns the open trip (ended_at null), ok false when none is
+// open. With at most one open trip, the highest id is the open one.
+func (s *Store) CurrentTrip(ctx context.Context) (Trip, bool, error) {
+	t, err := scanTrip(s.db.QueryRowContext(ctx,
+		`SELECT `+tripCols+` FROM trips WHERE ended_at IS NULL ORDER BY id DESC LIMIT 1`))
+	if err == sql.ErrNoRows {
+		return Trip{}, false, nil
+	}
+	if err != nil {
+		return Trip{}, false, err
+	}
+	return t, true, nil
+}
+
+// CloseTrip sets ended_at to at on the open trip with id, and returns it.
+func (s *Store) CloseTrip(ctx context.Context, id int64, at time.Time) (Trip, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE trips SET ended_at = ? WHERE id = ? AND ended_at IS NULL`, tripTime(at), id)
+	if err != nil {
+		return Trip{}, fmt.Errorf("close trip %d: %w", id, err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return Trip{}, sql.ErrNoRows
+	}
+	return s.TripByID(ctx, id)
+}
+
+// TripByID returns one trip, or sql.ErrNoRows.
+func (s *Store) TripByID(ctx context.Context, id int64) (Trip, error) {
+	return scanTrip(s.db.QueryRowContext(ctx,
+		`SELECT `+tripCols+` FROM trips WHERE id = ?`, id))
+}
+
+// ListTrips returns one page of trips, newest first, and the id to use as the
+// next cursor (0 on the last page).
+func (s *Store) ListTrips(ctx context.Context, limit int, cursor int64) ([]Trip, int64, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if cursor > 0 {
+		// The cursor is the previous page's last id; its started_at keeps the
+		// newest-first order exact when two trips share a timestamp.
+		var at string
+		err = s.db.QueryRowContext(ctx, `SELECT started_at FROM trips WHERE id = ?`, cursor).Scan(&at)
+		if err != nil && err != sql.ErrNoRows {
+			return nil, 0, err
+		}
+		if err == nil {
+			rows, err = s.db.QueryContext(ctx,
+				`SELECT `+tripCols+` FROM trips
+				 WHERE started_at < ? OR (started_at = ? AND id < ?)
+				 ORDER BY started_at DESC, id DESC LIMIT ?`,
+				at, at, cursor, limit+1)
+		} else {
+			rows, err = s.db.QueryContext(ctx,
+				`SELECT `+tripCols+` FROM trips WHERE id < ? ORDER BY started_at DESC, id DESC LIMIT ?`,
+				cursor, limit+1)
+		}
+	} else {
+		rows, err = s.db.QueryContext(ctx,
+			`SELECT `+tripCols+` FROM trips ORDER BY started_at DESC, id DESC LIMIT ?`, limit+1)
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var out []Trip
+	for rows.Next() {
+		t, err := scanTrip(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	// Fetch one extra to know whether another page follows.
+	var next int64
+	if len(out) > limit {
+		out = out[:limit]
+		next = out[len(out)-1].ID
+	}
+	return out, next, nil
+}
+
+func scanTrip(sc interface{ Scan(...any) error }) (Trip, error) {
+	var t Trip
+	var ended sql.NullString
+	if err := sc.Scan(&t.ID, &t.Name, &t.StartedAt, &ended); err != nil {
+		return Trip{}, err
+	}
+	t.EndedAt = ns(ended)
+	return t, nil
+}

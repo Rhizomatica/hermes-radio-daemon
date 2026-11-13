@@ -625,6 +625,12 @@ long radiod_api_gps_track_count(const char *station, int64_t since_ms, int64_t u
     return n < 0 ? RADIOD_API_EINVAL : n;
 }
 
+int radiod_api_gps_track_counts(const char *station, int n, const int64_t *since_ms,
+                                const int64_t *until_ms, long *out)
+{
+    return gps_track_counts(station, n, since_ms, until_ms, out) < 0 ? RADIOD_API_EINVAL : 0;
+}
+
 bool radiod_api_gps_track_files(char *out, size_t out_len)
 {
     return gps_track_files(out, out_len);
@@ -662,6 +668,13 @@ bool radiod_api_modem_status(char *out, size_t out_len)
 void radiod_api_gps_get(radiod_api_gps *out)
 {
     gps_latest(out);
+}
+
+#define API_MS_PER_S 1000.0   /* gps_clock's seconds to the API's milliseconds */
+
+int64_t radiod_api_gps_clock_ms(void)
+{
+    return llround(gps_clock() * API_MS_PER_S);
 }
 
 int radiod_api_gps_settings_set(const radiod_api_gps_settings *s)
