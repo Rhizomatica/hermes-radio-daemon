@@ -97,6 +97,25 @@ static radio *radio_h_dsp;
 
 #define MAX_SAMPLE_VALUE 8388607.0 // (2 ^ 23) - 1,  signed(?) 24 bits packed in a SIGNED 32 LE
 
+/* The TX output's scale before the band multiplier and the power level.
+ * Voice has ~10 dB of peak-to-average ratio; digital voice has much less
+ * (RADE's OFDM after its clipper) or none (D-STAR's GMSK through the FM
+ * modulator), so at the voice scale the PA sees ~10 dB more average power,
+ * saturates and splatters, and the power level barely changes the output.
+ * Measured with a through-line wattmeter into a dummy load at 7.05 MHz
+ * (band scale 1.5), at 20, 40, 60, 80 and 100%:
+ * - D-STAR at 500 read 0.5, 2.8, 6, 12 and 16 W; at 580, 0.8, 4, 9, 14
+ *   and 17 W. The PA saturates near 17 W, so more drive adds little;
+ * - RADEv2 at 500 read 0.1, 0.8, 1.5, 2.5 and 4.5 W average; at 650,
+ *   0.3, 1.3, 3, 5.8 and 8.5 W. Its peaks run well above the average and
+ *   at 100% they reach the PA's limit. At 720 it read 2.8 W: the peaks
+ *   passed the 24-bit sample range and wrapped around. With the
+ *   conversion below clamping them, 720 reads 10 W.
+ * The sBitx's own meter read ~40% above the wattmeter at the top. */
+#define TX_SCALE_VOICE  4000.0
+#define TX_SCALE_RADE    720.0
+#define TX_SCALE_DSTAR   580.0
+
 
 fftw_complex *fft_freq;
 fftw_complex *fft_time;
@@ -3063,16 +3082,22 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
 
     double multiplier = get_band_multiplier() * (double) radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].power_level_percentage / 100.0;
     RADAE_AMPL_LOG("tx_ssb mult*pct", multiplier);
-    // DV is constant-envelope (PAR ~0 dB) where voice has ~10 dB PAR, so at
-    // equal peak the PA sees ~10 dB more average power and splatters. Scale
-    // DV so its peak lands below SSB voice peak (~4.5e8 on this radio).
-    const double tx_scale = digital_voice ? 400.0 : 4000.0;
+    // D-STAR is its own mode, which the D-STAR codec sets; RADE is the
+    // digital_voice flag on a voice mode.
+    const double tx_scale = tx_mode_for_sb == MODE_DSTAR ? TX_SCALE_DSTAR
+                          : digital_voice ? TX_SCALE_RADE : TX_SCALE_VOICE;
     for (i = 0; i < MAX_BINS / 2; i++)
     {
         double _ssb_pre = creal(fft_time[i+(MAX_BINS/2)]);
         RADAE_AMPL_LOG("tx_ssb fft_time_re", _ssb_pre);
-        signal_output_int[i] = (int32_t) (_ssb_pre * tx_scale * multiplier);
-        signal_output_int[i] <<= 8;
+        // Clamp to the 24-bit range before the shift: a peak past it
+        // would wrap around and flip sign, not clip.
+        double v = _ssb_pre * tx_scale * multiplier;
+        if (v > MAX_SAMPLE_VALUE)
+            v = MAX_SAMPLE_VALUE;
+        else if (v < -MAX_SAMPLE_VALUE)
+            v = -MAX_SAMPLE_VALUE;
+        signal_output_int[i] = (int32_t) v * 256;
         RADAE_AMPL_LOG("tx_ssb dac_int32", signal_output_int[i]);
     }
 
