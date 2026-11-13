@@ -181,6 +181,20 @@ func TestReadonlyCanChangeOwnPassword(t *testing.T) {
 	e.Login("reader", "newpass99")
 }
 
+func TestNonAdminCannotResetAnotherPassword(t *testing.T) {
+	e := testapi.NewAuth(t)
+	bobID := e.SeedUser("bob", "password1", "user")
+	otherID := e.SeedUser("other", "password1", "user")
+	bt := e.Login("bob", "password1")
+
+	if r := e.DoAuth("PUT", "/users/"+itoa(otherID)+"/password", `{"new_password":"newpass99"}`, bt); r.Status != 403 {
+		t.Fatalf("non-admin reset other = %d, want 403", r.Status)
+	}
+	if r := e.DoAuth("PUT", "/users/"+itoa(bobID)+"/password", `{"current_password":"password1","new_password":"newpass99"}`, bt); r.Status != 204 {
+		t.Fatalf("non-admin reset self = %d", r.Status)
+	}
+}
+
 func TestReadonlySelfService(t *testing.T) {
 	e := testapi.NewAuth(t)
 	id := e.SeedUser("reader", "password1", "readonly")

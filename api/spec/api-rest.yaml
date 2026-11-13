@@ -2642,7 +2642,10 @@ components:
       type: object
       required: [username, password]
       properties:
-        username: {type: string, pattern: "^[a-z0-9._-]{1,32}$"}
+        username:
+          type: string
+          pattern: "^[a-z0-9._-]{1,32}$"
+          description: "`root` is reserved for the station's recovery account."
         password: {type: string, minLength: 8, writeOnly: true}
         display_name:
           type: [string, "null"]
@@ -3757,7 +3760,10 @@ components:
           type: object
           required: [username, password]
           properties:
-            username: {type: string, pattern: "^[a-z0-9._-]{1,32}$"}
+            username:
+              type: string
+              pattern: "^[a-z0-9._-]{1,32}$"
+              description: "`root` is reserved for the station's recovery account."
             display_name:
               type: [string, "null"]
               maxLength: 64

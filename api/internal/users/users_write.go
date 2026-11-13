@@ -22,7 +22,7 @@ func (h *handlers) update(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if u.Username == "root" {
+	if u.Username == store.RootUsername {
 		api.Problem(w, r, http.StatusForbidden, "forbidden", "root cannot be changed", nil)
 		return
 	}
@@ -132,7 +132,7 @@ func (h *handlers) delete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if u.Username == "root" {
+	if u.Username == store.RootUsername {
 		api.Problem(w, r, http.StatusForbidden, "forbidden", "root cannot be deleted", nil)
 		return
 	}
@@ -155,7 +155,7 @@ func (h *handlers) setPassword(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if u.Username == "root" {
+	if u.Username == store.RootUsername {
 		api.Problem(w, r, http.StatusForbidden, "forbidden", "root's password cannot be changed", nil)
 		return
 	}

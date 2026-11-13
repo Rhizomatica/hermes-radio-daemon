@@ -101,6 +101,14 @@ func TestSetupStatusAndRun(t *testing.T) {
 	}
 }
 
+func TestSetupRejectsReservedRoot(t *testing.T) {
+	rt := newRouter(t, "abc123")
+	withRoot := strings.Replace(body, `"alice"`, `"root"`, 1)
+	if w := do(rt, "POST", "/setup", withRoot); w.Code != 422 {
+		t.Fatalf("setup as root = %d, want 422: %s", w.Code, w.Body)
+	}
+}
+
 func TestSetupLockout(t *testing.T) {
 	rt := newRouter(t, "abc123")
 

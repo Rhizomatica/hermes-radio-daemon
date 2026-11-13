@@ -54,11 +54,10 @@ func HermesInit() {
 		slog.Error("cannot open the API database; /api/v2 serves without sessions", "error", err)
 		router = station.NewRouter(r)
 	} else {
-		if made, err := setup.EnsureDefaultAdmin(context.Background(), st); err != nil {
-			slog.Error("cannot create the default admin", "error", err)
+		if made, err := setup.EnsureRoot(context.Background(), st); err != nil {
+			slog.Error("cannot seed the root recovery account", "error", err)
 		} else if made {
-			slog.Warn("no users: created the default admin (root is a recovery account)",
-				"username", setup.DefaultAdminUsername)
+			slog.Warn("seeded the root recovery account", "username", store.RootUsername)
 		}
 		router = station.NewAuthenticatedRouter(r, st, setup.Config{SetupCodePath: cfg.SetupCodePath})
 	}

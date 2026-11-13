@@ -32,6 +32,10 @@ func TestCreateAndListUsers(t *testing.T) {
 	if r := e.DoAuth("POST", "/users", `{"username":"B ob","password":"short"}`, at); r.Status != 422 {
 		t.Fatalf("invalid create = %d, want 422", r.Status)
 	}
+	// root is reserved for the recovery account.
+	if r := e.DoAuth("POST", "/users", `{"username":"root","password":"password1"}`, at); r.Status != 422 {
+		t.Fatalf("create root = %d, want 422", r.Status)
+	}
 
 	r = e.DoAuth("GET", "/users", "", at)
 	if r.Status != 200 {

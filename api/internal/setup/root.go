@@ -2,37 +2,46 @@ package setup
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 
-	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/passwd"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/store"
 )
 
-// The admin every HERMES station starts with, as hermes-api seeds it: a
-// station is reachable as soon as it is installed, with no setup step.
-// It is a recovery account: root cannot be changed, disabled or deleted,
-// so its password stays the one seeded here.
-const (
-	DefaultAdminUsername = "root"
-	DefaultAdminPassword = "caduceu"
-)
-
-// EnsureDefaultAdmin creates the default admin and marks first-boot setup
-// done when the station has no users at all. A station that has any user,
-// or has completed setup, is left as it is. Reports whether it created one.
-func EnsureDefaultAdmin(ctx context.Context, st *store.Store) (bool, error) {
-	n, err := st.CountUsers(ctx)
-	if err != nil || n > 0 {
+// EnsureRoot seeds the station's root recovery account when it is missing.
+// On a fresh database it also marks first-boot setup done, so the station
+// is reachable as soon as it is installed. An existing account is left as
+// it is. Reports whether it created root.
+func EnsureRoot(ctx context.Context, st *store.Store) (bool, error) {
+	if _, err := st.UserByUsername(ctx, store.RootUsername); err == nil {
+		return false, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
-	hash, err := passwd.Hash(DefaultAdminPassword)
+
+	n, err := st.CountUsers(ctx)
 	if err != nil {
 		return false, err
 	}
-	_, err = st.CompleteSetup(ctx, store.NewUser{
-		Username: DefaultAdminUsername, PasswordHash: hash, Role: "admin",
-	}, map[string]string{"setup.done": "1"})
-	if err == store.ErrSetupDone {
-		return false, nil // setup ran before and its admin was deleted since: leave it so
+	if n == 0 {
+		_, err = st.CompleteSetup(ctx, store.NewUser{
+			Username: store.RootUsername, PasswordHash: rootSeedHash, Role: "admin",
+		}, map[string]string{"setup.done": "1"})
+		if err == nil {
+			return true, nil
+		}
+		if !errors.Is(err, store.ErrSetupDone) {
+			return false, err
+		}
+		// Setup won the race and may have created another admin; seed root
+		// below if that admin is not root.
+	}
+
+	_, err = st.CreateUser(ctx, store.NewUser{
+		Username: store.RootUsername, PasswordHash: rootSeedHash, Role: "admin",
+	})
+	if errors.Is(err, store.ErrUsernameTaken) {
+		return false, nil
 	}
 	return err == nil, err
 }

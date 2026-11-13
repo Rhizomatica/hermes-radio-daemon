@@ -51,6 +51,8 @@ func (h *handlers) create(w http.ResponseWriter, r *http.Request) {
 	f := api.Fields{}
 	if !usernameRe.MatchString(req.Username) {
 		f.Add("username", "1 to 32 characters: a-z, 0-9, . _ -")
+	} else if req.Username == store.RootUsername {
+		f.Add("username", "reserved")
 	}
 	if len(req.Password) < 8 {
 		f.Add("password", "at least 8 characters")

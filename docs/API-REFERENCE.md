@@ -518,7 +518,7 @@ Also creates the Postfix/Dovecot mailbox through the station's `email_create_use
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `username` | string | yes | pattern `^[a-z0-9._-]{1,32}$` |
+| `username` | string | yes | `root` is reserved for the station's recovery account; pattern `^[a-z0-9._-]{1,32}$` |
 | `password` | string | yes | min length 8; write-only |
 | `display_name` | string or null |  | Human name, optional; when null the UI shows the username; max length 64 |
 | `role` | [Role](#schema-role) |  |  |
@@ -4213,7 +4213,7 @@ Type: one of `uucp`, `nncp`, `reticulum`
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `username` | string | yes | pattern `^[a-z0-9._-]{1,32}$` |
+| `username` | string | yes | `root` is reserved for the station's recovery account; pattern `^[a-z0-9._-]{1,32}$` |
 | `password` | string | yes | min length 8; write-only |
 | `display_name` | string or null |  | Human name, optional; when null the UI shows the username; max length 64 |
 | `role` | [Role](#schema-role) |  |  |

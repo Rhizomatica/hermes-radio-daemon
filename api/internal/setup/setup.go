@@ -141,6 +141,8 @@ func (h *handlers) run(w http.ResponseWriter, r *http.Request) {
 	}
 	if !usernameRe.MatchString(req.Admin.Username) {
 		f.Add("admin.username", "1 to 32 characters: a-z, 0-9, . _ -")
+	} else if req.Admin.Username == store.RootUsername {
+		f.Add("admin.username", "reserved")
 	}
 	if len(req.Admin.Password) < 8 {
 		f.Add("admin.password", "at least 8 characters")
