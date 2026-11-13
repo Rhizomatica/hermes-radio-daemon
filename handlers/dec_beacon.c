@@ -44,6 +44,9 @@
 /* The send time's digits: unix milliseconds have 13 until the year 2286. */
 #define SENT_DIGITS_MAX 15
 
+/* A file name: <via>-<sent ms>-<sec>.<ns>-<pid>, under 64 characters. */
+#define DROP_NAME_LEN 80
+
 #define MS_PER_S  1000LL
 #define NS_PER_MS 1000000L
 
@@ -106,7 +109,7 @@ int main(int argc, char **argv)
     clock_gettime(CLOCK_REALTIME, &ts);
     if (sent == 0)
         sent = (long long) ts.tv_sec * MS_PER_S + ts.tv_nsec / NS_PER_MS;
-    char name[80], tmp[sizeof name + 1], path[sizeof BEACON_DROP_DIR + sizeof tmp + 1];
+    char name[DROP_NAME_LEN], tmp[sizeof name + 1], path[sizeof BEACON_DROP_DIR + sizeof tmp + 1];
     char final[sizeof path];
     snprintf(name, sizeof name, "%s-%lld-%lld.%09ld-%ld", via(), sent, (long long) ts.tv_sec,
              ts.tv_nsec, (long) getpid());
