@@ -5,7 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
+
+// tripTimeLayout is how started_at and ended_at are stored: UTC with
+// milliseconds, as the column default writes them, so they sort as text.
+const tripTimeLayout = "2006-01-02T15:04:05.000Z"
+
+func tripTime(at time.Time) string { return at.UTC().Format(tripTimeLayout) }
 
 var (
 	// ErrTripOpen is returned when an open trip already exists.
@@ -22,9 +29,10 @@ type Trip struct {
 
 const tripCols = "id, name, started_at, ended_at"
 
-// OpenTrip inserts a new open trip (ended_at null) and returns it.
-func (s *Store) OpenTrip(ctx context.Context, name string) (Trip, error) {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO trips (name) VALUES (?)`, name)
+// OpenTrip inserts a new open trip (ended_at null) starting at at, and
+// returns it. The caller gives the time so that it is on the track's clock.
+func (s *Store) OpenTrip(ctx context.Context, name string, at time.Time) (Trip, error) {
+	res, err := s.db.ExecContext(ctx, `INSERT INTO trips (name, started_at) VALUES (?, ?)`, name, tripTime(at))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return Trip{}, ErrTripOpen
@@ -52,10 +60,10 @@ func (s *Store) CurrentTrip(ctx context.Context) (Trip, bool, error) {
 	return t, true, nil
 }
 
-// CloseTrip sets ended_at on the open trip with id, and returns it.
-func (s *Store) CloseTrip(ctx context.Context, id int64) (Trip, error) {
+// CloseTrip sets ended_at to at on the open trip with id, and returns it.
+func (s *Store) CloseTrip(ctx context.Context, id int64, at time.Time) (Trip, error) {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE trips SET ended_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND ended_at IS NULL`, id)
+		`UPDATE trips SET ended_at = ? WHERE id = ? AND ended_at IS NULL`, tripTime(at), id)
 	if err != nil {
 		return Trip{}, fmt.Errorf("close trip %d: %w", id, err)
 	}

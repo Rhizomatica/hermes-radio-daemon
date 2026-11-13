@@ -241,14 +241,17 @@ func TestGPSTripRecording(t *testing.T) {
 		t.Fatalf("no 3-D fix within 10 s (last %d %s)", r.status, r.raw)
 	}
 
-	// Open before logging starts, so the track's first point is in the trip.
+	// Logging is off; opening the trip turns it on, so the track's first
+	// point is in the trip.
 	r = callAuth(t, "POST", base+"/gps/trip/open", `{"name":"Recording"}`, token)
 	if r.status != 200 {
 		t.Fatalf("open = %d %s", r.status, r.raw)
 	}
 	id := r.body["id"].(float64)
-	if r = callAuth(t, "PATCH", base+"/gps/settings", `{"logging":true}`, token); r.status != 200 {
-		t.Fatalf("enable logging = %d %s", r.status, r.raw)
+	if r = callAuth(t, "GET", base+"/gps", "", token); r.status != 200 {
+		t.Fatalf("GET /gps = %d %s", r.status, r.raw)
+	} else if s, _ := r.body["settings"].(map[string]any); s == nil || s["logging"] != true {
+		t.Fatalf("logging after open = %s", r.raw)
 	}
 
 	// The trip reads the track recorded while it is open.

@@ -472,7 +472,8 @@ than that means no fix (or, for another station, no beacon heard).
 
 A trip is a named time range of the station's track, so its breadcrumb is read from the same
 positions as `GET /gps/track`; there is no second recording. Open one with a name (operator), read it
-while it is open, then close it. Closing does not open another, and at most one is open at a time.
+while it is open, then close it. Opening turns position logging on if it is off; closing leaves it on.
+Closing does not open another, and at most one is open at a time.
 
 ```bash
 curl -sS -X POST "$BASE/gps/trip/open" \
@@ -482,13 +483,19 @@ curl -sS "$BASE/gps/trip" -H "Authorization: Bearer $TOKEN"
 curl -sS -X POST "$BASE/gps/trip/close" -H "Authorization: Bearer $TOKEN"
 ```
 
+The open answers the new trip:
+
 ```json
-{"id":1,"name":"Field day","started_at":"2026-11-09T08:00:00.000Z","ended_at":null,"point_count":18}
+{"id":1,"name":"Field day","started_at":"2026-11-09T08:00:00.000Z","ended_at":null,"point_count":0}
 ```
+
+A trip's times are on the track's clock, the GPS fix's time while there is a fix, as the track's
+points are, so a station with a wrong system clock still finds its points.
 
 `GET /gps/trips` lists trips newest first, each with a `point_count` (read without loading the points).
 `GET /gps/trips/{trip_id}` and `GET /gps/trip` page the points oldest first (`limit`, default 50, at
-most 200). Open trips end at now, so their count grows while logging records points.
+most 200). Open trips end at now, so their count grows while logging records points. The track's
+files are trimmed oldest first (`gps_log_max_mb`), so an old trip can lose points; the trip stays.
 
 ### Not available yet
 

@@ -3,6 +3,7 @@ package gps_test
 import (
 	"net/url"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -197,5 +198,86 @@ func TestTripPagesSameTime(t *testing.T) {
 		if want := float64(194300000+i) / 1e7; lat != want {
 			t.Errorf("point %d = %v, want %v", i, lat, want)
 		}
+	}
+}
+
+func TestTripTurnsLoggingOn(t *testing.T) {
+	e := testapi.NewAuth(t)
+	e.SeedUser("admin", "password", "admin")
+	token := e.Login("admin", "password")
+	logging := func() bool { return e.Radio.Gps().Settings.Logging }
+
+	if logging() {
+		t.Fatal("the stub starts with logging on")
+	}
+	trip := openTrip(t, e, token, "Field day")
+	if !logging() {
+		t.Fatal("opening a trip left logging off")
+	}
+
+	// A refused open changes nothing, logging included.
+	if r := e.DoAuth("PATCH", "/gps/settings", `{"logging":false}`, token); r.Status != 200 {
+		t.Fatalf("logging off = %d %s", r.Status, r.Body)
+	}
+	if r := e.DoAuth("POST", "/gps/trip/open", `{"name":"Another"}`, token); r.Status != 409 {
+		t.Fatalf("open while open = %d %s", r.Status, r.Body)
+	}
+	if logging() {
+		t.Fatal("a refused open turned logging on")
+	}
+
+	// Closing leaves logging as it is.
+	if r := e.DoAuth("PATCH", "/gps/settings", `{"logging":true}`, token); r.Status != 200 {
+		t.Fatalf("logging on = %d %s", r.Status, r.Body)
+	}
+	if r := e.DoAuth("POST", "/gps/trip/close", "", token); r.Status != 200 || r.JSON(t)["id"] != trip["id"] {
+		t.Fatalf("close = %d %s", r.Status, r.Body)
+	}
+	if !logging() {
+		t.Fatal("closing a trip turned logging off")
+	}
+}
+
+// A trip's bounds are on the track's clock: the GPS fix's time, not the
+// system clock, so a station whose system clock is off still finds its points.
+func TestTripUsesTheFixClock(t *testing.T) {
+	e := testapi.NewAuth(t)
+	e.SeedUser("admin", "password", "admin")
+	token := e.Login("admin", "password")
+
+	lat, lon, fixAt := 4.6, -74.1, "2030-01-01T00:00:00Z"
+	e.Radio.SetGpsFix("3d", &lat, &lon, nil, &fixAt)
+	at := time.Date(2030, 1, 1, 0, 0, 0, 500*int(time.Millisecond), time.UTC).UnixMilli()
+	e.Radio.SetGpsTrack("", rad.GpsPoint{AtMs: at, LatE7: 46000000, LonE7: -741000000, Fix: rad.GpsFix3D})
+
+	trip := openTrip(t, e, token, "Clock")
+	if trip["started_at"] != "2030-01-01T00:00:00.000Z" {
+		t.Fatalf("started_at = %v, want the fix's time", trip["started_at"])
+	}
+	// The point recorded later in the fix's second is in the open trip.
+	if r := e.DoAuth("GET", "/gps/trip", "", token); r.Status != 200 || len(r.JSON(t)["data"].([]any)) != 1 {
+		t.Fatalf("open trip points = %d %s", r.Status, r.Body)
+	}
+	r := e.DoAuth("POST", "/gps/trip/close", "", token)
+	if j := r.JSON(t); r.Status != 200 || j["ended_at"] != "2030-01-01T00:00:00.999Z" || j["point_count"].(float64) != 1 {
+		t.Fatalf("close = %d %s", r.Status, r.Body)
+	}
+}
+
+func TestTripNameLength(t *testing.T) {
+	e := testapi.NewAuth(t)
+	e.SeedUser("admin", "password", "admin")
+	token := e.Login("admin", "password")
+
+	// The limit counts characters, not bytes.
+	long := strings.Repeat("ç", 64)
+	if r := e.DoAuth("POST", "/gps/trip/open", `{"name":"`+long+`"}`, token); r.Status != 200 {
+		t.Fatalf("64 characters = %d %s", r.Status, r.Body)
+	}
+	if r := e.DoAuth("POST", "/gps/trip/close", "", token); r.Status != 200 {
+		t.Fatalf("close = %d %s", r.Status, r.Body)
+	}
+	if r := e.DoAuth("POST", "/gps/trip/open", `{"name":"`+long+`ç"}`, token); r.Status != 422 {
+		t.Fatalf("65 characters = %d %s", r.Status, r.Body)
 	}
 }

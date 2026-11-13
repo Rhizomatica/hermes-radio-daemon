@@ -2879,9 +2879,10 @@ curl -sS -X GET "$BASE/gps/track" \
 The station's open trip and the points of its track between `started_at` and
 now, oldest first, so the map can draw the breadcrumb. The points are the
 station's track (see `GET /gps/track`), not a separate recording: they appear
-once position logging has recorded them. A trip opens only via
-`POST /gps/trip/open` and closes via `POST /gps/trip/close`; `ended_at` is null
-until then. No trip is open by default, and with none open this answers 404.
+once position logging has recorded them (opening a trip turns logging on). A
+trip opens only via `POST /gps/trip/open` and closes via `POST /gps/trip/close`;
+`ended_at` is null until then. No trip is open by default, and with none open
+this answers 404. A `cursor` never reaches outside the trip's range.
 
 **Parameters**
 
@@ -2914,16 +2915,18 @@ curl -sS -X GET "$BASE/gps/trip" \
 - Status: **implemented**
 
 Opens a trip: a named time range of the station's track, from now until it is
-closed. Its points are whatever the track records in that range, so logging
-should be on (`PATCH /gps/settings`). There is at most one open trip, enforced
-in the database: while one is open this answers 409, so close it first
-(`POST /gps/trip/close`). Closing a trip does not open a new one.
+closed. Its points are whatever the track records in that range, so opening a
+trip turns position logging on (`GpsSettings.logging`) when it is off; closing
+the trip leaves logging as it is. `started_at` is now on the track's clock (see
+`Trip`). There is at most one open trip, enforced in the database: while one is
+open this answers 409, so close it first (`POST /gps/trip/close`). A refused
+open changes nothing, logging included. Closing a trip does not open a new one.
 
 **Request body** (`application/json`, required): object
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `name` | string | yes | A label for the list and the map, e.g. Field day; min length 1; max length 64 |
+| `name` | string | yes | A label for the list and the map, e.g. Field day. Leading and trailing spaces are dropped; the length is in characters; min length 1; max length 64 |
 
 **Responses**
 
@@ -2953,10 +2956,10 @@ curl -sS -X POST "$BASE/gps/trip/open" \
 - Role: **operator**
 - Status: **implemented**
 
-Sets `ended_at` on the open trip, ending its time range; it does not open a new
-one: open another with `POST /gps/trip/open`. The track keeps its points, so
-closed trips stay in the history. Returns the trip that was closed, with the
-number of points in its range.
+Sets `ended_at` on the open trip to the end of the current second on the track's
+clock (see `Trip`), ending its time range; it does not open a new one: open
+another with `POST /gps/trip/open`. Position logging stays as it is. Returns
+the trip that was closed, with the number of points in its range.
 
 **Responses**
 
@@ -2982,7 +2985,9 @@ curl -sS -X POST "$BASE/gps/trip/close" \
 - Status: **implemented**
 
 Each trip's `point_count` is the number of points of the station's track in its
-time range, read without loading them.
+time range, read without loading them. The track's files are trimmed oldest
+first (`main:gps_log_max_mb` in core.ini, and `DELETE /gps/files`), so an old
+trip can come to have fewer points than it had, or none; the trip itself stays.
 
 **Parameters**
 
@@ -3014,7 +3019,8 @@ curl -sS -X GET "$BASE/gps/trips" \
 - Status: **implemented**
 
 The trip's points are the station's track between `started_at` and `ended_at`
-(or now while it is open), oldest first.
+(or now while it is open), oldest first. Points in track files that were trimmed
+or deleted are gone (see `GET /gps/trips`).
 
 **Parameters**
 
@@ -4340,9 +4346,9 @@ Type: one of `uucp`, `nncp`, `reticulum`
 | --- | --- | --- | --- |
 | `id` | integer (int64) | yes |  |
 | `name` | string | yes | The label given to POST /gps/trip/open; max length 64 |
-| `started_at` | [Timestamp](#schema-timestamp) | yes | ISO 8601, UTC |
-| `ended_at` | [Timestamp](#schema-timestamp) or null |  | Null while the trip is open |
-| `point_count` | integer |  | Points of the station's track in the trip's time range |
+| `started_at` | [Timestamp](#schema-timestamp) | yes | When the trip opened, on the track's clock: the GPS fix's time while there is a fix with a time, the system clock otherwise. The track stamps its points the same way, so a trip finds its points even when the system clock is off |
+| `ended_at` | [Timestamp](#schema-timestamp) or null |  | When the trip closed, on the track's clock as `started_at`; null while the trip is open |
+| `point_count` | integer |  | Points of the station's track in the trip's time range. Absent only in the reply to an open or close whose trip changed but whose track could not be read just then; read the trip again for it |
 
 <a id="schema-user"></a>
 ### User
