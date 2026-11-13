@@ -57,7 +57,7 @@ func HermesInit() {
 		if made, err := setup.EnsureDefaultAdmin(context.Background(), st); err != nil {
 			slog.Error("cannot create the default admin", "error", err)
 		} else if made {
-			slog.Warn("no users: created the default admin; change its password",
+			slog.Warn("no users: created the default admin (root is a recovery account)",
 				"username", setup.DefaultAdminUsername)
 		}
 		router = station.NewAuthenticatedRouter(r, st, setup.Config{SetupCodePath: cfg.SetupCodePath})

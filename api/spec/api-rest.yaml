@@ -408,8 +408,8 @@ paths:
     patch:
       tags: [users]
       operationId: updateUser
-      summary: Change a user (admins; users may change their own display name, phone and location).
-      x-hermes-role: user
+      summary: Change a user (admins; anyone may change their own display name, phone and location; `root` cannot be changed).
+      x-hermes-role: readonly
       requestBody:
         required: true
         content:
@@ -427,7 +427,7 @@ paths:
     delete:
       tags: [users]
       operationId: deleteUser
-      summary: Delete a user and their mailbox (`root` cannot be deleted).
+      summary: Delete a user and their mailbox (admins may delete themselves; `root` cannot be deleted).
       x-hermes-role: admin
       responses:
         "204": {description: Deleted.}
@@ -439,7 +439,7 @@ paths:
     put:
       tags: [users]
       operationId: setPassword
-      summary: Set a password (the user, with the current one; or an admin). Updates the mailbox too.
+      summary: Set a password (the user, with the current one; or an admin; `root`'s password cannot be changed). Updates the mailbox too.
       x-hermes-role: readonly
       requestBody:
         required: true
@@ -2654,7 +2654,7 @@ components:
         location: {type: string}
     UserPatch:
       type: object
-      description: Only admins may change `role` or `disabled`.
+      description: Only admins may change `role`, `locale` or `disabled`.
       properties:
         display_name: {type: string, maxLength: 64}
         role: {$ref: "#/components/schemas/Role"}

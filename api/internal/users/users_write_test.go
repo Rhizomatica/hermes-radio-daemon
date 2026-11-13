@@ -112,27 +112,60 @@ func TestUpdateUserDisplayNameCountsCharacters(t *testing.T) {
 	}
 }
 
-func TestLastAdminGuards(t *testing.T) {
+func TestDeleteUserPolicy(t *testing.T) {
 	e := testapi.NewAuth(t)
-	id := e.SeedUser("admin", "password1", "admin")
+	adminID := e.SeedUser("admin", "password1", "admin")
+	otherID := e.SeedUser("other", "password1", "admin")
+	rootID := e.SeedUser("root", "password1", "admin")
+	bobID := e.SeedUser("bob", "password1", "user")
+	at := e.Login("admin", "password1")
+	bt := e.Login("bob", "password1")
+
+	// Root is untouchable for everyone.
+	if r := e.DoAuth("DELETE", "/users/"+itoa(rootID), "", at); r.Status != 403 {
+		t.Fatalf("delete root = %d, want 403", r.Status)
+	}
+	// A non-admin cannot delete anyone, not even itself.
+	if r := e.DoAuth("DELETE", "/users/"+itoa(bobID), "", bt); r.Status != 403 {
+		t.Fatalf("non-admin delete = %d, want 403", r.Status)
+	}
+	// An admin may delete another user.
+	if r := e.DoAuth("DELETE", "/users/"+itoa(bobID), "", at); r.Status != 204 {
+		t.Fatalf("admin delete other = %d", r.Status)
+	}
+	// An admin may delete another admin.
+	if r := e.DoAuth("DELETE", "/users/"+itoa(otherID), "", at); r.Status != 204 {
+		t.Fatalf("admin delete admin = %d", r.Status)
+	}
+	// An admin may delete itself.
+	if r := e.DoAuth("DELETE", "/users/"+itoa(adminID), "", at); r.Status != 204 {
+		t.Fatalf("admin delete self = %d", r.Status)
+	}
+	if r := e.DoAuth("GET", "/session", "", at); r.Status != 401 {
+		t.Fatalf("deleted admin session = %d, want 401", r.Status)
+	}
+}
+
+func TestRootUntouchable(t *testing.T) {
+	e := testapi.NewAuth(t)
+	rootID := e.SeedUser("root", "password1", "admin")
+	e.SeedUser("admin", "password1", "admin")
+	rt := e.Login("root", "password1")
 	at := e.Login("admin", "password1")
 
-	// The only active admin cannot demote or disable itself.
-	if r := e.DoAuth("PATCH", "/users/"+itoa(id), `{"role":"user"}`, at); r.Status != 403 {
-		t.Fatalf("demote last admin = %d, want 403", r.Status)
-	}
-	if r := e.DoAuth("PATCH", "/users/"+itoa(id), `{"disabled":true}`, at); r.Status != 403 {
-		t.Fatalf("disable last admin = %d, want 403", r.Status)
-	}
-	// Nor delete itself.
-	if r := e.DoAuth("DELETE", "/users/"+itoa(id), "", at); r.Status != 403 {
-		t.Fatalf("delete self = %d, want 403", r.Status)
-	}
-
-	// With a second admin, self-demotion is allowed.
-	e.SeedUser("admin2", "password1", "admin")
-	if r := e.DoAuth("PATCH", "/users/"+itoa(id), `{"role":"operator"}`, at); r.Status != 200 {
-		t.Fatalf("demote with another admin = %d: %s", r.Status, r.Body)
+	for _, token := range []string{rt, at} {
+		if r := e.DoAuth("PATCH", "/users/"+itoa(rootID), `{"display_name":"Root"}`, token); r.Status != 403 {
+			t.Fatalf("update root = %d, want 403", r.Status)
+		}
+		if r := e.DoAuth("PATCH", "/users/"+itoa(rootID), `{"disabled":true}`, token); r.Status != 403 {
+			t.Fatalf("disable root = %d, want 403", r.Status)
+		}
+		if r := e.DoAuth("PATCH", "/users/"+itoa(rootID), `{"role":"user"}`, token); r.Status != 403 {
+			t.Fatalf("demote root = %d, want 403", r.Status)
+		}
+		if r := e.DoAuth("PUT", "/users/"+itoa(rootID)+"/password", `{"current_password":"password1","new_password":"newpass99"}`, token); r.Status != 403 {
+			t.Fatalf("root password = %d, want 403", r.Status)
+		}
 	}
 }
 
@@ -146,4 +179,24 @@ func TestReadonlyCanChangeOwnPassword(t *testing.T) {
 		t.Fatalf("readonly setPassword = %d: %s", r.Status, r.Body)
 	}
 	e.Login("reader", "newpass99")
+}
+
+func TestReadonlySelfService(t *testing.T) {
+	e := testapi.NewAuth(t)
+	id := e.SeedUser("reader", "password1", "readonly")
+	other := e.SeedUser("other", "password1", "user")
+	rt := e.Login("reader", "password1")
+
+	if r := e.DoAuth("PATCH", "/users/"+itoa(id), `{"display_name":"Reader"}`, rt); r.Status != 200 {
+		t.Fatalf("readonly self update = %d: %s", r.Status, r.Body)
+	}
+	if r := e.DoAuth("PATCH", "/users/"+itoa(id), `{"role":"admin"}`, rt); r.Status != 403 {
+		t.Fatalf("readonly self role = %d, want 403", r.Status)
+	}
+	if r := e.DoAuth("PATCH", "/users/"+itoa(other), `{"display_name":"Other"}`, rt); r.Status != 403 {
+		t.Fatalf("readonly update other = %d, want 403", r.Status)
+	}
+	if r := e.DoAuth("DELETE", "/users/"+itoa(id), "", rt); r.Status != 403 {
+		t.Fatalf("readonly delete self = %d, want 403", r.Status)
+	}
 }

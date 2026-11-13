@@ -462,7 +462,7 @@ People with an account (and a mailbox) on this station.
 | [`listUsers`](#op-listusers) | `GET /users` | admin | implemented |
 | [`createUser`](#op-createuser) | `POST /users` | admin | implemented |
 | [`getUser`](#op-getuser) | `GET /users/{user_id}` | readonly | implemented |
-| [`updateUser`](#op-updateuser) | `PATCH /users/{user_id}` | user | implemented |
+| [`updateUser`](#op-updateuser) | `PATCH /users/{user_id}` | readonly | implemented |
 | [`deleteUser`](#op-deleteuser) | `DELETE /users/{user_id}` | admin | implemented |
 | [`setPassword`](#op-setpassword) | `PUT /users/{user_id}/password` | readonly | implemented |
 | [`setAvatar`](#op-setavatar) | `PUT /users/{user_id}/avatar` | user | planned |
@@ -579,9 +579,9 @@ curl -sS -X GET "$BASE/users/2" \
 <a id="op-updateuser"></a>
 ### `PATCH /users/{user_id}`
 
-**Change a user (admins; users may change their own display name, phone and location).** (`updateUser`)
+**Change a user (admins; anyone may change their own display name, phone and location; `root` cannot be changed).** (`updateUser`)
 
-- Role: **user**
+- Role: **readonly**
 - Status: **implemented**
 
 **Parameters**
@@ -624,7 +624,7 @@ curl -sS -X PATCH "$BASE/users/2" \
 <a id="op-deleteuser"></a>
 ### `DELETE /users/{user_id}`
 
-**Delete a user and their mailbox (`root` cannot be deleted).** (`deleteUser`)
+**Delete a user and their mailbox (admins may delete themselves; `root` cannot be deleted).** (`deleteUser`)
 
 - Role: **admin**
 - Status: **implemented**
@@ -655,7 +655,7 @@ curl -sS -X DELETE "$BASE/users/2" \
 <a id="op-setpassword"></a>
 ### `PUT /users/{user_id}/password`
 
-**Set a password (the user, with the current one; or an admin). Updates the mailbox too.** (`setPassword`)
+**Set a password (the user, with the current one; or an admin; `root`'s password cannot be changed). Updates the mailbox too.** (`setPassword`)
 
 - Role: **readonly**
 - Status: **implemented**
@@ -4232,7 +4232,7 @@ Type: one of `uucp`, `nncp`, `reticulum`
 <a id="schema-userpatch"></a>
 ### UserPatch
 
-Only admins may change `role` or `disabled`.
+Only admins may change `role`, `locale` or `disabled`.
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |

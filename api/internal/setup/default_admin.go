@@ -9,7 +9,8 @@ import (
 
 // The admin every HERMES station starts with, as hermes-api seeds it: a
 // station is reachable as soon as it is installed, with no setup step.
-// Change the password after the first login (PUT /users/{id}/password).
+// It is a recovery account: root cannot be changed, disabled or deleted,
+// so its password stays the one seeded here.
 const (
 	DefaultAdminUsername = "root"
 	DefaultAdminPassword = "caduceu"

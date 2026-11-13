@@ -127,14 +127,6 @@ func (s *Store) ListUsers(ctx context.Context, limit int, cursor int64) ([]User,
 	return out, next, nil
 }
 
-// CountActiveAdmins returns how many users are admins and not disabled.
-func (s *Store) CountActiveAdmins(ctx context.Context) (int, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT count(*) FROM users WHERE role = 'admin' AND disabled = 0`).Scan(&n)
-	return n, err
-}
-
 // UpdateUser applies a partial update and returns the stored row.
 func (s *Store) UpdateUser(ctx context.Context, id int64, p UserPatch) (User, error) {
 	sets := []string{"updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"}
