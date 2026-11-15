@@ -45,6 +45,11 @@
 
 #define LOG_C "cfg"
 
+/* main:drm_tx_gain, the DRM I/Q's level into the TX: the default puts its
+ * peaks at full scale; above the most, the codec's range clips. */
+#define DRM_TX_GAIN_DEFAULT 0.68
+#define DRM_TX_GAIN_MAX     4.0
+
 /* main:transport_prefer: the transport for a station both UUCP and NNCP
  * reach (api/internal/transport DefaultPrefer). */
 #define TRANSPORT_PREFER_DEFAULT "nncp"
@@ -819,8 +824,9 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     cfg_drm_param(radio_h, ini, "drm_codec", "xHE-AAC");
     cfg_drm_param(radio_h, ini, "drm_label", "HERMES");
     {
-        double g = iniparser_getdouble(ini, "main:drm_tx_gain", 0.5);
-        radio_h->drm_tx_gain = (float) (isfinite(g) && g > 0.0 && g <= 4.0 ? g : 0.5);
+        /* DRM's peaks at full scale (sbitx_dsp.c): 0.5 read 0.73 of it */
+        double g = iniparser_getdouble(ini, "main:drm_tx_gain", DRM_TX_GAIN_DEFAULT);
+        radio_h->drm_tx_gain = (float) (isfinite(g) && g > 0.0 && g <= DRM_TX_GAIN_MAX ? g : DRM_TX_GAIN_DEFAULT);
     }
 
     /* tx_band0, tx_band1, ... — per-band TX power calibration (sbitx
