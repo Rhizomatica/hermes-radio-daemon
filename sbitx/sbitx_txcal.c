@@ -19,8 +19,27 @@ void txcal_start(txcal *c)
     c->drive = TXCAL_START_DRIVE;
 }
 
+/* The lowest drive within TXCAL_PEAK_MARGIN_DB of the most power. */
+static void settle_on_peak(txcal *c)
+{
+    int n = c->steps < TXCAL_STEPS_MAX ? c->steps : TXCAL_STEPS_MAX;
+    double floor = c->best_fwd * pow(10.0, -TXCAL_PEAK_MARGIN_DB / 10.0);
+    for (int k = 0; k < n; k++)
+        if (c->step_fwd[k] >= floor)
+        {
+            c->best_drive = c->step_drive[k];
+            c->best_fwd = c->step_fwd[k];
+            return;
+        }
+}
+
 txcal_verdict txcal_step(txcal *c, double fwd, bool codec_full)
 {
+    if (c->steps < TXCAL_STEPS_MAX)
+    {
+        c->step_drive[c->steps] = c->drive;
+        c->step_fwd[c->steps] = fwd;
+    }
     c->steps++;
     if (fwd > c->best_fwd)
     {
@@ -48,8 +67,14 @@ txcal_verdict txcal_step(txcal *c, double fwd, bool codec_full)
 
     double next = c->drive * drive_db(c->fine ? TXCAL_FINE_DB : TXCAL_COARSE_DB);
     bool flat = c->climb_fwd > 0.0 && next > c->climb_drive * drive_db(TXCAL_FLAT_DB);
-    if (c->below >= TXCAL_FALL_STEPS || flat || codec_full || next > TXCAL_MAX_DRIVE)
-        return c->best_fwd > 0.0 ? TXCAL_FOUND : TXCAL_NO_POWER;
+    if (c->below >= TXCAL_FALL_STEPS || flat || codec_full || next > TXCAL_MAX_DRIVE ||
+        c->steps >= TXCAL_STEPS_MAX)
+    {
+        if (!(c->best_fwd > 0.0))
+            return TXCAL_NO_POWER;
+        settle_on_peak(c);
+        return TXCAL_FOUND;
+    }
     c->drive = next;
     return TXCAL_NEXT;
 }

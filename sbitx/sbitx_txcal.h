@@ -11,8 +11,8 @@
  * The calibration keys a full-scale tone for a second at a time, raising
  * the drive in steps, reads the forward power over the second half of each
  * step, and stops once two steps in a row read clearly under the best, or
- * 3 dB more drive added nothing. The drive of the best step is the band's
- * scale. Only where the readings peak
+ * 3 dB more drive added nothing. The lowest drive that read within 0.2 dB
+ * of the most power is the band's scale. Only where the readings peak
  * matters, so the bridge's error and its weak low end do not.
  *
  * Copyright (C) 2026 Rhizomatica
@@ -27,9 +27,9 @@
 
 #include "radio.h"
 
-/* The first drive tried: under any sBitx's peak (the two measured peaked
- * at 0.3 and 0.45 at 7 MHz), so the climb to it is seen. */
-#define TXCAL_START_DRIVE   0.05
+/* The first drive tried: under any sBitx's peak (the lowest measured was
+ * 0.3, a new board at 7 MHz), so the climb to it is seen. */
+#define TXCAL_START_DRIVE   0.1
 /* No drive past this: the highest shipped scale was 4.0 (1-2 MHz), and
  * the codec's range ends not far beyond. */
 #define TXCAL_MAX_DRIVE     4.0
@@ -49,6 +49,13 @@
  * TXCAL_MAX_DRIVE. */
 #define TXCAL_CLIMB_DB      0.1
 #define TXCAL_FLAT_DB       3.0
+/* The drive found is the lowest within TXCAL_PEAK_MARGIN_DB of the most
+ * power: a saturated PA reads flat over several dB of drive (30.0 W from
+ * 0.79 to 0.94 on one), and the higher drives only distort more. */
+#define TXCAL_PEAK_MARGIN_DB 0.2
+/* Steps kept: from TXCAL_START_DRIVE to TXCAL_MAX_DRIVE in coarse steps,
+ * and fine ones near the peak, with room. */
+#define TXCAL_STEPS_MAX     128
 
 typedef struct {
     double drive;        /* the step being measured */
@@ -60,11 +67,13 @@ typedef struct {
     int    below;        /* steps in a row under the best */
     int    steps;
     bool   fine;
+    double step_drive[TXCAL_STEPS_MAX];
+    double step_fwd[TXCAL_STEPS_MAX];
 } txcal;
 
 typedef enum {
     TXCAL_NEXT,          /* measure c->drive next */
-    TXCAL_FOUND,         /* c->best_drive is the peak */
+    TXCAL_FOUND,         /* c->best_drive is the peak's (best_fwd its power) */
     TXCAL_NO_POWER,      /* nothing read at any drive */
 } txcal_verdict;
 

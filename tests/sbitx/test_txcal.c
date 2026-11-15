@@ -89,11 +89,6 @@ static txcal_verdict run(pa_model pa, int glitch_at, txcal *c)
     return TXCAL_NO_POWER;
 }
 
-static double db_off(double drive, double want)
-{
-    return fabs(20.0 * log10(drive / want));
-}
-
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -108,12 +103,22 @@ static void test_power_is_a_share_of_the_peak(void)
     TEST_ASSERT_EQUAL_DOUBLE(scale, tx_power_drive(scale, 250));
 }
 
+/* The drive found gives the peak power, less TXCAL_PEAK_MARGIN_DB at most,
+ * and is no higher than the peak's (a fine step's rounding allowed). */
+static void assert_at_peak(const txcal *c, pa_model pa)
+{
+    double need = PEAK_W * pow(10.0, -TXCAL_PEAK_MARGIN_DB / 10.0);
+    TEST_ASSERT_TRUE_MESSAGE(pa(c->best_drive) >= need,
+                             test_msg("found %.4f, %.2f W of %.2f", c->best_drive, pa(c->best_drive), PEAK_W));
+    TEST_ASSERT_TRUE_MESSAGE(c->best_drive <= TRUE_PEAK * pow(10.0, FOUND_TOLERANCE_DB / 20.0),
+                             test_msg("found %.4f past the peak %.4f", c->best_drive, TRUE_PEAK));
+}
+
 static void test_finds_the_peak_of_a_pa_that_falls_past_it(void)
 {
     txcal c;
     TEST_ASSERT_EQUAL_INT(TXCAL_FOUND, run(pa_falling, 0, &c));
-    TEST_ASSERT_TRUE_MESSAGE(db_off(c.best_drive, TRUE_PEAK) <= FOUND_TOLERANCE_DB,
-                             test_msg("found %.4f for %.4f", c.best_drive, TRUE_PEAK));
+    assert_at_peak(&c, pa_falling);
     /* and not far past it */
     TEST_ASSERT_TRUE_MESSAGE(c.drive < TRUE_PEAK * pow(10.0, (TXCAL_FLAT_DB + TXCAL_FINE_DB) / 20.0),
                              test_msg("drove to %.4f", c.drive));
@@ -123,8 +128,8 @@ static void test_a_flat_pa_ends_within_the_flat_span(void)
 {
     txcal c;
     TEST_ASSERT_EQUAL_INT(TXCAL_FOUND, run(pa_flat, 0, &c));
-    TEST_ASSERT_TRUE_MESSAGE(db_off(c.best_drive, TRUE_PEAK) <= TXCAL_COARSE_DB,
-                             test_msg("found %.4f for %.4f", c.best_drive, TRUE_PEAK));
+    /* where it went flat, not the top of the flat span */
+    assert_at_peak(&c, pa_flat);
     TEST_ASSERT_TRUE_MESSAGE(c.drive <= TRUE_PEAK * pow(10.0, (TXCAL_FLAT_DB + TXCAL_COARSE_DB) / 20.0),
                              test_msg("drove to %.4f", c.drive));
 }
@@ -134,7 +139,7 @@ static void test_one_low_reading_does_not_end_it(void)
     txcal c;
     /* the fifth step, still well under the peak */
     TEST_ASSERT_EQUAL_INT(TXCAL_FOUND, run(pa_falling, 5, &c));
-    TEST_ASSERT_TRUE(db_off(c.best_drive, TRUE_PEAK) <= FOUND_TOLERANCE_DB);
+    assert_at_peak(&c, pa_falling);
 }
 
 static double pa_dead(double drive) { (void) drive; return 0.0; }
