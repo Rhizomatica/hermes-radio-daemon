@@ -710,10 +710,13 @@ static int    tx_cal_ticks;
 static double tx_cal_fwd_sum;
 static int    tx_cal_fwd_n;
 
+/* The tone goes on through the unkey's tail (tr_switch plays out the
+ * codec's queue first): with the drive dropped before, those milliseconds
+ * sent the profile's own audio. */
 static void tx_cal_unkey(radio *radio_h)
 {
-    radio_h->tx_cal_drive = 0.0;
     radio_backend_end_ptt(radio_h, PTT_SRC_TXCAL, 0);
+    radio_h->tx_cal_drive = 0.0;
 }
 
 static void tx_cal_fail(radio *radio_h, const char *why)
