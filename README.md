@@ -725,6 +725,15 @@ Uses the vendored `ft8_lib` (`vendor/ft8_lib/`, MIT) in process:
   does: the receiver is `callsign` at the GPS fix or the station's fixed
   position, each sender at most once an hour per band, one datagram every
   five minutes or so.
+- The decodes also check the station's clock (`dsp/band_clock.c`, an idea
+  from sdroxide). Each FT8 or JS8 decode says where its transmission started
+  against this station's slot. Stations whose clocks are right scatter
+  around this station's error, so the median of the largest group that
+  agrees within half a second is that error. Stations sending off the UTC
+  slots, as HERMES stations do with FT8, do not count. `GET /radio` reports
+  it as `clock_offset_s` (null until enough decodes agree), and radiod logs
+  a warning when it passes a second: FT8 and JS8 calls from a station whose
+  clock is off that much go unanswered.
 
 ### JS8 (JS8Call's keyboard mode)
 

@@ -4103,6 +4103,7 @@ Settings radiod keeps once for the station, not per profile.
 | `noise_reduction` | boolean |  | The active profile's noise_reduction |
 | `backend` | one of `sbitx`, `hamlib`, `none` | yes |  |
 | `rig_model` | string or null |  | Hamlib model name, e.g. IC-7100 |
+| `clock_offset_s` | number or null |  | How far this station's clock is off, in seconds to a tenth, as the FT8 and JS8 stations it hears show it: positive when it is fast. Each decode says where its transmission started against this station's slot; the median of the largest group that agrees within half a second is the error. Stations sending off the UTC slots, as HERMES stations do with FT8, do not count. Null until enough decodes in two minutes agree, and again after ten minutes without one. radiod also logs a warning when it passes a second |
 
 <a id="schema-reaction"></a>
 ### Reaction

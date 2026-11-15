@@ -182,11 +182,12 @@ static bool estimate_snr(const ftx_waterfall_t *wf, const ftx_candidate_t *c,
 }
 
 static const char *const NAMES[JS8_SUBMODES] = JS8_SUBMODE_NAMES;
+/* Symbol, period, Costas arrays, and start delay: JS8_Include/commons.h. */
 static const js8_submode_params SUBMODES[JS8_SUBMODES] = {
-    [JS8_SUB_NORMAL] = { NAMES[JS8_SUB_NORMAL], 1920, 15, JS8_COSTAS_ORIGINAL },
-    [JS8_SUB_FAST]   = { NAMES[JS8_SUB_FAST],   1200, 10, JS8_COSTAS_MODIFIED },
-    [JS8_SUB_TURBO]  = { NAMES[JS8_SUB_TURBO],  600,  6,  JS8_COSTAS_MODIFIED },
-    [JS8_SUB_SLOW]   = { NAMES[JS8_SUB_SLOW],   3840, 30, JS8_COSTAS_MODIFIED },
+    [JS8_SUB_NORMAL] = { NAMES[JS8_SUB_NORMAL], 1920, 15, JS8_COSTAS_ORIGINAL, 0.5 },
+    [JS8_SUB_FAST]   = { NAMES[JS8_SUB_FAST],   1200, 10, JS8_COSTAS_MODIFIED, 0.2 },
+    [JS8_SUB_TURBO]  = { NAMES[JS8_SUB_TURBO],  600,  6,  JS8_COSTAS_MODIFIED, 0.1 },
+    [JS8_SUB_SLOW]   = { NAMES[JS8_SUB_SLOW],   3840, 30, JS8_COSTAS_MODIFIED, 0.5 },
 };
 
 const js8_submode_params *js8_submode_get(js8_submode sub)

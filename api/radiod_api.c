@@ -27,6 +27,7 @@
 #include "radiod_log.h"
 
 #define LOG_C "api"
+#include "dsp/band_clock.h"
 #include "dsp/digi_log.h"
 #include "gps/gps.h"
 #include "gps/gps_track.h"
@@ -48,6 +49,8 @@
 
 /* The hermes.v1 connections' class on the daemon's websocket server. */
 #define V2_CLASS 1
+
+#define API_MS_PER_S 1000.0   /* seconds (gps_clock, band_clock) to the API's milliseconds */
 
 static radio          *s_radio;
 static pthread_mutex_t s_ws_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -208,6 +211,13 @@ void radiod_api_state_get(radiod_api_state *out)
     out->noise_reduction = r->profiles[a].noise_reduction == NOISE_REDUCTION_ON;
     snprintf(out->backend, sizeof(out->backend), "%s",
              r->backend_kind == RADIO_BACKEND_HFSIGNALS ? "sbitx" : "hamlib");
+    double clock_s;
+    int decodes;
+    if (band_clock_get(&clock_s, &decodes)) {
+        out->clock_offset_valid = true;
+        out->clock_offset_ms = (int32_t) lround(clock_s * API_MS_PER_S / RADIOD_API_CLOCK_STEP_MS)
+                               * RADIOD_API_CLOCK_STEP_MS;
+    }
 }
 
 uint32_t radiod_api_profile_count(void)
@@ -670,7 +680,6 @@ void radiod_api_gps_get(radiod_api_gps *out)
     gps_latest(out);
 }
 
-#define API_MS_PER_S 1000.0   /* gps_clock's seconds to the API's milliseconds */
 
 int64_t radiod_api_gps_clock_ms(void)
 {

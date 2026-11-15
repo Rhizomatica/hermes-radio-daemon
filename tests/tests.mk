@@ -52,7 +52,7 @@ TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
             tests/modem/test_rtp_audio tests/modem/test_modem_audio tests/modem/test_beacon \
             tests/modem/test_beacon_tx tests/modem/test_dec_beacon \
             tests/audioio/test_audio_bridge \
-            tests/dsp/test_upsample2 tests/dsp/test_stream_resampler tests/dsp/test_mic_filter \
+            tests/dsp/test_upsample2 tests/dsp/test_stream_resampler tests/dsp/test_mic_filter tests/dsp/test_band_clock \
             tests/dsp/test_digi_modes tests/dsp/test_digi_log tests/dsp/test_dstar_voice \
             tests/dsp/test_rade_voice tests/dsp/test_dstar_clock_cal tests/dsp/test_pskreporter tests/dsp/test_js8_frame tests/dsp/test_js8_rx tests/dsp/test_js8_msg tests/dsp/test_js8_decode tests/dsp/test_js8_recordings tests/dsp/test_js8_worker tests/dsp/test_js8_tx tests/dsp/test_radae_vocoder tests/dsp/test_drm \
             tests/sbitx/test_sbitx_buffer \
@@ -223,16 +223,19 @@ tests/dsp/test_upsample2: tests/dsp/test_upsample2.c dsp/upsample2.c dsp/upsampl
 tests/dsp/test_stream_resampler: tests/dsp/test_stream_resampler.c dsp/stream_resampler.c dsp/stream_resampler.h
 	$(CC) $(TEST_CFLAGS) -I/usr/include/csdr $< dsp/stream_resampler.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lcsdr -lfftw3f -lm
 
+tests/dsp/test_band_clock: tests/dsp/test_band_clock.c dsp/band_clock.c dsp/band_clock.h
+	$(CC) $(TEST_CFLAGS) -Idsp $< dsp/band_clock.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread -lm
+
 tests/dsp/test_mic_filter: tests/dsp/test_mic_filter.c dsp/mic_filter.c dsp/mic_filter.h
 	$(CC) $(TEST_CFLAGS) -Idsp $< dsp/mic_filter.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lm
 
 tests/dsp/test_digi_modes: tests/dsp/test_digi_modes.c dsp/stream_resampler.c dsp/sbitx_cw.c dsp/sbitx_cw.h \
                            dsp/sbitx_rtty.c dsp/sbitx_rtty.h dsp/tone_scan.c dsp/tone_scan.h \
                            dsp/sbitx_ft8.c dsp/sbitx_ft8.h dsp/ft8_js8.c dsp/ft8_js8.h dsp/ft8_subtract.c dsp/ft8_subtract.h \
-                           dsp/digi_log.c dsp/digi_log.h \
+                           dsp/digi_log.c dsp/digi_log.h dsp/band_clock.c dsp/band_clock.h \
                            $(FT8_TEST_SRCS) $(FT8_TEST_LIBS) $(MM_FSK_SRCS)
 	$(CC) $(TEST_CFLAGS) -w -I/usr/include/csdr -Idsp $(FT8_LIB_CPPFLAGS) $(MM_FSK_CPPFLAGS) \
-	      $< dsp/stream_resampler.c dsp/sbitx_cw.c dsp/sbitx_rtty.c dsp/tone_scan.c dsp/sbitx_ft8.c dsp/ft8_js8.c dsp/ft8_subtract.c dsp/digi_log.c \
+	      $< dsp/stream_resampler.c dsp/sbitx_cw.c dsp/sbitx_rtty.c dsp/tone_scan.c dsp/sbitx_ft8.c dsp/ft8_js8.c dsp/ft8_subtract.c dsp/digi_log.c dsp/band_clock.c \
 	      $(FT8_TEST_SRCS) $(MM_FSK_SRCS) $(FT8_TEST_LIBS) $(UNITY_SRC) $(HERMES_LOG_SRC) \
 	      -o $@ -lcsdr -lfftw3f -lfftw3 -lpthread -lm
 
@@ -240,9 +243,9 @@ tests/dsp/test_digi_modes: tests/dsp/test_digi_modes.c dsp/stream_resampler.c ds
 # to compare decoder changes on real audio.  make ft8-bench
 tests/dsp/ft8_bench: tests/dsp/ft8_bench.c dsp/stream_resampler.c dsp/sbitx_ft8.c dsp/sbitx_ft8.h \
                      dsp/ft8_js8.c dsp/ft8_js8.h dsp/ft8_subtract.c dsp/ft8_subtract.h \
-                     dsp/digi_log.c dsp/digi_log.h $(FT8_TEST_SRCS) $(FT8_TEST_LIBS)
+                     dsp/digi_log.c dsp/digi_log.h dsp/band_clock.c dsp/band_clock.h $(FT8_TEST_SRCS) $(FT8_TEST_LIBS)
 	$(CC) -O2 -g -std=gnu11 -pthread -w $(filter -I%,$(TEST_CFLAGS)) -Idsp -I/usr/include/csdr \
-	      $(FT8_LIB_CPPFLAGS) $< dsp/stream_resampler.c dsp/sbitx_ft8.c dsp/ft8_js8.c dsp/ft8_subtract.c dsp/digi_log.c \
+	      $(FT8_LIB_CPPFLAGS) $< dsp/stream_resampler.c dsp/sbitx_ft8.c dsp/ft8_js8.c dsp/ft8_subtract.c dsp/digi_log.c dsp/band_clock.c \
 	      $(FT8_TEST_SRCS) $(FT8_TEST_LIBS) $(HERMES_LOG_SRC) -o $@ -lcsdr -lfftw3f -lfftw3 -lpthread -lm
 
 .PHONY: ft8-bench
@@ -286,10 +289,10 @@ tests/dsp/test_js8_msg: tests/dsp/test_js8_msg.c dsp/js8_msg.c dsp/js8_msg.h dsp
 	$(CC) $(TEST_CFLAGS) $< dsp/js8_msg.c dsp/js8_frame.c $(UNITY_SRC) -o $@ -lpthread -lm
 
 tests/dsp/test_js8_decode: tests/dsp/test_js8_decode.c dsp/js8_decode.c dsp/js8_decode.h dsp/js8_rx.c dsp/ft8_subtract.c dsp/ft8_subtract.h \
-                           dsp/js8_msg.c dsp/js8_frame.c dsp/digi_log.c dsp/digi_log.h \
+                           dsp/js8_msg.c dsp/js8_frame.c dsp/digi_log.c dsp/digi_log.h dsp/band_clock.c dsp/band_clock.h \
                            $(FT8_TEST_SRCS) $(FT8_TEST_LIBS)
 	$(CC) $(TEST_CFLAGS) -w -Idsp $(FT8_LIB_CPPFLAGS) $< dsp/js8_decode.c dsp/js8_rx.c dsp/js8_msg.c dsp/ft8_subtract.c \
-	      dsp/js8_frame.c dsp/digi_log.c $(FT8_TEST_SRCS) $(FT8_TEST_LIBS) $(UNITY_SRC) $(HERMES_LOG_SRC) \
+	      dsp/js8_frame.c dsp/digi_log.c dsp/band_clock.c $(FT8_TEST_SRCS) $(FT8_TEST_LIBS) $(UNITY_SRC) $(HERMES_LOG_SRC) \
 	      -o $@ -lpthread -lm
 
 tests/dsp/test_js8_recordings: tests/dsp/test_js8_recordings.c dsp/js8_rx.c dsp/js8_msg.c dsp/js8_frame.c dsp/ft8_subtract.c dsp/ft8_subtract.h \
@@ -299,10 +302,10 @@ tests/dsp/test_js8_recordings: tests/dsp/test_js8_recordings.c dsp/js8_rx.c dsp/
 	      $(FT8_TEST_SRCS) $(FT8_TEST_LIBS) $(UNITY_SRC) -o $@ -lpthread -lm
 
 tests/dsp/test_js8_worker: tests/dsp/test_js8_worker.c dsp/js8_worker.c dsp/js8_worker.h dsp/js8_decode.c dsp/ft8_subtract.c dsp/ft8_subtract.h \
-                           dsp/js8_rx.c dsp/js8_msg.c dsp/js8_frame.c dsp/digi_log.c tests/fixtures/js8/E_1_1.wav \
+                           dsp/js8_rx.c dsp/js8_msg.c dsp/js8_frame.c dsp/digi_log.c dsp/band_clock.c dsp/band_clock.h tests/fixtures/js8/E_1_1.wav \
                            $(FT8_TEST_SRCS) $(FT8_TEST_LIBS)
 	$(CC) $(TEST_CFLAGS) -w -Idsp -Iradio $(FT8_LIB_CPPFLAGS) $< dsp/js8_worker.c dsp/js8_decode.c dsp/js8_rx.c dsp/ft8_subtract.c \
-	      dsp/js8_msg.c dsp/js8_frame.c dsp/digi_log.c $(FT8_TEST_SRCS) $(FT8_TEST_LIBS) $(UNITY_SRC) \
+	      dsp/js8_msg.c dsp/js8_frame.c dsp/digi_log.c dsp/band_clock.c $(FT8_TEST_SRCS) $(FT8_TEST_LIBS) $(UNITY_SRC) \
 	      $(HERMES_LOG_SRC) -o $@ -lpthread -lm
 
 tests/gps/test_gps_track: tests/gps/test_gps_track.c gps/gps_track.c gps/gps_track.h

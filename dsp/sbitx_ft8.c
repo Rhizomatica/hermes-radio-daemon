@@ -27,6 +27,7 @@
 #include "common/monitor.h"
 
 #include "sbitx_ft8.h"
+#include "band_clock.h"
 #include "digi_log.h"
 
 /* ft8_lib's candidate time runs late by a constant: its monitor's FFT
@@ -537,6 +538,7 @@ void sbitx_ft8_log_decodes(const sbitx_ft8_decode_result *res, int n,
             dt -= 15.0;
         else if (dt < -7.5)
             dt += 15.0;
+        band_clock_add(dt, start);
         digi_log_entry e = {
             .mode = "FT8", .dir = "rx", .freq_hz = dial_hz, .at = start,
             .has_offset = true, .offset_hz = (int) lroundf(r->freq_hz),

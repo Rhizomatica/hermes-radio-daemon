@@ -73,7 +73,11 @@ type State struct {
 	NoiseReduction bool     `json:"noise_reduction"`
 	Backend        string   `json:"backend"`
 	RigModel       *string  `json:"rig_model"`
+	ClockOffsetS   *float64 `json:"clock_offset_s"`
 }
+
+// msPerS turns the binding's milliseconds into the API's seconds.
+const msPerS = 1000
 
 // Profile is RadioProfile. Station-wide values (step, SWR limit, BFO, the
 // default profile) are RadioSettings (settings.go).
@@ -99,6 +103,10 @@ func stateOf(s rad.State) State {
 	}
 	if s.SMeterValid {
 		out.SMeterDB = &s.SMeterDB
+	}
+	if s.ClockOffsetValid {
+		c := float64(s.ClockOffsetMs) / msPerS
+		out.ClockOffsetS = &c
 	}
 	return out
 }
