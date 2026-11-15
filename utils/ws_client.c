@@ -188,6 +188,9 @@ static char *build_payload(void)
     if (!strcmp(g_cmd, "get_txrx_status"))        SIMPLE("get_txrx_status");
     if (!strcmp(g_cmd, "get_protection_status"))  SIMPLE("get_protection_status");
     if (!strcmp(g_cmd, "reset_protection"))       SIMPLE("reset_protection");
+    if (!strcmp(g_cmd, "tx_calibrate"))           SIMPLE("tx_calibrate");
+    if (!strcmp(g_cmd, "tx_calibrate_stop"))      SIMPLE("tx_calibrate_stop");
+    if (!strcmp(g_cmd, "get_tx_calibration"))     SIMPLE("get_tx_calibration");
     if (!strcmp(g_cmd, "reset_timeout"))          SIMPLE("reset_timeout");
     if (!strcmp(g_cmd, "get_bfo"))                SIMPLE("get_bfo");
     if (!strcmp(g_cmd, "set_bfo"))                NUMBER("set_bfo");
