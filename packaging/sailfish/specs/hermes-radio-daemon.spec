@@ -1,8 +1,8 @@
-%global commit 8f3738f
-%global gitdate 20261107
+%global commit 9833700
+%global gitdate 20261113
 # git rev-list --count %{commit}: it grows along the branch, so a later
 # commit always sorts newer, even on the same day (the hash alone may not)
-%global gitcount 552
+%global gitcount 636
 # The Go API layer (/api/v2, hermes.v1: what the browser pages and WebRTC
 # audio use) when a Go of api/go.mod's version or later is on the PATH;
 # --define 'have_go 0' or 1 decides it outright.
@@ -72,6 +72,7 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 %license LICENSE
 %{_bindir}/radio_daemon
 %{_bindir}/radio_client
+%{_bindir}/dec_beacon
 %{_bindir}/sbitx_client
 %{_bindir}/ws_client
 %{_unitdir}/radiod.service
