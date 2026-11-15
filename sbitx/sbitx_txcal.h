@@ -28,7 +28,7 @@
 #include "radio.h"
 
 /* The first drive tried: under any sBitx's peak (the lowest measured was
- * 0.3, a new board at 7 MHz), so the climb to it is seen. */
+ * 0.35, a new board at 7 MHz), so the climb to it is seen. */
 #define TXCAL_START_DRIVE   0.1
 /* No drive past this: the highest shipped scale was 4.0 (1-2 MHz), and
  * the codec's range ends not far beyond. */

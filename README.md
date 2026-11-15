@@ -437,7 +437,7 @@ JS8, RTTY, D-STAR) sends the peak power, and SSB, RADE and a modem's OFDM
 reach it on their peaks.
 
 Where the peak is depends on the radio and the band: on two sBitx at 7 MHz
-it was at 0.30 and 0.45 of drive. `config/core.ini` ships, per band
+it was at 0.35 and 0.45 of drive. `config/core.ini` ships, per band
 (`tx_band0`-`tx_band9`, each inside one of the sBitx's low-pass filters,
 which switch at 5.7, 8 and 18.5 MHz), a drive between the two, so an
 uncalibrated radio is close. To measure a radio, tune a USB or LSB profile

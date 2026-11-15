@@ -98,24 +98,19 @@ static radio *radio_h_dsp;
 
 #define MAX_SAMPLE_VALUE 8388607.0 // (2 ^ 23) - 1,  signed(?) 24 bits packed in a SIGNED 32 LE
 
-/* The TX output's scale before the band multiplier and the power level.
- * Voice has ~10 dB of peak-to-average ratio; digital voice has much less
- * (RADE's OFDM after its clipper) or none (D-STAR's GMSK through the FM
- * modulator), so at the voice scale the PA sees ~10 dB more average power,
- * saturates and splatters, and the power level barely changes the output.
- * Measured with a through-line wattmeter into a dummy load at 7.05 MHz
- * (band scale 1.5), at 20, 40, 60, 80 and 100%:
- * - D-STAR at 500 read 0.5, 2.8, 6, 12 and 16 W; at 580, 0.8, 4, 9, 14
- *   and 17 W. The PA saturates near 17 W, so more drive adds little;
- * - RADEv2 at 500 read 0.1, 0.8, 1.5, 2.5 and 4.5 W average; at 650,
- *   0.3, 1.3, 3, 5.8 and 8.5 W. Its peaks run well above the average and
- *   at 100% they reach the PA's limit. At 720 it read 2.8 W: the peaks
- *   passed the 24-bit sample range and wrapped around. With the
- *   conversion below clamping them, 720 reads 10 W.
- * The sBitx's own meter read ~40% above the wattmeter at the top. */
+/* The TX output's scale before the drive (sbitx_txcal.h), per kind of
+ * signal, so that each one's peaks reach full scale: what a steady tone at
+ * TX_AUDIO_LIMIT gives through the voice path at the voice scale. At power
+ * 100 that is the PA's peak power on the band. Measured with the TX peak
+ * report (tx_peak) on an sBitx at 7.05 MHz:
+ * - the full-scale tone read 1.00 at TX_SCALE_VOICE;
+ * - RADE V2 (speech, encrypted, its OFDM after RADE's clipper) read 0.331 at
+ *   the 720 it had, so 720 / 0.331;
+ * - D-STAR (its GMSK through the FM modulator, constant envelope) read 0.308
+ *   at the 580 it had, so 580 / 0.308. */
 #define TX_SCALE_VOICE  4000.0
-#define TX_SCALE_RADE    720.0
-#define TX_SCALE_DSTAR   580.0
+#define TX_SCALE_RADE   2175.0
+#define TX_SCALE_DSTAR  1883.0
 
 /* The voice chain's audio limiter (tx_process_chain), and so the envelope a
  * steady full-scale tone gives: every mode's full scale. At 100 % a mode's
