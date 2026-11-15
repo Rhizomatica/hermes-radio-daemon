@@ -10,6 +10,7 @@
 #include <pthread.h>
 #include <string.h>
 
+#include "band_clock.h"
 #include "digi_log.h"
 #include "js8_msg.h"
 
@@ -42,9 +43,19 @@ static bool seen_recently(const char *frame, double start, float offset_hz)
     return false;
 }
 
+/* How far a transmission starting at start_s is from its slot: the
+ * nearest period boundary plus JS8Call's start delay, the way JS8Call
+ * stations transmit. */
+static double slot_offset(const js8_submode_params *p, double start_s)
+{
+    double t = start_s - p->start_delay_s;
+    return t - p->period_s * round(t / p->period_s);
+}
+
 void js8_decode_and_log(js8_submode sub, const float *audio_12k, int nsamples,
                         double window_start, uint64_t dial_hz)
 {
+    const js8_submode_params *p = js8_submode_get(sub);
     js8_rx_result res[JS8_MAX_DECODES];
     int n = js8_rx_decode_sub(sub, audio_12k, nsamples, res, JS8_MAX_DECODES);
     pthread_mutex_lock(&g_lock);
@@ -53,6 +64,8 @@ void js8_decode_and_log(js8_submode sub, const float *audio_12k, int nsamples,
         double start = window_start + r->time_s;
         if (seen_recently(r->frame, start, r->freq_hz))
             continue;
+        if (p)
+            band_clock_add(slot_offset(p, start), start);
         js8_msg m;
         js8_msg_unpack(r->frame, r->type, &m);
         digi_log_entry e = {

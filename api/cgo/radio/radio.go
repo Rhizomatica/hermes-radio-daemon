@@ -78,6 +78,10 @@ type State struct {
 	DigitalVoice   bool
 	NoiseReduction bool   // the active profile's
 	Backend        string // sbitx, hamlib
+	// The station clock's error as the FT8 and JS8 stations heard show it,
+	// milliseconds, positive when fast; meaningful when ClockOffsetValid.
+	ClockOffsetValid bool
+	ClockOffsetMs    int
 }
 
 // Profile is one saved profile.

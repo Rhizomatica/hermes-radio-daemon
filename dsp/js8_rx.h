@@ -37,6 +37,7 @@ typedef struct {
     int             symbol;      /* samples at 12 kHz */
     int             period_s;
     js8_costas_type costas;
+    double          start_delay_s; /* JS8Call starts this far into the period */
 } js8_submode_params;
 
 const js8_submode_params *js8_submode_get(js8_submode sub);

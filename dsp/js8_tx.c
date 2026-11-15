@@ -12,11 +12,6 @@
 #define TWO_PI       6.283185307179586
 #define RAMP_S       0.005           /* raised-cosine ends: no click */
 
-/* JS8Call's start delays (JS8_Include/commons.h), in seconds. */
-static const double START_DELAY_S[JS8_SUBMODES] = {
-    [JS8_SUB_NORMAL] = 0.5, [JS8_SUB_FAST] = 0.2, [JS8_SUB_TURBO] = 0.1, [JS8_SUB_SLOW] = 0.5,
-};
-
 js8_submode js8_tx_submode(unsigned mask)
 {
     static const js8_submode ORDER[] = { JS8_SUB_NORMAL, JS8_SUB_FAST, JS8_SUB_TURBO, JS8_SUB_SLOW };
@@ -29,8 +24,10 @@ js8_submode js8_tx_submode(unsigned mask)
 double js8_tx_next_start(js8_submode sub, double now)
 {
     const js8_submode_params *p = js8_submode_get(sub);
-    double period = p ? p->period_s : JS8_NORMAL_PERIOD_S;
-    double delay = START_DELAY_S[p ? sub : JS8_SUB_NORMAL];
+    if (!p)
+        p = js8_submode_get(JS8_SUB_NORMAL);
+    double period = p->period_s;
+    double delay = p->start_delay_s;
     double start = floor((now - delay) / period) * period + delay;
     return start < now ? start + period : start;
 }

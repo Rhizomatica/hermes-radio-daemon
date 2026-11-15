@@ -79,6 +79,7 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   audioio/audio_bridge.o \
                   dsp/stream_resampler.o \
                   dsp/digi_log.o \
+                  dsp/band_clock.o \
                   modem/beacon.o \
                   modem/beacon_tx.o \
                   audioio/audio_headset.o \

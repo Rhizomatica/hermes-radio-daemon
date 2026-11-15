@@ -49,7 +49,16 @@ typedef struct {
     bool     digital_voice;
     bool     noise_reduction;     /* the active profile's, on received audio */
     char     backend[8];          /* sbitx, hamlib */
+    /* The station clock's error as the FT8 and JS8 stations heard show it
+     * (dsp/band_clock.h), ms rounded to RADIOD_API_CLOCK_STEP_MS, positive
+     * when fast; meaningful when clock_offset_valid. */
+    bool     clock_offset_valid;
+    int32_t  clock_offset_ms;
 } radiod_api_state;
+
+/* clock_offset_ms's resolution: the estimate is no finer, and a coarser
+ * value changes the radio.state topic only when the error does. */
+#define RADIOD_API_CLOCK_STEP_MS 100
 
 typedef struct {
     uint32_t profile;

@@ -257,6 +257,14 @@ func (s *Stub) ResetProtection() { s.mu.Lock(); s.state.Protection = false; s.mu
 // SetProtection trips (or clears) the SWR protection, for tests.
 func (s *Stub) SetProtection(on bool) { s.mu.Lock(); s.state.Protection = on; s.mu.Unlock() }
 
+// SetClockOffset sets the clock error State reports, milliseconds; ok false
+// reports none.
+func (s *Stub) SetClockOffset(ms int, ok bool) {
+	s.mu.Lock()
+	s.state.ClockOffsetMs, s.state.ClockOffsetValid = ms, ok
+	s.mu.Unlock()
+}
+
 // PTT follows radiod's rules (radiod_api_ptt): one owner at a time, refused
 // with the protection tripped, and only the owner unkeys.
 func (s *Stub) PTT(conn int64, on bool) error {

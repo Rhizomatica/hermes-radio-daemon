@@ -27,6 +27,19 @@ func TestGetStateAndProfiles(t *testing.T) {
 	}
 }
 
+// clock_offset_s: null until the FT8/JS8 decodes give an estimate, then in
+// seconds.
+func TestClockOffset(t *testing.T) {
+	e := testapi.New(t)
+	if j := e.Do("GET", "/radio", "").JSON(t); j["clock_offset_s"] != nil {
+		t.Errorf("clock_offset_s with no estimate = %v, want null", j["clock_offset_s"])
+	}
+	e.Radio.SetClockOffset(-1800, true)
+	if j := e.Do("GET", "/radio", "").JSON(t); j["clock_offset_s"] != -1.8 {
+		t.Errorf("clock_offset_s = %v, want -1.8", j["clock_offset_s"])
+	}
+}
+
 // A patch is validated in full before anything is applied.
 func TestUpdateProfile(t *testing.T) {
 	e := testapi.New(t)

@@ -40,6 +40,7 @@ func (binding) State() State {
 		SWR: float64(s.swr_x10) / 10, SMeterValid: bool(s.s_meter_valid), SMeterDB: float64(s.s_meter_db),
 		Protection: bool(s.protection), DigitalVoice: bool(s.digital_voice),
 		NoiseReduction: bool(s.noise_reduction), Backend: cstr(s.backend[:]),
+		ClockOffsetValid: bool(s.clock_offset_valid), ClockOffsetMs: int(s.clock_offset_ms),
 	}
 }
 
