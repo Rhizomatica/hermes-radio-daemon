@@ -128,7 +128,11 @@ static radio *radio_h_dsp;
 /* The tone the FT8 and JS8 encoders write peaks at 1. */
 #define DIGI_UNIT_TONE_PEAK 1.0f
 
-/* The TX peak report of the over (radio.h, tx_peak_*): reset as it keys. */
+/* The TX peak report of the over (radio.h, tx_peak_*): reset as it keys,
+ * and counted from TX_PEAK_SETTLE_BLOCKS blocks in, once the filter has
+ * settled: its start-up ringing put a full-scale tone at 1.057. */
+#define TX_PEAK_SETTLE_BLOCKS 2
+static uint32_t tx_over_blocks;
 static double   tx_over_peak_fs;
 static double   tx_over_peak_codec;
 static uint32_t tx_over_clipped;
@@ -2353,6 +2357,7 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     if (tx_starting)
     {
         digi_tx_new_over = true;
+        tx_over_blocks = 0;
         tx_over_peak_fs = 0.0;
         tx_over_peak_codec = 0.0;
         tx_over_clipped = 0;
@@ -3160,9 +3165,12 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
         signal_output_int[i] = (int32_t) v * 256;
         RADAE_AMPL_LOG("tx_ssb dac_int32", signal_output_int[i]);
     }
-    if (full > 0.0)
-        tx_over_peak_fs = fmax(tx_over_peak_fs, peak / full);
-    tx_over_peak_codec = fmax(tx_over_peak_codec, peak / MAX_SAMPLE_VALUE);
+    if (++tx_over_blocks > TX_PEAK_SETTLE_BLOCKS)
+    {
+        if (full > 0.0)
+            tx_over_peak_fs = fmax(tx_over_peak_fs, peak / full);
+        tx_over_peak_codec = fmax(tx_over_peak_codec, peak / MAX_SAMPLE_VALUE);
+    }
     radio_h_dsp->tx_peak_fs = (float) tx_over_peak_fs;
     radio_h_dsp->tx_peak_codec = (float) tx_over_peak_codec;
     radio_h_dsp->tx_clipped = tx_over_clipped;
