@@ -33,6 +33,9 @@
 
 /* ── radio ── */
 
+/* radiod_api_state's tx_cal_message, with its NUL */
+#define RADIOD_API_TX_CAL_MESSAGE_MAX 128
+
 typedef struct {
     uint32_t active_profile;
     bool     tx;
@@ -54,6 +57,19 @@ typedef struct {
      * when fast; meaningful when clock_offset_valid. */
     bool     clock_offset_valid;
     int32_t  clock_offset_ms;
+    /* sBitx: the last over's peak against full scale at the power set
+     * (1.0: what a full-scale tone gives, at 100 % the PA's peak) and the
+     * samples the codec's range cut; meaningful when tx_report_valid. */
+    bool     tx_report_valid;
+    double   tx_peak;
+    uint32_t tx_clipped;
+    /* sBitx: the TX power calibration (radiod_api_tx_calibrate): idle,
+     * running, done or failed, its steps so far, and why it failed;
+     * meaningful when tx_cal_valid. */
+    bool     tx_cal_valid;
+    char     tx_cal[8];
+    uint32_t tx_cal_steps;
+    char     tx_cal_message[RADIOD_API_TX_CAL_MESSAGE_MAX];
 } radiod_api_state;
 
 /* clock_offset_ms's resolution: the estimate is no finer, and a coarser
@@ -108,6 +124,13 @@ int radiod_api_set_bfo(uint32_t hz);                             /* ENOTSUP on H
  * does not hold it (nothing changes). */
 int radiod_api_ptt(long conn_id, bool on);
 void radiod_api_reset_protection(void);
+/* sBitx: start (start true) or stop the TX power calibration of the band
+ * the active profile's frequency is in (sbitx/sbitx_txcal.h). It keys a
+ * full-scale tone a second at a time, so a dummy load or a matched antenna
+ * must be on the output; its progress is in radiod_api_state. 0; ENOTSUP
+ * on Hamlib; EBUSY while one runs or the radio transmits; EPROTECT with
+ * the SWR protection tripped. Stopping is always 0. */
+int radiod_api_tx_calibrate(bool start);
 
 /* ── radio controls: levels, functions and parameters, in radiod's control
  *    vocabulary (radio/radio_controls.h), from whichever backend drives the

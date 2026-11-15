@@ -42,6 +42,7 @@
 #include "digi_log.h"
 #include "radio_backend.h"
 #include "radio_controls.h"
+#include "sbitx_txcal.h"
 
 #include "radiod_log.h"
 
@@ -503,13 +504,13 @@ void lpf_set(radio *radio_h)
 
     int lpf = 0;
 
-    if (*radio_freq < 5700000)
+    if (*radio_freq < LPF_D_MAX_HZ)
         lpf = LPF_D;
-    else if (*radio_freq < 8000000)
+    else if (*radio_freq < LPF_C_MAX_HZ)
         lpf = LPF_C;
-    else if (*radio_freq < 18500000)
+    else if (*radio_freq < LPF_B_MAX_HZ)
         lpf = LPF_B;
-    else if (*radio_freq < 35000000)
+    else if (*radio_freq < LPF_A_MAX_HZ)
         lpf = LPF_A;
 
     if (lpf)
@@ -668,6 +669,11 @@ static void tr_switch(radio *radio_h, bool txrx_state)
         rx_starting = true;
         radio_h->txrx_state = IN_RX;
 
+        /* the TX peak report of the over (sbitx_dsp.c) */
+        HLOGI(LOG_C, "TX over: peak %.2f of full scale at the power set, "
+              "%.0f %% of the codec's range, %u samples clipped",
+              radio_h->tx_peak_fs, radio_h->tx_peak_codec * 100.0, radio_h->tx_clipped);
+
         // Clear RADAE TX flow state AFTER txrx_state flips to IN_RX, so
         // no further dsp_process_tx block can spuriously re-fire
         // radae_tx_start via the lazy-start path in
@@ -679,6 +685,206 @@ static void tr_switch(radio *radio_h, bool txrx_state)
     }
 
     radio_h->send_ws_update = true;
+}
+
+/* ── TX power calibration (sbitx_txcal.h), run from io_tick ─────────── */
+
+/* io_tick runs every 10 ms. A step keys for TXCAL_KEY_TICKS, reads the
+ * forward power over its last TXCAL_MEASURE_TICKS (the PA and the bridge
+ * settle first), then rests TXCAL_REST_TICKS so the PA and its supply
+ * recover: at the peak the output sagged ~9 % over 5 s keyed. */
+#define TXCAL_KEY_TICKS      100
+#define TXCAL_MEASURE_TICKS   50
+#define TXCAL_REST_TICKS     100
+/* The power is read every POWER_READ_TICKS ticks while transmitting. */
+#define POWER_READ_TICKS       3
+/* Stop on an SWR above this (x10), as the bench sweeps did: a bad load,
+ * whatever the protection's own threshold. */
+#define TXCAL_SWR_MAX         25
+/* The codec's range reached: no clean drive above. */
+#define TXCAL_CODEC_FULL    0.98
+
+static txcal tx_cal;
+static enum { TXCAL_PHASE_KEYED, TXCAL_PHASE_REST } tx_cal_phase;
+static int    tx_cal_ticks;
+static double tx_cal_fwd_sum;
+static int    tx_cal_fwd_n;
+
+static void tx_cal_unkey(radio *radio_h)
+{
+    radio_h->tx_cal_drive = 0.0;
+    radio_backend_end_ptt(radio_h, PTT_SRC_TXCAL, 0);
+}
+
+static void tx_cal_fail(radio *radio_h, const char *why)
+{
+    if (tx_cal_phase == TXCAL_PHASE_KEYED)
+        tx_cal_unkey(radio_h);
+    radio_h->tx_cal_drive = 0.0;
+    snprintf(radio_h->tx_cal_message, sizeof(radio_h->tx_cal_message), "%s", why);
+    radio_h->tx_cal_status = TX_CAL_FAILED;
+    radio_h->send_ws_update = true;
+    HLOGW(LOG_C, "TX calibration stopped: %s", why);
+}
+
+static void tx_cal_key(radio *radio_h)
+{
+    radio_h->tx_cal_drive = tx_cal.drive;
+    tx_cal_phase = TXCAL_PHASE_KEYED;
+    tx_cal_ticks = 0;
+    tx_cal_fwd_sum = 0.0;
+    tx_cal_fwd_n = 0;
+    if (radio_backend_claim_ptt(radio_h, PTT_SRC_TXCAL, 0) != 0 ||
+        radio_h->txrx_state != IN_TX)
+    {
+        radio_h->tx_cal_drive = 0.0;
+        tx_cal_phase = TXCAL_PHASE_REST;
+        tx_cal_fail(radio_h, radio_h->swr_protection_enabled
+                    ? "the SWR protection is on" : "another transmission holds PTT");
+    }
+}
+
+/* The drive found: the band's scale from now on, saved in core.ini. */
+static void tx_cal_save(radio *radio_h, int row)
+{
+    power_settings *b = &radio_h->band_power[row];
+    char key[64], val[32];
+
+    b->scale = tx_cal.best_drive;
+    b->calibrated = true;
+    radio_h->band_power_gen++;
+    snprintf(key, sizeof(key), "tx_band%d:scale", row);
+    snprintf(val, sizeof(val), "%.4f", b->scale);
+    int rc = cfg_set(radio_h, radio_h->cfg_radio, key, val);
+    snprintf(key, sizeof(key), "tx_band%d:calibrated", row);
+    rc |= cfg_set(radio_h, radio_h->cfg_radio, key, "1");
+    if (rc != 0)
+        HLOGE(LOG_C, "Error modifying config file");
+    radio_h->cfg_radio_dirty = true;
+
+    radio_h->tx_cal_scale = b->scale;
+    radio_h->tx_cal_status = TX_CAL_DONE;
+    radio_h->send_ws_update = true;
+    HLOGI(LOG_C, "TX calibration: tx_band%d (%d-%d Hz) peaks at drive %.4f, "
+          "%.1f W on the radio's meter, after %d steps; saved",
+          row, b->f_start, b->f_stop, b->scale, tx_cal.best_fwd / 10.0, tx_cal.steps);
+}
+
+static void tx_cal_begin(radio *radio_h)
+{
+    uint32_t freq = radio_h->profiles[radio_h->profile_active_idx].freq;
+    uint16_t mode = radio_h->profiles[radio_h->profile_active_idx].mode;
+    int row = tx_band_index(radio_h->band_power, radio_h->band_power_count, freq);
+
+    radio_h->tx_cal_message[0] = 0;
+    radio_h->tx_cal_steps = 0;
+    radio_h->tx_cal_band = row;
+    radio_h->tx_cal_status = TX_CAL_RUNNING;
+    tx_cal_phase = TXCAL_PHASE_REST;
+
+    if (radio_h->txrx_state == IN_TX)
+    {
+        tx_cal_fail(radio_h, "the radio is transmitting");
+        return;
+    }
+    if (radio_h->swr_protection_enabled)
+    {
+        tx_cal_fail(radio_h, "the SWR protection is on");
+        return;
+    }
+    if (mode != MODE_USB && mode != MODE_LSB)
+    {
+        tx_cal_fail(radio_h, "the profile's mode is not USB or LSB");
+        return;
+    }
+    if (row < 0)
+    {
+        tx_cal_fail(radio_h, "no tx_band covers this frequency");
+        return;
+    }
+
+    HLOGI(LOG_C, "TX calibration of tx_band%d (%d-%d Hz) at %u Hz: a full-scale "
+          "tone, keyed a second at a time", row, radio_h->band_power[row].f_start,
+          radio_h->band_power[row].f_stop, freq);
+    txcal_start(&tx_cal);
+    tx_cal_key(radio_h);
+}
+
+static void tx_cal_tick(radio *radio_h)
+{
+    if (atomic_exchange(&radio_h->tx_cal_request, false) &&
+        radio_h->tx_cal_status != TX_CAL_RUNNING)
+    {
+        radio_h->tx_cal_cancel = false;
+        tx_cal_begin(radio_h);
+        return;
+    }
+    if (radio_h->tx_cal_status != TX_CAL_RUNNING)
+        return;
+
+    sbitx_timer_reset = true;                    /* activity */
+    if (atomic_exchange(&radio_h->tx_cal_cancel, false))
+    {
+        tx_cal_fail(radio_h, "cancelled");
+        return;
+    }
+
+    tx_cal_ticks++;
+    if (tx_cal_phase == TXCAL_PHASE_REST)
+    {
+        if (radio_h->txrx_state == IN_TX)
+        {
+            tx_cal_fail(radio_h, "another transmission started");
+            return;
+        }
+        if (tx_cal_ticks >= TXCAL_REST_TICKS)
+            tx_cal_key(radio_h);
+        return;
+    }
+
+    /* keyed */
+    if (radio_h->swr_protection_enabled)
+    {
+        tx_cal_fail(radio_h, "the SWR protection tripped");
+        return;
+    }
+    if (radio_h->txrx_state != IN_TX)
+    {
+        tx_cal_fail(radio_h, "unkeyed");
+        return;
+    }
+    if (tx_cal_ticks > TXCAL_KEY_TICKS - TXCAL_MEASURE_TICKS && !(tx_cal_ticks % POWER_READ_TICKS))
+    {
+        if (radio_h->ref_power && get_swr(radio_h) > TXCAL_SWR_MAX)
+        {
+            tx_cal_fail(radio_h, "the SWR is too high: check the load");
+            return;
+        }
+        tx_cal_fwd_sum += get_fwd_power(radio_h);
+        tx_cal_fwd_n++;
+    }
+    if (tx_cal_ticks < TXCAL_KEY_TICKS)
+        return;
+
+    tx_cal_unkey(radio_h);
+    tx_cal_phase = TXCAL_PHASE_REST;
+    tx_cal_ticks = 0;
+    radio_h->tx_cal_steps = (uint32_t) tx_cal.steps + 1;
+    radio_h->send_ws_update = true;
+    double fwd = tx_cal_fwd_n ? tx_cal_fwd_sum / tx_cal_fwd_n : 0.0;
+    HLOGI(LOG_C, "TX calibration: drive %.4f, %.1f W on the radio's meter, "
+          "codec at %.0f %%", tx_cal.drive, fwd / 10.0, radio_h->tx_peak_codec * 100.0);
+    switch (txcal_step(&tx_cal, fwd, radio_h->tx_peak_codec >= TXCAL_CODEC_FULL))
+    {
+    case TXCAL_NEXT:
+        break;
+    case TXCAL_FOUND:
+        tx_cal_save(radio_h, radio_h->tx_cal_band);
+        break;
+    case TXCAL_NO_POWER:
+        tx_cal_fail(radio_h, "no forward power read: is the PA on?");
+        break;
+    }
 }
 
 // this is our main 10ms period io loop
@@ -770,12 +976,13 @@ void io_tick(radio *radio_h)
     }
 
     // period * 3, read power over i2c
-    if ( !(ticks % 3) && radio_h->txrx_state == IN_TX )
+    if ( !(ticks % POWER_READ_TICKS) && radio_h->txrx_state == IN_TX )
     {
         update_power_measurements(radio_h);
         swr_protection_check(radio_h);
     }
-    if ( !(ticks % 3) && radio_h->txrx_state == IN_RX )
+    tx_cal_tick(radio_h);
+    if ( !(ticks % POWER_READ_TICKS) && radio_h->txrx_state == IN_RX )
     {
         // we hold the power values in case of high-swr protection enabled
         if (radio_h->swr_protection_enabled != true)
@@ -827,7 +1034,8 @@ void io_tick(radio *radio_h)
         if (!digi_keyed)
         {
             if (digi_mode && pending && slot_near && radio_h->txrx_state == IN_RX &&
-                !radio_h->key_down && !radio_h->swr_protection_enabled)
+                !radio_h->key_down && !radio_h->swr_protection_enabled &&
+                radio_h->tx_cal_status != TX_CAL_RUNNING)
             {
                 tr_switch(radio_h, IN_TX);
                 if (radio_h->txrx_state == IN_TX)

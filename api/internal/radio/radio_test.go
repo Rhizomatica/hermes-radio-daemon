@@ -40,6 +40,46 @@ func TestClockOffset(t *testing.T) {
 	}
 }
 
+// The TX power calibration is the sBitx's: started once at a time, refused
+// with the protection tripped, stopped without saving; its state and the
+// last over's peak are in RadioState, null on a Hamlib rig.
+func TestTxCalibration(t *testing.T) {
+	e := testapi.New(t)
+	if r := e.Do("POST", "/radio/tx-calibration", ""); r.Status != 422 {
+		t.Fatalf("Hamlib POST = %d %s, want 422", r.Status, r.Body)
+	}
+	if j := e.Do("GET", "/radio", "").JSON(t); j["tx_calibration"] != nil || j["tx_peak"] != nil {
+		t.Errorf("Hamlib state = %v, want tx_calibration and tx_peak null", j)
+	}
+
+	e.Radio.SetTXCal("idle", 0, 0.97, 0)
+	e.Radio.SetProtection(true)
+	if r := e.Do("POST", "/radio/tx-calibration", ""); r.Status != 409 {
+		t.Fatalf("POST with the protection tripped = %d %s, want 409", r.Status, r.Body)
+	}
+	e.Radio.SetProtection(false)
+	r := e.Do("POST", "/radio/tx-calibration", "")
+	if r.Status != 202 {
+		t.Fatalf("POST = %d %s, want 202", r.Status, r.Body)
+	}
+	if c := r.JSON(t)["tx_calibration"].(map[string]any); c["status"] != "running" {
+		t.Errorf("tx_calibration = %v, want running", c)
+	}
+	if r := e.Do("POST", "/radio/tx-calibration", ""); r.Status != 409 {
+		t.Errorf("second POST = %d, want 409", r.Status)
+	}
+	if r := e.Do("DELETE", "/radio/tx-calibration", ""); r.Status != 204 {
+		t.Fatalf("DELETE = %d %s, want 204", r.Status, r.Body)
+	}
+	j := e.Do("GET", "/radio", "").JSON(t)
+	if c := j["tx_calibration"].(map[string]any); c["status"] != "failed" || c["message"] != "cancelled" {
+		t.Errorf("tx_calibration after DELETE = %v", c)
+	}
+	if j["tx_peak"] != 0.97 || j["tx_clipped"] != 0.0 {
+		t.Errorf("tx_peak, tx_clipped = %v, %v", j["tx_peak"], j["tx_clipped"])
+	}
+}
+
 // A patch is validated in full before anything is applied.
 func TestUpdateProfile(t *testing.T) {
 	e := testapi.New(t)

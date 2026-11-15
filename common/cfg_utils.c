@@ -434,6 +434,52 @@ void *config_thread(void *radio_h_v)
     return NULL;
 }
 
+/* The LPF a frequency transmits through (lpf_set), 0 for none. */
+static int tx_lpf_segment(uint32_t hz)
+{
+    if (hz < LPF_D_MAX_HZ) return 1;
+    if (hz < LPF_C_MAX_HZ) return 2;
+    if (hz < LPF_B_MAX_HZ) return 3;
+    if (hz < LPF_A_MAX_HZ) return 4;
+    return 0;
+}
+
+bool cfg_tx_bands_check(const power_settings *b, uint32_t n, char *why, size_t len)
+{
+    if (n == 0)
+    {
+        snprintf(why, len, "none: the sBitx transmits nothing");
+        return false;
+    }
+    for (uint32_t k = 0; k < n; k++)
+    {
+        if (b[k].f_start < 0 || b[k].f_stop <= b[k].f_start)
+        {
+            snprintf(why, len, "tx_band%u: f_start %d, f_stop %d is no range", k, b[k].f_start, b[k].f_stop);
+            return false;
+        }
+        if (!(b[k].scale > 0.0))
+        {
+            snprintf(why, len, "tx_band%u: scale %g transmits nothing", k, b[k].scale);
+            return false;
+        }
+        int lpf = tx_lpf_segment((uint32_t) b[k].f_start);
+        if (lpf != tx_lpf_segment((uint32_t) b[k].f_stop - 1))
+        {
+            snprintf(why, len, "tx_band%u (%d-%d Hz) crosses a low-pass filter edge: "
+                     "one scale cannot serve both filters", k, b[k].f_start, b[k].f_stop);
+            return false;
+        }
+        if (k > 0 && b[k].f_start != b[k - 1].f_stop)
+        {
+            snprintf(why, len, "tx_band%u starts at %d Hz, tx_band%u ends at %d Hz: "
+                     "a gap or an overlap", k, b[k].f_start, k - 1, b[k - 1].f_stop);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool init_config_radio(radio *radio_h, const char *ini_name)
 {
     dictionary *ini;
@@ -777,22 +823,33 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
         radio_h->drm_tx_gain = (float) (isfinite(g) && g > 0.0 && g <= 4.0 ? g : 0.5);
     }
 
-    /* tx_band* sections — per-band TX power calibration (sbitx hardware) */
+    /* tx_band0, tx_band1, ... — per-band TX power calibration (sbitx
+     * hardware), up to the first number missing. */
     {
-        int sec_count = iniparser_getnsec(ini) - 1; /* minus [main] */
-        if (sec_count < 0) sec_count = 0;
-        if (sec_count > MAX_CAL_BANDS) sec_count = MAX_CAL_BANDS;
-        radio_h->band_power_count = (uint32_t) sec_count;
-        for (int k = 0; k < sec_count; k++)
+        uint32_t n = 0;
+        while (n < MAX_CAL_BANDS)
         {
             char key[64];
-            snprintf(key, sizeof(key), "tx_band%d:f_start", k);
-            radio_h->band_power[k].f_start = iniparser_getint(ini, key, -1);
-            snprintf(key, sizeof(key), "tx_band%d:f_stop", k);
-            radio_h->band_power[k].f_stop = iniparser_getint(ini, key, -1);
-            snprintf(key, sizeof(key), "tx_band%d:scale", k);
-            radio_h->band_power[k].scale = iniparser_getdouble(ini, key, 1.0);
+            snprintf(key, sizeof(key), "tx_band%u", n);
+            if (!iniparser_find_entry(ini, key))
+                break;
+            power_settings *b = &radio_h->band_power[n];
+            snprintf(key, sizeof(key), "tx_band%u:f_start", n);
+            b->f_start = iniparser_getint(ini, key, -1);
+            snprintf(key, sizeof(key), "tx_band%u:f_stop", n);
+            b->f_stop = iniparser_getint(ini, key, -1);
+            snprintf(key, sizeof(key), "tx_band%u:scale", n);
+            b->scale = iniparser_getdouble(ini, key, 0.0);
+            snprintf(key, sizeof(key), "tx_band%u:calibrated", n);
+            b->calibrated = iniparser_getboolean(ini, key, 0) == 1;
+            n++;
         }
+        radio_h->band_power_count = n;
+        radio_h->band_power_gen++;
+
+        char why[RADIO_MESSAGE_MAX];
+        if (!cfg_tx_bands_check(radio_h->band_power, n, why, sizeof(why)))
+            HLOGW(LOG_C, "TX power bands (tx_band*): %s", why);
     }
 
     return true;

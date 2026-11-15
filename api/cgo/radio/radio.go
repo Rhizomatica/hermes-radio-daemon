@@ -82,6 +82,19 @@ type State struct {
 	// milliseconds, positive when fast; meaningful when ClockOffsetValid.
 	ClockOffsetValid bool
 	ClockOffsetMs    int
+	// sBitx: the last over's peak against full scale at the power set
+	// (1.0 is what a full-scale tone gives, the PA's peak at 100 %), and
+	// the samples the codec's range cut; meaningful when TXReportValid.
+	TXReportValid bool
+	TXPeak        float64
+	TXClipped     int
+	// sBitx: the TX power calibration (TxCalibrate): idle, running, done
+	// or failed, its steps so far, and why it failed; meaningful when
+	// TXCalValid.
+	TXCalValid   bool
+	TXCal        string
+	TXCalSteps   int
+	TXCalMessage string
 }
 
 // Profile is one saved profile.
@@ -265,6 +278,12 @@ type Radio interface {
 	SetDigitalVoice(profile int, on bool) error
 	SetNoiseReduction(profile int, on bool) error
 	ResetProtection()
+	// TxCalibrate starts (start) or stops the sBitx's TX power calibration
+	// of the band the active profile is on. It keys a full-scale tone, so
+	// a dummy load or matched antenna must be on the output; its progress
+	// is in State. ErrNotSupported on Hamlib, ErrBusy while one runs or
+	// the radio transmits, ErrProtection with the SWR protection tripped.
+	TxCalibrate(start bool) error
 	// PTT keys (on) or unkeys the transmitter for hermes.v1 connection conn,
 	// which then owns it; radiod unkeys when that connection closes. On:
 	// ErrProtection with the SWR protection tripped, ErrBusy while another

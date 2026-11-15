@@ -116,6 +116,16 @@
 #define ZBITX_RX_LINE 15
 #define ZBITX_LPF_E   12
 
+/* Where the sBitx switches its TX low-pass filters (lpf_set). Not HF
+ * Signals' 5.5/10.5/18.5/30 MHz: the filters on our boards are retuned for
+ * channels outside the amateur bands, and at upstream's edges they took
+ * most of the power there. A TX power calibration band (tx_bandN) must not
+ * cross one: the PA's gain changes with the filter. */
+#define LPF_D_MAX_HZ   5700000U   /* LPF_D below this */
+#define LPF_C_MAX_HZ   8000000U   /* LPF_C below this */
+#define LPF_B_MAX_HZ  18500000U   /* LPF_B below this */
+#define LPF_A_MAX_HZ  35000000U   /* LPF_A below this; no filter above */
+
 #define SBITX_BFO_FREQUENCY 40035000U
 #define ZBITX_BFO_FREQUENCY 40048000U
 
@@ -164,12 +174,24 @@ typedef struct {
     int history;
 } encoder;
 
-/* Per-band TX power calibration (sbitx hardware only) */
+/* Per-band TX power calibration (sbitx hardware only): scale is the drive
+ * at which the PA gives its most power on the band, what 100 % sends;
+ * calibrated is true once this radio measured it (tx_calibrate), false
+ * for the shipped default. */
 typedef struct {
     int    f_start;
     int    f_stop;
     double scale;
+    bool   calibrated;
 } power_settings;
+
+/* A TX power calibration (tx_calibrate) */
+typedef enum {
+    TX_CAL_IDLE = 0,
+    TX_CAL_RUNNING,
+    TX_CAL_DONE,
+    TX_CAL_FAILED,
+} tx_cal_state;
 
 /* Hardware variant (sbitx vs zbitx — different GPIO + BFO) */
 typedef enum {
@@ -318,7 +340,28 @@ typedef struct {
     _Atomic uint32_t bridge_compensation;
     power_settings band_power[MAX_CAL_BANDS];
     uint32_t band_power_count;
+    _Atomic uint32_t band_power_gen;  /* bumped when band_power changes */
     _Atomic bool send_ws_update;      /* embedded DSP signals new state */
+
+    /* TX power calibration (sbitx/sbitx_txcal.h): a command sets
+     * tx_cal_request (or tx_cal_cancel), the io tick runs it. While a step
+     * is keyed, tx_cal_drive > 0 and the DSP sends its full-scale tone at
+     * that drive instead of the profile's audio. */
+    _Atomic bool     tx_cal_request;
+    _Atomic bool     tx_cal_cancel;
+    _Atomic int      tx_cal_status;           /* tx_cal_state */
+    _Atomic double   tx_cal_drive;
+    _Atomic int      tx_cal_band;             /* the tx_band row, -1 none */
+    _Atomic double   tx_cal_scale;            /* the drive found */
+    _Atomic uint32_t tx_cal_steps;
+    char             tx_cal_message[RADIO_MESSAGE_MAX]; /* why it failed */
+
+    /* The last over's peak (sbitx): against the full-scale tone at the
+     * power set (1.0 = what a full-scale tone gives), against the codec's
+     * range (1.0 = its full scale), and the samples the codec's range cut. */
+    _Atomic float    tx_peak_fs;
+    _Atomic float    tx_peak_codec;
+    _Atomic uint32_t tx_clipped;
 
     /* ── shared status ───────────────────────────────────────────── */
     _Atomic bool     txrx_state;              /* IN_RX or IN_TX */

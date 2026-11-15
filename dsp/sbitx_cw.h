@@ -13,6 +13,10 @@
 #ifndef SBITX_CW_H_
 #define SBITX_CW_H_
 
+/* The peak of the tones the encoder writes. The TX brings it to the full
+ * scale (sbitx_dsp.c), so it only sets the headroom left for digi_tx_gain. */
+#define SBITX_CW_TONE_PEAK 0.4f
+
 #include <stdbool.h>
 #include <stdint.h>
 

@@ -69,6 +69,7 @@
 #include "js8_station.h"
 #include "sbitx_cw.h"
 #include "sbitx_rtty.h"
+#include "sbitx_txcal.h"
 #include "sbitx_dstar.h"
 #include "dstar_voice.h"
 #include "digi_log.h"
@@ -115,6 +116,22 @@ static radio *radio_h_dsp;
 #define TX_SCALE_VOICE  4000.0
 #define TX_SCALE_RADE    720.0
 #define TX_SCALE_DSTAR   580.0
+
+/* The voice chain's audio limiter (tx_process_chain), and so the envelope a
+ * steady full-scale tone gives: every mode's full scale. At 100 % a mode's
+ * peaks reach what this tone gives, the PA's peak (sbitx_txcal.h). */
+#define TX_AUDIO_LIMIT   0.95
+/* The DSP's sample rate, and the TX power calibration's tone: inside any
+ * voice profile's passband. */
+#define TX_RATE_HZ       96000.0
+#define TX_CAL_TONE_HZ   1000.0
+/* The tone the FT8 and JS8 encoders write peaks at 1. */
+#define DIGI_UNIT_TONE_PEAK 1.0f
+
+/* The TX peak report of the over (radio.h, tx_peak_*): reset as it keys. */
+static double   tx_over_peak_fs;
+static double   tx_over_peak_codec;
+static uint32_t tx_over_clipped;
 
 
 fftw_complex *fft_freq;
@@ -2300,6 +2317,21 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
 // - output_tx: output to tx with the input baseband (eg. 0 to 3 kHz) upconverted to passband in LSB or USB
 // - block_size: number of samples, hardcoded to 1024 for now
 // - input_is_48k_stereo: if true, input is 48 kHz stereo (loopback), otherwise, 96 kHz mono (mic)
+/* A digital mode's tone into the TX: the encoder's peak brought to the full
+ * scale, times digi_tx_gain up to 1 (on the sBitx the power level sets the
+ * power; more would clip the tone towards a square, its harmonics inside
+ * the passband), and kept inside it. */
+static float digi_tone_to_tx(float tone, float encoder_peak)
+{
+    const float full = (float) TX_AUDIO_LIMIT;
+    float v = tone * full / encoder_peak * fminf(radio_h_dsp->digi_tx_gain, 1.0f);
+    if (v > full)
+        v = full;
+    else if (v < -full)
+        v = -full;
+    return v;
+}
+
 void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *output_loopback, uint8_t *output_tx, uint32_t block_size, bool input_is_48k_stereo)
 {
     dsp_radae_follow_profile();
@@ -2321,6 +2353,9 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     if (tx_starting)
     {
         digi_tx_new_over = true;
+        tx_over_peak_fs = 0.0;
+        tx_over_peak_codec = 0.0;
+        tx_over_clipped = 0;
         fft_reset_m_bins();
         clear_buffers();
         if (loop_up_ready)
@@ -2348,7 +2383,9 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     {
         for (i = 0; i < block_size; i = i + 2)
         {
-            loopback_in[i/2] = (1.0 * (signal_input_int[i] >> 8)) / MAX_SAMPLE_VALUE;
+            /* a modem's full-scale sample is the full scale: under the
+             * limiter, which would clip it */
+            loopback_in[i/2] = TX_AUDIO_LIMIT * (signal_input_int[i] >> 8) / MAX_SAMPLE_VALUE;
         }
 
         /* Every input sample in, exactly block_size samples out: see
@@ -2389,7 +2426,22 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     // cw_pitch with raised-cosine envelope), and feed the FFT TX path.
     // Emits silence when the queue is empty so PTT held with no
     // pending text doesn't loop a stale message.
-    if (tx_mode == MODE_CW)
+    const double tx_cal_drive = radio_h_dsp->tx_cal_drive;
+    if (tx_cal_drive > 0.0)
+    {
+        /* TX power calibration (sbitx_txcal.h): a steady full-scale tone */
+        static double cal_phase = 0.0;
+        for (i = MAX_BINS/2; i < MAX_BINS; i++)
+        {
+            cal_phase += 2.0 * M_PI * TX_CAL_TONE_HZ / TX_RATE_HZ;
+            if (cal_phase > 2.0 * M_PI)
+                cal_phase -= 2.0 * M_PI;
+            int k = i - MAX_BINS/2;
+            fft_in[i] = TX_AUDIO_LIMIT * sin(cal_phase);
+            fft_m[k]  = fft_in[i];
+        }
+    }
+    else if (tx_mode == MODE_CW)
     {
         static bool   cw_tx_inited = false;
         /* 8 s of CW audio at 96 kHz, a part of the message at a time:
@@ -2437,14 +2489,11 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             }
         }
 
-        float g = radio_h_dsp->digi_tx_gain;
         for (i = MAX_BINS/2; i < MAX_BINS; i++)
         {
             float tone = (cw_audio_pos < cw_audio_len)
                          ? cw_audio[cw_audio_pos++] : 0.0f;
-            tone *= g;
-            if (tone >  1.0f) tone =  1.0f;
-            if (tone < -1.0f) tone = -1.0f;
+            tone = digi_tone_to_tx(tone, SBITX_CW_TONE_PEAK);
             int k = i - MAX_BINS/2;
             fft_in[i] = (double) tone;
             fft_m[k]  = fft_in[i];
@@ -2551,14 +2600,11 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             }
         }
 
-        float g = radio_h_dsp->digi_tx_gain;
         for (i = MAX_BINS/2; i < MAX_BINS; i++)
         {
             float tone = (ft8_audio_96k_pos < ft8_audio_96k_len)
                          ? ft8_audio_96k[ft8_audio_96k_pos++] : 0.0f;
-            tone *= g;
-            if (tone >  1.0f) tone =  1.0f;
-            if (tone < -1.0f) tone = -1.0f;
+            tone = digi_tone_to_tx(tone, DIGI_UNIT_TONE_PEAK);
             int k = i - MAX_BINS/2;
             fft_in[i] = (double) tone;
             fft_m[k]  = fft_in[i];
@@ -2619,7 +2665,6 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             }
         }
 
-        float g = radio_h_dsp->digi_tx_gain;
         for (i = MAX_BINS/2; i < MAX_BINS; i++)
         {
             float tone = 0.0f;
@@ -2635,9 +2680,7 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
                 tone = (float) (ramp * sin(phase));
                 pos++;
             }
-            tone *= g;
-            if (tone >  1.0f) tone =  1.0f;
-            if (tone < -1.0f) tone = -1.0f;
+            tone = digi_tone_to_tx(tone, DIGI_UNIT_TONE_PEAK);
             int k = i - MAX_BINS/2;
             fft_in[i] = (double) tone;
             fft_m[k]  = fft_in[i];
@@ -2709,14 +2752,11 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
             }
         }
 
-        float g = radio_h_dsp->digi_tx_gain;
         for (i = MAX_BINS/2; i < MAX_BINS; i++)
         {
             float tone = (rtty_audio_pos < rtty_audio_len)
                          ? rtty_audio[rtty_audio_pos++] : 0.0f;
-            tone *= g;
-            if (tone >  1.0f) tone =  1.0f;
-            if (tone < -1.0f) tone = -1.0f;
+            tone = digi_tone_to_tx(tone, SBITX_RTTY_TONE_PEAK);
             int k = i - MAX_BINS/2;
             fft_in[i] = (double) tone;
             fft_m[k]  = fft_in[i];
@@ -3080,12 +3120,25 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     //convert back to time domain
     fftw_execute(plan_rev);
 
-    double multiplier = get_band_multiplier() * (double) radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].power_level_percentage / 100.0;
+    /* The power level is a share of the band's peak power (sbitx_txcal.h);
+     * a calibration step sends its own drive. */
+    const double multiplier = tx_cal_drive > 0.0 ? tx_cal_drive
+        : tx_power_drive(get_band_multiplier(),
+                         radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].power_level_percentage);
     RADAE_AMPL_LOG("tx_ssb mult*pct", multiplier);
     // D-STAR is its own mode, which the D-STAR codec sets; RADE is the
     // digital_voice flag on a voice mode.
-    const double tx_scale = tx_mode_for_sb == MODE_DSTAR ? TX_SCALE_DSTAR
+    const double tx_scale = tx_cal_drive > 0.0 ? TX_SCALE_VOICE
+                          : tx_mode_for_sb == MODE_DSTAR ? TX_SCALE_DSTAR
                           : digital_voice ? TX_SCALE_RADE : TX_SCALE_VOICE;
+    /* What the full-scale tone gives here: a tone of amplitude a leaves the
+     * filter and the IFFT at a times MAX_BINS times the filter's peak gain
+     * over 2. The peak report counts against it. */
+    double h_max = 0.0;
+    for (i = 0; i < MAX_BINS; i++)
+        h_max = fmax(h_max, cabs(tx_filter->fir_coeff[i]));
+    const double full = TX_AUDIO_LIMIT * MAX_BINS * h_max / 2.0 * TX_SCALE_VOICE * multiplier;
+    double peak = 0.0;
     for (i = 0; i < MAX_BINS / 2; i++)
     {
         double _ssb_pre = creal(fft_time[i+(MAX_BINS/2)]);
@@ -3093,13 +3146,26 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
         // Clamp to the 24-bit range before the shift: a peak past it
         // would wrap around and flip sign, not clip.
         double v = _ssb_pre * tx_scale * multiplier;
+        peak = fmax(peak, fabs(v));
         if (v > MAX_SAMPLE_VALUE)
+        {
             v = MAX_SAMPLE_VALUE;
+            tx_over_clipped++;
+        }
         else if (v < -MAX_SAMPLE_VALUE)
+        {
             v = -MAX_SAMPLE_VALUE;
+            tx_over_clipped++;
+        }
         signal_output_int[i] = (int32_t) v * 256;
         RADAE_AMPL_LOG("tx_ssb dac_int32", signal_output_int[i]);
     }
+    if (full > 0.0)
+        tx_over_peak_fs = fmax(tx_over_peak_fs, peak / full);
+    tx_over_peak_codec = fmax(tx_over_peak_codec, peak / MAX_SAMPLE_VALUE);
+    radio_h_dsp->tx_peak_fs = (float) tx_over_peak_fs;
+    radio_h_dsp->tx_peak_codec = (float) tx_over_peak_codec;
+    radio_h_dsp->tx_clipped = tx_over_clipped;
 
     memset(output_loopback, 0, block_size * (snd_pcm_format_width(format) / 8));
     memset(output_speaker, 0, block_size * (snd_pcm_format_width(format) / 8));
@@ -3108,23 +3174,21 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
 double get_band_multiplier()
 {
     static uint32_t freq_last = 0;
+    static uint32_t gen_last = 0;
+    static bool     have_last = false;
     static double multiplier = 0;
 
-    if (freq_last != radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].freq)
+    uint32_t freq = radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].freq;
+    uint32_t gen = radio_h_dsp->band_power_gen;
+    if (!have_last || freq_last != freq || gen_last != gen)
     {
-        freq_last = radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].freq;
-        multiplier = 0;
+        freq_last = freq;
+        gen_last = gen;
+        have_last = true;
+        int k = tx_band_index(radio_h_dsp->band_power, radio_h_dsp->band_power_count, freq);
+        multiplier = k < 0 ? 0.0 : radio_h_dsp->band_power[k].scale;
 
-        for (int k = 0; k < radio_h_dsp->band_power_count; k++)
-        {
-            if (freq_last >= radio_h_dsp->band_power[k].f_start && freq_last < radio_h_dsp->band_power[k].f_stop)
-            {
-                multiplier = radio_h_dsp->band_power[k].scale;
-                break;
-            }
-        }
-
-        if (multiplier == 0)
+        if (k < 0)
         {
             HLOGE(LOG_C, "Error finding band gain!");
         }
@@ -3796,5 +3860,5 @@ static void tx_process_chain(float *audio_buf, int n)
             audio_buf[i] = biquad_process(&tx_preemp, audio_buf[i]);
     }
 
-    limit_ff(audio_buf, audio_buf, n, 0.95f);
+    limit_ff(audio_buf, audio_buf, n, (float) TX_AUDIO_LIMIT);
 }

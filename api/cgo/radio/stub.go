@@ -254,6 +254,38 @@ func (s *Stub) SetNoiseReduction(n int, on bool) error {
 
 func (s *Stub) ResetProtection() { s.mu.Lock(); s.state.Protection = false; s.mu.Unlock() }
 
+// TxCalibrate follows radiod_api_tx_calibrate on an sBitx (SetTXCal makes
+// the stub one): refused with the protection tripped, while transmitting or
+// while one runs; it starts running, and stopping fails it.
+func (s *Stub) TxCalibrate(start bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case !s.state.TXCalValid:
+		return ErrNotSupported
+	case !start:
+		if s.state.TXCal == "running" {
+			s.state.TXCal, s.state.TXCalMessage = "failed", "cancelled"
+		}
+		return nil
+	case s.state.Protection:
+		return ErrProtection
+	case s.state.TX || s.state.TXCal == "running":
+		return ErrBusy
+	}
+	s.state.TXCal, s.state.TXCalSteps, s.state.TXCalMessage = "running", 0, ""
+	return nil
+}
+
+// SetTXCal makes the stub an sBitx with this calibration state and last
+// over's peak, for tests.
+func (s *Stub) SetTXCal(state string, steps int, peak float64, clipped int) {
+	s.mu.Lock()
+	s.state.TXCalValid, s.state.TXCal, s.state.TXCalSteps = true, state, steps
+	s.state.TXReportValid, s.state.TXPeak, s.state.TXClipped = true, peak, clipped
+	s.mu.Unlock()
+}
+
 // SetProtection trips (or clears) the SWR protection, for tests.
 func (s *Stub) SetProtection(on bool) { s.mu.Lock(); s.state.Protection = on; s.mu.Unlock() }
 

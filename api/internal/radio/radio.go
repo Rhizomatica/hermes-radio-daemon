@@ -27,6 +27,8 @@ func Register(rt *api.Router) {
 	rt.Op("updateProfile", h.updateProfile)
 	rt.Op("selectProfile", h.selectProfile)
 	rt.Op("resetProtection", h.resetProtection)
+	rt.Op("startTxCalibration", h.startTxCalibration)
+	rt.Op("stopTxCalibration", h.stopTxCalibration)
 	rt.Op("getRadioSettings", h.getSettings)
 	rt.Op("updateRadioSettings", h.updateSettings)
 
@@ -74,6 +76,16 @@ type State struct {
 	Backend        string   `json:"backend"`
 	RigModel       *string  `json:"rig_model"`
 	ClockOffsetS   *float64 `json:"clock_offset_s"`
+	TXPeak         *float64 `json:"tx_peak"`
+	TXClipped      *int     `json:"tx_clipped"`
+	TXCalibration  *TXCal   `json:"tx_calibration"`
+}
+
+// TXCal is RadioState's tx_calibration.
+type TXCal struct {
+	Status  string  `json:"status"`
+	Steps   int     `json:"steps"`
+	Message *string `json:"message"`
 }
 
 // msPerS turns the binding's milliseconds into the API's seconds.
@@ -107,6 +119,15 @@ func stateOf(s rad.State) State {
 	if s.ClockOffsetValid {
 		c := float64(s.ClockOffsetMs) / msPerS
 		out.ClockOffsetS = &c
+	}
+	if s.TXReportValid {
+		out.TXPeak, out.TXClipped = &s.TXPeak, &s.TXClipped
+	}
+	if s.TXCalValid {
+		out.TXCalibration = &TXCal{Status: s.TXCal, Steps: s.TXCalSteps}
+		if s.TXCalMessage != "" {
+			out.TXCalibration.Message = &s.TXCalMessage
+		}
 	}
 	return out
 }
@@ -204,6 +225,29 @@ func (h handlers) selectProfile(w http.ResponseWriter, r *http.Request) {
 
 func (h handlers) resetProtection(w http.ResponseWriter, r *http.Request) {
 	h.r.ResetProtection()
+	api.JSON(w, http.StatusNoContent, nil)
+}
+
+func (h handlers) startTxCalibration(w http.ResponseWriter, r *http.Request) {
+	switch err := h.r.TxCalibrate(true); {
+	case errors.Is(err, rad.ErrNotSupported):
+		api.Problem(w, r, http.StatusUnprocessableEntity, "not_supported", "the TX power calibration is the sBitx's", nil)
+	case errors.Is(err, rad.ErrProtection):
+		api.Problem(w, r, http.StatusConflict, "protection", "the SWR protection has tripped: check the load, then reset it", nil)
+	case errors.Is(err, rad.ErrBusy):
+		api.Problem(w, r, http.StatusConflict, "busy", "a calibration is running or the radio is transmitting", nil)
+	case err != nil:
+		h.problemFor(w, r, err)
+	default:
+		api.JSON(w, http.StatusAccepted, stateOf(h.r.State()))
+	}
+}
+
+func (h handlers) stopTxCalibration(w http.ResponseWriter, r *http.Request) {
+	if err := h.r.TxCalibrate(false); err != nil {
+		h.problemFor(w, r, err)
+		return
+	}
 	api.JSON(w, http.StatusNoContent, nil)
 }
 

@@ -1499,6 +1499,48 @@ paths:
       responses:
         "204": {description: Cleared.}
         '401': {$ref: '#/components/responses/Unauthorized'}
+  /radio/tx-calibration:
+    post:
+      tags: [radio]
+      operationId: startTxCalibration
+      summary: Find this sBitx's peak power on the band the active profile is on.
+      description: |
+        The radio transmits: a dummy load, or an antenna it is matched to, must be on the
+        output. radiod keys a steady full-scale tone for a second at a time, one second
+        apart, raising the drive each time, and reads the forward power over the second half
+        of each step. When two steps in a row read clearly less than the best, it stops, and
+        the best step's drive becomes the band's scale in core.ini (`tx_bandN` scale,
+        `calibrated = 1`): what power 100 sends from then on. The radio's meter does not
+        need to be accurate, only to read more power when there is more. It takes a minute
+        or less. The profile's mode must be USB or LSB. A high SWR, the SWR protection or
+        any other unkeying stops it without saving. Progress is in RadioState's
+        tx_calibration.
+      x-hermes-role: admin
+      responses:
+        "202":
+          description: Started.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RadioState"}
+        "409":
+          description: A calibration is running, the radio is transmitting, or the SWR protection has tripped.
+          content:
+            application/problem+json:
+              schema: {$ref: "#/components/schemas/Problem"}
+        "422":
+          description: Not an sBitx.
+          content:
+            application/problem+json:
+              schema: {$ref: "#/components/schemas/Problem"}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    delete:
+      tags: [radio]
+      operationId: stopTxCalibration
+      summary: Stop a TX power calibration; nothing is saved.
+      x-hermes-role: admin
+      responses:
+        "204": {description: Stopped, or none was running.}
+        '401': {$ref: '#/components/responses/Unauthorized'}
   /radio/settings:
     get:
       tags: [radio]
@@ -3530,7 +3572,13 @@ components:
         tx: {type: boolean}
         frequency_hz: {type: integer}
         mode: {$ref: "#/components/schemas/Mode"}
-        power: {type: integer, minimum: 0, maximum: 100, description: Percent.}
+        power:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: |
+            Percent of the transmitter's power: on an sBitx, of the PA's peak power on the
+            band (startTxCalibration), so 50 sends half of it; on Hamlib, the rig's RF power.
         swr: {type: [number, "null"]}
         fwd_w: {type: [number, "null"]}
         ref_w: {type: [number, "null"]}
@@ -3552,6 +3600,26 @@ components:
             as HERMES stations do with FT8, do not count. Null until enough decodes in two
             minutes agree, and again after ten minutes without one. radiod also logs a
             warning when it passes a second.
+        tx_peak:
+          type: [number, "null"]
+          description: |
+            sBitx: the last transmission's peak against full scale at the power set. 1.0 is
+            what a steady full-scale tone gives, which at power 100 is the PA's peak power on
+            the band (startTxCalibration). Every mode is levelled to that full scale, so a
+            voice over reads under 1.0 and a constant-envelope mode at it. Null on Hamlib.
+        tx_clipped:
+          type: [integer, "null"]
+          description: sBitx, the last transmission's samples cut at the codec's full scale; 0 when clean. Null on Hamlib.
+        tx_calibration:
+          description: The sBitx's TX power calibration (startTxCalibration); null on Hamlib.
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [status, steps]
+              properties:
+                status: {type: string, enum: [idle, running, done, failed]}
+                steps: {type: integer, description: Steps keyed so far.}
+                message: {type: [string, "null"], description: Why it failed.}
     RadioProfile:
       type: object
       required: [profile, frequency_hz, mode]

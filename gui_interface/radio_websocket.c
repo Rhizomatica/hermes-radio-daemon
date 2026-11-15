@@ -49,6 +49,7 @@
 #include "dsp/sbitx_ft8.h"
 #include "dsp/js8_station.h"
 #include "dsp/sbitx_drm.h"
+#include "sbitx/sbitx_txcal.h"
 #include "cfg_utils.h"
 #include "voice_crypto.h"
 #include "radio_media.h"
@@ -448,7 +449,12 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
          "\"rade_crypto\":%u,"
          /* In DRM, the receiver's report as Dream gives it (sync flags,
           * SNR, mode, services); null without one */
-         "\"drm_rx\":%s}",
+         "\"drm_rx\":%s,"
+         /* sBitx: the last over's peak against full scale (1.0 = the PA's
+          * peak at 100 %), the samples the codec's range cut, and the TX
+          * power calibration (tx_calibrate) */
+         "\"tx_peak\":%.3f,\"tx_clipped\":%u,"
+         "\"tx_cal\":\"%s\",\"tx_cal_steps\":%u}",
          active,
          radio_h->profiles[active].freq, radio_h->profiles[active].freq,
          mode_to_string(radio_h->profiles[active].mode),
@@ -489,7 +495,9 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
          (unsigned) radio_h->dstar_rx_heard,
          (unsigned) radio_h->dstar_rx_crypto,
          (unsigned) radio_h->rade_rx_crypto,
-         drm_rx_len ? drm_rx : "null");
+         drm_rx_len ? drm_rx : "null",
+         (double) radio_h->tx_peak_fs, (unsigned) radio_h->tx_clipped,
+         tx_cal_state_name(radio_h->tx_cal_status), (unsigned) radio_h->tx_cal_steps);
     pthread_mutex_unlock(&drm_rx_lock);
 }
 
@@ -601,6 +609,35 @@ static void handle_ws_command(radio *radio_h, ws_conn_t *c,
 
     if (!strcmp(cmd, "get_txrx_status"))      { send_value_string(c, cmd, radio_h->txrx_state == IN_TX ? "INTX" : "INRX"); return; }
     if (!strcmp(cmd, "get_protection_status")){ send_value_string(c, cmd, radio_h->swr_protection_enabled ? "PROTECTION_ON" : "PROTECTION_OFF"); return; }
+
+    /* TX power calibration (sbitx_txcal.h): keys a full-scale tone, a
+     * second at a time, on the frequency set; a dummy load or a matched
+     * antenna must be on the output. */
+    if (!strcmp(cmd, "tx_calibrate"))
+    {
+        if (radio_h->backend_kind != RADIO_BACKEND_HFSIGNALS) { send_cmd_error(c, cmd, "sBitx only"); return; }
+        if (radio_h->tx_cal_status == TX_CAL_RUNNING)         { send_cmd_result(c, cmd, false, "running"); return; }
+        radio_h->tx_cal_request = true;
+        send_cmd_result(c, cmd, true, "OK"); return;
+    }
+    if (!strcmp(cmd, "tx_calibrate_stop"))
+    {
+        radio_h->tx_cal_cancel = true;
+        send_cmd_result(c, cmd, true, "OK"); return;
+    }
+    if (!strcmp(cmd, "get_tx_calibration"))
+    {
+        char msg[RADIO_MESSAGE_MAX * 2];
+        json_escape(radio_h->tx_cal_message, msg, sizeof(msg));
+        char out[RADIO_MESSAGE_MAX * 4];
+        snprintf(out, sizeof(out),
+                 "{\"type\":\"%s\",\"status\":\"%s\",\"band\":%d,\"steps\":%u,"
+                 "\"scale\":%.4f,\"message\":\"%s\"}",
+                 cmd, tx_cal_state_name(radio_h->tx_cal_status), (int) radio_h->tx_cal_band,
+                 (unsigned) radio_h->tx_cal_steps, (double) radio_h->tx_cal_scale, msg);
+        ws_send_text(c, out);
+        return;
+    }
 
     if (!strcmp(cmd, "reset_protection")) { radio_h->swr_protection_enabled = false; send_cmd_result(c, cmd, true, "OK"); return; }
     if (!strcmp(cmd, "reset_timeout"))    { radio_backend_reset_timeout_timer();     send_cmd_result(c, cmd, true, "OK"); return; }

@@ -145,6 +145,7 @@ typedef enum {
     PTT_SRC_CAT,        /* CAT server (emulate), id = connection fd     */
     PTT_SRC_WEBSOCKET,  /* websocket, id = connection id (ws_conn_id)   */
     PTT_SRC_MODEM,      /* a modem (modem_audio): RTP SSRC, or < 0 linked in */
+    PTT_SRC_TXCAL,      /* the TX power calibration (sbitx_txcal.h), id 0 */
 } ptt_source;
 
 void radio_backend_set_ptt(radio *radio_h, bool txrx_state,

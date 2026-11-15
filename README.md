@@ -416,12 +416,42 @@ playback_device = default
 ; rig coming back as a new USB device: a usb: path by ids and serial, or
 ; /dev/serial/by-id/..., and ALSA cards by name (hw:CARD=...), not number.
 
-; Per-band TX power calibration (scale = multiplier):
-; [tx_band0]
+; sBitx per-band TX power: scale is the drive at which this radio's PA
+; gives its most power on the band (what power 100 sends); calibrated = 1
+; once tx_calibrate measured it (see "sBitx TX power" below):
+; [tx_band3]
 ; f_start = 5700000
 ; f_stop = 6800000
-; scale = 1.5
+; scale = 0.37
+; calibrated = 0
 ```
+
+#### sBitx TX power
+
+`power_level_percentage` (the API's `power`) is a share of the PA's peak
+power on the band: 100 is the peak, 50 half of it, 25 a quarter. Past its
+peak an sBitx PA only gives less power, and more distortion, so nothing
+drives it harder. Every mode is levelled to one full scale (a steady tone at
+the voice chain's limit), so at power 100 a constant-envelope mode (CW, FT8,
+JS8, RTTY, D-STAR) sends the peak power, and SSB, RADE and a modem's OFDM
+reach it on their peaks.
+
+Where the peak is depends on the radio and the band: on two sBitx at 7 MHz
+it was at 0.30 and 0.45 of drive. `config/core.ini` ships, per band
+(`tx_band0`-`tx_band9`, each inside one of the sBitx's low-pass filters,
+which switch at 5.7, 8 and 18.5 MHz), a drive between the two, so an
+uncalibrated radio is close. To measure a radio, tune a USB or LSB profile
+into the band with a dummy load (or an antenna it is matched to) on the
+output, and run `ws_client -c tx_calibrate` (or `POST /radio/tx-calibration`).
+radiod keys a full-scale tone for a second at a time, raising the drive,
+until the forward power stops rising; it saves that band's drive in
+`core.ini` and logs each step. `get_tx_calibration` (or `GET /radio`'s
+`tx_calibration`) gives its progress; `tx_calibrate_stop`, any unkey, a high
+SWR or the SWR protection stops it without saving. The radio's own power
+meter needs no calibration for this: only where its readings peak matters.
+
+After each transmission radiod logs its peak against full scale and the
+samples cut at the codec's range (`tx_peak` and `tx_clipped` in `GET /radio`).
 
 ### `/etc/hermes/user.ini` — profiles
 
@@ -573,7 +603,7 @@ enable_ptt = 1
 | `noise_reduction` | `OFF`, `ON` | libspecbleach adaptive spectral denoiser on the received audio, on every backend: what the browser, the websocket stream and the speaker play, on a voice profile (`operating_mode = 0`) in USB, LSB, AM, FM and CW (the modem's profile is never denoised, and the digital-mode decoders get the audio as it is); `core.ini`'s `rx_noise_reduction_db` and `rx_noise_reduction_strength` set how much |
 | `digital_voice` | `0`, `1` | Digital voice, in the codec `main:digital_voice_codec` selects |
 | `dv_restore_mode` | a `mode` | Mode D-STAR digital voice returns to when switched off (kept by the daemon) |
-| `power_level_percentage` | 0–100 | TX RF power level |
+| `power_level_percentage` | 0–100 | TX power, as a share of the transmitter's: on the sBitx of the PA's peak power on the band (see [sBitx TX power](#sbitx-tx-power)) |
 | `mic_level`, `rx_level`, `speaker_level`, `tx_level` | 0–100 | ALSA mixer levels |
 
 **Voice DSP (`compressor=ON`, `preemphasis=ON`, `noise_reduction=ON`) is automatically disabled when `digital_voice=1`.**
