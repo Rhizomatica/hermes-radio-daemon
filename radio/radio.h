@@ -588,6 +588,7 @@ typedef struct {
     /* sBitx mic high-pass cutoff (Hz), 4th-order Butterworth, applied to the
      * mic before every TX voice path; takes DC and mains hum off. 0 = off. */
     _Atomic uint32_t mic_highpass_hz;
+    _Atomic uint32_t tx_cessb_db;          /* controlled-envelope SSB compression, dB; 0 off */
     /* Audio gain applied to the DECODED D-STAR voice on its way to the
      * speaker and the websocket. Kept separate from dstar_rx_gain, which
      * scales the discriminator signal feeding the modem: one is a listening
