@@ -31,8 +31,8 @@ func TestEnsureRootSeedsFreshStation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UserByUsername: %v", err)
 	}
-	if u.Role != "admin" || !passwd.Verify(u.PasswordHash, "caduceu") {
-		t.Fatalf("root: role %q, password ok %v", u.Role, passwd.Verify(u.PasswordHash, "caduceu"))
+	if u.Role != "admin" || !passwd.Verify(u.PasswordHash, rootDefaultPassword) {
+		t.Fatalf("root: role %q, password ok %v", u.Role, passwd.Verify(u.PasswordHash, rootDefaultPassword))
 	}
 	if v, ok, _ := st.GetMeta(ctx, "setup.done"); !ok || v != "1" {
 		t.Fatalf("setup.done = %q, %v; want 1", v, ok)
@@ -48,7 +48,7 @@ func TestEnsureRootSeedsFreshStation(t *testing.T) {
 	}
 }
 
-func TestEnsureRootSeedsExistingStation(t *testing.T) {
+func TestEnsureRootLeavesExistingStation(t *testing.T) {
 	ctx := context.Background()
 	st := openStore(t)
 	if _, err := st.CreateUser(ctx, store.NewUser{Username: "alice", PasswordHash: "h", Role: "admin"}); err != nil {
@@ -56,18 +56,23 @@ func TestEnsureRootSeedsExistingStation(t *testing.T) {
 	}
 
 	made, err := EnsureRoot(ctx, st)
-	if err != nil || !made {
-		t.Fatalf("existing station: made=%v err=%v, want root", made, err)
+	if err != nil || made {
+		t.Fatalf("existing station: made=%v err=%v, want nothing", made, err)
 	}
-	if _, err := st.UserByUsername(ctx, store.RootUsername); err != nil {
-		t.Fatalf("root missing: %v", err)
+	if _, err := st.UserByUsername(ctx, store.RootUsername); err == nil {
+		t.Fatal("root was added to a station that already had users")
 	}
-	if n, _ := st.CountUsers(ctx); n != 2 {
-		t.Fatalf("users = %d, want 2", n)
+	if n, _ := st.CountUsers(ctx); n != 1 {
+		t.Fatalf("users = %d, want 1", n)
+	}
+	// An imported or migrated database without setup.done is left alone:
+	// no root appears and setup is not silently marked done.
+	if _, ok, _ := st.GetMeta(ctx, "setup.done"); ok {
+		t.Fatal("setup.done was set on an existing station")
 	}
 }
 
-func TestEnsureRootReseedsAfterDeletion(t *testing.T) {
+func TestEnsureRootDoesNotReseedAfterDeletion(t *testing.T) {
 	ctx := context.Background()
 	st := openStore(t)
 	if _, err := EnsureRoot(ctx, st); err != nil {
@@ -82,10 +87,10 @@ func TestEnsureRootReseedsAfterDeletion(t *testing.T) {
 	}
 
 	made, err := EnsureRoot(ctx, st)
-	if err != nil || !made {
-		t.Fatalf("after deletion: made=%v err=%v, want root reseeded", made, err)
+	if err != nil || made {
+		t.Fatalf("after deletion: made=%v err=%v, want nothing", made, err)
 	}
-	if _, err := st.UserByUsername(ctx, store.RootUsername); err != nil {
-		t.Fatalf("root not reseeded: %v", err)
+	if _, err := st.UserByUsername(ctx, store.RootUsername); err == nil {
+		t.Fatal("root was reseeded after setup had completed")
 	}
 }
