@@ -55,7 +55,7 @@ TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
             tests/dsp/test_upsample2 tests/dsp/test_stream_resampler tests/dsp/test_mic_filter tests/dsp/test_band_clock \
             tests/dsp/test_digi_modes tests/dsp/test_digi_log tests/dsp/test_dstar_voice \
             tests/dsp/test_rade_voice tests/dsp/test_dstar_clock_cal tests/dsp/test_pskreporter tests/dsp/test_js8_frame tests/dsp/test_js8_rx tests/dsp/test_js8_msg tests/dsp/test_js8_decode tests/dsp/test_js8_recordings tests/dsp/test_js8_worker tests/dsp/test_js8_tx tests/dsp/test_radae_vocoder tests/dsp/test_drm \
-            tests/sbitx/test_sbitx_buffer \
+            tests/sbitx/test_sbitx_buffer tests/sbitx/test_txcal \
             tests/common/test_radiod_log tests/common/test_async_file \
             tests/gps/test_gps_track
 # The broadcast plane uses Mercury's codec (libmercury_host.a), so its tests
@@ -326,6 +326,12 @@ tests/dsp/test_radae_vocoder: tests/dsp/test_radae_vocoder.c dsp/radae_vocoder.h
 	$(CC) $(TEST_CFLAGS) $< dsp/radae_vocoder.o $(OPUS_DNN_OBJS) $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lm
 
 # ── sbitx/ ──────────────────────────────────────────────────────
+tests/sbitx/test_txcal: tests/sbitx/test_txcal.c sbitx/sbitx_txcal.c sbitx/sbitx_txcal.h \
+                       common/cfg_utils.c common/cfg_utils.h radio/radio_backend.c radio/radio.h config/core.ini \
+                       tests/fixtures/tx-bands-old.ini tests/fixtures/tx-bands-calibrated.ini
+	$(CC) $(TEST_CFLAGS) $< sbitx/sbitx_txcal.c control_interfaces/rig_server.c radio/radio_controls.c \
+	      control_interfaces/cat_server.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -liniparser -lpthread -lm
+
 tests/sbitx/test_sbitx_buffer: tests/sbitx/test_sbitx_buffer.c sbitx/sbitx_buffer.c sbitx/sbitx_buffer.h \
                                sbitx/ring_buffer.c sbitx/ring_buffer.h
 	$(CC) $(TEST_CFLAGS) -Isbitx $< $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread

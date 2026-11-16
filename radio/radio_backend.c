@@ -167,6 +167,7 @@ static const char *ptt_source_name(ptt_source src)
     case PTT_SRC_CAT:       return "cat fd";
     case PTT_SRC_WEBSOCKET: return "websocket conn";
     case PTT_SRC_MODEM:     return "modem";
+    case PTT_SRC_TXCAL:     return "TX calibration";
     default:                return "none";
     }
 }

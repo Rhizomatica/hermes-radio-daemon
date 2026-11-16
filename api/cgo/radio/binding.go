@@ -41,6 +41,9 @@ func (binding) State() State {
 		Protection: bool(s.protection), DigitalVoice: bool(s.digital_voice),
 		NoiseReduction: bool(s.noise_reduction), Backend: cstr(s.backend[:]),
 		ClockOffsetValid: bool(s.clock_offset_valid), ClockOffsetMs: int(s.clock_offset_ms),
+		TXReportValid: bool(s.tx_report_valid), TXPeak: float64(s.tx_peak), TXClipped: int(s.tx_clipped),
+		TXCalValid: bool(s.tx_cal_valid), TXCal: cstr(s.tx_cal[:]), TXCalSteps: int(s.tx_cal_steps),
+		TXCalMessage: cstr(s.tx_cal_message[:]),
 	}
 }
 
@@ -129,6 +132,9 @@ func (binding) SetNoiseReduction(n int, on bool) error {
 	return codeErr(int(C.radiod_api_set_noise_reduction(prof(n), C.bool(on))))
 }
 func (binding) ResetProtection() { C.radiod_api_reset_protection() }
+func (binding) TxCalibrate(start bool) error {
+	return codeErr(int(C.radiod_api_tx_calibrate(C.bool(start))))
+}
 
 func (binding) Controls() []Control {
 	var cs [192]C.radiod_api_control

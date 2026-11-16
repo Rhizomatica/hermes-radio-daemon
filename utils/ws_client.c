@@ -122,6 +122,9 @@ static void print_usage(const char *prog)
             "  get_digital_voice | set_digital_voice   Set requires -a <ON|OFF>\n"
             "  get_txrx_status\n"
             "  get_protection_status | reset_protection\n"
+            "  tx_calibrate | tx_calibrate_stop | get_tx_calibration\n"
+            "                                 sBitx: find this band's peak power, keying a\n"
+            "                                 tone; a dummy load must be on the output\n"
             "  get_fwd | get_ref | get_ref_power\n"
             "  get_led_status | set_led_status        Set requires -a <ON|OFF>\n"
             "  get_connected_status | set_connected_status\n"
@@ -186,6 +189,9 @@ static char *build_payload(void)
     if (!strcmp(g_cmd, "get_txrx_status"))        SIMPLE("get_txrx_status");
     if (!strcmp(g_cmd, "get_protection_status"))  SIMPLE("get_protection_status");
     if (!strcmp(g_cmd, "reset_protection"))       SIMPLE("reset_protection");
+    if (!strcmp(g_cmd, "tx_calibrate"))           SIMPLE("tx_calibrate");
+    if (!strcmp(g_cmd, "tx_calibrate_stop"))      SIMPLE("tx_calibrate_stop");
+    if (!strcmp(g_cmd, "get_tx_calibration"))     SIMPLE("get_tx_calibration");
     if (!strcmp(g_cmd, "reset_timeout"))          SIMPLE("reset_timeout");
     if (!strcmp(g_cmd, "get_bfo"))                SIMPLE("get_bfo");
     if (!strcmp(g_cmd, "set_bfo"))                NUMBER("set_bfo");

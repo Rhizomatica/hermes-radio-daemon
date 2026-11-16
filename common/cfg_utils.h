@@ -71,6 +71,16 @@ bool cfg_shutdown(radio *radio_h, pthread_t *config_tid);
 /* Thread-safe wrapper around iniparser_set */
 int cfg_set(radio *radio_h, dictionary *ini, const char *entry, const char *val);
 
+/* The TX power bands (tx_band*), in order: each a range, a drive above
+ * zero, inside one low-pass filter (LPF_*_MAX_HZ), and starting where the
+ * one before ends. False, with why, at the first that is not. */
+bool cfg_tx_bands_check(const power_settings *b, uint32_t n, char *why, size_t len);
+
+/* The sBitx's TX power bands as shipped, which replace a core.ini's when
+ * it has none or the old form (no calibrated key). */
+extern const power_settings cfg_tx_band_defaults[];
+extern const uint32_t cfg_tx_band_defaults_n;
+
 /* Load hardware/radio config from INI file */
 bool init_config_radio(radio *radio_h, const char *ini_name);
 

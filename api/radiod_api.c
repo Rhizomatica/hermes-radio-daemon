@@ -16,6 +16,7 @@
 #include "radiod_api.h"
 #include "radiod_api_attach.h"
 #include "radio.h"
+#include "sbitx/sbitx_txcal.h"
 #include "radio_backend.h"
 #include "radio_controls.h"
 #include "dsp/sbitx_ft8.h"
@@ -218,6 +219,16 @@ void radiod_api_state_get(radiod_api_state *out)
         out->clock_offset_ms = (int32_t) lround(clock_s * API_MS_PER_S / RADIOD_API_CLOCK_STEP_MS)
                                * RADIOD_API_CLOCK_STEP_MS;
     }
+    if (r->backend_kind == RADIO_BACKEND_HFSIGNALS) {
+        out->tx_report_valid = true;
+        out->tx_peak = r->tx_peak_fs;
+        out->tx_clipped = r->tx_clipped;
+        out->tx_cal_valid = true;
+        snprintf(out->tx_cal, sizeof(out->tx_cal), "%s", tx_cal_state_name(r->tx_cal_status));
+        out->tx_cal_steps = r->tx_cal_steps;
+        if (r->tx_cal_status == TX_CAL_FAILED)
+            snprintf(out->tx_cal_message, sizeof(out->tx_cal_message), "%s", r->tx_cal_message);
+    }
 }
 
 uint32_t radiod_api_profile_count(void)
@@ -401,9 +412,15 @@ int radiod_api_ptt(long conn_id, bool on)
 {
     if (!s_radio)
         return RADIOD_API_ENOTSUP;
-    if (!on)
+    if (!on) {
+        /* PTT off stops a TX calibration too, which holds PTT itself */
+        if (s_radio->tx_cal_status == TX_CAL_RUNNING) {
+            radiod_api_tx_calibrate(false);
+            return RADIOD_API_OK;
+        }
         return radio_backend_unkey_ptt(s_radio, PTT_SRC_WEBSOCKET, conn_id) ?
                RADIOD_API_OK : RADIOD_API_ENOPTT;
+    }
     if (s_radio->swr_protection_enabled)
         return RADIOD_API_EPROTECT;
     return radio_backend_claim_ptt(s_radio, PTT_SRC_WEBSOCKET, conn_id) == 0 ?
@@ -414,6 +431,25 @@ void radiod_api_reset_protection(void)
 {
     if (s_radio)
         s_radio->swr_protection_enabled = false;
+}
+
+int radiod_api_tx_calibrate(bool start)
+{
+    if (!start) {
+        /* only a calibration running or about to start: a stale stop would
+         * cancel the next one */
+        if (s_radio && (s_radio->tx_cal_status == TX_CAL_RUNNING || s_radio->tx_cal_request))
+            s_radio->tx_cal_cancel = true;
+        return RADIOD_API_OK;
+    }
+    if (!s_radio || s_radio->backend_kind != RADIO_BACKEND_HFSIGNALS)
+        return RADIOD_API_ENOTSUP;
+    if (s_radio->swr_protection_enabled)
+        return RADIOD_API_EPROTECT;
+    if (s_radio->tx_cal_status == TX_CAL_RUNNING || s_radio->txrx_state == IN_TX)
+        return RADIOD_API_EBUSY;
+    s_radio->tx_cal_request = true;
+    return RADIOD_API_OK;
 }
 
 /* ── browser audio ── */

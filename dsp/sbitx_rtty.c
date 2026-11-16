@@ -57,7 +57,7 @@ static void rtty_tone(rtty_tx *t, bool mark, int n)
         float *ph = mark ? &t->phase_mark : &t->phase_space;
         *ph += mark ? t->dds_mark : t->dds_space;
         if (*ph > 2.0f * (float) M_PI) *ph -= 2.0f * (float) M_PI;
-        t->signal[t->idx] = 0.4f * sinf(*ph);
+        t->signal[t->idx] = SBITX_RTTY_TONE_PEAK * sinf(*ph);
     }
 }
 
