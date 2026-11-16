@@ -128,6 +128,17 @@ func TestListUsersExactLastPageHasNoCursor(t *testing.T) {
 	}
 }
 
+func TestListUsersRejectsNonPositiveLimit(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	if _, _, err := s.ListUsers(ctx, 0, 0); err == nil {
+		t.Fatal("ListUsers(0) did not fail")
+	}
+	if _, _, err := s.ListUsers(ctx, -1, 0); err == nil {
+		t.Fatal("ListUsers(-1) did not fail")
+	}
+}
+
 func TestCreateUserDuplicateIsTyped(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t)

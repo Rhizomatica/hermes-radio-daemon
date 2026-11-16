@@ -51,7 +51,7 @@ func (h *handlers) create(w http.ResponseWriter, r *http.Request) {
 	f := api.Fields{}
 	if !usernameRe.MatchString(req.Username) {
 		f.Add("username", "1 to 32 characters: a-z, 0-9, . _ -")
-	} else if req.Username == store.RootUsername {
+	} else if store.IsReservedUsername(req.Username) {
 		f.Add("username", "reserved")
 	}
 	if len(req.Password) < 8 {
@@ -64,7 +64,7 @@ func (h *handlers) create(w http.ResponseWriter, r *http.Request) {
 	if !roles[role] {
 		f.Add("role", "readonly, user, operator or admin")
 	}
-	if req.DisplayName != nil && !validDisplayName(*req.DisplayName) {
+	if req.DisplayName != nil && !store.ValidDisplayName(*req.DisplayName) {
 		f.Add("display_name", "at most 64 characters")
 	}
 	if req.Locale != nil && !locales[*req.Locale] {

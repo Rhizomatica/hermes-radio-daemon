@@ -109,6 +109,28 @@ func TestSetupRejectsReservedRoot(t *testing.T) {
 	}
 }
 
+func TestSetupCountsCharacters(t *testing.T) {
+	bodyWith := func(station, callsign, display string) string {
+		return fmt.Sprintf(`{"setup_code":"abc123","station_name":%q,"callsign":%q,"language":"en","timezone":"UTC","admin":{"username":"alice","password":"password1","display_name":%q}}`,
+			station, callsign, display)
+	}
+
+	// 64 multibyte characters are fine even though they are more than 64
+	// bytes; 65 are not. The same applies to the callsign's 16.
+	if w := do(newRouter(t, "abc123"), "POST", "/setup", bodyWith(strings.Repeat("é", 64), strings.Repeat("é", 16), strings.Repeat("é", 64))); w.Code != 201 {
+		t.Fatalf("64-char setup = %d: %s", w.Code, w.Body)
+	}
+	if w := do(newRouter(t, "abc123"), "POST", "/setup", bodyWith(strings.Repeat("é", 65), "TEST1", "Alice")); w.Code != 422 {
+		t.Fatalf("65-char station_name = %d, want 422", w.Code)
+	}
+	if w := do(newRouter(t, "abc123"), "POST", "/setup", bodyWith("Test", strings.Repeat("é", 17), "Alice")); w.Code != 422 {
+		t.Fatalf("17-char callsign = %d, want 422", w.Code)
+	}
+	if w := do(newRouter(t, "abc123"), "POST", "/setup", bodyWith("Test", "TEST1", strings.Repeat("é", 65))); w.Code != 422 {
+		t.Fatalf("65-char admin display_name = %d, want 422", w.Code)
+	}
+}
+
 func TestSetupLockout(t *testing.T) {
 	rt := newRouter(t, "abc123")
 

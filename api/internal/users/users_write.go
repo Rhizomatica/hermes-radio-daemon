@@ -22,10 +22,6 @@ func (h *handlers) update(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if u.Username == store.RootUsername {
-		api.Problem(w, r, http.StatusForbidden, "forbidden", "root cannot be changed", nil)
-		return
-	}
 	p, _ := api.PrincipalFrom(r)
 	isAdmin := p.Role == spec.RoleAdmin
 	if !isAdmin && p.UserID != id {
@@ -52,7 +48,7 @@ func (h *handlers) update(w http.ResponseWriter, r *http.Request) {
 	var patch store.UserPatch
 	if v, present := raw["display_name"]; present {
 		var s string
-		if json.Unmarshal(v, &s) != nil || !validDisplayName(s) {
+		if json.Unmarshal(v, &s) != nil || !store.ValidDisplayName(s) {
 			f.Add("display_name", "a string of at most 64 characters")
 		} else {
 			patch.DisplayName = &s
@@ -110,6 +106,32 @@ func (h *handlers) update(w http.ResponseWriter, r *http.Request) {
 		api.Invalid(w, r, f)
 		return
 	}
+	// root stays an admin; restoring that role after an upgrade is allowed.
+	if u.Username == store.RootUsername && patch.Role != nil && *patch.Role != "admin" {
+		api.Problem(w, r, http.StatusForbidden, "forbidden", "root must stay an admin", nil)
+		return
+	}
+	// Refuse to leave the station without an enabled admin.
+	if u.Role == "admin" && !u.Disabled {
+		newRole, newDisabled := u.Role, u.Disabled
+		if patch.Role != nil {
+			newRole = *patch.Role
+		}
+		if patch.Disabled != nil {
+			newDisabled = *patch.Disabled
+		}
+		if newRole != "admin" || newDisabled {
+			n, err := h.store.CountActiveAdmins(r.Context())
+			if err != nil {
+				api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
+				return
+			}
+			if n <= 1 {
+				api.Problem(w, r, http.StatusForbidden, "forbidden", "cannot remove the last active admin", nil)
+				return
+			}
+		}
+	}
 
 	updated, err := h.store.UpdateUser(r.Context(), id, patch)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -136,6 +158,17 @@ func (h *handlers) delete(w http.ResponseWriter, r *http.Request) {
 		api.Problem(w, r, http.StatusForbidden, "forbidden", "root cannot be deleted", nil)
 		return
 	}
+	if u.Role == "admin" && !u.Disabled {
+		n, err := h.store.CountActiveAdmins(r.Context())
+		if err != nil {
+			api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
+			return
+		}
+		if n <= 1 {
+			api.Problem(w, r, http.StatusForbidden, "forbidden", "cannot delete the last active admin", nil)
+			return
+		}
+	}
 	if err := h.store.DeleteUser(r.Context(), id); errors.Is(err, sql.ErrNoRows) {
 		api.Problem(w, r, http.StatusNotFound, "not_found", "no such user", nil)
 		return
@@ -153,10 +186,6 @@ func (h *handlers) setPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	u, ok := h.loadUser(w, r, id)
 	if !ok {
-		return
-	}
-	if u.Username == store.RootUsername {
-		api.Problem(w, r, http.StatusForbidden, "forbidden", "root's password cannot be changed", nil)
 		return
 	}
 	p, _ := api.PrincipalFrom(r)

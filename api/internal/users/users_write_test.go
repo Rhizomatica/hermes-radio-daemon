@@ -146,25 +146,91 @@ func TestDeleteUserPolicy(t *testing.T) {
 	}
 }
 
-func TestRootUntouchable(t *testing.T) {
+func TestRootCanManageOwnAccount(t *testing.T) {
 	e := testapi.NewAuth(t)
 	rootID := e.SeedUser("root", "password1", "admin")
 	e.SeedUser("admin", "password1", "admin")
 	rt := e.Login("root", "password1")
 	at := e.Login("admin", "password1")
 
-	for _, token := range []string{rt, at} {
-		if r := e.DoAuth("PATCH", "/users/"+itoa(rootID), `{"display_name":"Root"}`, token); r.Status != 403 {
-			t.Fatalf("update root = %d, want 403", r.Status)
+	// root may edit its profile, like any other user.
+	if r := e.DoAuth("PATCH", "/users/"+itoa(rootID), `{"display_name":"Root","locale":"pt-BR"}`, rt); r.Status != 200 {
+		t.Fatalf("root self update = %d: %s", r.Status, r.Body)
+	}
+	if r := e.DoAuth("PATCH", "/users/"+itoa(rootID), `{"display_name":"Recovery"}`, at); r.Status != 200 {
+		t.Fatalf("admin update root = %d: %s", r.Status, r.Body)
+	}
+	// Disabling and re-enabling root is allowed while another admin is active.
+	if r := e.DoAuth("PATCH", "/users/"+itoa(rootID), `{"disabled":true}`, at); r.Status != 200 {
+		t.Fatalf("disable root = %d: %s", r.Status, r.Body)
+	}
+	if r := e.DoAuth("PATCH", "/users/"+itoa(rootID), `{"disabled":false}`, at); r.Status != 200 {
+		t.Fatalf("enable root = %d: %s", r.Status, r.Body)
+	}
+	// root may change its own password.
+	if r := e.DoAuth("PUT", "/users/"+itoa(rootID)+"/password", `{"current_password":"password1","new_password":"newpass99"}`, rt); r.Status != 204 {
+		t.Fatalf("root password = %d: %s", r.Status, r.Body)
+	}
+	e.Login("root", "newpass99")
+	// An admin may reset it without the current one.
+	if r := e.DoAuth("PUT", "/users/"+itoa(rootID)+"/password", `{"new_password":"password1"}`, at); r.Status != 204 {
+		t.Fatalf("admin root password = %d: %s", r.Status, r.Body)
+	}
+	// Its role stays admin, but restoring that role is allowed.
+	if r := e.DoAuth("PATCH", "/users/"+itoa(rootID), `{"role":"user"}`, at); r.Status != 403 {
+		t.Fatalf("demote root = %d, want 403", r.Status)
+	}
+}
+
+func TestLastActiveAdminGuard(t *testing.T) {
+	e := testapi.NewAuth(t)
+	id := e.SeedUser("admin", "password1", "admin")
+	at := e.Login("admin", "password1")
+
+	// The only active admin cannot demote, disable or delete itself.
+	if r := e.DoAuth("PATCH", "/users/"+itoa(id), `{"role":"user"}`, at); r.Status != 403 {
+		t.Fatalf("demote last admin = %d, want 403", r.Status)
+	}
+	if r := e.DoAuth("PATCH", "/users/"+itoa(id), `{"disabled":true}`, at); r.Status != 403 {
+		t.Fatalf("disable last admin = %d, want 403", r.Status)
+	}
+	if r := e.DoAuth("DELETE", "/users/"+itoa(id), "", at); r.Status != 403 {
+		t.Fatalf("delete last admin = %d, want 403", r.Status)
+	}
+
+	// With a second admin, the same changes are allowed.
+	e.SeedUser("admin2", "password1", "admin")
+	if r := e.DoAuth("PATCH", "/users/"+itoa(id), `{"role":"operator"}`, at); r.Status != 200 {
+		t.Fatalf("demote with another admin = %d: %s", r.Status, r.Body)
+	}
+}
+
+func TestAdminCanRestoreRootRole(t *testing.T) {
+	e := testapi.NewAuth(t)
+	rootID := e.SeedUser("root", "password1", "user")
+	e.SeedUser("admin", "password1", "admin")
+	at := e.Login("admin", "password1")
+
+	if r := e.DoAuth("PATCH", "/users/"+itoa(rootID), `{"role":"admin"}`, at); r.Status != 200 {
+		t.Fatalf("restore root role = %d: %s", r.Status, r.Body)
+	}
+}
+
+func TestNonAdminCannotTellRootApart(t *testing.T) {
+	e := testapi.NewAuth(t)
+	rootID := e.SeedUser("root", "password1", "admin")
+	otherID := e.SeedUser("other", "password1", "user")
+	e.SeedUser("bob", "password1", "user")
+	bt := e.Login("bob", "password1")
+
+	for _, other := range []int64{rootID, otherID} {
+		r := e.DoAuth("PATCH", "/users/"+itoa(other), `{"display_name":"X"}`, bt)
+		if r.Status != 403 || !strings.Contains(string(r.Body), "only your own profile") {
+			t.Fatalf("PATCH /users/%d = %d %s, want the own-profile error", other, r.Status, r.Body)
 		}
-		if r := e.DoAuth("PATCH", "/users/"+itoa(rootID), `{"disabled":true}`, token); r.Status != 403 {
-			t.Fatalf("disable root = %d, want 403", r.Status)
-		}
-		if r := e.DoAuth("PATCH", "/users/"+itoa(rootID), `{"role":"user"}`, token); r.Status != 403 {
-			t.Fatalf("demote root = %d, want 403", r.Status)
-		}
-		if r := e.DoAuth("PUT", "/users/"+itoa(rootID)+"/password", `{"current_password":"password1","new_password":"newpass99"}`, token); r.Status != 403 {
-			t.Fatalf("root password = %d, want 403", r.Status)
+		r = e.DoAuth("PUT", "/users/"+itoa(other)+"/password", `{"new_password":"newpass99"}`, bt)
+		if r.Status != 403 || !strings.Contains(string(r.Body), "only your own password") {
+			t.Fatalf("PUT /users/%d/password = %d %s, want the own-password error", other, r.Status, r.Body)
 		}
 	}
 }

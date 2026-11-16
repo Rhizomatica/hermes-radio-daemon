@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -14,6 +15,13 @@ import (
 // ErrUsernameTaken is returned when a user insert violates the unique
 // username constraint.
 var ErrUsernameTaken = errors.New("username is taken")
+
+// MaxDisplayName is api-rest.yaml's display_name maxLength.
+const MaxDisplayName = 64
+
+// ValidDisplayName reports whether s fits the display_name maxLength,
+// counted in characters rather than bytes.
+func ValidDisplayName(s string) bool { return utf8.RuneCountInString(s) <= MaxDisplayName }
 
 // isUniqueViolation reports whether err is SQLite's UNIQUE constraint error.
 func isUniqueViolation(err error) bool {
@@ -101,6 +109,9 @@ func (s *Store) UserByUsername(ctx context.Context, username string) (User, erro
 // ListUsers returns one page of users ordered by id, and the id to use as
 // the next cursor (0 on the last page).
 func (s *Store) ListUsers(ctx context.Context, limit int, cursor int64) ([]User, int64, error) {
+	if limit < 1 {
+		return nil, 0, fmt.Errorf("ListUsers: limit %d must be positive", limit)
+	}
 	// One extra row tells whether another page follows, so a full last page
 	// does not hand out a cursor to an empty one.
 	rows, err := s.db.QueryContext(ctx, `SELECT `+userCols+` FROM users WHERE id > ? ORDER BY id ASC LIMIT ?`, cursor, limit+1)
@@ -211,6 +222,14 @@ func (s *Store) SetLastLoginAt(ctx context.Context, id int64) error {
 func (s *Store) CountUsers(ctx context.Context) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM users`).Scan(&n)
+	return n, err
+}
+
+// CountActiveAdmins returns how many users are admins and not disabled.
+func (s *Store) CountActiveAdmins(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM users WHERE role = 'admin' AND disabled = 0`).Scan(&n)
 	return n, err
 }
 

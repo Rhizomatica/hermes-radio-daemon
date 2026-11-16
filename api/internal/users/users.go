@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
-	"unicode/utf8"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/store"
@@ -42,12 +41,6 @@ func Of(u store.User) User {
 		LastLoginAt: u.LastLoginAt, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt,
 	}
 }
-
-const maxDisplayName = 64
-
-// validDisplayName reports whether s fits api-rest.yaml's display_name
-// maxLength, counted in characters rather than bytes.
-func validDisplayName(s string) bool { return utf8.RuneCountInString(s) <= maxDisplayName }
 
 var (
 	usernameRe = regexp.MustCompile(`^[a-z0-9._-]{1,32}$`)
