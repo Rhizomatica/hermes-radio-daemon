@@ -45,9 +45,14 @@
 
 #define LOG_C "cfg"
 
-/* main:drm_tx_gain, the DRM I/Q's level into the TX: the default puts its
- * peaks at full scale; above the most, the codec's range clips. */
-#define DRM_TX_GAIN_DEFAULT 0.68
+/* main:drm_tx_gain, the DRM I/Q's level into the TX. 0.68 puts its peaks
+ * at full scale, the PA's peak at power 100, where its OFDM averages ~11 dB
+ * under them (1.5 W of an sBitx's 18 W). 1.0 lets the PA flatten the peaks
+ * by up to 3.4 dB for twice the average power: on the bench (7 MHz, power
+ * 100) it read 3.5 W and a receiver decoded every frame, SNR 11.6 dB,
+ * against 8.4 dB and no audio at 0.68; 1.4 read 4.5-6 W but dropped a
+ * frame and gained no SNR. Above the most, the codec's range clips. */
+#define DRM_TX_GAIN_DEFAULT 1.0
 #define DRM_TX_GAIN_MAX     4.0
 
 /* main:transport_prefer: the transport for a station both UUCP and NNCP
@@ -824,7 +829,6 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     cfg_drm_param(radio_h, ini, "drm_codec", "xHE-AAC");
     cfg_drm_param(radio_h, ini, "drm_label", "HERMES");
     {
-        /* DRM's peaks at full scale (sbitx_dsp.c): 0.5 read 0.73 of it */
         double g = iniparser_getdouble(ini, "main:drm_tx_gain", DRM_TX_GAIN_DEFAULT);
         radio_h->drm_tx_gain = (float) (isfinite(g) && g > 0.0 && g <= DRM_TX_GAIN_MAX ? g : DRM_TX_GAIN_DEFAULT);
     }
