@@ -84,21 +84,24 @@ func wsHostOr(h string) string {
 	return h
 }
 
-// freePort asks the kernel for a free TCP port on 127.0.0.1.
+// freePort asks the kernel for a free TCP port on every local address.
 func freePort(t *testing.T) int {
 	t.Helper()
 	return freePorts(t, 1)[0]
 }
 
-// freePorts returns n distinct free TCP ports on 127.0.0.1. Every probe
-// listener stays open until all n are picked: closing one before asking for
-// the next lets the kernel hand the same port out twice (it did: the
-// daemon's websocket and rigctl ports collided).
+// freePorts returns n distinct free TCP ports. Probes bind 0.0.0.0 because
+// the daemon's rigctl server binds INADDR_ANY: a port free only on 127.0.0.1
+// can still be taken on another interface (it was: the rigctl bind failed
+// with "Address already in use"). Every probe listener stays open until all
+// n are picked: closing one before asking for the next lets the kernel hand
+// the same port out twice (it did: the daemon's websocket and rigctl ports
+// collided).
 func freePorts(t *testing.T, n int) []int {
 	t.Helper()
 	ports := make([]int, n)
 	for i := range ports {
-		l, err := net.Listen("tcp", "127.0.0.1:0")
+		l, err := net.Listen("tcp", "0.0.0.0:0")
 		if err != nil {
 			t.Fatalf("free port: %v", err)
 		}
@@ -113,12 +116,12 @@ func freePorts(t *testing.T, n int) []int {
 func freePortPair(t *testing.T) int {
 	t.Helper()
 	for i := 0; i < 50; i++ {
-		l1, err := net.Listen("tcp", "127.0.0.1:0")
+		l1, err := net.Listen("tcp", "0.0.0.0:0")
 		if err != nil {
 			t.Fatalf("free port: %v", err)
 		}
 		p := l1.Addr().(*net.TCPAddr).Port
-		l2, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p+1))
+		l2, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", p+1))
 		l1.Close()
 		if err == nil {
 			l2.Close()
