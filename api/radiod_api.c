@@ -412,9 +412,15 @@ int radiod_api_ptt(long conn_id, bool on)
 {
     if (!s_radio)
         return RADIOD_API_ENOTSUP;
-    if (!on)
+    if (!on) {
+        /* PTT off stops a TX calibration too, which holds PTT itself */
+        if (s_radio->tx_cal_status == TX_CAL_RUNNING) {
+            radiod_api_tx_calibrate(false);
+            return RADIOD_API_OK;
+        }
         return radio_backend_unkey_ptt(s_radio, PTT_SRC_WEBSOCKET, conn_id) ?
                RADIOD_API_OK : RADIOD_API_ENOPTT;
+    }
     if (s_radio->swr_protection_enabled)
         return RADIOD_API_EPROTECT;
     return radio_backend_claim_ptt(s_radio, PTT_SRC_WEBSOCKET, conn_id) == 0 ?
@@ -429,12 +435,15 @@ void radiod_api_reset_protection(void)
 
 int radiod_api_tx_calibrate(bool start)
 {
-    if (!s_radio || s_radio->backend_kind != RADIO_BACKEND_HFSIGNALS)
-        return RADIOD_API_ENOTSUP;
     if (!start) {
-        s_radio->tx_cal_cancel = true;
+        /* only a calibration running or about to start: a stale stop would
+         * cancel the next one */
+        if (s_radio && (s_radio->tx_cal_status == TX_CAL_RUNNING || s_radio->tx_cal_request))
+            s_radio->tx_cal_cancel = true;
         return RADIOD_API_OK;
     }
+    if (!s_radio || s_radio->backend_kind != RADIO_BACKEND_HFSIGNALS)
+        return RADIOD_API_ENOTSUP;
     if (s_radio->swr_protection_enabled)
         return RADIOD_API_EPROTECT;
     if (s_radio->tx_cal_status == TX_CAL_RUNNING || s_radio->txrx_state == IN_TX)

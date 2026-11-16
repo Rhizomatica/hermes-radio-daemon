@@ -128,6 +128,9 @@ static radio *radio_h_dsp;
  * settled: its start-up ringing put a full-scale tone at 1.057. */
 #define TX_PEAK_SETTLE_BLOCKS 2
 static uint32_t tx_over_blocks;
+/* The TX filter's peak gain, for the full scale: set where the filter is
+ * tuned (dsp_set_filters), not per block. */
+static _Atomic double tx_filter_peak_gain;
 static double   tx_over_peak_fs;
 static double   tx_over_peak_codec;
 static uint32_t tx_over_clipped;
@@ -3134,10 +3137,7 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     /* What the full-scale tone gives here: a tone of amplitude a leaves the
      * filter and the IFFT at a times MAX_BINS times the filter's peak gain
      * over 2. The peak report counts against it. */
-    double h_max = 0.0;
-    for (i = 0; i < MAX_BINS; i++)
-        h_max = fmax(h_max, cabs(tx_filter->fir_coeff[i]));
-    const double full = TX_AUDIO_LIMIT * MAX_BINS * h_max / 2.0 * TX_SCALE_VOICE * multiplier;
+    const double full = TX_AUDIO_LIMIT * MAX_BINS * tx_filter_peak_gain / 2.0 * TX_SCALE_VOICE * multiplier;
     double peak = 0.0;
     for (i = 0; i < MAX_BINS / 2; i++)
     {
@@ -3378,6 +3378,11 @@ void dsp_set_filters()
         filter_tune(tx_filter, (1.0 * bpf_low) / 96000.0, (1.0 * bpf_high) / 96000.0, 5);
         filter_tune(rx_filter, (1.0 * bpf_low) / 96000.0, (1.0 * bpf_high) / 96000.0, 5);
     }
+
+    double h_max = 0.0;
+    for (int k = 0; k < MAX_BINS; k++)
+        h_max = fmax(h_max, cabs(tx_filter->fir_coeff[k]));
+    tx_filter_peak_gain = h_max;
 }
 
 

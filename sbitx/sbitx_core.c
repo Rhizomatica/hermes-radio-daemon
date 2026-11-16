@@ -709,6 +709,10 @@ static enum { TXCAL_PHASE_KEYED, TXCAL_PHASE_REST } tx_cal_phase;
 static int    tx_cal_ticks;
 static double tx_cal_fwd_sum;
 static int    tx_cal_fwd_n;
+/* What it calibrates: a step on another profile, frequency or mode would
+ * measure another band, and save it as this one. */
+static uint32_t tx_cal_profile, tx_cal_freq;
+static uint16_t tx_cal_mode;
 
 /* The tone goes on through the unkey's tail (tr_switch plays out the
  * codec's queue first): with the drive dropped before, those milliseconds
@@ -740,6 +744,9 @@ static void tx_cal_key(radio *radio_h)
     if (radio_backend_claim_ptt(radio_h, PTT_SRC_TXCAL, 0) != 0 ||
         radio_h->txrx_state != IN_TX)
     {
+        /* claimed but not keyed (tr_switch refuses with the protection
+         * on): give the PTT back, or no one else could key */
+        radio_backend_end_ptt(radio_h, PTT_SRC_TXCAL, 0);
         radio_h->tx_cal_drive = 0.0;
         tx_cal_phase = TXCAL_PHASE_REST;
         tx_cal_fail(radio_h, radio_h->swr_protection_enabled
@@ -809,6 +816,9 @@ static void tx_cal_begin(radio *radio_h)
     HLOGI(LOG_C, "TX calibration of tx_band%d (%d-%d Hz) at %u Hz: a full-scale "
           "tone, keyed a second at a time", row, radio_h->band_power[row].f_start,
           radio_h->band_power[row].f_stop, freq);
+    tx_cal_profile = radio_h->profile_active_idx;
+    tx_cal_freq = freq;
+    tx_cal_mode = mode;
     txcal_start(&tx_cal);
     tx_cal_key(radio_h);
 }
@@ -818,7 +828,9 @@ static void tx_cal_tick(radio *radio_h)
     if (atomic_exchange(&radio_h->tx_cal_request, false) &&
         radio_h->tx_cal_status != TX_CAL_RUNNING)
     {
-        radio_h->tx_cal_cancel = false;
+        /* a stop sent with the start, before this tick: not started */
+        if (atomic_exchange(&radio_h->tx_cal_cancel, false))
+            return;
         tx_cal_begin(radio_h);
         return;
     }
@@ -829,6 +841,14 @@ static void tx_cal_tick(radio *radio_h)
     if (atomic_exchange(&radio_h->tx_cal_cancel, false))
     {
         tx_cal_fail(radio_h, "cancelled");
+        return;
+    }
+
+    if (radio_h->profile_active_idx != tx_cal_profile ||
+        radio_h->profiles[tx_cal_profile].freq != tx_cal_freq ||
+        radio_h->profiles[tx_cal_profile].mode != tx_cal_mode)
+    {
+        tx_cal_fail(radio_h, "the profile, frequency or mode changed");
         return;
     }
 

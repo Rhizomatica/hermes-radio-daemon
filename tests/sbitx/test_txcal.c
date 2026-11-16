@@ -142,6 +142,28 @@ static void test_one_low_reading_does_not_end_it(void)
     assert_at_peak(&c, pa_falling);
 }
 
+/* The fifth step read 1 dB high, as a bridge refresh caught at the wrong
+ * moment might: the climb must not stop on it. */
+static void test_one_high_reading_does_not_end_it(void)
+{
+    txcal c;
+    txcal_start(&c);
+    for (int step = 1; step < 200; step++)
+    {
+        double fwd = pa_falling(c.drive);
+        if (step == 5 && !c.confirming)
+            fwd *= pow(10.0, 1.0 / 10.0);
+        txcal_verdict v = txcal_step(&c, fwd, false);
+        if (v == TXCAL_FOUND)
+        {
+            assert_at_peak(&c, pa_falling);
+            return;
+        }
+        TEST_ASSERT_EQUAL_INT(TXCAL_NEXT, v);
+    }
+    TEST_FAIL_MESSAGE("never ended");
+}
+
 static double pa_dead(double drive) { (void) drive; return 0.0; }
 
 static void test_no_power_is_no_calibration(void)
@@ -156,7 +178,9 @@ static void test_the_codec_range_ends_it(void)
     txcal_start(&c);
     TEST_ASSERT_EQUAL_INT(TXCAL_NEXT, txcal_step(&c, 1.0, false));
     double first = c.best_drive;
-    TEST_ASSERT_EQUAL_INT(TXCAL_FOUND, txcal_step(&c, 2.0, true));
+    TEST_ASSERT_EQUAL_INT(TXCAL_NEXT, txcal_step(&c, 2.0, true));   /* the re-read */
+    TEST_ASSERT_TRUE(c.confirming);
+    TEST_ASSERT_EQUAL_INT(TXCAL_FOUND, txcal_step(&c, 2.0, false));
     TEST_ASSERT_TRUE(c.best_drive > first);
 }
 
@@ -214,6 +238,7 @@ int main(void)
     RUN_TEST(test_finds_the_peak_of_a_pa_that_falls_past_it);
     RUN_TEST(test_a_flat_pa_ends_within_the_flat_span);
     RUN_TEST(test_one_low_reading_does_not_end_it);
+    RUN_TEST(test_one_high_reading_does_not_end_it);
     RUN_TEST(test_no_power_is_no_calibration);
     RUN_TEST(test_the_codec_range_ends_it);
     RUN_TEST(test_band_lookup);

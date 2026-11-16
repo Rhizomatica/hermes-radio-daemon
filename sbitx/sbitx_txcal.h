@@ -11,8 +11,11 @@
  * The calibration keys a full-scale tone for a second at a time, raising
  * the drive in steps, reads the forward power over the second half of each
  * step, and stops once two steps in a row read clearly under the best, or
- * 3 dB more drive added nothing. The lowest drive that read within 0.2 dB
- * of the most power is the band's scale. Only where the readings peak
+ * 3 dB more drive added nothing. The best step is then keyed once more: a
+ * reading the bridge caught high (it refreshes every ~100 ms) would end the
+ * climb early, so if the second reading is clearly lower it replaces the
+ * first and the climb goes on. The lowest drive that read within 0.2 dB of
+ * the most power is the band's scale. Only where the readings peak
  * matters, so the bridge's error and its weak low end do not.
  *
  * Copyright (C) 2026 Rhizomatica
@@ -67,6 +70,10 @@ typedef struct {
     int    below;        /* steps in a row under the best */
     int    steps;
     bool   fine;
+    int    best_index;   /* the step that read best_fwd */
+    int    confirmed;    /* the step re-read and found true, -1 none */
+    bool   confirming;   /* c->drive is a re-read of best_index */
+    bool   codec_full;   /* a step reached the codec's range */
     double step_drive[TXCAL_STEPS_MAX];
     double step_fwd[TXCAL_STEPS_MAX];
 } txcal;

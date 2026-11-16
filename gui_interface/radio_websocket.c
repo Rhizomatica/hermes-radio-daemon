@@ -550,6 +550,7 @@ static void handle_ws_command(radio *radio_h, ws_conn_t *c,
         /* Unkey whatever the cached state says (see radio_shm.c); the
          * replies keep their old meaning. */
         bool was_tx = radio_h->txrx_state == IN_TX;
+        radiod_api_tx_calibrate(false);      /* a TX calibration stops too */
         radio_backend_set_ptt(radio_h, IN_RX, PTT_SRC_WEBSOCKET, ws_conn_id(c));
         if (radio_h->swr_protection_enabled)             send_cmd_result(c, cmd, false, "SWR");
         else if (!was_tx)                                send_cmd_result(c, cmd, false, "NOK");
@@ -615,14 +616,17 @@ static void handle_ws_command(radio *radio_h, ws_conn_t *c,
      * antenna must be on the output. */
     if (!strcmp(cmd, "tx_calibrate"))
     {
-        if (radio_h->backend_kind != RADIO_BACKEND_HFSIGNALS) { send_cmd_error(c, cmd, "sBitx only"); return; }
-        if (radio_h->tx_cal_status == TX_CAL_RUNNING)         { send_cmd_result(c, cmd, false, "running"); return; }
-        radio_h->tx_cal_request = true;
-        send_cmd_result(c, cmd, true, "OK"); return;
+        switch (radiod_api_tx_calibrate(true))
+        {
+        case RADIOD_API_OK:       send_cmd_result(c, cmd, true, "OK"); return;
+        case RADIOD_API_ENOTSUP:  send_cmd_error(c, cmd, "sBitx only"); return;
+        case RADIOD_API_EPROTECT: send_cmd_result(c, cmd, false, "SWR"); return;
+        default:                  send_cmd_result(c, cmd, false, "busy"); return;
+        }
     }
     if (!strcmp(cmd, "tx_calibrate_stop"))
     {
-        radio_h->tx_cal_cancel = true;
+        radiod_api_tx_calibrate(false);
         send_cmd_result(c, cmd, true, "OK"); return;
     }
     if (!strcmp(cmd, "get_tx_calibration"))

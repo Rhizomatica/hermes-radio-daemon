@@ -129,7 +129,8 @@ void radiod_api_reset_protection(void);
  * full-scale tone a second at a time, so a dummy load or a matched antenna
  * must be on the output; its progress is in radiod_api_state. 0; ENOTSUP
  * on Hamlib; EBUSY while one runs or the radio transmits; EPROTECT with
- * the SWR protection tripped. Stopping is always 0. */
+ * the SWR protection tripped. Stopping is always 0, and so is
+ * radiod_api_ptt off while one runs, which stops it. */
 int radiod_api_tx_calibrate(bool start);
 
 /* ── radio controls: levels, functions and parameters, in radiod's control
