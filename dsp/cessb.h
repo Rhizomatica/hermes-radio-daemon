@@ -39,6 +39,13 @@
  * nearly all the work and speech starts to sound processed. */
 #define CESSB_MAX_DB 12
 
+/* The default compression (main:tx_cessb_db): the most. In a listening
+ * test on an sBitx, the same recorded speech at power 100 with the
+ * compressor on, plain and at 12 dB, 12 dB was by far the best, and the
+ * first where a needle wattmeter moved as it should; 6 dB without the
+ * compressor sounded much like plain SSB. */
+#define CESSB_DEFAULT_DB CESSB_MAX_DB
+
 typedef struct cessb cessb;
 
 /* A processor for n_fft-point overlap-save blocks; NULL if out of memory

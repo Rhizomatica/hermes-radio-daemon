@@ -848,7 +848,7 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     radio_h->dstar_clock_auto = (uint16_t) (i != 0);
     i = iniparser_getint(ini, "main:mic_highpass_hz", 200);
     radio_h->mic_highpass_hz = (uint32_t) (i < 0 ? 0 : i);
-    i = iniparser_getint(ini, "main:tx_cessb_db", 0);
+    i = iniparser_getint(ini, "main:tx_cessb_db", CESSB_DEFAULT_DB);
     radio_h->tx_cessb_db = (uint32_t) (i < 0 ? 0 : i > CESSB_MAX_DB ? CESSB_MAX_DB : i);
     i = iniparser_getint(ini, "main:dstar_verbose", 0);
     radio_h->dstar_verbose = (uint16_t) i;

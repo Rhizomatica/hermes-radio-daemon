@@ -639,8 +639,8 @@ Defaults: `-r /etc/hermes/core.ini` `-u /etc/hermes/user.ini`.
 Standard single-sideband with the full voice DSP chain:
 - **RX**: ADC → FFT → sideband filter → rotate → IFFT → DC block → noise reduction → AGC → limiter → DAC
 - **TX**: Mic → DC block → pre-EQ → compressor → pre-emphasis → limiter → FFT → filter → sideband → rotate → IFFT → DAC
-- **Controlled-envelope SSB** (`dsp/cessb.c`, sBitx, `main:tx_cessb_db`, off by
-  default): the audio limiter does not limit what the amplifier sees. The SSB
+- **Controlled-envelope SSB** (`dsp/cessb.c`, sBitx, `main:tx_cessb_db`, 12 dB
+  by default, 0 turns it off): the audio limiter does not limit what the amplifier sees. The SSB
   envelope of limited speech overshoots it by 40-70 %, so the transmitter has to
   be backed off for peaks. With `tx_cessb_db` set, the sideband-filtered signal
   goes back to time as its complex envelope. It is then driven that many dB
