@@ -29,6 +29,10 @@
 #define GUARD_HZ 150.0         /* the band-pass's skirt, not out of band */
 
 static double complex h[N];
+/* h with the other sideband's half zeroed, as the modulator does (USB:
+ * the upper half of the bins), and its peak: what cessb_process takes. */
+static double complex h_ssb[N];
+static double h_peak;
 static double audio[BLOCKS * L];
 static double complex env[BLOCKS * L];
 
@@ -48,6 +52,10 @@ static void design(void)
     }
     fftw_execute(p);
     memcpy(h, b, sizeof h);
+    memcpy(h_ssb, h, sizeof h);
+    memset(h_ssb + N / 2, 0, (N / 2) * sizeof(*h_ssb));
+    for (int k = 0; k < N; k++)
+        h_peak = fmax(h_peak, cabs(h[k]));
     fftw_destroy_plan(p);
     fftw_free(b);
 }
@@ -142,7 +150,7 @@ static cessb *run(double drive_db)
     TEST_ASSERT_NOT_NULL(c);
     cessb_set_drive_db(c, drive_db);
     for (int b = 0; b < BLOCKS; b++)
-        cessb_process(c, env + b * L, h, CEILING);
+        cessb_process(c, env + b * L, h_ssb, h_peak, CEILING);
     return c;
 }
 
@@ -230,7 +238,7 @@ static void test_reset_forgets_the_over(void)
     cessb_reset(c);
     TEST_ASSERT_EQUAL_DOUBLE(0.0, cessb_residual_peak(c));
     double complex z[L] = {0};
-    cessb_process(c, z, h, CEILING);
+    cessb_process(c, z, h_ssb, h_peak, CEILING);
     for (int i = 0; i < L; i++)
         TEST_ASSERT_EQUAL_DOUBLE(0.0, cabs(z[i]));
     cessb_free(c);

@@ -153,10 +153,16 @@ static struct filter *tx_filter;	// tx convolution filter
  * It works on the complex envelope, so the sideband-filtered spectrum is
  * also taken back to time unrotated (cessb_plan into cessb_env) and mixed
  * up to the IF in time instead: TUNED_BINS of MAX_BINS is a quarter of the
- * rate, the mixer j^n (n from the block start, a multiple of 4). */
+ * rate, the mixer j^n (n from the block start, a multiple of 4). Made
+ * only when tx_cessb_db is set (it is read once, at start-up). cessb_h is
+ * the block's copy of the TX filter with the other sideband's half zeroed,
+ * as fft_out is; cessb_was_on says whether the last block went through it,
+ * so it starts from reset filters whenever it starts within an over. */
 static cessb        *tx_cessb;
 static fftw_complex *cessb_env;
 static fftw_plan     cessb_plan;
+static double complex cessb_h[MAX_BINS];
+static bool          cessb_was_on;
 
 struct vfo tone; // vfo
 
@@ -2371,8 +2377,7 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
         tx_over_clipped = 0;
         fft_reset_m_bins();
         clear_buffers();
-        if (tx_cessb)
-            cessb_reset(tx_cessb);
+        cessb_was_on = false;
         if (loop_up_ready)
             upsample2_reset(&loop_up);
         if (radio_h_dsp->profiles[radio_h_dsp->profile_active_idx].mode == MODE_DRM
@@ -3128,16 +3133,24 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
                           (tx_mode_for_sb == MODE_USB || tx_mode_for_sb == MODE_LSB) &&
                           !digital_voice && !input_is_48k_stereo && !radio_h_dsp->tone_generation &&
                           !(tx_cal_drive > 0.0);
-    /* The envelope's scale: a tone of amplitude a in the audio is a here. */
-    const double cessb_scale = cessb_on ? MAX_BINS * tx_filter_peak_gain / 2.0 : 0.0;
-    if (cessb_on && cessb_scale > 0.0)
+    if (cessb_on && !cessb_was_on)
+        cessb_reset(tx_cessb);
+    cessb_was_on = cessb_on;
+    if (cessb_on)
     {
+        /* The envelope's scale: a tone of amplitude a in the audio is a here. */
+        const double h_peak = tx_filter_peak_gain;
+        const double cessb_scale = MAX_BINS * h_peak / 2.0;
+        /* The filter as the sideband above left fft_out: the other half
+         * zeroed, so the clipper's splatter there goes completely. */
+        const int keep_from = tx_mode_for_sb == MODE_LSB ? MAX_BINS / 2 : 0;
+        for (i = 0; i < MAX_BINS; i++)
+            cessb_h[i] = (i >= keep_from && i < keep_from + MAX_BINS / 2) ? tx_filter->fir_coeff[i] : 0.0;
         fftw_execute(cessb_plan);
         double complex *env = (double complex *) cessb_env;
         for (i = 0; i < MAX_BINS / 2; i++)
-            env[i] = env[i + MAX_BINS / 2] / cessb_scale;
-        cessb_set_drive_db(tx_cessb, (double) radio_h_dsp->tx_cessb_db);
-        cessb_process(tx_cessb, env, tx_filter->fir_coeff, TX_AUDIO_LIMIT);
+            env[i] = cessb_scale > 0.0 ? env[i + MAX_BINS / 2] / cessb_scale : 0.0;
+        cessb_process(tx_cessb, env, cessb_h, h_peak, TX_AUDIO_LIMIT);
         /* Up to the IF: Re(env * j^i), as the rotation below would. */
         _Static_assert(MAX_BINS == 4 * TUNED_BINS && (MAX_BINS / 2) % 4 == 0,
                        "the IF mixer below is j^n: the IF a quarter of the rate, blocks whole periods of it");
@@ -3282,16 +3295,23 @@ void dsp_init(radio *radio_h)
     HLOGI(LOG_C, "Creating signal FFT plans");
     plan_rev = fftw_plan_dft_1d(MAX_BINS, fft_freq, fft_time, FFTW_BACKWARD, FFTW_MEASURE);
     plan_fwd = fftw_plan_dft_1d(MAX_BINS, fft_in, fft_out, FFTW_FORWARD, FFTW_MEASURE);
-    cessb_env = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * MAX_BINS);
-    cessb_plan = fftw_plan_dft_1d(MAX_BINS, fft_out, cessb_env, FFTW_BACKWARD, FFTW_MEASURE);
 
     fft_reset_m_bins();
 
     rx_filter = filter_new(1024, 1025);
     tx_filter = filter_new(1024, 1025);
-    tx_cessb = cessb_new(MAX_BINS, tx_filter->M / 2);   /* the filter's delay */
-    if (!tx_cessb)
-        HLOGW(LOG_C, "controlled-envelope SSB unavailable (out of memory)");
+    if (radio_h->tx_cessb_db > 0)
+    {
+        cessb_env = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * MAX_BINS);
+        if (cessb_env)
+            cessb_plan = fftw_plan_dft_1d(MAX_BINS, fft_out, cessb_env, FFTW_BACKWARD, FFTW_MEASURE);
+        if (cessb_plan)
+            tx_cessb = cessb_new(MAX_BINS, tx_filter->M / 2);   /* the filter's delay */
+        if (tx_cessb)
+            cessb_set_drive_db(tx_cessb, (double) radio_h->tx_cessb_db);
+        else
+            HLOGW(LOG_C, "controlled-envelope SSB unavailable (out of memory)");
+    }
 
     HLOGI(LOG_C, "Creating filters FFT plans");
     dsp_set_filters();
@@ -3314,8 +3334,11 @@ void dsp_free(radio *radio_h)
 
     fftw_destroy_plan(plan_rev);
     fftw_destroy_plan(plan_fwd);
-    fftw_destroy_plan(cessb_plan);
+    if (cessb_plan)
+        fftw_destroy_plan(cessb_plan);
+    cessb_plan = NULL;
     fftw_free(cessb_env);
+    cessb_env = NULL;
     cessb_free(tx_cessb);
     tx_cessb = NULL;
     fftw_destroy_plan(rev_filter_plan);

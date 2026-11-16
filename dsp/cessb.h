@@ -46,16 +46,21 @@ typedef struct cessb cessb;
 cessb *cessb_new(int n_fft, int delay);
 void   cessb_free(cessb *c);
 
-/* Forget the over so far (at key-up): the filters' history belongs to it. */
+/* Forget the over so far (at key-up, or when it starts mid-over): the
+ * filters' history belongs to what went before. */
 void   cessb_reset(cessb *c);
 
 /* The compression: decibels of gain into the clipper, 0..CESSB_MAX_DB. */
 void   cessb_set_drive_db(cessb *c, double db);
 
 /* One block of n_fft/2 complex baseband samples, in place, band-limited
- * by h (the modulator's frequency response, n_fft points; its passband
- * gain does not matter). The envelope comes out at most `ceiling`. */
-void   cessb_process(cessb *c, double complex *z, const double complex *h, double ceiling);
+ * by h: the modulator's frequency response, n_fft points, with the other
+ * sideband's half zeroed as the modulator zeroes it, so the clipper's
+ * splatter there goes as completely as in plain SSB. h_peak is h's largest
+ * magnitude (its passband gain, divided out). The envelope comes out at
+ * most `ceiling`. */
+void   cessb_process(cessb *c, double complex *z, const double complex *h,
+                     double h_peak, double ceiling);
 
 /* The worst envelope the correction left for the last clip, as a fraction
  * of the ceiling, since cessb_reset(): 1.0 or less means it left none.

@@ -649,7 +649,7 @@ Standard single-sideband with the full voice DSP chain:
   energy outside the passband. Only then is it mixed up to the IF (W9GR's
   method, as sdroxide has it). The envelope never passes what a steady
   full-scale tone gives. On recorded speech at 6 dB this is 2.9 dB more average
-  power than the audio limiter driven as hard, at the same peak, and 3.9 dB at
+  power than the audio limiter driven as hard, at the same peak, and 3.8 dB at
   12 dB. Mic voice on USB and LSB only: never the modem's or a digital
   program's loopback audio, RADE, or the other modes.
 

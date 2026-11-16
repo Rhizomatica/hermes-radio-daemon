@@ -20,16 +20,17 @@
  * at 6 and 12 dB of compression:
  *   1.0 -> 7.4 %, 14.9 %    2.0 -> 4.4 %, 5.3 %
  *   3.0 -> 1.9 %,  2.7 %    4.0 -> 0.6 %, 1.7 %
- * Average power barely moves with it (4.9 dB to 4.8 dB at 6 dB), and the
- * out-of-band energy stays at the measurement's floor (-48 to -50 dB)
+ * The gain in average power barely moves with it (0.1 dB across the sweep
+ * at 6 dB), and the out-of-band energy stays at the measurement's floor (-48 to -50 dB)
  * from 2 up. 4, so the last clip, which splatters, has the least to do;
  * sdroxide settled on 3 with its 331-tap filter at 48 kHz. */
 #ifndef CESSB_CORRECTION
 #define CESSB_CORRECTION 4.0
 #endif
 
-/* A drive below this is no compression: the clipper is never reached by
- * more than rounding. */
+/* The least drive: 0 dB still compresses, since limited speech's envelope
+ * overshoots the ceiling by 40-70 % (cessb.h), so "off" is the caller not
+ * running the processor at all, never a drive of 0. */
 #define CESSB_DRIVE_MIN_DB 0.0
 
 struct cessb {
@@ -137,19 +138,14 @@ static double complex clip(double complex z, double ceiling)
     return m > ceiling ? z * (ceiling / m) : z;
 }
 
-void cessb_process(cessb *c, double complex *z, const double complex *h, double ceiling)
+void cessb_process(cessb *c, double complex *z, const double complex *h,
+                   double h_peak, double ceiling)
 {
-    double h_max = 0.0;
-    for (int k = 0; k < c->n; k++) {
-        double m = cabs(h[k]);
-        if (m > h_max)
-            h_max = m;
-    }
-    if (h_max <= 0.0 || !(ceiling > 0.0)) {
+    if (!(h_peak > 0.0) || !(ceiling > 0.0)) {
         memset(z, 0, (size_t) c->l * sizeof(double complex));
         return;
     }
-    const double h_scale = 1.0 / h_max;
+    const double h_scale = 1.0 / h_peak;
 
     /* 1. Drive, and clip the envelope. */
     for (int i = 0; i < c->l; i++)
