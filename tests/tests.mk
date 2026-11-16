@@ -327,7 +327,8 @@ tests/dsp/test_radae_vocoder: tests/dsp/test_radae_vocoder.c dsp/radae_vocoder.h
 
 # ── sbitx/ ──────────────────────────────────────────────────────
 tests/sbitx/test_txcal: tests/sbitx/test_txcal.c sbitx/sbitx_txcal.c sbitx/sbitx_txcal.h \
-                       common/cfg_utils.c common/cfg_utils.h radio/radio_backend.c radio/radio.h config/core.ini
+                       common/cfg_utils.c common/cfg_utils.h radio/radio_backend.c radio/radio.h config/core.ini \
+                       tests/fixtures/tx-bands-old.ini tests/fixtures/tx-bands-calibrated.ini
 	$(CC) $(TEST_CFLAGS) $< sbitx/sbitx_txcal.c control_interfaces/rig_server.c radio/radio_controls.c \
 	      control_interfaces/cat_server.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -liniparser -lpthread -lm
 

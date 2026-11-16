@@ -37,6 +37,8 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
 #include "radio/radio_backend.c"
 
 #define SHIPPED_CONFIG  "config/core.ini"
+#define OLD_BANDS_CONFIG        "tests/fixtures/tx-bands-old.ini"
+#define CALIBRATED_BANDS_CONFIG "tests/fixtures/tx-bands-calibrated.ini"
 #define SHIPPED_BANDS   10
 #define LOWEST_HZ       1000000
 #define PEAK_W          21.0     /* about the bench sBitx's peak on 40 m */
@@ -212,6 +214,59 @@ static void test_shipped_table_loads_and_checks(void)
     close_config_radio(&r);
 }
 
+/* config/core.ini ships the table radiod carries */
+static void test_shipped_table_is_the_built_in_one(void)
+{
+    static radio r;
+    memset(&r, 0, sizeof(r));
+    pthread_mutex_init(&r.cfg_mutex, NULL);
+    TEST_ASSERT_TRUE(init_config_radio(&r, SHIPPED_CONFIG));
+    TEST_ASSERT_EQUAL_UINT32(cfg_tx_band_defaults_n, r.band_power_count);
+    for (uint32_t k = 0; k < cfg_tx_band_defaults_n; k++)
+    {
+        TEST_ASSERT_EQUAL_INT(cfg_tx_band_defaults[k].f_start, r.band_power[k].f_start);
+        TEST_ASSERT_EQUAL_INT(cfg_tx_band_defaults[k].f_stop, r.band_power[k].f_stop);
+        TEST_ASSERT_DOUBLE_WITHIN(1e-9, cfg_tx_band_defaults[k].scale, r.band_power[k].scale);
+    }
+    TEST_ASSERT_FALSE(tx_bands_rewritten);
+    close_config_radio(&r);
+}
+
+/* bands from before (no calibrated key) are replaced by the shipped ones,
+ * in the configuration too, to be saved */
+static void test_old_bands_are_replaced(void)
+{
+    static radio r;
+    memset(&r, 0, sizeof(r));
+    pthread_mutex_init(&r.cfg_mutex, NULL);
+    tx_bands_rewritten = false;
+    TEST_ASSERT_TRUE(init_config_radio(&r, OLD_BANDS_CONFIG));
+    TEST_ASSERT_TRUE(tx_bands_rewritten);
+    TEST_ASSERT_EQUAL_UINT32(cfg_tx_band_defaults_n, r.band_power_count);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, cfg_tx_band_defaults[0].scale, r.band_power[0].scale);
+    TEST_ASSERT_EQUAL_INT(cfg_tx_band_defaults[5].f_start, r.band_power[5].f_start);
+    TEST_ASSERT_EQUAL_STRING("0", iniparser_getstring(r.cfg_radio, "tx_band9:calibrated", "missing"));
+    char why[RADIO_MESSAGE_MAX];
+    TEST_ASSERT_TRUE_MESSAGE(cfg_tx_bands_check(r.band_power, r.band_power_count, why, sizeof(why)), why);
+    close_config_radio(&r);
+    tx_bands_rewritten = false;
+}
+
+/* a radio's own table stays as it is */
+static void test_calibrated_bands_are_kept(void)
+{
+    static radio r;
+    memset(&r, 0, sizeof(r));
+    pthread_mutex_init(&r.cfg_mutex, NULL);
+    tx_bands_rewritten = false;
+    TEST_ASSERT_TRUE(init_config_radio(&r, CALIBRATED_BANDS_CONFIG));
+    TEST_ASSERT_FALSE(tx_bands_rewritten);
+    TEST_ASSERT_EQUAL_UINT32(2, r.band_power_count);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, 0.4456, r.band_power[1].scale);
+    TEST_ASSERT_TRUE(r.band_power[1].calibrated);
+    close_config_radio(&r);
+}
+
 static void test_check_refuses_a_band_across_a_filter(void)
 {
     power_settings b[1] = { { .f_start = 7500000, .f_stop = 12500000, .scale = 1.0 } };
@@ -243,6 +298,9 @@ int main(void)
     RUN_TEST(test_the_codec_range_ends_it);
     RUN_TEST(test_band_lookup);
     RUN_TEST(test_shipped_table_loads_and_checks);
+    RUN_TEST(test_shipped_table_is_the_built_in_one);
+    RUN_TEST(test_old_bands_are_replaced);
+    RUN_TEST(test_calibrated_bands_are_kept);
     RUN_TEST(test_check_refuses_a_band_across_a_filter);
     RUN_TEST(test_check_refuses_a_gap);
     return UNITY_END();

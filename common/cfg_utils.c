@@ -55,6 +55,10 @@
 #define DRM_TX_GAIN_DEFAULT 1.0
 #define DRM_TX_GAIN_MAX     4.0
 
+/* Set when init_config_radio replaced core.ini's TX power bands (the old
+ * form, or none): cfg_init saves them. */
+static bool tx_bands_rewritten;
+
 /* main:transport_prefer: the transport for a station both UUCP and NNCP
  * reach (api/internal/transport DefaultPrefer). */
 #define TRANSPORT_PREFER_DEFAULT "nncp"
@@ -390,7 +394,8 @@ bool cfg_init(radio *radio_h, const char *cfg_radio, const char *cfg_user,
         return false;
     }
 
-    radio_h->cfg_radio_dirty = false;
+    /* nothing to write back, unless the TX power bands were replaced */
+    radio_h->cfg_radio_dirty = tx_bands_rewritten;
     radio_h->cfg_user_dirty  = false;
 
     cfg_carry_digital_voice(radio_h);
@@ -442,6 +447,84 @@ void *config_thread(void *radio_h_v)
      * station is stopped) is still saved. */
     flush_config(radio_h);
     return NULL;
+}
+
+/* The sBitx's TX power bands as shipped (config/core.ini carries the
+ * same; a test holds them equal): each scale is the geometric mean of the
+ * peak drives two sBitx measured with tx_calibrate on 2026-11-15, an old
+ * board with less gain and a new one with more, within 1.5 dB of each. A
+ * core.ini whose bands are missing, or from before scale meant the PA's
+ * peak (no calibrated key: 1.5 at 7 MHz, some 3 times this drive), gets
+ * these instead, saved. */
+const power_settings cfg_tx_band_defaults[] = {
+    {  1000000,  2000000, 0.73, false },   /* LPF_D: 0.79 and 0.67 at 1.9 MHz */
+    {  2000000,  4000000, 0.67, false },   /*        0.75, 0.60 at 3.0 MHz */
+    {  4000000,  5700000, 0.53, false },   /*        0.63, 0.45 at 5.0 MHz */
+    {  5700000,  6800000, 0.49, false },   /* LPF_C: 0.56, 0.42 at 6.2 MHz */
+    {  6800000,  8000000, 0.40, false },   /*        0.45, 0.35 at 7.05 MHz */
+    {  8000000, 10500000, 0.45, false },   /* LPF_B: 0.50, 0.40 at 9.2 MHz */
+    { 10500000, 14500000, 0.65, false },   /*        0.71, 0.60 at 12.5 MHz */
+    { 14500000, 18500000, 0.61, false },   /*        0.71, 0.53 at 16.5 MHz */
+    { 18500000, 22000000, 0.77, false },   /* LPF_A: 0.75, 0.79 at 20.2 MHz */
+    { 22000000, 35000000, 0.94, false },   /*        1.06, 0.84 at 28 MHz */
+};
+const uint32_t cfg_tx_band_defaults_n =
+    (uint32_t) (sizeof(cfg_tx_band_defaults) / sizeof(cfg_tx_band_defaults[0]));
+
+/* The keys a tx_band section holds. */
+static const char *const tx_band_keys[] = { "f_start", "f_stop", "scale", "calibrated" };
+#define TX_BAND_KEYS (sizeof(tx_band_keys) / sizeof(tx_band_keys[0]))
+
+/* Missing or old-form bands out of ini, cfg_tx_band_defaults in. */
+static void tx_bands_replace_if_old(dictionary *ini)
+{
+    char key[64], val[32];
+    uint32_t present = 0;
+    bool old = false;
+    for (uint32_t k = 0; k < MAX_CAL_BANDS; k++)
+    {
+        snprintf(key, sizeof(key), "tx_band%u", k);
+        if (!iniparser_find_entry(ini, key))
+            continue;
+        present++;
+        snprintf(key, sizeof(key), "tx_band%u:calibrated", k);
+        if (!iniparser_find_entry(ini, key))
+            old = true;
+    }
+    if (present && !old)
+        return;
+
+    HLOGW(LOG_C, "TX power bands (tx_band*): %s; using the shipped ones, saved to the "
+          "configuration. tx_calibrate measures this radio's",
+          present ? "the old form, whose scale is not the PA's peak drive" : "none");
+    for (uint32_t k = 0; k < MAX_CAL_BANDS; k++)
+    {
+        for (size_t j = 0; j < TX_BAND_KEYS; j++)
+        {
+            snprintf(key, sizeof(key), "tx_band%u:%s", k, tx_band_keys[j]);
+            iniparser_unset(ini, key);
+        }
+        snprintf(key, sizeof(key), "tx_band%u", k);
+        iniparser_unset(ini, key);
+    }
+    for (uint32_t k = 0; k < cfg_tx_band_defaults_n; k++)
+    {
+        const power_settings *d = &cfg_tx_band_defaults[k];
+        snprintf(key, sizeof(key), "tx_band%u", k);
+        iniparser_set(ini, key, NULL);
+        snprintf(key, sizeof(key), "tx_band%u:f_start", k);
+        snprintf(val, sizeof(val), "%d", d->f_start);
+        iniparser_set(ini, key, val);
+        snprintf(key, sizeof(key), "tx_band%u:f_stop", k);
+        snprintf(val, sizeof(val), "%d", d->f_stop);
+        iniparser_set(ini, key, val);
+        snprintf(key, sizeof(key), "tx_band%u:scale", k);
+        snprintf(val, sizeof(val), "%.2f", d->scale);
+        iniparser_set(ini, key, val);
+        snprintf(key, sizeof(key), "tx_band%u:calibrated", k);
+        iniparser_set(ini, key, "0");
+    }
+    tx_bands_rewritten = true;
 }
 
 /* The LPF a frequency transmits through (lpf_set), 0 for none. */
@@ -836,6 +919,7 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     /* tx_band0, tx_band1, ... — per-band TX power calibration (sbitx
      * hardware), up to the first number missing. */
     {
+        tx_bands_replace_if_old(ini);
         uint32_t n = 0;
         while (n < MAX_CAL_BANDS)
         {
