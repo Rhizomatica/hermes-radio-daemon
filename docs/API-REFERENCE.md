@@ -579,7 +579,7 @@ curl -sS -X GET "$BASE/users/2" \
 <a id="op-updateuser"></a>
 ### `PATCH /users/{user_id}`
 
-**Change a user (admins; anyone may change their own display name, phone and location; `root` cannot be changed).** (`updateUser`)
+**Change a user (admins; anyone may change their own display name, phone and location; `root` must stay an admin).** (`updateUser`)
 
 - Role: **readonly**
 - Status: **implemented**
@@ -655,7 +655,7 @@ curl -sS -X DELETE "$BASE/users/2" \
 <a id="op-setpassword"></a>
 ### `PUT /users/{user_id}/password`
 
-**Set a password (the user, with the current one; or an admin; `root`'s password cannot be changed). Updates the mailbox too.** (`setPassword`)
+**Set a password (the user, with the current one; or an admin). Updates the mailbox too.** (`setPassword`)
 
 - Role: **readonly**
 - Status: **implemented**
@@ -4232,7 +4232,7 @@ Type: one of `uucp`, `nncp`, `reticulum`
 <a id="schema-userpatch"></a>
 ### UserPatch
 
-Only admins may change `role`, `locale` or `disabled`.
+Only admins may change `role`, `locale` or `disabled`; `root` must stay an admin.
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
