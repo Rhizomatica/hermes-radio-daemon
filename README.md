@@ -8,7 +8,7 @@ Radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-net)
 - **`hamlib` backend** — Hamlib CAT/PTT control for IC-7100, IC-7300, FT-710, TS-480 and every other rig Hamlib supports
 - **9 modulation modes**: LSB, USB, CW, **FM** (NBFM), **AM** (broadcast), **DRM** (Digital Radio Mondiale), **FT8**, **JS8**, **RTTY**, plus RADEv2 digital voice on top of USB
 - **Digital text modes**: FT8 (8-FSK), JS8 (all four submodes), CW (Morse) and RTTY (Baudot FSK), CW and RTTY decoded as skimmers (every station in the passband), with unified websocket API and a real outbound text queue (`digi_send`)
-- **SSB voice DSP chain**: 3-band pre-EQ, wideband compressor, pre-emphasis, DC block, limiter
+- **SSB voice DSP chain**: 3-band pre-EQ, wideband compressor, pre-emphasis, DC block, limiter, and optional controlled-envelope SSB (sBitx)
 - **RX voice DSP chain**: DC block, adaptive noise reduction (libspecbleach), AGC (SLOW/MEDIUM/FAST), soft limiter
 - **Audio bridge** for websocket RX/TX streaming, RX/TX spectrum waterfall, and `.wav` recording — on both backends, sharing the same audio rings. csdr-based polyphase resampler (`audio_bridge.c`) decouples the rig USB codec rate from the daemon ring rate.
 - **Optional operator-side headset** (`audio_headset.c`) — second pair of ALSA devices for users running the daemon on a dedicated box with a wired headset instead of (or in addition to) the browser audio.
@@ -639,6 +639,19 @@ Defaults: `-r /etc/hermes/core.ini` `-u /etc/hermes/user.ini`.
 Standard single-sideband with the full voice DSP chain:
 - **RX**: ADC → FFT → sideband filter → rotate → IFFT → DC block → noise reduction → AGC → limiter → DAC
 - **TX**: Mic → DC block → pre-EQ → compressor → pre-emphasis → limiter → FFT → filter → sideband → rotate → IFFT → DAC
+- **Controlled-envelope SSB** (`dsp/cessb.c`, sBitx, `main:tx_cessb_db`, 12 dB
+  by default, 0 turns it off): the audio limiter does not limit what the amplifier sees. The SSB
+  envelope of limited speech overshoots it by 40-70 %, so the transmitter has to
+  be backed off for peaks. With `tx_cessb_db` set, the sideband-filtered signal
+  goes back to time as its complex envelope. It is then driven that many dB
+  into a clipper on the envelope and filtered again with the transmit filter.
+  The overshoot that brings back is filtered and subtracted, which cannot put
+  energy outside the passband. Only then is it mixed up to the IF (W9GR's
+  method, as sdroxide has it). The envelope never passes what a steady
+  full-scale tone gives. On recorded speech at 6 dB this is 2.9 dB more average
+  power than the audio limiter driven as hard, at the same peak, and 3.8 dB at
+  12 dB. Mic voice on USB and LSB only: never the modem's or a digital
+  program's loopback audio, RADE, or the other modes.
 
 ### CW (Morse code)
 

@@ -142,6 +142,7 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              dsp/js8_station.o \
              dsp/pskreporter_ipfix.o \
              dsp/mic_filter.o \
+             dsp/cessb.o \
              dsp/rx_denoise.o \
              sbitx/sbitx_si5351.o \
              sbitx/ring_buffer.o \
