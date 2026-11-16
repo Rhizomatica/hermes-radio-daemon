@@ -124,6 +124,8 @@ static radio *radio_h_dsp;
 #define TX_CAL_TONE_HZ   1000.0
 /* The tone the FT8 and JS8 encoders write peaks at 1. */
 #define DIGI_UNIT_TONE_PEAK 1.0f
+/* The peak of vfo_read()'s sine (vfo_init_phase_table): 2^30. */
+#define VFO_TONE_PEAK    1073741824.0
 
 /* The TX peak report of the over (radio.h, tx_peak_*): reset as it keys,
  * and counted from TX_PEAK_SETTLE_BLOCKS blocks in, once the filter has
@@ -2394,9 +2396,11 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
     // prepare data from loopback... 48kHz stereo to 96 kHz mono
     if (radio_h_dsp->tone_generation)
     {
+        /* The test tone at full scale, as every other mode's peak: at
+         * power 100 it is the PA's peak (sbitx_txcal.h), at 50 half of it. */
         for (i = 0; i < block_size; i++)
         {
-            signal_input_f[i] = (1.0 * vfo_read(&tone)) / 4800000000.0;
+            signal_input_f[i] = TX_AUDIO_LIMIT * (double) vfo_read(&tone) / VFO_TONE_PEAK;
         }
     }
     else if (input_is_48k_stereo)
@@ -3667,7 +3671,7 @@ void vfo_init_phase_table()
     for (int i = 0; i < MAX_PHASE_COUNT; i++)
     {
         double d = (M_PI/2) * ((double)i)/((double)MAX_PHASE_COUNT);
-        phase_table[i] = (int)(sin(d) * 1073741824.0);
+        phase_table[i] = (int)(sin(d) * VFO_TONE_PEAK);
     }
 }
 
