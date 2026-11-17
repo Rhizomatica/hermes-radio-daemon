@@ -584,6 +584,10 @@ curl -sS -X GET "$BASE/users/2" \
 - Role: **readonly**
 - Status: **implemented**
 
+Returns 403 when a non-admin targets another user, when a non-admin changes
+`role`, `locale` or `disabled`, when `root` would stop being an admin, or when
+the change would remove the last active admin.
+
 **Parameters**
 
 | Name | In | Type | Required | Notes |
@@ -624,10 +628,12 @@ curl -sS -X PATCH "$BASE/users/2" \
 <a id="op-deleteuser"></a>
 ### `DELETE /users/{user_id}`
 
-**Delete a user and their mailbox (admins may delete themselves; `root` cannot be deleted).** (`deleteUser`)
+**Delete a user and their mailbox (admins may delete themselves while another active admin remains; `root` cannot be deleted).** (`deleteUser`)
 
 - Role: **admin**
 - Status: **implemented**
+
+Returns 403 when deleting `root` or the last active admin.
 
 > **In this build:** The mailbox is not removed yet: the station's email helper is not wired in. Only the account and its sessions are removed.
 

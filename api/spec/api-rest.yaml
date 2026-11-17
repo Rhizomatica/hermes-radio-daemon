@@ -409,6 +409,10 @@ paths:
       tags: [users]
       operationId: updateUser
       summary: Change a user (admins; anyone may change their own display name, phone and location; `root` must stay an admin).
+      description: |
+        Returns 403 when a non-admin targets another user, when a non-admin changes
+        `role`, `locale` or `disabled`, when `root` would stop being an admin, or when
+        the change would remove the last active admin.
       x-hermes-role: readonly
       requestBody:
         required: true
@@ -427,7 +431,9 @@ paths:
     delete:
       tags: [users]
       operationId: deleteUser
-      summary: Delete a user and their mailbox (admins may delete themselves; `root` cannot be deleted).
+      summary: Delete a user and their mailbox (admins may delete themselves while another active admin remains; `root` cannot be deleted).
+      description: |
+        Returns 403 when deleting `root` or the last active admin.
       x-hermes-role: admin
       responses:
         "204": {description: Deleted.}
