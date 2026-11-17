@@ -1,6 +1,7 @@
 package users_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/testapi"
@@ -92,4 +93,190 @@ func TestSetPassword(t *testing.T) {
 		t.Fatalf("admin setPassword = %d", r.Status)
 	}
 	e.Login("bob", "adminpass1")
+}
+
+func TestUpdateUserDisplayNameCountsCharacters(t *testing.T) {
+	e := testapi.NewAuth(t)
+	e.SeedUser("admin", "password1", "admin")
+	at := e.Login("admin", "password1")
+
+	// 64 multibyte characters are fine even though they are more than 64
+	// bytes; 65 are not.
+	body := `{"username":"bob","password":"password1","display_name":"` + strings.Repeat("é", 64) + `"}`
+	if r := e.DoAuth("POST", "/users", body, at); r.Status != 201 {
+		t.Fatalf("64-char create = %d: %s", r.Status, r.Body)
+	}
+	body = `{"username":"carol","password":"password1","display_name":"` + strings.Repeat("é", 65) + `"}`
+	if r := e.DoAuth("POST", "/users", body, at); r.Status != 422 {
+		t.Fatalf("65-char create = %d, want 422", r.Status)
+	}
+}
+
+func TestDeleteUserPolicy(t *testing.T) {
+	e := testapi.NewAuth(t)
+	adminID := e.SeedUser("admin", "password1", "admin")
+	otherID := e.SeedUser("other", "password1", "admin")
+	rootID := e.SeedUser("root", "password1", "admin")
+	bobID := e.SeedUser("bob", "password1", "user")
+	at := e.Login("admin", "password1")
+	bt := e.Login("bob", "password1")
+
+	// Root is untouchable for everyone.
+	if r := e.DoAuth("DELETE", "/users/"+itoa(rootID), "", at); r.Status != 403 {
+		t.Fatalf("delete root = %d, want 403", r.Status)
+	}
+	// A non-admin cannot delete anyone, not even itself.
+	if r := e.DoAuth("DELETE", "/users/"+itoa(bobID), "", bt); r.Status != 403 {
+		t.Fatalf("non-admin delete = %d, want 403", r.Status)
+	}
+	// An admin may delete another user.
+	if r := e.DoAuth("DELETE", "/users/"+itoa(bobID), "", at); r.Status != 204 {
+		t.Fatalf("admin delete other = %d", r.Status)
+	}
+	// An admin may delete another admin.
+	if r := e.DoAuth("DELETE", "/users/"+itoa(otherID), "", at); r.Status != 204 {
+		t.Fatalf("admin delete admin = %d", r.Status)
+	}
+	// An admin may delete itself.
+	if r := e.DoAuth("DELETE", "/users/"+itoa(adminID), "", at); r.Status != 204 {
+		t.Fatalf("admin delete self = %d", r.Status)
+	}
+	if r := e.DoAuth("GET", "/session", "", at); r.Status != 401 {
+		t.Fatalf("deleted admin session = %d, want 401", r.Status)
+	}
+}
+
+func TestRootCanManageOwnAccount(t *testing.T) {
+	e := testapi.NewAuth(t)
+	rootID := e.SeedUser("root", "password1", "admin")
+	e.SeedUser("admin", "password1", "admin")
+	rt := e.Login("root", "password1")
+	at := e.Login("admin", "password1")
+
+	// root may edit its profile, like any other user.
+	if r := e.DoAuth("PATCH", "/users/"+itoa(rootID), `{"display_name":"Root","locale":"pt-BR"}`, rt); r.Status != 200 {
+		t.Fatalf("root self update = %d: %s", r.Status, r.Body)
+	}
+	if r := e.DoAuth("PATCH", "/users/"+itoa(rootID), `{"display_name":"Recovery"}`, at); r.Status != 200 {
+		t.Fatalf("admin update root = %d: %s", r.Status, r.Body)
+	}
+	// Disabling and re-enabling root is allowed while another admin is active.
+	if r := e.DoAuth("PATCH", "/users/"+itoa(rootID), `{"disabled":true}`, at); r.Status != 200 {
+		t.Fatalf("disable root = %d: %s", r.Status, r.Body)
+	}
+	if r := e.DoAuth("PATCH", "/users/"+itoa(rootID), `{"disabled":false}`, at); r.Status != 200 {
+		t.Fatalf("enable root = %d: %s", r.Status, r.Body)
+	}
+	// root may change its own password.
+	if r := e.DoAuth("PUT", "/users/"+itoa(rootID)+"/password", `{"current_password":"password1","new_password":"newpass99"}`, rt); r.Status != 204 {
+		t.Fatalf("root password = %d: %s", r.Status, r.Body)
+	}
+	e.Login("root", "newpass99")
+	// An admin may reset it without the current one.
+	if r := e.DoAuth("PUT", "/users/"+itoa(rootID)+"/password", `{"new_password":"password1"}`, at); r.Status != 204 {
+		t.Fatalf("admin root password = %d: %s", r.Status, r.Body)
+	}
+	// Its role stays admin, but restoring that role is allowed.
+	if r := e.DoAuth("PATCH", "/users/"+itoa(rootID), `{"role":"user"}`, at); r.Status != 403 {
+		t.Fatalf("demote root = %d, want 403", r.Status)
+	}
+}
+
+func TestLastActiveAdminGuard(t *testing.T) {
+	e := testapi.NewAuth(t)
+	id := e.SeedUser("admin", "password1", "admin")
+	at := e.Login("admin", "password1")
+
+	// The only active admin cannot demote, disable or delete itself.
+	if r := e.DoAuth("PATCH", "/users/"+itoa(id), `{"role":"user"}`, at); r.Status != 403 {
+		t.Fatalf("demote last admin = %d, want 403", r.Status)
+	}
+	if r := e.DoAuth("PATCH", "/users/"+itoa(id), `{"disabled":true}`, at); r.Status != 403 {
+		t.Fatalf("disable last admin = %d, want 403", r.Status)
+	}
+	if r := e.DoAuth("DELETE", "/users/"+itoa(id), "", at); r.Status != 403 {
+		t.Fatalf("delete last admin = %d, want 403", r.Status)
+	}
+
+	// With a second admin, the same changes are allowed.
+	e.SeedUser("admin2", "password1", "admin")
+	if r := e.DoAuth("PATCH", "/users/"+itoa(id), `{"role":"operator"}`, at); r.Status != 200 {
+		t.Fatalf("demote with another admin = %d: %s", r.Status, r.Body)
+	}
+}
+
+func TestAdminCanRestoreRootRole(t *testing.T) {
+	e := testapi.NewAuth(t)
+	rootID := e.SeedUser("root", "password1", "user")
+	e.SeedUser("admin", "password1", "admin")
+	at := e.Login("admin", "password1")
+
+	if r := e.DoAuth("PATCH", "/users/"+itoa(rootID), `{"role":"admin"}`, at); r.Status != 200 {
+		t.Fatalf("restore root role = %d: %s", r.Status, r.Body)
+	}
+}
+
+func TestNonAdminCannotTellRootApart(t *testing.T) {
+	e := testapi.NewAuth(t)
+	rootID := e.SeedUser("root", "password1", "admin")
+	otherID := e.SeedUser("other", "password1", "user")
+	e.SeedUser("bob", "password1", "user")
+	bt := e.Login("bob", "password1")
+
+	for _, other := range []int64{rootID, otherID, 999999} {
+		r := e.DoAuth("PATCH", "/users/"+itoa(other), `{"display_name":"X"}`, bt)
+		if r.Status != 403 || !strings.Contains(string(r.Body), "only your own profile") {
+			t.Fatalf("PATCH /users/%d = %d %s, want the own-profile error", other, r.Status, r.Body)
+		}
+		r = e.DoAuth("PUT", "/users/"+itoa(other)+"/password", `{"new_password":"newpass99"}`, bt)
+		if r.Status != 403 || !strings.Contains(string(r.Body), "only your own password") {
+			t.Fatalf("PUT /users/%d/password = %d %s, want the own-password error", other, r.Status, r.Body)
+		}
+	}
+}
+
+func TestReadonlyCanChangeOwnPassword(t *testing.T) {
+	e := testapi.NewAuth(t)
+	e.SeedUser("admin", "password1", "admin")
+	id := e.SeedUser("reader", "password1", "readonly")
+	rt := e.Login("reader", "password1")
+
+	if r := e.DoAuth("PUT", "/users/"+itoa(id)+"/password", `{"current_password":"password1","new_password":"newpass99"}`, rt); r.Status != 204 {
+		t.Fatalf("readonly setPassword = %d: %s", r.Status, r.Body)
+	}
+	e.Login("reader", "newpass99")
+}
+
+func TestNonAdminCannotResetAnotherPassword(t *testing.T) {
+	e := testapi.NewAuth(t)
+	bobID := e.SeedUser("bob", "password1", "user")
+	otherID := e.SeedUser("other", "password1", "user")
+	bt := e.Login("bob", "password1")
+
+	if r := e.DoAuth("PUT", "/users/"+itoa(otherID)+"/password", `{"new_password":"newpass99"}`, bt); r.Status != 403 {
+		t.Fatalf("non-admin reset other = %d, want 403", r.Status)
+	}
+	if r := e.DoAuth("PUT", "/users/"+itoa(bobID)+"/password", `{"current_password":"password1","new_password":"newpass99"}`, bt); r.Status != 204 {
+		t.Fatalf("non-admin reset self = %d", r.Status)
+	}
+}
+
+func TestReadonlySelfService(t *testing.T) {
+	e := testapi.NewAuth(t)
+	id := e.SeedUser("reader", "password1", "readonly")
+	other := e.SeedUser("other", "password1", "user")
+	rt := e.Login("reader", "password1")
+
+	if r := e.DoAuth("PATCH", "/users/"+itoa(id), `{"display_name":"Reader"}`, rt); r.Status != 200 {
+		t.Fatalf("readonly self update = %d: %s", r.Status, r.Body)
+	}
+	if r := e.DoAuth("PATCH", "/users/"+itoa(id), `{"role":"admin"}`, rt); r.Status != 403 {
+		t.Fatalf("readonly self role = %d, want 403", r.Status)
+	}
+	if r := e.DoAuth("PATCH", "/users/"+itoa(other), `{"display_name":"Other"}`, rt); r.Status != 403 {
+		t.Fatalf("readonly update other = %d, want 403", r.Status)
+	}
+	if r := e.DoAuth("DELETE", "/users/"+itoa(id), "", rt); r.Status != 403 {
+		t.Fatalf("readonly delete self = %d, want 403", r.Status)
+	}
 }

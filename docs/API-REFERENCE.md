@@ -461,9 +461,9 @@ People with an account (and a mailbox) on this station.
 | [`listUsers`](#op-listusers) | `GET /users` | admin | implemented |
 | [`createUser`](#op-createuser) | `POST /users` | admin | implemented |
 | [`getUser`](#op-getuser) | `GET /users/{user_id}` | readonly | implemented |
-| [`updateUser`](#op-updateuser) | `PATCH /users/{user_id}` | user | implemented |
+| [`updateUser`](#op-updateuser) | `PATCH /users/{user_id}` | readonly | implemented |
 | [`deleteUser`](#op-deleteuser) | `DELETE /users/{user_id}` | admin | implemented |
-| [`setPassword`](#op-setpassword) | `PUT /users/{user_id}/password` | user | implemented |
+| [`setPassword`](#op-setpassword) | `PUT /users/{user_id}/password` | readonly | implemented |
 | [`setAvatar`](#op-setavatar) | `PUT /users/{user_id}/avatar` | user | planned |
 | [`removeAvatar`](#op-removeavatar) | `DELETE /users/{user_id}/avatar` | user | planned |
 | [`exportLxmfIdentity`](#op-exportlxmfidentity) | `POST /users/{user_id}/lxmf-identity/export` | user | planned |
@@ -517,7 +517,7 @@ Also creates the Postfix/Dovecot mailbox through the station's `email_create_use
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `username` | string | yes | pattern `^[a-z0-9._-]{1,32}$` |
+| `username` | string | yes | `root` is reserved for the station's recovery account; pattern `^[a-z0-9._-]{1,32}$` |
 | `password` | string | yes | min length 8; write-only |
 | `display_name` | string or null |  | Human name, optional; when null the UI shows the username; max length 64 |
 | `role` | [Role](#schema-role) |  |  |
@@ -578,10 +578,14 @@ curl -sS -X GET "$BASE/users/2" \
 <a id="op-updateuser"></a>
 ### `PATCH /users/{user_id}`
 
-**Change a user (admins; users may change their own display name, phone and location).** (`updateUser`)
+**Change a user (admins; anyone may change their own display name, phone and location; `root` must stay an admin).** (`updateUser`)
 
-- Role: **user**
+- Role: **readonly**
 - Status: **implemented**
+
+Returns 403 when a non-admin targets another user, when a non-admin changes
+`role`, `locale` or `disabled`, when `root` would stop being an admin, or when
+the change would remove the last active admin.
 
 **Parameters**
 
@@ -623,10 +627,12 @@ curl -sS -X PATCH "$BASE/users/2" \
 <a id="op-deleteuser"></a>
 ### `DELETE /users/{user_id}`
 
-**Delete a user and their mailbox (`root` cannot be deleted).** (`deleteUser`)
+**Delete a user and their mailbox (admins may delete themselves while another active admin remains; `root` cannot be deleted).** (`deleteUser`)
 
 - Role: **admin**
 - Status: **implemented**
+
+Returns 403 when deleting `root` or the last active admin.
 
 > **In this build:** The mailbox is not removed yet: the station's email helper is not wired in. Only the account and its sessions are removed.
 
@@ -656,7 +662,7 @@ curl -sS -X DELETE "$BASE/users/2" \
 
 **Set a password (the user, with the current one; or an admin). Updates the mailbox too.** (`setPassword`)
 
-- Role: **user**
+- Role: **readonly**
 - Status: **implemented**
 
 > **In this build:** The mailbox password is not updated yet: the station's email helper is not wired in. Only the login password changes.
@@ -4449,7 +4455,7 @@ Type: one of `uucp`, `nncp`, `reticulum`
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `username` | string | yes | pattern `^[a-z0-9._-]{1,32}$` |
+| `username` | string | yes | `root` is reserved for the station's recovery account; pattern `^[a-z0-9._-]{1,32}$` |
 | `password` | string | yes | min length 8; write-only |
 | `display_name` | string or null |  | Human name, optional; when null the UI shows the username; max length 64 |
 | `role` | [Role](#schema-role) |  |  |
@@ -4468,7 +4474,7 @@ Type: one of `uucp`, `nncp`, `reticulum`
 <a id="schema-userpatch"></a>
 ### UserPatch
 
-Only admins may change `role` or `disabled`.
+Only admins may change `role`, `locale` or `disabled`; `root` must stay an admin.
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |

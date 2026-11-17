@@ -408,8 +408,12 @@ paths:
     patch:
       tags: [users]
       operationId: updateUser
-      summary: Change a user (admins; users may change their own display name, phone and location).
-      x-hermes-role: user
+      summary: Change a user (admins; anyone may change their own display name, phone and location; `root` must stay an admin).
+      description: |
+        Returns 403 when a non-admin targets another user, when a non-admin changes
+        `role`, `locale` or `disabled`, when `root` would stop being an admin, or when
+        the change would remove the last active admin.
+      x-hermes-role: readonly
       requestBody:
         required: true
         content:
@@ -427,7 +431,9 @@ paths:
     delete:
       tags: [users]
       operationId: deleteUser
-      summary: Delete a user and their mailbox (`root` cannot be deleted).
+      summary: Delete a user and their mailbox (admins may delete themselves while another active admin remains; `root` cannot be deleted).
+      description: |
+        Returns 403 when deleting `root` or the last active admin.
       x-hermes-role: admin
       responses:
         "204": {description: Deleted.}
@@ -440,7 +446,7 @@ paths:
       tags: [users]
       operationId: setPassword
       summary: Set a password (the user, with the current one; or an admin). Updates the mailbox too.
-      x-hermes-role: user
+      x-hermes-role: readonly
       requestBody:
         required: true
         content:
@@ -2817,7 +2823,10 @@ components:
       type: object
       required: [username, password]
       properties:
-        username: {type: string, pattern: "^[a-z0-9._-]{1,32}$"}
+        username:
+          type: string
+          pattern: "^[a-z0-9._-]{1,32}$"
+          description: "`root` is reserved for the station's recovery account."
         password: {type: string, minLength: 8, writeOnly: true}
         display_name:
           type: [string, "null"]
@@ -2829,7 +2838,7 @@ components:
         location: {type: string}
     UserPatch:
       type: object
-      description: Only admins may change `role` or `disabled`.
+      description: Only admins may change `role`, `locale` or `disabled`; `root` must stay an admin.
       properties:
         display_name: {type: string, maxLength: 64}
         role: {$ref: "#/components/schemas/Role"}
@@ -3991,7 +4000,10 @@ components:
           type: object
           required: [username, password]
           properties:
-            username: {type: string, pattern: "^[a-z0-9._-]{1,32}$"}
+            username:
+              type: string
+              pattern: "^[a-z0-9._-]{1,32}$"
+              description: "`root` is reserved for the station's recovery account."
             display_name:
               type: [string, "null"]
               maxLength: 64

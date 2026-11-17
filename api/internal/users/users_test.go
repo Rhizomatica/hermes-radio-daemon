@@ -21,6 +21,9 @@ func TestCreateAndListUsers(t *testing.T) {
 	if j := r.JSON(t); j["username"] != "bob" || j["role"] != "user" || j["display_name"] != "Bob" {
 		t.Fatalf("created = %v", j)
 	}
+	if j := r.JSON(t); j["avatar"] != nil || j["lxmf_address"] != nil {
+		t.Fatalf("avatar/lxmf_address should be null: %v", j)
+	}
 	// Duplicate username → 409.
 	if r := e.DoAuth("POST", "/users", `{"username":"bob","password":"password1"}`, at); r.Status != 409 {
 		t.Fatalf("duplicate = %d, want 409", r.Status)
@@ -28,6 +31,10 @@ func TestCreateAndListUsers(t *testing.T) {
 	// Bad username and short password → 422.
 	if r := e.DoAuth("POST", "/users", `{"username":"B ob","password":"short"}`, at); r.Status != 422 {
 		t.Fatalf("invalid create = %d, want 422", r.Status)
+	}
+	// root is reserved for the recovery account.
+	if r := e.DoAuth("POST", "/users", `{"username":"root","password":"password1"}`, at); r.Status != 422 {
+		t.Fatalf("create root = %d, want 422", r.Status)
 	}
 
 	r = e.DoAuth("GET", "/users", "", at)

@@ -3,6 +3,7 @@ package users
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
@@ -21,6 +22,10 @@ func (h *handlers) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	list, next, err := h.store.ListUsers(r.Context(), limit, int64(cursor))
+	if errors.Is(err, store.ErrInvalidLimit) {
+		api.Invalid(w, r, api.Fields{"limit": {"an integer from 1 to 200"}})
+		return
+	}
 	if err != nil {
 		api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
 		return
@@ -51,9 +56,11 @@ func (h *handlers) create(w http.ResponseWriter, r *http.Request) {
 	f := api.Fields{}
 	if !usernameRe.MatchString(req.Username) {
 		f.Add("username", "1 to 32 characters: a-z, 0-9, . _ -")
+	} else if store.IsReservedUsername(req.Username) {
+		f.Add("username", "reserved")
 	}
-	if len(req.Password) < 8 {
-		f.Add("password", "at least 8 characters")
+	if len(req.Password) < store.MinPasswordLength {
+		f.Add("password", fmt.Sprintf("at least %d characters", store.MinPasswordLength))
 	}
 	role := req.Role
 	if role == "" {
@@ -62,8 +69,8 @@ func (h *handlers) create(w http.ResponseWriter, r *http.Request) {
 	if !roles[role] {
 		f.Add("role", "readonly, user, operator or admin")
 	}
-	if req.DisplayName != nil && len(*req.DisplayName) > 64 {
-		f.Add("display_name", "at most 64 characters")
+	if req.DisplayName != nil && !store.ValidDisplayName(*req.DisplayName) {
+		f.Add("display_name", fmt.Sprintf("at most %d characters", store.MaxDisplayName))
 	}
 	if req.Locale != nil && !locales[*req.Locale] {
 		f.Add("locale", "en, es, pt-BR or fr")

@@ -111,6 +111,64 @@ func TestUsersCRUD(t *testing.T) {
 	}
 }
 
+func TestListUsersExactLastPageHasNoCursor(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	for _, name := range []string{"alice", "bob"} {
+		if _, err := s.CreateUser(ctx, NewUser{Username: name, PasswordHash: "h", Role: "user"}); err != nil {
+			t.Fatalf("CreateUser %s: %v", name, err)
+		}
+	}
+	page, next, err := s.ListUsers(ctx, 2, 0)
+	if err != nil || len(page) != 2 {
+		t.Fatalf("ListUsers = %d rows, err %v", len(page), err)
+	}
+	if next != 0 {
+		t.Fatalf("ListUsers next = %d, want 0 on a full last page", next)
+	}
+}
+
+func TestListUsersRejectsNonPositiveLimit(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	if _, _, err := s.ListUsers(ctx, 0, 0); !errors.Is(err, ErrInvalidLimit) {
+		t.Fatalf("ListUsers(0) = %v, want ErrInvalidLimit", err)
+	}
+	if _, _, err := s.ListUsers(ctx, -1, 0); !errors.Is(err, ErrInvalidLimit) {
+		t.Fatalf("ListUsers(-1) = %v, want ErrInvalidLimit", err)
+	}
+}
+
+func TestActiveAdminGuard(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	a, err := s.CreateUser(ctx, NewUser{Username: "a", PasswordHash: "h", Role: "admin"})
+	if err != nil {
+		t.Fatalf("CreateUser a: %v", err)
+	}
+	role := "user"
+	if _, err := s.UpdateUserKeepingActiveAdmin(ctx, a.ID, UserPatch{Role: &role}); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("demote last admin = %v, want ErrLastAdmin", err)
+	}
+	if err := s.DeleteUserKeepingActiveAdmin(ctx, a.ID); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("delete last admin = %v, want ErrLastAdmin", err)
+	}
+
+	b, err := s.CreateUser(ctx, NewUser{Username: "b", PasswordHash: "h", Role: "admin"})
+	if err != nil {
+		t.Fatalf("CreateUser b: %v", err)
+	}
+	if _, err := s.UpdateUserKeepingActiveAdmin(ctx, a.ID, UserPatch{Role: &role}); err != nil {
+		t.Fatalf("demote with another admin: %v", err)
+	}
+	if err := s.DeleteUserKeepingActiveAdmin(ctx, b.ID); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("delete last admin after demotion = %v, want ErrLastAdmin", err)
+	}
+	if err := s.DeleteUserKeepingActiveAdmin(ctx, a.ID); err != nil {
+		t.Fatalf("delete non-admin = %v", err)
+	}
+}
+
 func TestCreateUserDuplicateIsTyped(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t)

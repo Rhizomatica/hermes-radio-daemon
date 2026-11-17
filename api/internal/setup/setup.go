@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/auth"
@@ -70,6 +72,11 @@ var (
 	locales    = map[string]bool{"en": true, "es": true, "pt-BR": true, "fr": true}
 )
 
+const (
+	maxStationName = 64
+	maxCallsign    = 16
+)
+
 // MaxWrongCodesPerHour is how many wrong setup codes the station takes an hour from
 // all clients together, however many addresses they come from.
 const MaxWrongCodesPerHour = 30
@@ -123,11 +130,11 @@ func (h *handlers) run(w http.ResponseWriter, r *http.Request) {
 	if req.SetupCode == "" {
 		f.Add("setup_code", "required")
 	}
-	if req.StationName == "" || len(req.StationName) > 64 {
-		f.Add("station_name", "1 to 64 characters")
+	if req.StationName == "" || utf8.RuneCountInString(req.StationName) > maxStationName {
+		f.Add("station_name", fmt.Sprintf("1 to %d characters", maxStationName))
 	}
-	if req.Callsign != nil && len(*req.Callsign) > 16 {
-		f.Add("callsign", "at most 16 characters")
+	if req.Callsign != nil && utf8.RuneCountInString(*req.Callsign) > maxCallsign {
+		f.Add("callsign", fmt.Sprintf("at most %d characters", maxCallsign))
 	}
 	if req.Country != nil && !countryRe.MatchString(*req.Country) {
 		f.Add("country", "ISO 3166-1 alpha-2, e.g. BR")
@@ -140,12 +147,14 @@ func (h *handlers) run(w http.ResponseWriter, r *http.Request) {
 	}
 	if !usernameRe.MatchString(req.Admin.Username) {
 		f.Add("admin.username", "1 to 32 characters: a-z, 0-9, . _ -")
+	} else if store.IsReservedUsername(req.Admin.Username) {
+		f.Add("admin.username", "reserved")
 	}
-	if len(req.Admin.Password) < 8 {
-		f.Add("admin.password", "at least 8 characters")
+	if len(req.Admin.Password) < store.MinPasswordLength {
+		f.Add("admin.password", fmt.Sprintf("at least %d characters", store.MinPasswordLength))
 	}
-	if req.Admin.DisplayName != nil && len(*req.Admin.DisplayName) > 64 {
-		f.Add("admin.display_name", "at most 64 characters")
+	if req.Admin.DisplayName != nil && !store.ValidDisplayName(*req.Admin.DisplayName) {
+		f.Add("admin.display_name", fmt.Sprintf("at most %d characters", store.MaxDisplayName))
 	}
 	if !f.OK() {
 		api.Invalid(w, r, f)
