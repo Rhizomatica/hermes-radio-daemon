@@ -57,7 +57,7 @@ func HermesInit() {
 		if made, err := setup.EnsureRoot(context.Background(), st); err != nil {
 			slog.Error("cannot seed the root recovery account", "error", err)
 		} else if made {
-			slog.Warn("seeded the root recovery account", "username", store.RootUsername)
+			slog.Warn("seeded the root recovery account; change its password", "username", store.RootUsername)
 		}
 		router = station.NewAuthenticatedRouter(r, st, setup.Config{SetupCodePath: cfg.SetupCodePath})
 	}
