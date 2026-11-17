@@ -223,7 +223,7 @@ func TestNonAdminCannotTellRootApart(t *testing.T) {
 	e.SeedUser("bob", "password1", "user")
 	bt := e.Login("bob", "password1")
 
-	for _, other := range []int64{rootID, otherID} {
+	for _, other := range []int64{rootID, otherID, 999999} {
 		r := e.DoAuth("PATCH", "/users/"+itoa(other), `{"display_name":"X"}`, bt)
 		if r.Status != 403 || !strings.Contains(string(r.Body), "only your own profile") {
 			t.Fatalf("PATCH /users/%d = %d %s, want the own-profile error", other, r.Status, r.Body)

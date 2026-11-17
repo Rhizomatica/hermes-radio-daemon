@@ -16,8 +16,17 @@ import (
 // username constraint.
 var ErrUsernameTaken = errors.New("username is taken")
 
+// ErrLastAdmin is returned when a change would leave no enabled admin.
+var ErrLastAdmin = errors.New("cannot remove the last active admin")
+
+// ErrInvalidLimit is returned when a page size is not positive.
+var ErrInvalidLimit = errors.New("invalid limit")
+
 // MaxDisplayName is api-rest.yaml's display_name maxLength.
 const MaxDisplayName = 64
+
+// MinPasswordLength is api-rest.yaml's password minLength.
+const MinPasswordLength = 8
 
 // ValidDisplayName reports whether s fits the display_name maxLength,
 // counted in characters rather than bytes.
@@ -110,7 +119,7 @@ func (s *Store) UserByUsername(ctx context.Context, username string) (User, erro
 // the next cursor (0 on the last page).
 func (s *Store) ListUsers(ctx context.Context, limit int, cursor int64) ([]User, int64, error) {
 	if limit < 1 {
-		return nil, 0, fmt.Errorf("ListUsers: limit %d must be positive", limit)
+		return nil, 0, fmt.Errorf("%w: %d", ErrInvalidLimit, limit)
 	}
 	// One extra row tells whether another page follows, so a full last page
 	// does not hand out a cursor to an empty one.
@@ -140,6 +149,17 @@ func (s *Store) ListUsers(ctx context.Context, limit int, cursor int64) ([]User,
 
 // UpdateUser applies a partial update and returns the stored row.
 func (s *Store) UpdateUser(ctx context.Context, id int64, p UserPatch) (User, error) {
+	return s.updateUser(ctx, id, p, false)
+}
+
+// UpdateUserKeepingActiveAdmin is UpdateUser, but refuses with ErrLastAdmin
+// when the update would leave no enabled admin. The count and the write are
+// one statement, so concurrent requests cannot both remove the last admin.
+func (s *Store) UpdateUserKeepingActiveAdmin(ctx context.Context, id int64, p UserPatch) (User, error) {
+	return s.updateUser(ctx, id, p, true)
+}
+
+func (s *Store) updateUser(ctx context.Context, id int64, p UserPatch, keepActiveAdmin bool) (User, error) {
 	sets := []string{"updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"}
 	var args []any
 	add := func(col string, v any) {
@@ -175,26 +195,62 @@ func (s *Store) UpdateUser(ctx context.Context, id int64, p UserPatch) (User, er
 		}
 	}
 	args = append(args, id)
-	res, err := s.db.ExecContext(ctx, `UPDATE users SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
+	query := `UPDATE users SET ` + strings.Join(sets, ", ") + ` WHERE id = ?`
+	if keepActiveAdmin {
+		query += ` AND (SELECT count(*) FROM users WHERE role = 'admin' AND disabled = 0 AND id != ?) > 0`
+		args = append(args, id)
+	}
+	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return User{}, err
 	}
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return User{}, sql.ErrNoRows
+		return User{}, s.noRowErr(ctx, id, keepActiveAdmin)
 	}
 	return s.UserByID(ctx, id)
 }
 
 // DeleteUser removes a user. It returns sql.ErrNoRows when none matched.
 func (s *Store) DeleteUser(ctx context.Context, id int64) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, id)
+	return s.deleteUser(ctx, id, false)
+}
+
+// DeleteUserKeepingActiveAdmin is DeleteUser, but refuses with ErrLastAdmin
+// when deleting the user would leave no enabled admin.
+func (s *Store) DeleteUserKeepingActiveAdmin(ctx context.Context, id int64) error {
+	return s.deleteUser(ctx, id, true)
+}
+
+func (s *Store) deleteUser(ctx context.Context, id int64, keepActiveAdmin bool) error {
+	query := `DELETE FROM users WHERE id = ?`
+	args := []any{id}
+	if keepActiveAdmin {
+		query += ` AND (SELECT count(*) FROM users WHERE role = 'admin' AND disabled = 0 AND id != ?) > 0`
+		args = append(args, id)
+	}
+	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return err
 	}
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return sql.ErrNoRows
+		return s.noRowErr(ctx, id, keepActiveAdmin)
 	}
 	return nil
+}
+
+// noRowErr tells a missing row from an active-admin guard refusal.
+func (s *Store) noRowErr(ctx context.Context, id int64, guarded bool) error {
+	if guarded {
+		var one int
+		err := s.db.QueryRowContext(ctx, `SELECT 1 FROM users WHERE id = ?`, id).Scan(&one)
+		if err == nil {
+			return ErrLastAdmin
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	return sql.ErrNoRows
 }
 
 // SetPasswordHash replaces a user's password hash and bumps updated_at.
@@ -222,14 +278,6 @@ func (s *Store) SetLastLoginAt(ctx context.Context, id int64) error {
 func (s *Store) CountUsers(ctx context.Context) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM users`).Scan(&n)
-	return n, err
-}
-
-// CountActiveAdmins returns how many users are admins and not disabled.
-func (s *Store) CountActiveAdmins(ctx context.Context) (int, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT count(*) FROM users WHERE role = 'admin' AND disabled = 0`).Scan(&n)
 	return n, err
 }
 

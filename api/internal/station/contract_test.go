@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -106,9 +107,11 @@ func TestContract(t *testing.T) {
 		return e.Login(string(r)+"1", "password-"+string(r))
 	}
 	tokens := map[spec.Role]string{}
+	userIDs := map[spec.Role]string{}
 	for _, r := range roleOrder {
-		e.SeedUser(string(r)+"1", "password-"+string(r), string(r))
+		uid := e.SeedUser(string(r)+"1", "password-"+string(r), string(r))
 		tokens[r] = login(r)
+		userIDs[r] = strconv.FormatInt(uid, 10)
 	}
 
 	ids := e.R.Operations()
@@ -171,7 +174,16 @@ func TestContract(t *testing.T) {
 				checkProblem(t, r, 403, "forbidden")
 			}
 
-			r := e.DoAuth(op.Method, path, body, token)
+			ownPath, ownBody := path, body
+			if op.Role != spec.RoleAdmin {
+				ownPath = strings.Replace(path, "/users/"+sample["user_id"], "/users/"+userIDs[asRole], 1)
+				if ownPath != path && ownBody != "" {
+					// A refused body reaches the handler without mutating
+					// the seeded user's updated_at.
+					ownBody = `{"__contract":true}`
+				}
+			}
+			r := e.DoAuth(op.Method, ownPath, ownBody, token)
 			switch {
 			case r.Status == 401 && !op.Public, r.Status == 405, r.Status >= 500 && !absent(r):
 				t.Fatalf("%s %s as %s = %d: %s", op.Method, op.Path, asRole, r.Status, r.Body)

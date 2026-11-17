@@ -5,6 +5,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
@@ -18,14 +19,14 @@ func (h *handlers) update(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	u, ok := h.loadUser(w, r, id)
-	if !ok {
-		return
-	}
 	p, _ := api.PrincipalFrom(r)
 	isAdmin := p.Role == spec.RoleAdmin
 	if !isAdmin && p.UserID != id {
 		api.Problem(w, r, http.StatusForbidden, "forbidden", "you may change only your own profile", nil)
+		return
+	}
+	u, ok := h.loadUser(w, r, id)
+	if !ok {
 		return
 	}
 
@@ -49,7 +50,7 @@ func (h *handlers) update(w http.ResponseWriter, r *http.Request) {
 	if v, present := raw["display_name"]; present {
 		var s string
 		if json.Unmarshal(v, &s) != nil || !store.ValidDisplayName(s) {
-			f.Add("display_name", "a string of at most 64 characters")
+			f.Add("display_name", fmt.Sprintf("a string of at most %d characters", store.MaxDisplayName))
 		} else {
 			patch.DisplayName = &s
 		}
@@ -112,6 +113,7 @@ func (h *handlers) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Refuse to leave the station without an enabled admin.
+	keepActiveAdmin := false
 	if u.Role == "admin" && !u.Disabled {
 		newRole, newDisabled := u.Role, u.Disabled
 		if patch.Role != nil {
@@ -120,20 +122,20 @@ func (h *handlers) update(w http.ResponseWriter, r *http.Request) {
 		if patch.Disabled != nil {
 			newDisabled = *patch.Disabled
 		}
-		if newRole != "admin" || newDisabled {
-			n, err := h.store.CountActiveAdmins(r.Context())
-			if err != nil {
-				api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
-				return
-			}
-			if n <= 1 {
-				api.Problem(w, r, http.StatusForbidden, "forbidden", "cannot remove the last active admin", nil)
-				return
-			}
-		}
+		keepActiveAdmin = newRole != "admin" || newDisabled
 	}
 
-	updated, err := h.store.UpdateUser(r.Context(), id, patch)
+	var updated store.User
+	var err error
+	if keepActiveAdmin {
+		updated, err = h.store.UpdateUserKeepingActiveAdmin(r.Context(), id, patch)
+	} else {
+		updated, err = h.store.UpdateUser(r.Context(), id, patch)
+	}
+	if errors.Is(err, store.ErrLastAdmin) {
+		api.Problem(w, r, http.StatusForbidden, "forbidden", "cannot remove the last active admin", nil)
+		return
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		api.Problem(w, r, http.StatusNotFound, "not_found", "no such user", nil)
 		return
@@ -158,21 +160,21 @@ func (h *handlers) delete(w http.ResponseWriter, r *http.Request) {
 		api.Problem(w, r, http.StatusForbidden, "forbidden", "root cannot be deleted", nil)
 		return
 	}
+	var err error
 	if u.Role == "admin" && !u.Disabled {
-		n, err := h.store.CountActiveAdmins(r.Context())
-		if err != nil {
-			api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
-			return
-		}
-		if n <= 1 {
-			api.Problem(w, r, http.StatusForbidden, "forbidden", "cannot delete the last active admin", nil)
-			return
-		}
+		err = h.store.DeleteUserKeepingActiveAdmin(r.Context(), id)
+	} else {
+		err = h.store.DeleteUser(r.Context(), id)
 	}
-	if err := h.store.DeleteUser(r.Context(), id); errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, store.ErrLastAdmin) {
+		api.Problem(w, r, http.StatusForbidden, "forbidden", "cannot delete the last active admin", nil)
+		return
+	}
+	if errors.Is(err, sql.ErrNoRows) {
 		api.Problem(w, r, http.StatusNotFound, "not_found", "no such user", nil)
 		return
-	} else if err != nil {
+	}
+	if err != nil {
 		api.Problem(w, r, http.StatusInternalServerError, "internal", "the database failed", nil)
 		return
 	}
@@ -184,14 +186,14 @@ func (h *handlers) setPassword(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	u, ok := h.loadUser(w, r, id)
-	if !ok {
-		return
-	}
 	p, _ := api.PrincipalFrom(r)
 	isAdmin := p.Role == spec.RoleAdmin
 	if !isAdmin && p.UserID != id {
 		api.Problem(w, r, http.StatusForbidden, "forbidden", "you may change only your own password", nil)
+		return
+	}
+	u, ok := h.loadUser(w, r, id)
+	if !ok {
 		return
 	}
 
@@ -203,8 +205,8 @@ func (h *handlers) setPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f := api.Fields{}
-	if len(req.NewPassword) < 8 {
-		f.Add("new_password", "at least 8 characters")
+	if len(req.NewPassword) < store.MinPasswordLength {
+		f.Add("new_password", fmt.Sprintf("at least %d characters", store.MinPasswordLength))
 	}
 	if !isAdmin {
 		if req.CurrentPassword == "" {

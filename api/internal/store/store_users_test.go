@@ -131,11 +131,41 @@ func TestListUsersExactLastPageHasNoCursor(t *testing.T) {
 func TestListUsersRejectsNonPositiveLimit(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t)
-	if _, _, err := s.ListUsers(ctx, 0, 0); err == nil {
-		t.Fatal("ListUsers(0) did not fail")
+	if _, _, err := s.ListUsers(ctx, 0, 0); !errors.Is(err, ErrInvalidLimit) {
+		t.Fatalf("ListUsers(0) = %v, want ErrInvalidLimit", err)
 	}
-	if _, _, err := s.ListUsers(ctx, -1, 0); err == nil {
-		t.Fatal("ListUsers(-1) did not fail")
+	if _, _, err := s.ListUsers(ctx, -1, 0); !errors.Is(err, ErrInvalidLimit) {
+		t.Fatalf("ListUsers(-1) = %v, want ErrInvalidLimit", err)
+	}
+}
+
+func TestActiveAdminGuard(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	a, err := s.CreateUser(ctx, NewUser{Username: "a", PasswordHash: "h", Role: "admin"})
+	if err != nil {
+		t.Fatalf("CreateUser a: %v", err)
+	}
+	role := "user"
+	if _, err := s.UpdateUserKeepingActiveAdmin(ctx, a.ID, UserPatch{Role: &role}); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("demote last admin = %v, want ErrLastAdmin", err)
+	}
+	if err := s.DeleteUserKeepingActiveAdmin(ctx, a.ID); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("delete last admin = %v, want ErrLastAdmin", err)
+	}
+
+	b, err := s.CreateUser(ctx, NewUser{Username: "b", PasswordHash: "h", Role: "admin"})
+	if err != nil {
+		t.Fatalf("CreateUser b: %v", err)
+	}
+	if _, err := s.UpdateUserKeepingActiveAdmin(ctx, a.ID, UserPatch{Role: &role}); err != nil {
+		t.Fatalf("demote with another admin: %v", err)
+	}
+	if err := s.DeleteUserKeepingActiveAdmin(ctx, b.ID); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("delete last admin after demotion = %v, want ErrLastAdmin", err)
+	}
+	if err := s.DeleteUserKeepingActiveAdmin(ctx, a.ID); err != nil {
+		t.Fatalf("delete non-admin = %v", err)
 	}
 }
 
