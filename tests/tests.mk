@@ -342,5 +342,5 @@ tests/sbitx/test_sbitx_buffer: tests/sbitx/test_sbitx_buffer.c sbitx/sbitx_buffe
                                sbitx/ring_buffer.c sbitx/ring_buffer.h
 	$(CC) $(TEST_CFLAGS) -Isbitx $< $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread
 
-tests/sbitx/test_sbitx_codec: tests/sbitx/test_sbitx_codec.c sbitx/sbitx_codec.c sbitx/sbitx_codec.h
-	$(CC) $(TEST_CFLAGS) -Ivendor/hermes_log -Icommon -Iradio $< sbitx/sbitx_codec.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread
+tests/sbitx/test_sbitx_codec: tests/sbitx/test_sbitx_codec.c sbitx/sbitx_codec.c sbitx/sbitx_codec.h sbitx/sbitx_alsa.h
+	$(CC) $(TEST_CFLAGS) -Ivendor/hermes_log -Icommon -Iradio -Isbitx $< sbitx/sbitx_codec.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread

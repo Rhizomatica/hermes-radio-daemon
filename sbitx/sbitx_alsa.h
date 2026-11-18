@@ -36,6 +36,12 @@ void sound_system_init(radio *radio_h, pthread_t *control_tid, pthread_t *radio_
  * no audio threads were started, e.g. controls-only mode). */
 bool sound_system_wait_ready(int timeout_ms, bool *codec_ok);
 
+/* Both codec capture channels' DC offset, in dBFS, measured over a short
+ * window once the capture has settled (the left channel is the receiver,
+ * the right the microphone).  False when no measurement came within
+ * timeout_ms (no capture running, or controls-only mode). */
+bool sound_codec_probe_dc(double *left_dbfs, double *right_dbfs, int timeout_ms);
+
 void sound_system_shutdown(radio *radio_h, pthread_t *control_tid, pthread_t *radio_capture,
                            pthread_t *radio_playback, pthread_t *loop_capture, pthread_t *loop_playback);
 

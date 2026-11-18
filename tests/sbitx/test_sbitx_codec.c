@@ -1,7 +1,9 @@
 /* sbitx_codec: the WM8731 is found by its name among the kernel's I2C
  * devices (bus entries and other devices skipped, the address read as hex),
- * not found when absent, and a register write is encoded as the codec
- * expects (7-bit register, the value's ninth bit, its low byte).
+ * not found when absent; a register write is encoded as the codec expects
+ * (7-bit register, the value's ninth bit, its low byte); and the channel
+ * order is read from the two channels' DC (the bench's figures, both ways,
+ * and too close to tell).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,6 +13,17 @@
 
 #include "unity.h"
 #include "sbitx/sbitx_codec.h"
+
+/* The capture probe lives in sbitx_alsa.c, with ALSA: not measured here. */
+bool sound_codec_probe_dc(double *left_dbfs, double *right_dbfs, int timeout_ms)
+{
+    (void) left_dbfs; (void) right_dbfs; (void) timeout_ms;
+    return false;
+}
+
+/* The bench's DC offsets (caldono and pueblonuevo, 2026-11-18). */
+#define RECEIVER_DC_DBFS   (-34.8)
+#define MIC_DC_DBFS        (-15.2)
 
 #define CODEC_BUS   1
 #define CODEC_ADDR  0x1a
@@ -82,11 +95,20 @@ void test_register_write_encoding(void)
     TEST_ASSERT_EQUAL_HEX8(0x9f, b[1]);
 }
 
+void test_channel_order_from_the_dc(void)
+{
+    TEST_ASSERT_EQUAL_INT(CODEC_ORDER_RIGHT, sbitx_codec_order(RECEIVER_DC_DBFS, MIC_DC_DBFS));
+    TEST_ASSERT_EQUAL_INT(CODEC_ORDER_SWAPPED, sbitx_codec_order(MIC_DC_DBFS, RECEIVER_DC_DBFS));
+    TEST_ASSERT_EQUAL_INT(CODEC_ORDER_UNKNOWN, sbitx_codec_order(-30.0, -25.0));   /* under the margin */
+    TEST_ASSERT_EQUAL_INT(CODEC_ORDER_UNKNOWN, sbitx_codec_order(-25.0, -30.0));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
     RUN_TEST(test_finds_the_wm8731_among_other_devices);
     RUN_TEST(test_no_wm8731_is_not_found);
     RUN_TEST(test_register_write_encoding);
+    RUN_TEST(test_channel_order_from_the_dc);
     return UNITY_END();
 }

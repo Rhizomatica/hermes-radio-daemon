@@ -489,6 +489,17 @@ static snd_pcm_sframes_t play_catch_up(snd_pcm_t *pcm, snd_pcm_uframes_t buffer_
 #define CAPTURE_LEVELS_SETTLE_MS 1000
 #define CAPTURE_LEVELS_START_MS  1000
 #define CAPTURE_LEVELS_PERIOD_MS 60000
+
+/* An on-demand measurement of both capture channels' DC (sound_codec_probe_dc):
+ * the startup thread asks, the capture thread skips CODEC_PROBE_SETTLE_MS,
+ * measures CODEC_PROBE_MS and publishes the result.  Atomics only, so the
+ * capture thread neither locks nor waits. */
+#define CODEC_PROBE_SETTLE_MS 300
+#define CODEC_PROBE_MS        500
+#define CODEC_PROBE_POLL_MS   20
+enum { PROBE_IDLE, PROBE_REQUESTED, PROBE_DONE };
+static _Atomic int    codec_probe_state = PROBE_IDLE;
+static _Atomic double codec_probe_dc[CAPTURE_LEVELS_CHANNELS];
 static int pcm_open_wait(snd_pcm_t **pcm, const char *device, snd_pcm_stream_t stream)
 {
     for (int waited_ms = 0; ; waited_ms += 250)
@@ -653,6 +664,36 @@ static void *radio_capture_thread(void *device_ptr)
 
         if (channels == CAPTURE_LEVELS_CHANNELS)
         {
+            static capture_levels probe;
+            static uint64_t probe_skip;
+            static bool probe_running;
+            if (!probe_running && atomic_load(&codec_probe_state) == PROBE_REQUESTED)
+            {
+                capture_levels_reset(&probe);
+                probe_skip = (uint64_t) hw_rate * CODEC_PROBE_SETTLE_MS / 1000;
+                probe_running = true;
+            }
+            if (probe_running)
+            {
+                if (probe_skip)
+                    probe_skip -= probe_skip < (uint64_t) hw_period_size ? probe_skip : (uint64_t) hw_period_size;
+                else
+                {
+                    capture_levels_add(&probe, (const int32_t *) buffer, hw_period_size);
+                    if (probe.frames >= (uint64_t) hw_rate * CODEC_PROBE_MS / 1000)
+                    {
+                        for (int ch = 0; ch < CAPTURE_LEVELS_CHANNELS; ch++)
+                        {
+                            capture_channel_level l;
+                            capture_levels_get(&probe, ch, &l);
+                            atomic_store(&codec_probe_dc[ch], l.dc_dbfs);
+                        }
+                        probe_running = false;
+                        atomic_store(&codec_probe_state, PROBE_DONE);
+                    }
+                }
+            }
+
             if (levels_skip)
                 levels_skip -= levels_skip < (uint64_t) hw_period_size ? levels_skip : (uint64_t) hw_period_size;
             else if (radio_h_snd->txrx_state == IN_TX)
@@ -688,6 +729,25 @@ static void *radio_capture_thread(void *device_ptr)
     return NULL;
 }
 
+
+bool sound_codec_probe_dc(double *left_dbfs, double *right_dbfs, int timeout_ms)
+{
+    atomic_store(&codec_probe_state, PROBE_REQUESTED);
+    for (int waited = 0; waited < timeout_ms; waited += CODEC_PROBE_POLL_MS)
+    {
+        if (atomic_load(&codec_probe_state) == PROBE_DONE)
+        {
+            *left_dbfs = atomic_load(&codec_probe_dc[0]);
+            *right_dbfs = atomic_load(&codec_probe_dc[1]);
+            atomic_store(&codec_probe_state, PROBE_IDLE);
+            return true;
+        }
+        struct timespec ts = { 0, CODEC_PROBE_POLL_MS * 1000000L };
+        nanosleep(&ts, NULL);
+    }
+    atomic_store(&codec_probe_state, PROBE_IDLE);
+    return false;
+}
 
 /* Audio already on its way to the transmitter, in ms: Mercury's samples in
  * the loopback ring (48 kHz stereo S32), the DSP block in flight (1024
