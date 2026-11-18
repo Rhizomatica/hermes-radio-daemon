@@ -43,6 +43,7 @@
 #include "pskreporter.h"
 #include "js8_worker.h"
 #include "sbitx/sbitx_alsa.h"
+#include "sbitx/sbitx_codec.h"
 
 #define LOG_C "radiod"
 
@@ -308,6 +309,10 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
         }
         if (!loop_ok)
             HLOGW(LOG_C, "loopback devices not configured after 15 s; reporting ready anyway");
+        /* Both codec streams are configured: the codec's interface goes
+         * active last, as it wants (sbitx/sbitx_codec.h).  Set first, about
+         * one start in five left the receiver deaf until the next start. */
+        sbitx_codec_reactivate();
     }
     notify_systemd_ready();
 

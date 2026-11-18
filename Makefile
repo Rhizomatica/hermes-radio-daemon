@@ -113,6 +113,7 @@ SBITX_OBJS = sbitx/sbitx_alsa.o \
              sbitx/sbitx_bridge.o \
              sbitx/sbitx_core.o \
              sbitx/sbitx_txcal.o \
+             sbitx/sbitx_codec.o \
              dsp/sbitx_dsp.o \
              dsp/upsample2.o \
              sbitx/sbitx_gpio.o \
