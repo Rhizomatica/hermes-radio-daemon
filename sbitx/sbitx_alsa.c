@@ -516,9 +516,10 @@ static void log_capture_levels(const capture_levels *levels, const char *when)
     capture_channel_level radio, mic;
     capture_levels_get(levels, 0, &radio);
     capture_levels_get(levels, 1, &mic);
-    HLOGI(LOG_C, "capture levels %s: radio (left) %.1f dBFS rms, peak %.1f, HF ratio %.2f; "
-          "mic (right) %.1f dBFS rms, peak %.1f, HF ratio %.2f", when,
-          radio.rms_dbfs, radio.peak_dbfs, radio.hf_ratio, mic.rms_dbfs, mic.peak_dbfs, mic.hf_ratio);
+    HLOGI(LOG_C, "capture levels %s: radio (left) %.1f dBFS rms, peak %.1f, HF ratio %.2f, DC %.1f; "
+          "mic (right) %.1f dBFS rms, peak %.1f, HF ratio %.2f, DC %.1f", when,
+          radio.rms_dbfs, radio.peak_dbfs, radio.hf_ratio, radio.dc_dbfs,
+          mic.rms_dbfs, mic.peak_dbfs, mic.hf_ratio, mic.dc_dbfs);
 }
 
 static void *radio_capture_thread(void *device_ptr)

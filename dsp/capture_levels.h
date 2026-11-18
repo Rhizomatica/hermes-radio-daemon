@@ -15,6 +15,7 @@
 #define CAPTURE_LEVELS_H_
 
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 #define CAPTURE_LEVELS_CHANNELS 2
@@ -22,20 +23,29 @@
 /* The HF ratio is rms(x[n] - x[n-1]) / rms(x): 2 sin(pi f / fs) for a tone
  * at f.  At 96 kHz that is about 1.41 at the 24 kHz IF and under 0.2 below
  * 3 kHz, so it says where a channel's energy is without a transform. */
+/* The codec runs with its ADC high-pass filter off, so each channel carries
+ * a DC offset that can be larger than its signal: the levels are of what is
+ * left once the mean is taken out, and the offset is reported on its own.
+ * Sums are kept relative to each channel's first sample, which keeps the
+ * mean's removal exact in doubles over minutes of samples. */
 typedef struct
 {
+    double   sum[CAPTURE_LEVELS_CHANNELS];
     double   sum_sq[CAPTURE_LEVELS_CHANNELS];
     double   diff_sq[CAPTURE_LEVELS_CHANNELS];
+    int32_t  ref[CAPTURE_LEVELS_CHANNELS];
     int32_t  prev[CAPTURE_LEVELS_CHANNELS];
-    uint32_t peak[CAPTURE_LEVELS_CHANNELS];
+    int32_t  min[CAPTURE_LEVELS_CHANNELS];
+    int32_t  max[CAPTURE_LEVELS_CHANNELS];
     uint64_t frames;
 } capture_levels;
 
 typedef struct
 {
-    double rms_dbfs;     /* -INFINITY for digital silence */
-    double peak_dbfs;
-    double hf_ratio;     /* 0 for digital silence */
+    double rms_dbfs;     /* the signal without its DC; -INFINITY when constant */
+    double peak_dbfs;    /* half the peak-to-peak swing */
+    double dc_dbfs;      /* the mean's magnitude; -INFINITY for none */
+    double hf_ratio;     /* 0 when constant */
 } capture_channel_level;
 
 void capture_levels_reset(capture_levels *c);

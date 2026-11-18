@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include <math.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "capture_levels.h"
@@ -21,38 +20,50 @@ void capture_levels_add(capture_levels *c, const int32_t *frames, size_t n_frame
 {
     for (size_t i = 0; i < n_frames; i++)
     {
+        bool first = c->frames == 0 && i == 0;
         for (int ch = 0; ch < CAPTURE_LEVELS_CHANNELS; ch++)
         {
             int32_t v = frames[i * CAPTURE_LEVELS_CHANNELS + ch];
-            double x = (double) v;
-            uint32_t a = v < 0 ? (uint32_t) (-(int64_t) v) : (uint32_t) v;
-            c->sum_sq[ch] += x * x;
-            /* The first frame has no previous one: no difference counted. */
-            if (c->frames || i)
+            if (first)
             {
-                double d = x - (double) c->prev[ch];
+                c->ref[ch] = v;
+                c->min[ch] = c->max[ch] = v;
+            }
+            else
+            {
+                double d = (double) v - (double) c->prev[ch];
                 c->diff_sq[ch] += d * d;
             }
-            if (a > c->peak[ch])
-                c->peak[ch] = a;
+            double x = (double) v - (double) c->ref[ch];
+            c->sum[ch] += x;
+            c->sum_sq[ch] += x * x;
+            if (v < c->min[ch]) c->min[ch] = v;
+            if (v > c->max[ch]) c->max[ch] = v;
             c->prev[ch] = v;
         }
     }
     c->frames += n_frames;
 }
 
+static double dbfs(double magnitude)
+{
+    return magnitude > 0.0 ? 20.0 * log10(magnitude / CAPTURE_FULL_SCALE) : -INFINITY;
+}
+
 void capture_levels_get(const capture_levels *c, int channel, capture_channel_level *out)
 {
-    out->rms_dbfs = -INFINITY;
-    out->peak_dbfs = -INFINITY;
+    out->rms_dbfs = out->peak_dbfs = out->dc_dbfs = -INFINITY;
     out->hf_ratio = 0.0;
     if (channel < 0 || channel >= CAPTURE_LEVELS_CHANNELS || c->frames == 0)
         return;
-    double ms = c->sum_sq[channel] / (double) c->frames;
-    if (ms <= 0.0)
+    double n = (double) c->frames;
+    double mean = c->sum[channel] / n;
+    double var = c->sum_sq[channel] / n - mean * mean;
+    out->dc_dbfs = dbfs(fabs((double) c->ref[channel] + mean));
+    out->peak_dbfs = dbfs(((double) c->max[channel] - (double) c->min[channel]) / 2.0);
+    if (var <= 0.0)
         return;
-    out->rms_dbfs = 10.0 * log10(ms / (CAPTURE_FULL_SCALE * CAPTURE_FULL_SCALE));
-    out->peak_dbfs = 20.0 * log10((double) c->peak[channel] / CAPTURE_FULL_SCALE);
+    out->rms_dbfs = dbfs(sqrt(var));
     if (c->frames > 1)
-        out->hf_ratio = sqrt((c->diff_sq[channel] / (double) (c->frames - 1)) / ms);
+        out->hf_ratio = sqrt((c->diff_sq[channel] / (n - 1.0)) / var);
 }
