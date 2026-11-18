@@ -480,10 +480,13 @@ static snd_pcm_sframes_t play_catch_up(snd_pcm_t *pcm, snd_pcm_uframes_t buffer_
  * giving up at once left the daemon running with no audio at all. Bounded; any other error returns at once. */
 #define PCM_BUSY_WAIT_MS 10000
 
-/* Both capture channels' levels in the log (dsp/capture_levels.h): over the
- * first CAPTURE_LEVELS_START_MS of reception after the stream starts (or is
- * restarted after an error), then every CAPTURE_LEVELS_PERIOD_MS.  Only
+/* Both capture channels' levels in the log (dsp/capture_levels.h): over
+ * CAPTURE_LEVELS_START_MS of reception after the stream starts (or is
+ * restarted after an error), skipping its first CAPTURE_LEVELS_SETTLE_MS --
+ * on the bench a start's first second carries a transient that swamps the
+ * channels' figures -- then every CAPTURE_LEVELS_PERIOD_MS.  Only
  * reception counts: a window that sees TX starts over. */
+#define CAPTURE_LEVELS_SETTLE_MS 1000
 #define CAPTURE_LEVELS_START_MS  1000
 #define CAPTURE_LEVELS_PERIOD_MS 60000
 static int pcm_open_wait(snd_pcm_t **pcm, const char *device, snd_pcm_stream_t stream)
@@ -506,11 +509,10 @@ static int pcm_open_wait(snd_pcm_t **pcm, const char *device, snd_pcm_stream_t s
 
 static void codec_opened(void);
 
-/* The codec's two capture channels: the receiver's IF on the left, the
- * microphone on the right.  A deaf receiver whose left channel looks like
- * the right (low level, a low HF ratio) had its channels swapped; one whose
- * left channel is only the codec's own floor had its line input powered
- * down (dsp/capture_levels.h). */
+/* The codec's two capture channels: the receiver on the left, the
+ * microphone on the right.  A deaf receiver whose channels have taken each
+ * other's figures had them swapped; one whose left channel fell to the
+ * codec's own floor had its line input powered down (dsp/capture_levels.h). */
 static void log_capture_levels(const capture_levels *levels, const char *when)
 {
     capture_channel_level radio, mic;
@@ -621,6 +623,7 @@ static void *radio_capture_thread(void *device_ptr)
     capture_levels_reset(&levels);
     const char *levels_when = "at stream start";
     uint64_t levels_frames = (uint64_t) hw_rate * CAPTURE_LEVELS_START_MS / 1000;
+    uint64_t levels_skip = (uint64_t) hw_rate * CAPTURE_LEVELS_SETTLE_MS / 1000;
 
     while (!shutdown_)
     {
@@ -644,12 +647,15 @@ static void *radio_capture_thread(void *device_ptr)
             capture_levels_reset(&levels);
             levels_when = "after the stream restarted";
             levels_frames = (uint64_t) hw_rate * CAPTURE_LEVELS_START_MS / 1000;
+            levels_skip = (uint64_t) hw_rate * CAPTURE_LEVELS_SETTLE_MS / 1000;
             continue;
         }
 
         if (channels == CAPTURE_LEVELS_CHANNELS)
         {
-            if (radio_h_snd->txrx_state == IN_TX)
+            if (levels_skip)
+                levels_skip -= levels_skip < (uint64_t) hw_period_size ? levels_skip : (uint64_t) hw_period_size;
+            else if (radio_h_snd->txrx_state == IN_TX)
                 capture_levels_reset(&levels);
             else
             {

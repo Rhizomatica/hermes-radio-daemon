@@ -3,13 +3,16 @@
  * Copyright (C) 2026 Rhizomatica
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * The sBitx codec captures two channels: the receiver's IF on the left, the
+ * The sBitx codec captures two channels: the receiver on the left, the
  * microphone on the right.  A receiver that goes deaf after a daemon start
  * (no signal, the noise still there) can be one of two things: the codec's
  * line input left powered down, or left and right swapped at the start of
  * the capture.  These figures, logged at each stream start and every
- * minute, tell them apart: the receiver's channel carries its noise around
- * the IF (a high HF ratio), the microphone's sits in the audio band.
+ * minute, tell them apart.  On two healthy sBitx with no microphone the
+ * receiver reads about -70 dBFS rms (HF ratio about 0.3) and the
+ * microphone about -57 dBFS (HF ratio 0.4-0.5): a swap shows as each
+ * channel taking the other's figures, a powered-down input as the left
+ * channel falling to the codec's own floor.
  */
 #ifndef CAPTURE_LEVELS_H_
 #define CAPTURE_LEVELS_H_
@@ -21,9 +24,10 @@
 #define CAPTURE_LEVELS_CHANNELS 2
 
 /* The HF ratio is rms(x[n] - x[n-1]) / rms(x): 2 sin(pi f / fs) for a tone
- * at f.  At 96 kHz that is about 1.41 at the 24 kHz IF and under 0.2 below
- * 3 kHz, so it says where a channel's energy is without a transform. */
-/* The codec runs with its ADC high-pass filter off, so each channel carries
+ * at f.  At 96 kHz it is 1.41 at 24 kHz and 0.07 at 1 kHz, so it says where
+ * a channel's energy is without a transform.
+ *
+ * The codec runs with its ADC high-pass filter off, so each channel carries
  * a DC offset that can be larger than its signal: the levels are of what is
  * left once the mean is taken out, and the offset is reported on its own.
  * Sums are kept relative to each channel's first sample, which keeps the
