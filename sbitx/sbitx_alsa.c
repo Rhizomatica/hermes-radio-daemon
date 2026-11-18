@@ -507,7 +507,13 @@ static int pcm_open_wait(snd_pcm_t **pcm, const char *device, snd_pcm_stream_t s
     }
 }
 
+/* How long the codec's capture waits for its playback to start (see
+ * codec_play_started). */
+#define CODEC_PLAY_START_WAIT_MS 5000
+
 static void codec_opened(void);
+static void codec_play_started(void);
+static bool wait_codec_play_running(void);
 
 /* The codec's two capture channels: the receiver on the left, the
  * microphone on the right.  A deaf receiver whose channels have taken each
@@ -538,6 +544,9 @@ static void *radio_capture_thread(void *device_ptr)
         return NULL;
     }
 
+    if (!wait_codec_play_running())
+        HLOGW(LOG_C, "codec playback not running after %d ms: opening the capture anyway",
+              CODEC_PLAY_START_WAIT_MS);
     if ((e = pcm_open_wait(&pcm_capture_handle, device, SND_PCM_STREAM_CAPTURE)) < 0)
     {
         HLOGE(LOG_C, "Can not open audio device %s (%s)", device, snd_strerror (e));
@@ -812,6 +821,7 @@ static void *radio_playback_thread(void *device_ptr)
     snd_pcm_drop(pcm_play_handle);
     snd_pcm_prepare(pcm_play_handle);
     play_prime(pcm_play_handle, silence, hw_period_size, PLAY_PRIME_PERIODS);
+    codec_play_started();
     codec_opened();
 
     while (!shutdown_)
@@ -885,6 +895,45 @@ static void loop_check_period(const char *device, snd_pcm_uframes_t period)
  * the cables are open. */
 static pthread_mutex_t loop_ready_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  loop_ready_cond = PTHREAD_COND_INITIALIZER;
+
+/* The codec's two streams start one after the other: playback first, then
+ * capture.  Opened from two threads at once, which stream configured the
+ * Pi's I2S (bcm2835-i2s sets it up once, for the first stream; the second
+ * gets no hw_params of its own and no FIFO clear) changed from start to
+ * start, and about one start in five left the receiver deaf until the next.
+ * Bounded, so a playback stream that never starts does not hold the
+ * receiver forever. */
+static bool codec_play_running;
+
+static void codec_play_started(void)
+{
+    pthread_mutex_lock(&loop_ready_lock);
+    codec_play_running = true;
+    pthread_cond_broadcast(&loop_ready_cond);
+    pthread_mutex_unlock(&loop_ready_lock);
+}
+
+/* The capture thread, before it opens the codec: the playback stream
+ * running first.  True when it is, false after CODEC_PLAY_START_WAIT_MS. */
+static bool wait_codec_play_running(void)
+{
+    struct timespec dl;
+    clock_gettime(CLOCK_REALTIME, &dl);
+    dl.tv_sec += CODEC_PLAY_START_WAIT_MS / 1000;
+    dl.tv_nsec += (long) (CODEC_PLAY_START_WAIT_MS % 1000) * 1000000L;
+    if (dl.tv_nsec >= 1000000000L)
+    {
+        dl.tv_sec++;
+        dl.tv_nsec -= 1000000000L;
+    }
+    pthread_mutex_lock(&loop_ready_lock);
+    while (!codec_play_running && !shutdown_ &&
+           pthread_cond_timedwait(&loop_ready_cond, &loop_ready_lock, &dl) == 0)
+        ;
+    bool running = codec_play_running;
+    pthread_mutex_unlock(&loop_ready_lock);
+    return running;
+}
 static int             loop_ready_count, loop_ready_expected;
 /* The snd-aloop cables run only with main:enable_loop_audio: a modem in
  * radiod or on RTP takes its audio from modem_audio, and with nothing on
