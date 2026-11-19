@@ -42,6 +42,11 @@ bool sound_system_wait_ready(int timeout_ms, bool *codec_ok);
  * timeout_ms (no capture running, or controls-only mode). */
 bool sound_codec_probe_dc(double *left_dbfs, double *right_dbfs, int timeout_ms);
 
+/* Starts the capture's start-of-reception level window over (the levels
+ * logged as "after the codec's reactivation"): for once the codec's
+ * interface has been cycled, which the first window may have straddled. */
+void sound_capture_levels_restart(void);
+
 void sound_system_shutdown(radio *radio_h, pthread_t *control_tid, pthread_t *radio_capture,
                            pthread_t *radio_playback, pthread_t *loop_capture, pthread_t *loop_playback);
 

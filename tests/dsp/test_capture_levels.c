@@ -24,7 +24,7 @@
 #define IF_RATIO     1.4142     /* 2 sin(pi * 24000 / 96000) */
 #define AUDIO_RATIO  0.0654     /* 2 sin(pi * 1000 / 96000) */
 #define PIECE        1000       /* frames per call in the split test */
-#define DC_DBFS      (-15.0)    /* the offset the codec shows on the bench */
+#define DC_DBFS      (-15.0)    /* the offset an sBitx codec shows */
 
 static int32_t frames[FRAMES * CAPTURE_LEVELS_CHANNELS];
 
@@ -122,7 +122,7 @@ void test_pieces_add_up_to_the_whole(void)
 }
 
 /* A DC offset larger than the signal leaves the signal's own figures and is
- * reported on its own (on the bench both channels sit on one, the mic's at
+ * reported on its own (on an sBitx both channels sit on one, the mic's at
  * -15 dBFS). */
 void test_dc_offset_is_taken_out_and_reported(void)
 {

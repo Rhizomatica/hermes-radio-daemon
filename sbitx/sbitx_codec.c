@@ -32,11 +32,11 @@
 #define WM8731_ACTIVE       0x001
 
 /* How long the interface stays inactive: what cured a deaf codec on the
- * bench (2026-11-18). */
+ * tested sBitx (2026-11-18). */
 #define CODEC_INACTIVE_MS   200
 
 /* How far the microphone's DC must lead the receiver's to call the order
- * (bench: 20 dB apart, either way). */
+ * (measured: 20 dB apart, either way). */
 #define CODEC_ORDER_MARGIN_DB 10.0
 
 /* Reactivations tried before giving up: each lands in the right order
@@ -155,6 +155,8 @@ bool sbitx_codec_reactivate(void)
         return false;
     }
 
+    /* From here on the interface is cycled: the capture's start-of-reception
+     * levels are measured again once it is done. */
     int swapped = 0, unreadable = 0;
     for (int n = 1; n <= CODEC_REACTIVATE_MAX; n++)
     {
@@ -162,6 +164,7 @@ bool sbitx_codec_reactivate(void)
         if (e < 0)
         {
             close(fd);
+            sound_capture_levels_restart();
             HLOGE(LOG_C, "%s at %d-%04x: writing ACTIVE failed (%s); the receiver may stay deaf until a restart",
                   CODEC_DRIVER_NAME, bus, addr, strerror(-e));
             return false;
@@ -170,6 +173,7 @@ bool sbitx_codec_reactivate(void)
         if (o == CODEC_ORDER_RIGHT)
         {
             close(fd);
+            sound_capture_levels_restart();
             HLOGI(LOG_C, "%s at %d-%04x: interface reactivated, channels in order after %d cycle%s "
                   "(%d swapped, %d unreadable; receiver DC %.1f, microphone %.1f dBFS)",
                   CODEC_DRIVER_NAME, bus, addr, n, n == 1 ? "" : "s", swapped, unreadable, l, r);
@@ -181,6 +185,7 @@ bool sbitx_codec_reactivate(void)
             unreadable++;
     }
     close(fd);
+    sound_capture_levels_restart();
     HLOGE(LOG_C, "%s at %d-%04x: channels not in order after %d reactivations (%d swapped, %d unreadable); "
           "the receiver may be deaf until a restart", CODEC_DRIVER_NAME, bus, addr, CODEC_REACTIVATE_MAX,
           swapped, unreadable);

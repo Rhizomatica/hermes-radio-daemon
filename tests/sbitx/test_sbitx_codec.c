@@ -2,7 +2,7 @@
  * devices (bus entries and other devices skipped, the address read as hex),
  * not found when absent; a register write is encoded as the codec expects
  * (7-bit register, the value's ninth bit, its low byte); and the channel
- * order is read from the two channels' DC (the bench's figures, both ways,
+ * order is read from the two channels' DC (two sBitx boards' figures, both ways,
  * and too close to tell).
  */
 #include <stdio.h>
@@ -21,7 +21,11 @@ bool sound_codec_probe_dc(double *left_dbfs, double *right_dbfs, int timeout_ms)
     return false;
 }
 
-/* The bench's DC offsets (caldono and pueblonuevo, 2026-11-18). */
+void sound_capture_levels_restart(void)
+{
+}
+
+/* The DC offsets measured on two sBitx boards (2026-11-18). */
 #define RECEIVER_DC_DBFS   (-34.8)
 #define MIC_DC_DBFS        (-15.2)
 
