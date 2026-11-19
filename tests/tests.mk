@@ -52,7 +52,7 @@ TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
             tests/modem/test_rtp_audio tests/modem/test_modem_audio tests/modem/test_beacon \
             tests/modem/test_beacon_tx tests/modem/test_dec_beacon \
             tests/audioio/test_audio_bridge \
-            tests/dsp/test_upsample2 tests/dsp/test_stream_resampler tests/dsp/test_mic_filter tests/dsp/test_band_clock tests/dsp/test_cessb \
+            tests/dsp/test_upsample2 tests/dsp/test_stream_resampler tests/dsp/test_mic_filter tests/dsp/test_band_clock tests/dsp/test_cessb tests/dsp/test_capture_levels \
             tests/dsp/test_digi_modes tests/dsp/test_digi_log tests/dsp/test_dstar_voice \
             tests/dsp/test_rade_voice tests/dsp/test_dstar_clock_cal tests/dsp/test_pskreporter tests/dsp/test_js8_frame tests/dsp/test_js8_rx tests/dsp/test_js8_msg tests/dsp/test_js8_decode tests/dsp/test_js8_recordings tests/dsp/test_js8_worker tests/dsp/test_js8_tx tests/dsp/test_radae_vocoder tests/dsp/test_drm \
             tests/sbitx/test_sbitx_buffer tests/sbitx/test_txcal \
@@ -228,6 +228,9 @@ tests/dsp/test_band_clock: tests/dsp/test_band_clock.c dsp/band_clock.c dsp/band
 
 tests/dsp/test_cessb: tests/dsp/test_cessb.c dsp/cessb.c dsp/cessb.h
 	$(CC) $(TEST_CFLAGS) -Idsp $< dsp/cessb.c $(UNITY_SRC) -o $@ -lfftw3 -lm
+
+tests/dsp/test_capture_levels: tests/dsp/test_capture_levels.c dsp/capture_levels.c dsp/capture_levels.h
+	$(CC) $(TEST_CFLAGS) -Idsp $< dsp/capture_levels.c $(UNITY_SRC) -o $@ -lm
 
 tests/dsp/test_mic_filter: tests/dsp/test_mic_filter.c dsp/mic_filter.c dsp/mic_filter.h
 	$(CC) $(TEST_CFLAGS) -Idsp $< dsp/mic_filter.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lm

@@ -37,6 +37,7 @@
 #include "audio_bridge.h"
 #include "modem_audio.h"
 #include "../dsp/mic_filter.h"
+#include "../dsp/capture_levels.h"
 
 #include "radiod_log.h"
 #include "async_file.h"
@@ -225,6 +226,70 @@ void show_alsa(snd_pcm_t *handle, snd_pcm_hw_params_t *params)
 
 }
 
+/* The mixer element `name` on `card`, opened into *handle.  NULL, with the
+ * reason logged, when the mixer or the element is not there; the caller
+ * closes *handle when the element is returned. */
+static snd_mixer_elem_t *mixer_elem_open(const char *card, const char *name, snd_mixer_t **handle)
+{
+    snd_mixer_selem_id_t *sid;
+    int e;
+
+    if ((e = snd_mixer_open(handle, 0)) < 0)
+    {
+        HLOGE(LOG_C, "mixer %s: cannot open it (%s)", card, snd_strerror(e));
+        return NULL;
+    }
+    if ((e = snd_mixer_attach(*handle, card)) < 0 ||
+        (e = snd_mixer_selem_register(*handle, NULL, NULL)) < 0 ||
+        (e = snd_mixer_load(*handle)) < 0)
+    {
+        HLOGE(LOG_C, "mixer %s: cannot load it (%s)", card, snd_strerror(e));
+        snd_mixer_close(*handle);
+        return NULL;
+    }
+    snd_mixer_selem_id_alloca(&sid);
+    snd_mixer_selem_id_set_index(sid, 0);
+    snd_mixer_selem_id_set_name(sid, name);
+    snd_mixer_elem_t *elem = snd_mixer_find_selem(*handle, sid);
+    if (!elem)
+    {
+        HLOGE(LOG_C, "mixer %s: no control '%s'", card, name);
+        snd_mixer_close(*handle);
+    }
+    return elem;
+}
+
+/* A mixer write that failed.  The driver's register cache already holds the
+ * new value, and the codec (a WM8731) cannot be read back, so nothing else
+ * would ever show that the codec kept the old one. */
+static void mixer_check(int e, const char *name, const char *what, long value)
+{
+    if (e < 0)
+        HLOGE(LOG_C, "mixer: setting '%s' %s to %ld failed (%s); the codec may not hold it",
+              name, what, value, snd_strerror(e));
+}
+
+/* One channel of a volume control, at level (0-100) of its range. */
+static void mixer_set_volume(const char *name, bool capture, snd_mixer_selem_channel_id_t channel,
+                             const char *channel_name, uint32_t level)
+{
+    snd_mixer_t *handle;
+    snd_mixer_elem_t *elem = mixer_elem_open(radio_ctl, name, &handle);
+    if (!elem)
+        return;
+
+    long min = 0, max = 0;
+    if (capture)
+        snd_mixer_selem_get_capture_volume_range(elem, &min, &max);
+    else
+        snd_mixer_selem_get_playback_volume_range(elem, &min, &max);
+    long value = (long) level * max / 100;
+    mixer_check(capture ? snd_mixer_selem_set_capture_volume(elem, channel, value)
+                        : snd_mixer_selem_set_playback_volume(elem, channel, value),
+                name, channel_name, value);
+    snd_mixer_close(handle);
+}
+
 // this is the radio rx level
 void set_rx_level(uint32_t rx_level)
 {
@@ -232,29 +297,8 @@ void set_rx_level(uint32_t rx_level)
     if (radio_h_snd->profiles[radio_h_snd->profile_active_idx].operating_mode == OPERATING_MODE_CONTROLS_ONLY)
         return;
 #endif
-
-    long min, max;
-    snd_mixer_t *handle;
-    snd_mixer_selem_id_t *sid;
-
-    // TODO: lets keep these handle open?
-    snd_mixer_open(&handle, 0);
-    snd_mixer_attach(handle, radio_ctl);
-    snd_mixer_selem_register(handle, NULL, NULL);
-    snd_mixer_load(handle);
-
-    snd_mixer_selem_id_alloca(&sid);
-    snd_mixer_selem_id_set_index(sid, 0);
-    snd_mixer_selem_id_set_name(sid, "Capture");
-    snd_mixer_elem_t *elem = snd_mixer_find_selem(handle, sid);
-
-    long volume = rx_level;
-    snd_mixer_selem_get_capture_volume_range(elem, &min, &max);
-
     // left channel of the audio codec
-    snd_mixer_selem_set_capture_volume(elem, SND_MIXER_SCHN_FRONT_LEFT,  volume * max / 100);
-
-    snd_mixer_close(handle);
+    mixer_set_volume("Capture", true, SND_MIXER_SCHN_FRONT_LEFT, "left", rx_level);
 }
 
 void set_mic_level(uint32_t mic_level)
@@ -263,29 +307,8 @@ void set_mic_level(uint32_t mic_level)
     if (radio_h_snd->profiles[radio_h_snd->profile_active_idx].operating_mode == OPERATING_MODE_CONTROLS_ONLY)
         return;
 #endif
-
-    long min, max;
-    snd_mixer_t *handle;
-    snd_mixer_selem_id_t *sid;
-
-    // TODO: lets keep these handle open?
-    snd_mixer_open(&handle, 0);
-    snd_mixer_attach(handle, radio_ctl);
-    snd_mixer_selem_register(handle, NULL, NULL);
-    snd_mixer_load(handle);
-
-    snd_mixer_selem_id_alloca(&sid);
-    snd_mixer_selem_id_set_index(sid, 0);
-    snd_mixer_selem_id_set_name(sid, "Capture");
-    snd_mixer_elem_t *elem = snd_mixer_find_selem(handle, sid);
-
-    long volume = mic_level;
-    snd_mixer_selem_get_capture_volume_range(elem, &min, &max);
-
     // right channel of the audio codec
-    snd_mixer_selem_set_capture_volume(elem, SND_MIXER_SCHN_FRONT_RIGHT,  volume * max / 100);
-
-    snd_mixer_close(handle);
+    mixer_set_volume("Capture", true, SND_MIXER_SCHN_FRONT_RIGHT, "right", mic_level);
 }
 
 void set_speaker_level(uint32_t speaker_level)
@@ -294,29 +317,8 @@ void set_speaker_level(uint32_t speaker_level)
     if (radio_h_snd->profiles[radio_h_snd->profile_active_idx].operating_mode == OPERATING_MODE_CONTROLS_ONLY)
         return;
 #endif
-
-    long min, max;
-    snd_mixer_t *handle;
-    snd_mixer_selem_id_t *sid;
-
-    // TODO: lets keep these handle open?
-    snd_mixer_open(&handle, 0);
-    snd_mixer_attach(handle, radio_ctl);
-    snd_mixer_selem_register(handle, NULL, NULL);
-    snd_mixer_load(handle);
-
-    snd_mixer_selem_id_alloca(&sid);
-    snd_mixer_selem_id_set_index(sid, 0);
-    snd_mixer_selem_id_set_name(sid, "Master");
-    snd_mixer_elem_t *elem = snd_mixer_find_selem(handle, sid);
-
-    long volume = speaker_level;
-    snd_mixer_selem_get_playback_volume_range(elem, &min, &max);
-
     // left channel of the audio codec
-    snd_mixer_selem_set_playback_volume(elem, SND_MIXER_SCHN_FRONT_LEFT,  volume * max / 100);
-
-    snd_mixer_close(handle);
+    mixer_set_volume("Master", false, SND_MIXER_SCHN_FRONT_LEFT, "left", speaker_level);
 }
 
 void set_tx_level(uint32_t tx_level)
@@ -325,29 +327,8 @@ void set_tx_level(uint32_t tx_level)
     if (radio_h_snd->profiles[radio_h_snd->profile_active_idx].operating_mode == OPERATING_MODE_CONTROLS_ONLY)
         return;
 #endif
-
-    long min, max;
-    snd_mixer_t *handle;
-    snd_mixer_selem_id_t *sid;
-
-    // TODO: lets keep these handle open?
-    snd_mixer_open(&handle, 0);
-    snd_mixer_attach(handle, radio_ctl);
-    snd_mixer_selem_register(handle, NULL, NULL);
-    snd_mixer_load(handle);
-
-    snd_mixer_selem_id_alloca(&sid);
-    snd_mixer_selem_id_set_index(sid, 0);
-    snd_mixer_selem_id_set_name(sid, "Master");
-    snd_mixer_elem_t *elem = snd_mixer_find_selem(handle, sid);
-
-    long volume = tx_level;
-    snd_mixer_selem_get_playback_volume_range(elem, &min, &max);
-
     // right channel of the audio codec
-    snd_mixer_selem_set_playback_volume(elem, SND_MIXER_SCHN_FRONT_RIGHT,  volume * max / 100);
-
-    snd_mixer_close(handle);
+    mixer_set_volume("Master", false, SND_MIXER_SCHN_FRONT_RIGHT, "right", tx_level);
 }
 
 
@@ -395,44 +376,34 @@ void sound_mixer(char *card_name, char *element, int make_on)
 
     long min, max;
     snd_mixer_t *handle;
-    snd_mixer_selem_id_t *sid;
-    char *card = card_name;
-
-    // TODO: lets keep these handle open?
-    snd_mixer_open(&handle, 0);
-    snd_mixer_attach(handle, card);
-    snd_mixer_selem_register(handle, NULL, NULL);
-    snd_mixer_load(handle);
-
-    snd_mixer_selem_id_alloca(&sid);
-    snd_mixer_selem_id_set_index(sid, 0);
-    snd_mixer_selem_id_set_name(sid, element);
-    snd_mixer_elem_t* elem = snd_mixer_find_selem(handle, sid);
+    snd_mixer_elem_t *elem = mixer_elem_open(card_name, element, &handle);
+    if (!elem)
+        return;
 
     //find out if the his element is capture side or plaback
-    if(snd_mixer_selem_has_capture_switch(elem))
+    if (snd_mixer_selem_has_capture_switch(elem))
     {
-        snd_mixer_selem_set_capture_switch_all(elem, make_on);
+        mixer_check(snd_mixer_selem_set_capture_switch_all(elem, make_on), element, "switch", make_on);
     }
     else if (snd_mixer_selem_has_playback_switch(elem))
     {
-        snd_mixer_selem_set_playback_switch_all(elem, make_on);
+        mixer_check(snd_mixer_selem_set_playback_switch_all(elem, make_on), element, "switch", make_on);
     }
     else if (snd_mixer_selem_has_playback_volume(elem))
     {
         long volume = make_on;
         snd_mixer_selem_get_playback_volume_range(elem, &min, &max);
-        snd_mixer_selem_set_playback_volume_all(elem, volume * max / 100);
+        mixer_check(snd_mixer_selem_set_playback_volume_all(elem, volume * max / 100), element, "volume", volume * max / 100);
     }
     else if (snd_mixer_selem_has_capture_volume(elem))
     {
         long volume = make_on;
         snd_mixer_selem_get_capture_volume_range(elem, &min, &max);
-        snd_mixer_selem_set_capture_volume_all(elem, volume * max / 100);
+        mixer_check(snd_mixer_selem_set_capture_volume_all(elem, volume * max / 100), element, "volume", volume * max / 100);
     }
     else if (snd_mixer_selem_is_enumerated(elem))
     {
-        snd_mixer_selem_set_enum_item(elem, 0, make_on);
+        mixer_check(snd_mixer_selem_set_enum_item(elem, 0, make_on), element, "item", make_on);
     }
     snd_mixer_close(handle);
 }
@@ -508,6 +479,16 @@ static snd_pcm_sframes_t play_catch_up(snd_pcm_t *pcm, snd_pcm_uframes_t buffer_
  * test daemon) that is still shutting down keeps the codec for a moment, and
  * giving up at once left the daemon running with no audio at all. Bounded; any other error returns at once. */
 #define PCM_BUSY_WAIT_MS 10000
+
+/* Both capture channels' levels in the log (dsp/capture_levels.h): over
+ * CAPTURE_LEVELS_START_MS of reception after the stream starts (or is
+ * restarted after an error), skipping its first CAPTURE_LEVELS_SETTLE_MS --
+ * on the bench a start's first second carries a transient that swamps the
+ * channels' figures -- then every CAPTURE_LEVELS_PERIOD_MS.  Only
+ * reception counts: a window that sees TX starts over. */
+#define CAPTURE_LEVELS_SETTLE_MS 1000
+#define CAPTURE_LEVELS_START_MS  1000
+#define CAPTURE_LEVELS_PERIOD_MS 60000
 static int pcm_open_wait(snd_pcm_t **pcm, const char *device, snd_pcm_stream_t stream)
 {
     for (int waited_ms = 0; ; waited_ms += 250)
@@ -527,6 +508,21 @@ static int pcm_open_wait(snd_pcm_t **pcm, const char *device, snd_pcm_stream_t s
 }
 
 static void codec_opened(void);
+
+/* The codec's two capture channels: the receiver on the left, the
+ * microphone on the right.  A deaf receiver whose channels have taken each
+ * other's figures had them swapped; one whose left channel fell to the
+ * codec's own floor had its line input powered down (dsp/capture_levels.h). */
+static void log_capture_levels(const capture_levels *levels, const char *when)
+{
+    capture_channel_level radio, mic;
+    capture_levels_get(levels, 0, &radio);
+    capture_levels_get(levels, 1, &mic);
+    HLOGI(LOG_C, "capture levels %s: radio (left) %.1f dBFS rms, peak %.1f, HF ratio %.2f, DC %.1f; "
+          "mic (right) %.1f dBFS rms, peak %.1f, HF ratio %.2f, DC %.1f", when,
+          radio.rms_dbfs, radio.peak_dbfs, radio.hf_ratio, radio.dc_dbfs,
+          mic.rms_dbfs, mic.peak_dbfs, mic.hf_ratio, mic.dc_dbfs);
+}
 
 static void *radio_capture_thread(void *device_ptr)
 {
@@ -623,6 +619,12 @@ static void *radio_capture_thread(void *device_ptr)
     snd_pcm_prepare(pcm_capture_handle);
     codec_opened();
 
+    capture_levels levels;
+    capture_levels_reset(&levels);
+    const char *levels_when = "at stream start";
+    uint64_t levels_frames = (uint64_t) hw_rate * CAPTURE_LEVELS_START_MS / 1000;
+    uint64_t levels_skip = (uint64_t) hw_rate * CAPTURE_LEVELS_SETTLE_MS / 1000;
+
     while (!shutdown_)
     {
 
@@ -641,7 +643,31 @@ static void *radio_capture_thread(void *device_ptr)
                 HLOGW(LOG_C, "%s: short read, read %d frames", device, e);
             }
             snd_pcm_prepare (pcm_capture_handle);
+            /* A restarted stream is a new start: its channels are checked again. */
+            capture_levels_reset(&levels);
+            levels_when = "after the stream restarted";
+            levels_frames = (uint64_t) hw_rate * CAPTURE_LEVELS_START_MS / 1000;
+            levels_skip = (uint64_t) hw_rate * CAPTURE_LEVELS_SETTLE_MS / 1000;
             continue;
+        }
+
+        if (channels == CAPTURE_LEVELS_CHANNELS)
+        {
+            if (levels_skip)
+                levels_skip -= levels_skip < (uint64_t) hw_period_size ? levels_skip : (uint64_t) hw_period_size;
+            else if (radio_h_snd->txrx_state == IN_TX)
+                capture_levels_reset(&levels);
+            else
+            {
+                capture_levels_add(&levels, (const int32_t *) buffer, hw_period_size);
+                if (levels.frames >= levels_frames)
+                {
+                    log_capture_levels(&levels, levels_when);
+                    capture_levels_reset(&levels);
+                    levels_when = "over a minute of reception";
+                    levels_frames = (uint64_t) hw_rate * CAPTURE_LEVELS_PERIOD_MS / 1000;
+                }
+            }
         }
 
         for (int j = 0; j < hw_period_size; j++)
