@@ -1092,6 +1092,10 @@ static uint32_t get_fwd_power(radio *radio_h)
     return radio_h->fwd_power;
 }
 
+/* The io thread's last meter reading, already in watts x 10. */
+static uint32_t last_fwd_power(radio *radio_h) { return radio_h->fwd_power; }
+static uint32_t last_ref_power(radio *radio_h) { return radio_h->ref_power; }
+
 static uint32_t get_ref_power(radio *radio_h)
 {
     if (!radio_h || !radio_h->rig)
@@ -2517,6 +2521,8 @@ const radio_backend_ops hamlib_backend_ops = {
     .set_profile             = set_profile,
     .get_fwd_power           = get_fwd_power,
     .get_ref_power           = get_ref_power,
+    .last_fwd_power          = last_fwd_power,
+    .last_ref_power          = last_ref_power,
     .get_swr                 = get_swr,
 
     .get_level               = hl_get_level,

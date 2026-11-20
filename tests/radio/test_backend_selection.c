@@ -111,6 +111,41 @@ static void test_timeout_reset_passthrough(void)
 void setUp(void) {}
 void tearDown(void) {}
 
+/* The status broadcast reports the last power readings in watts x 10. A
+ * backend that stores its meter in another unit (the sBitx keeps the bridge's
+ * raw readings) converts in its last_* ops; without them, the stored fields
+ * are taken as they are. */
+#define TEST_RAW_FWD 300
+#define TEST_RAW_REF 20
+#define TEST_FWD_X10 36
+#define TEST_REF_X10 1
+static uint32_t fake_last_fwd(radio *r) { (void) r; return TEST_FWD_X10; }
+static uint32_t fake_last_ref(radio *r) { (void) r; return TEST_REF_X10; }
+
+static void test_last_power_readings(void)
+{
+    static radio r;
+    static const radio_backend_ops converting = {
+        .name = "converting",
+        .last_fwd_power = fake_last_fwd,
+        .last_ref_power = fake_last_ref,
+    };
+    static const radio_backend_ops plain = { .name = "plain" };
+
+    r.fwd_power = TEST_RAW_FWD;
+    r.ref_power = TEST_RAW_REF;
+
+    r.backend_ops = &converting;
+    TEST_ASSERT_EQUAL_UINT32(TEST_FWD_X10, radio_backend_last_fwd_power(&r));
+    TEST_ASSERT_EQUAL_UINT32(TEST_REF_X10, radio_backend_last_ref_power(&r));
+
+    r.backend_ops = &plain;
+    TEST_ASSERT_EQUAL_UINT32(TEST_RAW_FWD, radio_backend_last_fwd_power(&r));
+    TEST_ASSERT_EQUAL_UINT32(TEST_RAW_REF, radio_backend_last_ref_power(&r));
+
+    TEST_ASSERT_EQUAL_UINT32(0, radio_backend_last_fwd_power(NULL));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -118,5 +153,6 @@ int main(void)
     RUN_TEST(test_backend_detect_aliases);
     RUN_TEST(test_backend_configure_and_run_dispatch);
     RUN_TEST(test_timeout_reset_passthrough);
+    RUN_TEST(test_last_power_readings);
     return UNITY_END();
 }

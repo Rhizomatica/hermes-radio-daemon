@@ -44,6 +44,11 @@ typedef struct radio_backend_ops {
     uint32_t (*get_fwd_power)(radio *radio_h);
     uint32_t (*get_ref_power)(radio *radio_h);
     uint32_t (*get_swr)(radio *radio_h);
+    /* The last forward and reflected power readings, in watts x 10 like
+     * get_fwd_power/get_ref_power, without reading the radio again: cheap
+     * enough for the status broadcast, which runs several times a second. */
+    uint32_t (*last_fwd_power)(radio *radio_h);
+    uint32_t (*last_ref_power)(radio *radio_h);
 
     /* ── generic named controls ───────────────────────────────────────
      * Named with the Hamlib token names (see radio_controls.h). The
@@ -187,6 +192,9 @@ void radio_backend_set_profile(radio *radio_h, uint32_t profile);
 uint32_t radio_backend_get_fwd_power(radio *radio_h);
 uint32_t radio_backend_get_ref_power(radio *radio_h);
 uint32_t radio_backend_get_swr(radio *radio_h);
+/* The last power readings in watts x 10, without radio I/O (see the ops). */
+uint32_t radio_backend_last_fwd_power(radio *radio_h);
+uint32_t radio_backend_last_ref_power(radio *radio_h);
 
 /* Generic named controls. See radio_controls.h for the vocabulary. */
 int radio_backend_get_level(radio *radio_h, const char *name, double *out);

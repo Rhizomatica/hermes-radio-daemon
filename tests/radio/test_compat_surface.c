@@ -124,6 +124,8 @@ void radio_backend_set_profile(radio *radio_h, uint32_t p)
 
 uint32_t radio_backend_get_fwd_power(radio *radio_h) { return radio_h->fwd_power; }
 uint32_t radio_backend_get_swr(radio *radio_h)       { return radio_h->ref_power; }
+uint32_t radio_backend_last_fwd_power(radio *radio_h) { return radio_h->fwd_power; }
+uint32_t radio_backend_last_ref_power(radio *radio_h) { return radio_h->ref_power; }
 
 static bool timeout_reset_called;
 void radio_backend_reset_timeout_timer(void) { timeout_reset_called = true; }
