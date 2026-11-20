@@ -1706,6 +1706,8 @@ const radio_backend_ops sbitx_backend_ops = {
     .set_profile             = set_profile,
     .get_fwd_power           = get_fwd_power,
     .get_ref_power           = get_ref_power,
+    .last_fwd_power          = get_fwd_power,
+    .last_ref_power          = get_ref_power,
     .get_swr                 = get_swr,
 
     .get_level               = sb_get_level,

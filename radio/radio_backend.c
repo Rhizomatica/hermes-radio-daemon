@@ -528,6 +528,24 @@ uint32_t radio_backend_get_ref_power(radio *radio_h)
     return radio_h ? radio_h->ref_power : 0;
 }
 
+uint32_t radio_backend_last_fwd_power(radio *radio_h)
+{
+    const radio_backend_ops *ops = radio_backend_ops_from_radio(radio_h);
+    if (ops && ops->last_fwd_power)
+        return ops->last_fwd_power(radio_h);
+
+    return radio_h ? radio_h->fwd_power : 0;
+}
+
+uint32_t radio_backend_last_ref_power(radio *radio_h)
+{
+    const radio_backend_ops *ops = radio_backend_ops_from_radio(radio_h);
+    if (ops && ops->last_ref_power)
+        return ops->last_ref_power(radio_h);
+
+    return radio_h ? radio_h->ref_power : 0;
+}
+
 uint32_t radio_backend_get_swr(radio *radio_h)
 {
     const radio_backend_ops *ops = radio_backend_ops_from_radio(radio_h);
