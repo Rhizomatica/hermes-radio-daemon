@@ -426,6 +426,8 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
          "\"bfo\":%u,\"serial\":%u,\"step_size\":%u,\"tone\":%s,"
          "\"reflected_threshold\":%u,\"timeout\":%d,"
          "\"operating_mode\":%u,\"filter_width\":%u,"
+         /* fwd and ref_power in watts x 10, as get_fwd and get_ref_power;
+          * swr x 10. */
          "\"fwd\":%u,\"ref_power\":%u,\"swr\":%u,"
          "\"s_meter\":%d,"
          "\"recording_rx\":%s,\"recording_tx\":%s,"
@@ -469,7 +471,8 @@ static void build_status_json(radio *radio_h, char *json, size_t json_len)
          radio_h->reflected_threshold, radio_h->profile_timeout,
          radio_h->profiles[active].operating_mode,
          radio_h->profiles[active].filter_width,
-         radio_h->fwd_power, radio_h->ref_power, radio_backend_get_swr(radio_h),
+         radio_backend_last_fwd_power(radio_h), radio_backend_last_ref_power(radio_h),
+         radio_backend_get_swr(radio_h),
          (int) radio_h->s_meter_db,
          radio_h->rx_recording.active ? "true" : "false",
          radio_h->tx_recording.active ? "true" : "false",
