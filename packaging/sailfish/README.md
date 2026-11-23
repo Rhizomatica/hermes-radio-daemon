@@ -112,7 +112,7 @@ the spec names (`fetch-sources.sh`): Sailfish carries the libraries, through
 libhybris, but not their headers.
 
 mercury is a release: `Version` and `%global commit` (the release tag's
-commit) in `specs/mercury.spec`, 1.9.24 now. The release tag's own
+commit) in `specs/mercury.spec`, 1.9.25 now. The release tag's own
 `sailfish/mercury.spec` builds the modem only; this one adds `mercury-ui`.
 To package the next release, change those two lines.
 
