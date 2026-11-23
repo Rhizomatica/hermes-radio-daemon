@@ -1,5 +1,5 @@
-# The commit of mercury's release tag, v1.9.24
-%global commit 1b13fab1
+# The commit of mercury's release tag, v1.9.25
+%global commit 33efac4e
 # The Khronos EGL, GLES2 and KHR headers mercury-ui builds against
 # (Sailfish carries the libraries, through libhybris, but not the headers)
 %global egl_registry db3425b8246136faccb5e2782b5694960bd6edf1
@@ -8,9 +8,8 @@
 # on the PATH; --define 'have_go 0' or 1 decides it outright.
 %{!?have_go:%global have_go %(command -v go >/dev/null 2>&1 && echo 1 || echo 0)}
 Name:           mercury
-# The 1.9.24 release: it carries mercury #512 and #513 (taps on mercury-ui),
-# which 1.9.23 took as a patch, and #515 (the on-screen keyboard).
-Version:        1.9.24
+# The 1.9.25 release.
+Version:        1.9.25
 Release:        1
 Summary:        HF modem for store-and-forward communication
 License:        GPL-3.0-or-later
