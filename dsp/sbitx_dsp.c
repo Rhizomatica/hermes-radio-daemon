@@ -1550,15 +1550,26 @@ void dsp_process_rx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
 
     dsp_radae_follow_profile();
 
-    //fix the burst at the start of transmission
+    /* Back in RX: the samples captured while switching (this block and what
+     * waits behind it) hold the transmitter's tail and the relays' click.
+     * They are muted, not dropped: dropping them took them out of the codec
+     * playback's slack for good (see clear_loopback_buffers). */
+    static uint32_t rx_mute_frames = 0;
     if (rx_starting)
     {
         fft_reset_m_bins();
-        clear_buffers();
+        clear_loopback_buffers();
+        rx_mute_frames = block_size + sound_rx_queued_frames();
         // Flush RADAE RX buffers to discard stale data from before TX
         if (radae_ctx.rx_running)
             radae_rx_flush(&radae_ctx);
         rx_starting = false;
+    }
+    if (rx_mute_frames)
+    {
+        uint32_t n = rx_mute_frames < block_size ? rx_mute_frames : block_size;
+        memset(input_rx, 0, n * sizeof(*input_rx));
+        rx_mute_frames -= n;
     }
 
     //STEP 1: first add the previous M samples to
@@ -2378,7 +2389,7 @@ void dsp_process_tx(uint8_t *signal_input, uint8_t *output_speaker, uint8_t *out
         tx_over_peak_codec = 0.0;
         tx_over_clipped = 0;
         fft_reset_m_bins();
-        clear_buffers();
+        clear_loopback_buffers();    /* never the codec's rings: see there */
         cessb_was_on = false;
         if (loop_up_ready)
             upsample2_reset(&loop_up);

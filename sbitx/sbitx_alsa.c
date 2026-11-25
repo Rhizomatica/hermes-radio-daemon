@@ -1411,6 +1411,10 @@ void *control_thread(void *device_ptr)
 
         if (radio_h_snd->txrx_state == IN_RX)
         {
+            /* The TX channel is silent in RX. Nothing writes output_tx
+             * here, so it went on repeating the last TX block, which then
+             * waited in the codec's queue for the next key-up. */
+            memset(output_tx, 0, buffer_size);
             dsp_process_rx(buffer_radio_to_dsp, output_speaker, output_loopback, output_tx, block_size);
             maybe_dump_rx_speaker(output_speaker, buffer_size, true);
 
@@ -1512,14 +1516,31 @@ void *control_thread(void *device_ptr)
 }
 
 
-void clear_buffers()
+/* At a T/R switch, drop what the loopback cable holds: modem audio captured
+ * before keying, and RX audio not yet sent to the modem.
+ *
+ * The codec's rings (radio_to_dsp, mic_to_dsp, dsp_to_radio, dsp_to_speaker)
+ * are not touched. The capture, DSP and playback threads run in lockstep on
+ * the codec's clock, so a sample dropped there is never replaced: emptying
+ * them at every switch took whatever they held (none to a couple of periods)
+ * out of the playback's slack for good. A few switches later the slack was
+ * gone, and the next small delay underran the codec playback for one period
+ * (5.3 ms) in the first second of an over, or just after one. That silence
+ * cut Mercury frames, which the far station then could not decode: 23 of 49
+ * keydowns with an underrun went unheard, 9 of 721 without (bench, 25 Nov
+ * 2026). What the rings held at the switch is dealt with in step instead:
+ * RX mutes what was captured while switching (sound_rx_queued_frames), and
+ * the TX channel carries zeros in RX, so there is nothing stale to drop. */
+void clear_loopback_buffers(void)
 {
-    sbitx_buf_clear(radio_to_dsp);
-    sbitx_buf_clear(dsp_to_radio);
-    sbitx_buf_clear(mic_to_dsp);
-    sbitx_buf_clear(dsp_to_speaker);
     sbitx_buf_clear(dsp_to_loopback);
     sbitx_buf_clear(loopback_to_dsp);
+}
+
+/* Captured radio samples waiting for the DSP (mono S32). */
+uint32_t sound_rx_queued_frames(void)
+{
+    return radio_to_dsp ? (uint32_t) (sbitx_buf_size(radio_to_dsp) / RADIO_FRAME_BYTES) : 0;
 }
 
 // initialize the ALSA sound system
