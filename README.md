@@ -1435,6 +1435,10 @@ capture_device = hw:CARD=Device,DEV=0
 playback_device = hw:CARD=Device,DEV=0
 ```
 
+- **Both firmware versions.** The radios in the field run the 2022
+  firmware, whose command codes differ from current hermes-net's (which
+  shares its codes with the sBitx). radiod tells them apart when it connects
+  and logs which one answered.
 - **The link.** 38400 8N1 (`serial_rate` and `ptt_type` are not used).
   Opening the port resets the Nano, so radiod's start and a reopen take a
   few seconds while its bootloader runs. A radio that stops answering is

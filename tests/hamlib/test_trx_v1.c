@@ -78,6 +78,7 @@ static struct {
     pthread_mutex_t lock;
     uint32_t freq;
     bool usb, in_tx, protect;
+    bool v22;                       /* speak the 2022 firmware's codes */
     uint16_t fwd, ref;
     int ignore;                     /* commands to leave unanswered */
     int ptt_on, ptt_off;            /* PTT commands received */
@@ -152,6 +153,62 @@ static size_t fw_reply(const uint8_t *cmd, uint8_t *r)
     }
 }
 
+/* The same, as the 2022 firmware the radios in the field run: its own
+ * codes, one acknowledgement per command. */
+static size_t fw_reply_v22(const uint8_t *cmd, uint8_t *r)
+{
+    uint32_t arg = (uint32_t) cmd[0] | (uint32_t) cmd[1] << 8 |
+                   (uint32_t) cmd[2] << 16 | (uint32_t) cmd[3] << 24;
+
+    switch (cmd[4])
+    {
+    case V22_PTT_ON:
+        fw.ptt_on++;
+        if (fw.protect)      r[0] = V22_ALERT_PROTECTION_ON;
+        else if (!fw.in_tx) { r[0] = V22_RESP_PTT_ON_ACK; fw.in_tx = true; }
+        else                 r[0] = V22_RESP_PTT_ON_NACK;
+        return 1;
+    case V22_PTT_OFF:
+        fw.ptt_off++;
+        if (fw.protect)      r[0] = V22_ALERT_PROTECTION_ON;
+        else if (fw.in_tx) { r[0] = V22_RESP_PTT_OFF_ACK; fw.in_tx = false; }
+        else                 r[0] = V22_RESP_PTT_OFF_NACK;
+        return 1;
+    case V22_RESET_PROTECTION:
+        fw.resets++;
+        fw.protect = false;
+        r[0] = V22_RESP_RESET_PROTECTION_ACK;
+        return 1;
+    case V22_GET_FREQ:
+        r[0] = V22_RESP_GET_FREQ_ACK; put32(r + 1, fw.freq);
+        return 5;
+    case V22_SET_FREQ:
+        fw.freq = arg; r[0] = V22_RESP_SET_FREQ_ACK;
+        return 1;
+    case V22_SET_MODE:
+        fw.usb = !(cmd[0] == 0x00 || cmd[0] == 0x03); r[0] = V22_RESP_SET_MODE_ACK;
+        return 1;
+    case V22_GET_MODE:
+        r[0] = fw.usb ? V22_RESP_GET_MODE_USB : V22_RESP_GET_MODE_LSB;
+        return 1;
+    case V22_GET_TXRX_STATUS:
+        r[0] = fw.in_tx ? V22_RESP_GET_TXRX_INTX : V22_RESP_GET_TXRX_INRX;
+        return 1;
+    case V22_GET_PROTECTION_STATUS:
+        r[0] = fw.protect ? V22_RESP_GET_PROTECTION_ON : V22_RESP_GET_PROTECTION_OFF;
+        return 1;
+    case V22_GET_FWD:       /* as seen on a radio: the padding is the frequency's */
+        r[0] = V22_RESP_GET_FWD_ACK; put32(r + 1, (fw.freq & 0xFFFF0000u) | fw.fwd);
+        return 5;
+    case V22_GET_REF:
+        r[0] = V22_RESP_GET_REF_ACK; put32(r + 1, (fw.freq & 0xFFFF0000u) | fw.ref);
+        return 5;
+    default:
+        r[0] = V22_RESP_WRONG_COMMAND;
+        return 1;
+    }
+}
+
 static void *fw_run(void *arg)
 {
     (void) arg;
@@ -181,7 +238,7 @@ static void *fw_run(void *arg)
         bool drop = fw.ignore > 0;
         if (drop)
             fw.ignore--;
-        size_t len = drop ? 0 : fw_reply(cmd, r);
+        size_t len = drop ? 0 : fw.v22 ? fw_reply_v22(cmd, r) : fw_reply(cmd, r);
         pthread_mutex_unlock(&fw.lock);
         if (len && write(master_fd, r, len) != (ssize_t) len)
             return NULL;
@@ -207,7 +264,7 @@ static void start_firmware(void)
 
 static void fw_reset_state(void)
 {
-    FW(fw.freq = 7100000; fw.usb = true; fw.in_tx = false; fw.protect = false;
+    FW(fw.freq = 7100000; fw.usb = true; fw.in_tx = false; fw.protect = false; fw.v22 = false;
        fw.fwd = 0; fw.ref = 0; fw.ignore = 0; fw.ptt_on = 0; fw.ptt_off = 0;
        fw.resets = 0);
 }
@@ -292,6 +349,52 @@ static void test_driver_protection(void)
     TEST_ASSERT_FALSE(latched);
     TEST_ASSERT_EQUAL_INT(TRXV1_OK, trxv1_set_ptt(drv, true));
     TEST_ASSERT_EQUAL_INT(TRXV1_OK, trxv1_set_ptt(drv, false));
+}
+
+/* The 2022 firmware (Daniel's radio answered every current code with its
+ * WRONG_COMMAND, 0xc0): told apart when connecting, then driven in its own
+ * codes. */
+static void test_driver_2022_firmware(void)
+{
+    uint32_t hz = 0;
+    bool usb = true, on = true, latched = false;
+    uint16_t f = 0, r = 0;
+
+    FW(fw.v22 = true; fw.freq = 7094003; fw.usb = false);
+    trxv1 *old = trxv1_new(slave_path);
+    TEST_ASSERT_EQUAL_INT(TRXV1_OK, trxv1_connect(old));
+    TEST_ASSERT_EQUAL_INT(TRXV1_OK, trxv1_get_freq(old, &hz));
+    TEST_ASSERT_EQUAL_UINT32(7094003, hz);
+    TEST_ASSERT_EQUAL_INT(TRXV1_OK, trxv1_get_usb(old, &usb));
+    TEST_ASSERT_FALSE(usb);
+
+    TEST_ASSERT_EQUAL_INT(TRXV1_OK, trxv1_set_freq(old, 6985000));
+    TEST_ASSERT_EQUAL_UINT32(6985000, FWV(freq));
+    TEST_ASSERT_EQUAL_INT(TRXV1_OK, trxv1_set_usb(old, true));
+    TEST_ASSERT_TRUE(FWV(usb));
+
+    TEST_ASSERT_EQUAL_INT(TRXV1_OK, trxv1_set_ptt(old, true));
+    TEST_ASSERT_TRUE(FWV(in_tx));
+    TEST_ASSERT_EQUAL_INT(TRXV1_OK, trxv1_set_ptt(old, true));   /* NACK: keyed already */
+    FW(fw.fwd = 600; fw.ref = 200);
+    TEST_ASSERT_EQUAL_INT(TRXV1_OK, trxv1_get_fwd(old, &f));
+    TEST_ASSERT_EQUAL_INT(TRXV1_OK, trxv1_get_ref(old, &r));
+    TEST_ASSERT_EQUAL_UINT16(600, f);
+    TEST_ASSERT_EQUAL_UINT16(200, r);
+    TEST_ASSERT_EQUAL_INT(TRXV1_OK, trxv1_set_ptt(old, false));
+    TEST_ASSERT_FALSE(FWV(in_tx));
+    TEST_ASSERT_EQUAL_INT(TRXV1_OK, trxv1_get_ptt(old, &on));
+    TEST_ASSERT_FALSE(on);
+
+    FW(fw.protect = true);
+    TEST_ASSERT_EQUAL_INT(TRXV1_EPROTECT, trxv1_set_ptt(old, true));
+    TEST_ASSERT_EQUAL_INT(TRXV1_OK, trxv1_get_protection(old, &latched));
+    TEST_ASSERT_TRUE(latched);
+    TEST_ASSERT_EQUAL_INT(TRXV1_OK, trxv1_reset_protection(old));
+    TEST_ASSERT_EQUAL_INT(1, FWV(resets));
+    TEST_ASSERT_FALSE(FWV(protect));
+
+    trxv1_free(old);
 }
 
 static void test_driver_survives_a_lost_reply(void)
@@ -520,6 +623,7 @@ int main(void)
     RUN_TEST(test_driver_detectors_and_swr);
     RUN_TEST(test_driver_protection);
     RUN_TEST(test_driver_survives_a_lost_reply);
+    RUN_TEST(test_driver_2022_firmware);
     RUN_TEST(test_backend_start);
     RUN_TEST(test_backend_frequency_and_mode);
     RUN_TEST(test_backend_ptt_and_meters);
