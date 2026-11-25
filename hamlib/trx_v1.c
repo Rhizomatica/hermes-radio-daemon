@@ -21,12 +21,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <termios.h>
+#include <sys/ioctl.h>
+#include <asm/termbits.h>     /* termios2, as trx_v1-userland's serial.c */
 #include <time.h>
 #include <unistd.h>
 
 #include "trx_v1.h"
-#include "radio_cmds.h"
+#include "trx_v1_cmds.h"   /* the 2022 codes (hermes-net trx_v1-userland) */
+#include "radio_cmds.h"     /* the current codes (hermes-net, shared with the sBitx) */
 
 #include "radiod_log.h"
 
@@ -86,65 +88,31 @@ typedef struct trxv1_proto {
     size_t n_long_replies;
 } trxv1_proto;
 
-/* hermes-net 2022 (trx_v1-firmware as the field radios run it). */
-#define V22_PTT_ON                  0x08
-#define V22_PTT_OFF                 0x88
-#define V22_RESET_PROTECTION        0x90
-#define V22_GET_FREQ                0x91
-#define V22_SET_FREQ                0x92
-#define V22_GET_MODE                0x93
-#define V22_SET_MODE                0x94
-#define V22_GET_TXRX_STATUS         0x95
-#define V22_GET_PROTECTION_STATUS   0x96
-#define V22_GET_FWD                 0x9b
-#define V22_GET_REF                 0x9c
-#define V22_RESP_GET_FREQ_ACK       0xa3
-#define V22_RESP_GET_MASTERCAL_ACK  0xa4
-#define V22_RESP_GET_BFO_ACK        0xa5
-#define V22_RESP_GET_FWD_ACK        0xa6
-#define V22_RESP_GET_REF_ACK        0xa7
-#define V22_RESP_GET_SERIAL_ACK     0xa8
-#define V22_RESP_PTT_ON_ACK         0xa9
-#define V22_RESP_PTT_ON_NACK        0xaa
-#define V22_RESP_PTT_OFF_ACK        0xab
-#define V22_RESP_PTT_OFF_NACK       0xac
-#define V22_RESP_SET_FREQ_ACK       0xad
-#define V22_RESP_SET_MODE_ACK       0xaf
-#define V22_RESP_GET_MODE_USB       0xb0
-#define V22_RESP_GET_MODE_LSB       0xb1
-#define V22_RESP_GET_TXRX_INTX      0xb2
-#define V22_RESP_GET_TXRX_INRX      0xb3
-#define V22_RESP_GET_PROTECTION_ON  0xb4
-#define V22_RESP_GET_PROTECTION_OFF 0xb5
-#define V22_RESP_RESET_PROTECTION_ACK 0xbe
-#define V22_RESP_WRONG_COMMAND      0xc0
-#define V22_RESP_GET_STATUS_ACK     0xd4
-#define V22_RESP_GET_REF_THRESHOLD_ACK 0xe2
-#define V22_ALERT_PROTECTION_ON     0xe7
-
+/* hermes-net 2022 (trx_v1-firmware as the field radios run it): the codes
+ * are trx_v1-userland's own definitions, copied in trx_v1_cmds.h. */
 static const uint8_t v22_long[] = {
-    V22_RESP_GET_FREQ_ACK, V22_RESP_GET_MASTERCAL_ACK, V22_RESP_GET_BFO_ACK,
-    V22_RESP_GET_FWD_ACK, V22_RESP_GET_REF_ACK, V22_RESP_GET_SERIAL_ACK,
-    V22_RESP_GET_REF_THRESHOLD_ACK, V22_RESP_GET_STATUS_ACK,
+    TRXV1_RESP_GET_FREQ_ACK, TRXV1_RESP_GET_MASTERCAL_ACK, TRXV1_RESP_GET_BFO_ACK,
+    TRXV1_RESP_GET_FWD_ACK, TRXV1_RESP_GET_REF_ACK, TRXV1_RESP_GET_SERIAL_ACK,
+    TRXV1_RESP_GET_REF_THRESHOLD_ACK, TRXV1_RESP_GET_STATUS_ACK,
 };
 
 static const trxv1_proto proto_2022 = {
     .name = "2022 firmware",
-    .get_freq = V22_GET_FREQ, .set_freq = V22_SET_FREQ,
-    .get_mode = V22_GET_MODE, .set_mode = V22_SET_MODE,
-    .ptt_on = V22_PTT_ON, .ptt_off = V22_PTT_OFF,
-    .get_txrx = V22_GET_TXRX_STATUS, .get_protection = V22_GET_PROTECTION_STATUS,
-    .reset_protection = V22_RESET_PROTECTION,
-    .get_fwd = V22_GET_FWD, .get_ref = V22_GET_REF,
-    .freq = V22_RESP_GET_FREQ_ACK, .fwd = V22_RESP_GET_FWD_ACK, .ref = V22_RESP_GET_REF_ACK,
-    .set_freq_ack = V22_RESP_SET_FREQ_ACK, .set_mode_ack = V22_RESP_SET_MODE_ACK,
-    .ptt_on_ack = V22_RESP_PTT_ON_ACK, .ptt_off_ack = V22_RESP_PTT_OFF_ACK,
-    .reset_protection_ack = V22_RESP_RESET_PROTECTION_ACK,
-    .ptt_on_nack = V22_RESP_PTT_ON_NACK, .ptt_off_nack = V22_RESP_PTT_OFF_NACK,
-    .alert_protection = V22_ALERT_PROTECTION_ON,
-    .mode_usb = V22_RESP_GET_MODE_USB, .mode_lsb = V22_RESP_GET_MODE_LSB,
-    .in_tx = V22_RESP_GET_TXRX_INTX, .in_rx = V22_RESP_GET_TXRX_INRX,
-    .protection_on = V22_RESP_GET_PROTECTION_ON, .protection_off = V22_RESP_GET_PROTECTION_OFF,
+    .get_freq = TRXV1_GET_FREQ, .set_freq = TRXV1_SET_FREQ,
+    .get_mode = TRXV1_GET_MODE, .set_mode = TRXV1_SET_MODE,
+    .ptt_on = TRXV1_PTT_ON, .ptt_off = TRXV1_PTT_OFF,
+    .get_txrx = TRXV1_GET_TXRX_STATUS, .get_protection = TRXV1_GET_PROTECTION_STATUS,
+    .reset_protection = TRXV1_RESET_PROTECTION,
+    .get_fwd = TRXV1_GET_FWD, .get_ref = TRXV1_GET_REF,
+    .freq = TRXV1_RESP_GET_FREQ_ACK, .fwd = TRXV1_RESP_GET_FWD_ACK, .ref = TRXV1_RESP_GET_REF_ACK,
+    .set_freq_ack = TRXV1_RESP_SET_FREQ_ACK, .set_mode_ack = TRXV1_RESP_SET_MODE_ACK,
+    .ptt_on_ack = TRXV1_RESP_PTT_ON_ACK, .ptt_off_ack = TRXV1_RESP_PTT_OFF_ACK,
+    .reset_protection_ack = TRXV1_RESP_RESET_PROTECTION_ACK,
+    .ptt_on_nack = TRXV1_RESP_PTT_ON_NACK, .ptt_off_nack = TRXV1_RESP_PTT_OFF_NACK,
+    .alert_protection = TRXV1_ALERT_PROTECTION_ON,
+    .mode_usb = TRXV1_RESP_GET_MODE_USB, .mode_lsb = TRXV1_RESP_GET_MODE_LSB,
+    .in_tx = TRXV1_RESP_GET_TXRX_INTX, .in_rx = TRXV1_RESP_GET_TXRX_INRX,
+    .protection_on = TRXV1_RESP_GET_PROTECTION_ON, .protection_off = TRXV1_RESP_GET_PROTECTION_OFF,
     .long_replies = v22_long, .n_long_replies = sizeof(v22_long),
 };
 
@@ -201,31 +169,31 @@ static void sleep_ms(int ms)
         ;
 }
 
+/* The port as hermes-net's trx_v1-userland sets it up (serial.c:
+ * open_serial_port() and set_serial_baudrate() at 38400), returning errors
+ * instead of exit()ing. TIOCEXCL keeps other programs off the port while we
+ * hold it. */
 static int open_port(const char *path)
 {
-    int fd = open(path, O_RDWR | O_NOCTTY | O_CLOEXEC);
+    /* O_NOCTTY beyond serial.c: the port must not become the daemon's
+     * controlling terminal */
+    int fd = open(path, O_RDWR | O_NONBLOCK | O_NOCTTY | O_CLOEXEC);
     if (fd < 0)
     {
         HLOGE(LOG_C, "cannot open %s: %s", path, strerror(errno));
         return -1;
     }
+    ioctl(fd, TIOCEXCL);
 
-    struct termios tio;
-    if (tcgetattr(fd, &tio) < 0)
-    {
-        HLOGE(LOG_C, "%s is not a serial port: %s", path, strerror(errno));
-        close(fd);
-        return -1;
-    }
-    cfmakeraw(&tio);
-    tio.c_cflag |= CLOCAL | CREAD;
-    tio.c_cflag &= ~(CSTOPB | PARENB | CRTSCTS);
-    tio.c_iflag &= ~(IXON | IXOFF | IXANY);
-    tio.c_cc[VMIN] = 0;
+    struct termios2 tio;
+    memset(&tio, 0, sizeof(tio));
+    tio.c_iflag = IGNBRK;
+    tio.c_oflag = 0;
+    tio.c_cflag = B38400 | CLOCAL | HUPCL | CREAD | CS8;
+    tio.c_lflag = 0;
+    tio.c_cc[VMIN] = 1;
     tio.c_cc[VTIME] = 0;
-    cfsetispeed(&tio, B38400);
-    cfsetospeed(&tio, B38400);
-    if (tcsetattr(fd, TCSANOW, &tio) < 0)
+    if (ioctl(fd, TCSETSF2, &tio) < 0)
     {
         HLOGE(LOG_C, "cannot set up %s: %s", path, strerror(errno));
         close(fd);
@@ -301,7 +269,7 @@ static int transact(trxv1 *t, uint8_t code, uint32_t arg,
         t->resync = false;
     }
     /* a late reply to an earlier command would be read as this one's */
-    tcflush(t->fd, TCIFLUSH);
+    ioctl(t->fd, TCFLSH, TCIFLUSH);
 
     size_t sent = 0;
     while (sent < sizeof(cmd))
@@ -426,6 +394,9 @@ void trxv1_disconnect(trxv1 *t)
 {
     if (!t || t->fd < 0)
         return;
+    /* the port stays exclusive while anything else holds it open: give it
+     * up, so the next open (ours, after a reconnect) is not refused */
+    ioctl(t->fd, TIOCNXCL);
     close(t->fd);
     t->fd = -1;
     t->p = NULL;
