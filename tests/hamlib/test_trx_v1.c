@@ -434,6 +434,9 @@ static void test_rigctld_client(void)
     pbwidth_t w = 0;
     ptt_t ptt = RIG_PTT_ON;
 
+    radio_backend_set_mode(&r, MODE_USB, r.profile_active_idx);
+    TEST_ASSERT_TRUE(FWV(usb));
+
     RIG *net = rig_init(RIG_MODEL_NETRIGCTL);
     TEST_ASSERT_NOT_NULL(net);
     snprintf(addr, sizeof(addr), "127.0.0.1:%d", TEST_RIGCTLD_PORT);
@@ -445,6 +448,14 @@ static void test_rigctld_client(void)
     TEST_ASSERT_EQUAL_INT(RIG_OK, rig_get_freq(net, RIG_VFO_CURR, &f));
     TEST_ASSERT_EQUAL_UINT32(7095000, (uint32_t) f);
 
+    /* Every set is a change: Hamlib's client does not send a mode it holds
+     * as already set, so a set equal to its cached mode never reached the
+     * radio, which then kept the sideband an earlier test left (seen on a
+     * slower CI runner). The profile starts at USB, then LSB, then USB. */
+    TEST_ASSERT_EQUAL_INT(RIG_OK, rig_set_mode(net, RIG_VFO_CURR, RIG_MODE_LSB, RIG_PASSBAND_NOCHANGE));
+    TEST_ASSERT_FALSE(FWV(usb));
+    TEST_ASSERT_EQUAL_INT(RIG_OK, rig_get_mode(net, RIG_VFO_CURR, &m, &w));
+    TEST_ASSERT_EQUAL_INT((int) RIG_MODE_LSB, (int) m);
     TEST_ASSERT_EQUAL_INT(RIG_OK, rig_set_mode(net, RIG_VFO_CURR, RIG_MODE_USB, RIG_PASSBAND_NOCHANGE));
     TEST_ASSERT_TRUE(FWV(usb));
     TEST_ASSERT_EQUAL_INT(RIG_OK, rig_get_mode(net, RIG_VFO_CURR, &m, &w));
