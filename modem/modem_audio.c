@@ -317,6 +317,10 @@ static _Atomic bool    s_tx_keyed;
 static _Atomic bool    s_tx_ending;     /* end seen: the ring is draining */
 static _Atomic long    s_tx_id;         /* the keyer */
 static int64_t         s_tx_end_ms;
+/* Another client asked for the radio to unkey (modem_audio_tx_end_within):
+ * the over ends once drained, at the latest at this time, whatever the modem
+ * still sends. 0 when no one asked. */
+static _Atomic int64_t s_tx_deadline_ms;
 
 static bool tx_to_sbitx(void)
 {
@@ -394,6 +398,7 @@ bool modem_audio_tx_begin(long id)
         s_tx_id = id;
         s_tx_ending = false;
         s_tx_end_ms = 0;
+        s_tx_deadline_ms = 0;
         s_tx_keyed = true;
         ok = keyed_now = true;
     }
@@ -410,8 +415,11 @@ void modem_audio_tx_feed(const int16_t *pcm8k, size_t n)
     pthread_mutex_lock(&s_key_mutex);
     if (s_tx_keyed)
     {
-        s_tx_ending = false;            /* the modem went on after all */
-        s_tx_end_ms = 0;
+        if (!s_tx_deadline_ms)          /* the modem went on after all */
+        {
+            s_tx_ending = false;
+            s_tx_end_ms = 0;
+        }
         while (n)
         {
             size_t chunk = n > MODEM_AUDIO_FRAME ? MODEM_AUDIO_FRAME : n;
@@ -431,6 +439,29 @@ void modem_audio_tx_end(void)
     s_tx_ending = true;
 }
 
+bool modem_audio_tx_end_within(unsigned max_ms)
+{
+    bool ok = false;
+
+    pthread_mutex_lock(&s_key_mutex);
+    /* Only a keyer whose end something polls for: the RTP stream's thread
+     * does, an in-process modem (id < 0) ends its overs itself. */
+    if (s_tx_keyed && s_tx_id >= 0)
+    {
+        int64_t now = now_ms();
+        if (!s_tx_ending)
+        {
+            s_tx_end_ms = now;
+            s_tx_ending = true;
+        }
+        if (!s_tx_deadline_ms || now + (int64_t) max_ms < s_tx_deadline_ms)
+            s_tx_deadline_ms = now + (int64_t) max_ms;
+        ok = true;
+    }
+    pthread_mutex_unlock(&s_key_mutex);
+    return ok;
+}
+
 void modem_audio_tx_unkey(const char *why)
 {
     bool was_keyed;
@@ -445,6 +476,7 @@ void modem_audio_tx_unkey(const char *why)
     {
         s_tx_keyed = false;
         s_tx_ending = false;
+        s_tx_deadline_ms = 0;
         tx_ring_clear();
     }
     pthread_mutex_unlock(&s_key_mutex);
@@ -462,9 +494,13 @@ void modem_audio_tx_unkey(const char *why)
 
 bool modem_audio_tx_poll(void)
 {
-    if (s_tx_keyed && s_tx_ending
-        && (tx_queued() == 0 || now_ms() - s_tx_end_ms >= TX_DRAIN_MAX_MS))
-        modem_audio_tx_unkey("ended");
+    if (!s_tx_keyed || !s_tx_ending)
+        return s_tx_keyed;
+    int64_t now = now_ms();
+    if (tx_queued() == 0 || now - s_tx_end_ms >= TX_DRAIN_MAX_MS)
+        modem_audio_tx_unkey(s_tx_deadline_ms ? "ended (unkey asked by another client)" : "ended");
+    else if (s_tx_deadline_ms && now >= s_tx_deadline_ms)
+        modem_audio_tx_unkey("cut: another client asked to unkey and the modem went on");
     return s_tx_keyed;
 }
 

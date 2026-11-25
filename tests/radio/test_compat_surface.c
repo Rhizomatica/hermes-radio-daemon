@@ -136,6 +136,11 @@ bool shm_destroy(key_t k, size_t s)    { (void) k; (void) s; return true; }
 void *shm_attach(key_t k, size_t s)
 { static controller_conn connector; (void) k; (void) s; return &connector; }
 
+/* modem_audio: whether a modem keyed over RTP holds PTT, and the asks. */
+static struct { bool keyed; int calls; unsigned max_ms; } modem_stub;
+bool modem_audio_tx_end_within(unsigned max_ms)
+{ modem_stub.calls++; modem_stub.max_ms = max_ms; return modem_stub.keyed; }
+
 #include "radio/radio_pipeline.c"
 #include "control_interfaces/radio_shm.c"
 
@@ -300,6 +305,73 @@ static void test_shm_ptt_off_always_unkeys(void)
     puts("  shm PTT off always unkeys ............ ok");
 }
 
+/* A modem keyed over RTP holds PTT and a client relaying the modem's own PTT
+ * (uucpd -o shm) asks to unkey: the over ends through the modem's drain,
+ * bounded, instead of being cut with its audio still queued. An operator's
+ * stop from a one-shot client (the web panel's PTT button) still cuts. */
+static int keyer_fork_named(controller_conn *conn, int *ctl_w, const char *name);
+static void keyer_reap(pid_t pid, int ctl_w);
+
+static void test_shm_ptt_off_lets_a_modem_over_drain(void)
+{
+    radio radio_h;
+    uint8_t off[5] = {0, 0, 0, 0, CMD_PTT_OFF};
+    uint8_t response[5] = {0};
+
+    controller_conn *conn = mmap(NULL, sizeof(*conn), PROT_READ | PROT_WRITE,
+                                 MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    TEST_ASSERT_TRUE(conn != MAP_FAILED);
+    memset(conn, 0, sizeof(*conn));
+    TEST_ASSERT_TRUE(initialize_connector(conn));
+    init_test_radio(&radio_h, RADIO_BACKEND_HAMLIB, false);
+    connector_local = conn;
+    radio_h_shm = &radio_h;
+
+    /* a long-running client (uucpd) while the modem holds PTT: drained */
+    reset_backend_call();
+    memset(&modem_stub, 0, sizeof(modem_stub));
+    modem_stub.keyed = true;
+    radio_h.txrx_state = IN_TX;
+    int ctl;
+    pid_t pid = keyer_fork_named(conn, &ctl, "uucpd");
+    process_radio_command(off, response);
+    TEST_ASSERT_EQUAL_INT64(1, write(ctl, "U", 1));
+    keyer_reap(pid, ctl);
+    TEST_ASSERT_EQUAL_INT64(1, modem_stub.calls);
+    TEST_ASSERT_EQUAL_INT64(SHM_PTT_OFF_DRAIN_MAX_MS, modem_stub.max_ms);
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(0, backend_call.txrx_calls, "the modem's over was cut");
+    TEST_ASSERT_EQUAL_INT64(IN_TX, radio_h.txrx_state);
+    TEST_ASSERT_EQUAL_INT64(CMD_RESP_ACK, response[0]);
+
+    /* no modem holds PTT (uucpd keyed it itself): unkeyed at once */
+    reset_backend_call();
+    modem_stub.keyed = false;
+    pid = keyer_fork_named(conn, &ctl, "uucpd");
+    process_radio_command(off, response);
+    TEST_ASSERT_EQUAL_INT64(1, write(ctl, "U", 1));
+    keyer_reap(pid, ctl);
+    do { TEST_ASSERT_EQUAL_INT64(1, backend_call.txrx_calls); TEST_ASSERT_EQUAL_INT64(IN_RX, radio_h.txrx_state); } while (0);
+
+    /* the operator's stop: cut at once, the modem not even asked */
+    reset_backend_call();
+    memset(&modem_stub, 0, sizeof(modem_stub));
+    modem_stub.keyed = true;
+    radio_h.txrx_state = IN_TX;
+    pid = keyer_fork_named(conn, &ctl, "sbitx_client");
+    process_radio_command(off, response);
+    TEST_ASSERT_EQUAL_INT64(1, write(ctl, "U", 1));
+    keyer_reap(pid, ctl);
+    TEST_ASSERT_EQUAL_INT64(0, modem_stub.calls);
+    do { TEST_ASSERT_EQUAL_INT64(1, backend_call.txrx_calls); TEST_ASSERT_EQUAL_INT64(IN_RX, radio_h.txrx_state); } while (0);
+    TEST_ASSERT_EQUAL_INT64(CMD_RESP_ACK, response[0]);
+
+    memset(&modem_stub, 0, sizeof(modem_stub));
+    shm_keyer_forget();
+    destroy_test_radio(&radio_h);
+    munmap(conn, sizeof(*conn));
+    puts("  shm PTT off lets a modem over drain .. ok");
+}
+
 /* A client that keys over hermes_shm and dies without unkeying (killed
  * mid-transmission) must not leave the radio in TX; one that is alive, or
  * that unkeyed before exiting, must not be touched. The child plays
@@ -457,6 +529,7 @@ int main(void)
     RUN_TEST(test_shm_profile_and_message_semantics);
     RUN_TEST(test_shm_ptt_off_always_unkeys);
     RUN_TEST(test_shm_keyer_death_releases_ptt);
+    RUN_TEST(test_shm_ptt_off_lets_a_modem_over_drain);
     RUN_TEST(test_pipeline_follows_digital_voice);
     return UNITY_END();
 }
