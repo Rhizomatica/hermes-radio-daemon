@@ -74,6 +74,12 @@ void modem_audio_tx_feed(const int16_t *pcm8k, size_t n);
  * 1 s), as modem_audio_tx_poll() finds it. */
 void modem_audio_tx_end(void);
 
+/* Another client asked to unkey while a modem holds PTT: end the over as
+ * modem_audio_tx_end() does, once what is queued has been played, but at the
+ * latest max_ms from now even if the modem goes on sending. False (nothing
+ * done) when no modem holds PTT, or the keyer is an in-process modem. */
+bool modem_audio_tx_end_within(unsigned max_ms);
+
 /* Unkey now. `why` goes to the log ("ended", "unkeyed at shutdown", ...). */
 void modem_audio_tx_unkey(const char *why);
 

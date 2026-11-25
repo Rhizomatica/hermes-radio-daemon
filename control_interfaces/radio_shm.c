@@ -41,6 +41,11 @@
 #include "include/radio_cmds.h"
 
 #include "radiod_log.h"
+#include "modem_audio.h"
+
+/* Longest a modem's over goes on after a shm client asks to unkey: past the
+ * 262 ms of queued audio seen at worst on the bench. */
+#define SHM_PTT_OFF_DRAIN_MAX_MS 300
 
 #define LOG_C "shm"
 extern _Atomic bool shutdown_;
@@ -105,6 +110,23 @@ static bool shm_client_is_one_shot(const char *comm)
            !strcmp(comm, "ubitx_client");
 }
 
+/* The client's process name ("?" when unknown). */
+static void shm_client_comm(pid_t pid, char *comm, size_t size)
+{
+    char path[64];
+    snprintf(comm, size, "?");
+    if (pid <= 0)
+        return;
+    snprintf(path, sizeof(path), "/proc/%d/comm", (int) pid);
+    FILE *f = fopen(path, "r");
+    if (f)
+    {
+        if (fgets(comm, (int) size, f))
+            comm[strcspn(comm, "\n")] = '\0';
+        fclose(f);
+    }
+}
+
 static void shm_keyer_watch(pid_t pid)
 {
     shm_keyer_forget();
@@ -115,15 +137,8 @@ static void shm_keyer_watch(pid_t pid)
         return;
     }
 
-    char path[64], comm[32] = "?";
-    snprintf(path, sizeof(path), "/proc/%d/comm", (int) pid);
-    FILE *f = fopen(path, "r");
-    if (f)
-    {
-        if (fgets(comm, sizeof(comm), f))
-            comm[strcspn(comm, "\n")] = '\0';
-        fclose(f);
-    }
+    char comm[32];
+    shm_client_comm(pid, comm, sizeof(comm));
 
     if (shm_client_is_one_shot(comm))
     {
@@ -209,9 +224,19 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
          * client restarted to clear a stuck transmitter, say) leaves the
          * radio keyed. The replies keep their old meaning. */
         bool was_tx = radio_h->txrx_state == IN_TX;
+        pid_t sender = shm_command_sender(connector_local);
+        char comm[32];
+        shm_client_comm(sender, comm, sizeof(comm));
         shm_keyer_forget();
-        radio_backend_set_ptt(radio_h, IN_RX, PTT_SRC_SHM,
-                              shm_command_sender(connector_local));
+        /* A modem keyed over its RTP stream holds PTT, and a client that
+         * relays the modem's own PTT (uucpd -o shm) asks to unkey: the
+         * modem's audio still queued here would be cut, the last 0-220 ms
+         * of its frame (bench, 25 Nov 2026). Let the over end once that has
+         * played, within SHM_PTT_OFF_DRAIN_MAX_MS. An operator's stop (the
+         * one-shot clients, as the web panel's PTT button) cuts at once. */
+        if (!(was_tx && !shm_client_is_one_shot(comm)
+              && modem_audio_tx_end_within(SHM_PTT_OFF_DRAIN_MAX_MS)))
+            radio_backend_set_ptt(radio_h, IN_RX, PTT_SRC_SHM, sender);
         if (radio_h->swr_protection_enabled)
             response[0] = CMD_ALERT_PROTECTION_ON;
         else if (was_tx)

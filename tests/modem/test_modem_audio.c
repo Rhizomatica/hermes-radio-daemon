@@ -140,6 +140,52 @@ static void test_shutdown_unkeys(void)
     TEST_ASSERT_FALSE_MESSAGE(modem_audio_tx_begin(1), "keyed after shutdown");
 }
 
+/* Another client asks to unkey while a modem holds PTT: the over ends once
+ * what is queued has played, and at the latest at the deadline even if the
+ * modem goes on sending. An in-process modem, which nothing polls for, is
+ * left alone. */
+enum { END_WITHIN_TEST_MS = 50, END_WITHIN_WAIT_US = 80000, QUEUED_SAMPLES = 4800 };
+
+static void test_end_within_drains_then_cuts(void)
+{
+    TEST_ASSERT_FALSE_MESSAGE(modem_audio_tx_end_within(END_WITHIN_TEST_MS), "ended with no modem keyed");
+
+    /* audio still queued and the modem going on: keyed until the deadline */
+    TEST_ASSERT_TRUE(modem_audio_tx_begin(4242));
+    r.tx_audio_ring.count = QUEUED_SAMPLES;
+    TEST_ASSERT_TRUE(modem_audio_tx_end_within(END_WITHIN_TEST_MS));
+    TEST_ASSERT_TRUE(modem_audio_tx_ending());
+    TEST_ASSERT_TRUE_MESSAGE(modem_audio_tx_poll(), "cut with audio still queued");
+    modem_audio_tx_feed(blk, MODEM_AUDIO_FRAME);
+    TEST_ASSERT_TRUE_MESSAGE(modem_audio_tx_ending(), "the modem's audio cancelled the asked end");
+    TEST_ASSERT_EQUAL_INT(0, radio_backend_end_ptt_fake.call_count);
+    usleep(END_WITHIN_WAIT_US);
+    TEST_ASSERT_FALSE_MESSAGE(modem_audio_tx_poll(), "still keyed past the deadline");
+    TEST_ASSERT_EQUAL_INT(1, radio_backend_end_ptt_fake.call_count);
+    TEST_ASSERT_EQUAL_INT64(4242, radio_backend_end_ptt_fake.arg2_val);
+
+    /* drained before the deadline: unkeyed at once */
+    TEST_ASSERT_TRUE(modem_audio_tx_begin(4242));
+    r.tx_audio_ring.count = 0;
+    TEST_ASSERT_TRUE(modem_audio_tx_end_within(END_WITHIN_TEST_MS));
+    TEST_ASSERT_FALSE(modem_audio_tx_poll());
+    TEST_ASSERT_EQUAL_INT(2, radio_backend_end_ptt_fake.call_count);
+
+    /* the next over starts with no deadline: the modem's own audio goes on */
+    TEST_ASSERT_TRUE(modem_audio_tx_begin(4242));
+    r.tx_audio_ring.count = QUEUED_SAMPLES;
+    modem_audio_tx_end();
+    modem_audio_tx_feed(blk, MODEM_AUDIO_FRAME);
+    TEST_ASSERT_FALSE_MESSAGE(modem_audio_tx_ending(), "an old deadline outlived its over");
+    modem_audio_tx_unkey("ended");
+    r.tx_audio_ring.count = 0;
+
+    /* an in-process modem: not this path's to end */
+    TEST_ASSERT_TRUE(modem_audio_tx_begin(-1));
+    TEST_ASSERT_FALSE(modem_audio_tx_end_within(END_WITHIN_TEST_MS));
+    TEST_ASSERT_FALSE(modem_audio_tx_ending());
+}
+
 int main(void)
 {
     r.backend_kind = RADIO_BACKEND_HAMLIB;
@@ -153,5 +199,6 @@ int main(void)
     RUN_TEST(test_feed_from_another_thread);
     RUN_TEST(test_immediate_unkey);
     RUN_TEST(test_shutdown_unkeys);
+    RUN_TEST(test_end_within_drains_then_cuts);
     return UNITY_END();
 }
