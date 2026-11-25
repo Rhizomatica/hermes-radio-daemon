@@ -1458,6 +1458,14 @@ playback_device = hw:CARD=Device,DEV=0
   the reflected reading stays over its own threshold (in its EEPROM), and
   will not key again until reset. radiod's protection flag follows it, and
   `reset_protection` (websocket, API, hermes_shm) resets both.
+- **A radio without a wired SWR bridge.** Its detectors float: they read a
+  few hundred on both, so the SWR comes out at its 10.0 ceiling. Set both
+  thresholds above their maximum, so neither protection ever trips:
+  - radiod's: `reflected_threshold = 101` in `[main]`. The trx_v1's SWR is at
+    most 10.0, which is 100 in radiod's unit of SWR × 10.
+  - the firmware's: 1023, the detector's full scale. The firmware trips only
+    on a reading above its threshold, and resets any stored value above 1023
+    to 512 at boot.
 
 ## Rigctld-Compatible Server
 
