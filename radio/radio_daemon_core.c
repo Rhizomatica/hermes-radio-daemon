@@ -15,6 +15,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <stddef.h>
@@ -136,6 +138,34 @@ static void maybe_pin_cpu(int cpu_nr)
         HLOGE(LOG_C, "cannot pin to CPU %d: %s", cpu_nr, strerror(errno));
 }
 
+/* Keep the daemon's memory in RAM. The audio threads run real time, and a
+ * page they touch that was swapped out, or a code page the kernel dropped,
+ * comes back from the SD card in tens of ms: past the codec's ~21 ms of
+ * slack, so the playback underran in the middle of an over. A station with
+ * Mercury beside radiod in 2 GB had 5 MB of radiod in swap and 40 major
+ * faults on the DSP thread (bench, 25 Nov 2026). MCL_ONFAULT locks pages as
+ * they are first touched, not every mapping up front: the Go runtime and
+ * the threads' stacks reserve gigabytes they never use. Without the
+ * privilege to lock (a phone's user session, say) the limit would make
+ * later allocations fail, so it is left alone there. */
+static void lock_memory(void)
+{
+#ifdef MCL_ONFAULT
+    struct rlimit lim;
+    bool unlimited = getrlimit(RLIMIT_MEMLOCK, &lim) == 0 && lim.rlim_cur == RLIM_INFINITY;
+
+    if (geteuid() != 0 && !unlimited)
+    {
+        HLOGI(LOG_C, "memory not locked: no privilege to lock it (RLIMIT_MEMLOCK)");
+        return;
+    }
+    if (mlockall(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT) == 0)
+        HLOGI(LOG_C, "memory locked as it is touched (no swapping of the audio path)");
+    else
+        HLOGW(LOG_C, "cannot lock memory: %s", strerror(errno));
+#endif
+}
+
 int radio_daemon_core_run(const radio_backend_selection *selection,
                           const radio_daemon_runtime *runtime)
 {
@@ -165,6 +195,7 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
 
     shutdown_ = false;
     install_signal_handlers();
+    lock_memory();
 
     memset(&radio_h, 0, sizeof(radio_h));
     pthread_mutex_init(&radio_h.message_mutex, NULL);
