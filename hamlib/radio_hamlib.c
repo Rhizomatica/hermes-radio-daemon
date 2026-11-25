@@ -55,6 +55,7 @@
 #include "radio_backend.h"
 #include "radio_controls.h"
 #include "hamlib_digi.h"
+#include "trx_v1.h"
 
 #include "radiod_log.h"
 
@@ -303,6 +304,148 @@ static int hamlib_open(RIG *rig, int defaulted)
     return ret;
 }
 
+/* ── The CAT link ────────────────────────────────────────────────────
+ * libhamlib's RIG for the models Hamlib knows, or radiod's own driver for
+ * the HERMES trx_v1 (main:radio_model = trx_v1, hamlib/trx_v1.h), whose
+ * protocol it does not. The rest of this backend is the same for both:
+ * these calls are what differs, answering in Hamlib's return codes, under
+ * RIG_LOCK. */
+
+static bool is_trxv1(const radio *radio_h)
+{
+    return radio_h && radio_h->hamlib_model == RADIO_MODEL_TRXV1;
+}
+
+/* A radio to talk to: an open Hamlib rig, or the trx_v1's driver (whose
+ * port may be down for a moment, while hamlib_cat_watch reopens it, as a
+ * Hamlib rig's may). */
+static bool cat_up(const radio *radio_h)
+{
+    return radio_h && (radio_h->rig || radio_h->trxv1);
+}
+
+static int trxv1_rc(int ret)
+{
+    switch (ret)
+    {
+    case TRXV1_OK:       return RIG_OK;
+    case TRXV1_ETIMEOUT: return -RIG_ETIMEOUT;
+    case TRXV1_EIO:      return -RIG_EIO;
+    case TRXV1_EPROTECT: return -RIG_ERJCTED;
+    default:             return -RIG_EPROTO;
+    }
+}
+
+/* The trx_v1 has USB and LSB only, and every other mode goes out on one of
+ * them. The mode last set reads back for as long as the radio stays on its
+ * sideband, so a PKTUSB profile reads PKTUSB, as from a rig that has it
+ * (hamlib_keep_mode would set it again at every frequency change). */
+static rmode_t trxv1_mode = RIG_MODE_USB;
+
+static bool rmode_lower_sideband(rmode_t m)
+{
+    return m == RIG_MODE_LSB || m == RIG_MODE_PKTLSB ||
+           m == RIG_MODE_CWR || m == RIG_MODE_RTTYR;
+}
+
+static int cat_set_freq(radio *radio_h, uint32_t hz)
+{
+    if (radio_h->trxv1)
+        return trxv1_rc(trxv1_set_freq(radio_h->trxv1, hz));
+    if (!radio_h->rig)
+        return -RIG_EINVAL;
+    return rig_set_freq((RIG *) radio_h->rig, RIG_VFO_CURR, (freq_t) hz);
+}
+
+static int cat_get_freq(radio *radio_h, freq_t *hz)
+{
+    if (radio_h->trxv1)
+    {
+        uint32_t f = 0;
+        int ret = trxv1_rc(trxv1_get_freq(radio_h->trxv1, &f));
+        if (ret == RIG_OK)
+            *hz = (freq_t) f;
+        return ret;
+    }
+    if (!radio_h->rig)
+        return -RIG_EINVAL;
+    return rig_get_freq((RIG *) radio_h->rig, RIG_VFO_CURR, hz);
+}
+
+static int cat_set_mode(radio *radio_h, rmode_t mode, pbwidth_t width)
+{
+    if (radio_h->trxv1)
+    {
+        int ret = trxv1_rc(trxv1_set_usb(radio_h->trxv1, !rmode_lower_sideband(mode)));
+        if (ret == RIG_OK)
+            trxv1_mode = mode;
+        return ret;
+    }
+    if (!radio_h->rig)
+        return -RIG_EINVAL;
+    return rig_set_mode((RIG *) radio_h->rig, RIG_VFO_CURR, mode, width);
+}
+
+static int cat_get_mode(radio *radio_h, rmode_t *mode, pbwidth_t *width)
+{
+    if (radio_h->trxv1)
+    {
+        bool usb = true;
+        int ret = trxv1_rc(trxv1_get_usb(radio_h->trxv1, &usb));
+        if (ret != RIG_OK)
+            return ret;
+        if (usb == !rmode_lower_sideband(trxv1_mode))
+            *mode = trxv1_mode;
+        else
+            *mode = usb ? RIG_MODE_USB : RIG_MODE_LSB;
+        *width = 0;                 /* a fixed filter */
+        return RIG_OK;
+    }
+    if (!radio_h->rig)
+        return -RIG_EINVAL;
+    return rig_get_mode((RIG *) radio_h->rig, RIG_VFO_CURR, mode, width);
+}
+
+static int cat_set_ptt(radio *radio_h, ptt_t ptt)
+{
+    if (radio_h->trxv1)
+        return trxv1_rc(trxv1_set_ptt(radio_h->trxv1, ptt != RIG_PTT_OFF));
+    if (!radio_h->rig)
+        return -RIG_EINVAL;
+    return rig_set_ptt((RIG *) radio_h->rig, RIG_VFO_CURR, ptt);
+}
+
+static int cat_get_ptt(radio *radio_h, ptt_t *ptt)
+{
+    if (radio_h->trxv1)
+    {
+        bool on = false;
+        int ret = trxv1_rc(trxv1_get_ptt(radio_h->trxv1, &on));
+        if (ret == RIG_OK)
+            *ptt = on ? RIG_PTT_ON : RIG_PTT_OFF;
+        return ret;
+    }
+    if (!radio_h->rig)
+        return -RIG_EINVAL;
+    return rig_get_ptt((RIG *) radio_h->rig, RIG_VFO_CURR, ptt);
+}
+
+/* The trx_v1's own SWR protection latched: the firmware unkeyed and will
+ * not key again until it is reset (hl_reset_protection). radiod's flag
+ * follows it, so every client sees the trip and the reset clears both. */
+static void trxv1_note_protection(radio *radio_h)
+{
+    bool latched = false;
+
+    if (!radio_h->trxv1 ||
+        trxv1_get_protection(radio_h->trxv1, &latched) != TRXV1_OK || !latched)
+        return;
+    if (!radio_h->swr_protection_enabled)
+        HLOGW(LOG_C, "the trx_v1's SWR protection tripped; TX is off until "
+              "the protection is reset");
+    radio_h->swr_protection_enabled = true;
+}
+
 static bool hamlib_read_level_float(RIG *rig, setting_t level, float *out)
 {
     value_t val;
@@ -386,12 +529,41 @@ static void hamlib_update_reflected_from_swr(radio *radio_h, float swr)
                                            gamma * gamma);
 }
 
+/* The trx_v1's last SWR x 10, from its two detectors (trxv1_swr_x10). */
+static _Atomic uint32_t trxv1_swr = TRXV1_SWR_SCALE;
+
+/* The trx_v1's detectors are not calibrated in watts: forward power goes
+ * out as RIG_LEVEL_RFPOWER_METER does below, per mille of the forward
+ * detector's full scale (power, so the reading squared). */
+#define TRXV1_FWD_FULL_SCALE 1000.0f
+
+static bool trxv1_update_measurements(radio *radio_h)
+{
+    uint16_t fwd = 0, ref = 0;
+
+    RIG_LOCK();
+    bool ok = trxv1_get_fwd(radio_h->trxv1, &fwd) == TRXV1_OK &&
+              trxv1_get_ref(radio_h->trxv1, &ref) == TRXV1_OK;
+    RIG_UNLOCK();
+    if (!ok)
+        return false;
+
+    float f = (float) fwd / TRXV1_ADC_MAX;
+    radio_h->fwd_power = (uint32_t) lrintf(f * f * TRXV1_FWD_FULL_SCALE);
+    trxv1_swr = trxv1_swr_x10(fwd, ref);
+    hamlib_update_reflected_from_swr(radio_h, (float) trxv1_swr / TRXV1_SWR_SCALE);
+    return true;
+}
+
 static bool hamlib_update_measurements(radio *radio_h)
 {
     RIG *rig;
     float meter_value = 0.0f;
     float swr = 0.0f;
     bool updated = false;
+
+    if (radio_h && radio_h->trxv1)
+        return trxv1_update_measurements(radio_h);
 
     if (!radio_h || !radio_h->rig)
         return false;
@@ -436,18 +608,20 @@ __attribute__((noinline))
 static void hamlib_sync_txrx_state(radio *radio_h, bool fallback_state)
 {
     ptt_t ptt_state = RIG_PTT_OFF;
-    RIG *rig;
 
-    if (!radio_h || !radio_h->rig)
+    if (!cat_up(radio_h))
     {
         if (radio_h)
             radio_h->txrx_state = fallback_state;
         return;
     }
 
-    rig = (RIG *) radio_h->rig;
     RIG_LOCK();
-    int ret = rig_get_ptt(rig, RIG_VFO_CURR, &ptt_state);
+    int ret = cat_get_ptt(radio_h, &ptt_state);
+    /* a trx_v1 that stopped transmitting on its own: its protection? */
+    if (ret == RIG_OK && ptt_state == RIG_PTT_OFF && radio_h->trxv1 &&
+        radio_h->txrx_state == IN_TX)
+        trxv1_note_protection(radio_h);
     RIG_UNLOCK();
     cat_note(&cat_ptt_failing, ret);
     if (ret == RIG_OK)
@@ -462,37 +636,43 @@ static void hamlib_sync_txrx_state(radio *radio_h, bool fallback_state)
  * (past Hamlib's cache, which still has the one radiod set) and, when the
  * band changed it, put the profile's back, and the frequency after it (a
  * mode change moves the FT-710's dial). Under RIG_LOCK. */
-static void hamlib_keep_mode(radio *radio_h, RIG *rig, uint32_t profile)
+static void hamlib_keep_mode(radio *radio_h, uint32_t profile)
 {
     const radio_profile *p = &radio_h->profiles[profile];
     rmode_t want = mode_to_hamlib(p->mode, profile_data_path(p)), got = RIG_MODE_NONE;
     pbwidth_t width;
+    RIG *rig = (RIG *) radio_h->rig;
+    int ret;
 
-    int cached = rig_get_cache_timeout_ms(rig, HAMLIB_CACHE_MODE);
-    rig_set_cache_timeout_ms(rig, HAMLIB_CACHE_MODE, 0);
-    int ret = rig_get_mode(rig, RIG_VFO_CURR, &got, &width);
-    rig_set_cache_timeout_ms(rig, HAMLIB_CACHE_MODE, cached);
+    if (rig)
+    {
+        int cached = rig_get_cache_timeout_ms(rig, HAMLIB_CACHE_MODE);
+        rig_set_cache_timeout_ms(rig, HAMLIB_CACHE_MODE, 0);
+        ret = cat_get_mode(radio_h, &got, &width);
+        rig_set_cache_timeout_ms(rig, HAMLIB_CACHE_MODE, cached);
+    }
+    else
+        ret = cat_get_mode(radio_h, &got, &width);
     if (ret != RIG_OK || got == want)
         return;
 
     HLOGI(LOG_C, "the rig went to %s with the band; back to %s",
             rig_strrmode(got), rig_strrmode(want));
-    ret = rig_set_mode(rig, RIG_VFO_CURR, want, mode_passband(want, p));
+    ret = cat_set_mode(radio_h, want, mode_passband(want, p));
     if (ret == RIG_OK)
-        ret = rig_set_freq(rig, RIG_VFO_CURR, (freq_t) p->freq);
+        ret = cat_set_freq(radio_h, p->freq);
     if (ret != RIG_OK)
         HLOGE(LOG_C, "keeping the mode: %s", rigerror(ret));
 }
 
 static void hamlib_apply_profile(radio *radio_h, uint32_t profile)
 {
-    RIG *rig;
     int ret;
 
-    if (!radio_h || !radio_h->rig || profile >= radio_h->profiles_count)
+    if (!cat_up(radio_h) || profile >= radio_h->profiles_count)
         return;
 
-    rig = (RIG *) radio_h->rig;
+    RIG *rig = (RIG *) radio_h->rig;
 
     /* Apply freq + mode + power as one transaction so a concurrent poll can't
      * slip a meter read between the commands. */
@@ -507,18 +687,17 @@ static void hamlib_apply_profile(radio *radio_h, uint32_t profile)
      * TX source) would send nothing. */
     uint16_t pm = radio_h->profiles[profile].mode;
     rmode_t hm = mode_to_hamlib(pm, profile_data_path(&radio_h->profiles[profile]));
-    ret = rig_set_mode(rig, RIG_VFO_CURR, hm,
-                       mode_passband(hm, &radio_h->profiles[profile]));
+    ret = cat_set_mode(radio_h, hm, mode_passband(hm, &radio_h->profiles[profile]));
     if (ret != RIG_OK)
         HLOGE(LOG_C, "hamlib_apply_profile: rig_set_mode failed: %s",
                 rigerror(ret));
 
-    ret = rig_set_freq(rig, RIG_VFO_CURR, (freq_t) radio_h->profiles[profile].freq);
+    ret = cat_set_freq(radio_h, radio_h->profiles[profile].freq);
     if (ret != RIG_OK)
         HLOGE(LOG_C, "hamlib_apply_profile: rig_set_freq failed: %s",
                 rigerror(ret));
     else if (pm != MODE_CW && pm != MODE_RTTY && pm != MODE_FT8 && pm != MODE_JS8)
-        hamlib_keep_mode(radio_h, rig, profile);
+        hamlib_keep_mode(radio_h, profile);
 
     hamlib_set_level_float(rig,
                            RIG_LEVEL_RFPOWER,
@@ -649,13 +828,34 @@ static const char *mode_to_string(uint16_t mode)
     }
 }
 
-static bool radio_hamlib_init(radio *radio_h)
+/* The trx_v1's driver, connected (hamlib/trx_v1.h), or NULL. */
+static trxv1 *trxv1_open_link(const radio *radio_h)
 {
-    RIG *rig;
+    trxv1 *t = trxv1_new(radio_h->rig_pathname);
+    if (!t)
+        return NULL;
+    int ret = trxv1_connect(t);
+    if (ret != TRXV1_OK)
+    {
+        HLOGE(LOG_C, "trx_v1 on %s: %s", radio_h->rig_pathname, trxv1_strerror(ret));
+        trxv1_free(t);
+        return NULL;
+    }
+    return t;
+}
+
+/* Opens the CAT link: radio_h->rig, or radio_h->trxv1 for the trx_v1. */
+static bool cat_open(radio *radio_h)
+{
+    if (is_trxv1(radio_h))
+    {
+        radio_h->trxv1 = trxv1_open_link(radio_h);
+        return radio_h->trxv1 != NULL;
+    }
 
     rig_set_debug(RIG_DEBUG_WARN);
 
-    rig = rig_init(radio_h->hamlib_model);
+    RIG *rig = rig_init(radio_h->hamlib_model);
     if (!rig)
     {
         HLOGE(LOG_C, "radio_hamlib_init: rig_init failed for model %d",
@@ -663,16 +863,9 @@ static bool radio_hamlib_init(radio *radio_h)
         return false;
     }
 
-    int defaulted = hamlib_configure_ports(rig, radio_h);
-    cat_defaulted = defaulted;
+    cat_defaulted = hamlib_configure_ports(rig, radio_h);
 
-    hl_serial_lock_init();
-
-    /* Publish the CAT serial lock so the media threads can serialise codec
-     * open/close against CAT on a shared USB hub (see radio.h cat_bus_lock). */
-    radio_h->cat_bus_lock = &hl_serial_lock;
-
-    int ret = hamlib_open(rig, defaulted);
+    int ret = hamlib_open(rig, cat_defaulted);
     if (ret != RIG_OK)
     {
         HLOGE(LOG_C, "radio_hamlib_init: rig_open failed: %s",
@@ -680,16 +873,29 @@ static bool radio_hamlib_init(radio *radio_h)
         rig_cleanup(rig);
         return false;
     }
+    radio_h->rig = (void *) rig;
+    return true;
+}
+
+static bool radio_hamlib_init(radio *radio_h)
+{
+    hl_serial_lock_init();
+
+    /* Publish the CAT serial lock so the media threads can serialise codec
+     * open/close against CAT on a shared USB hub (see radio.h cat_bus_lock). */
+    radio_h->cat_bus_lock = &hl_serial_lock;
+
+    if (!cat_open(radio_h))
+        return false;
 
     /* Unkey first, whatever state the rig is in: a daemon that died while
      * transmitting (crash, SIGKILL, power cut on the Pi) leaves the rig
      * keyed, and nothing else would ever release it. */
-    ret = rig_set_ptt(rig, RIG_VFO_CURR, RIG_PTT_OFF);
+    int ret = cat_set_ptt(radio_h, RIG_PTT_OFF);
     if (ret != RIG_OK)
         HLOGE(LOG_C, "radio_hamlib_init: PTT off failed: %s",
                 rigerror(ret));
-
-    radio_h->rig = (void *) rig;
+    trxv1_note_protection(radio_h);
     radio_h->s_meter_db = -200;   /* no S-meter reading until the first RX poll */
     cat_freq_failing = cat_ptt_failing = 0;
 
@@ -706,7 +912,7 @@ static bool radio_hamlib_init(radio *radio_h)
         hamlib_apply_profile(radio_h, profile);
 
     RIG_LOCK();
-    if (rig_get_freq(rig, RIG_VFO_CURR, &hfreq) == RIG_OK && hfreq > 0)
+    if (cat_get_freq(radio_h, &hfreq) == RIG_OK && hfreq > 0)
         radio_h->profiles[profile].freq = (uint32_t) hfreq;
 
     /* As the poll does: a digital-text profile (CW/RTTY/FT8) keeps its mode,
@@ -714,15 +920,19 @@ static bool radio_hamlib_init(radio *radio_h)
      * profile's mode at every start. */
     uint16_t pm = radio_h->profiles[profile].mode;
     if (pm != MODE_CW && pm != MODE_RTTY && pm != MODE_FT8 && pm != MODE_JS8 &&
-        rig_get_mode(rig, RIG_VFO_CURR, &hmode, &width) == RIG_OK)
+        cat_get_mode(radio_h, &hmode, &width) == RIG_OK)
         radio_h->profiles[profile].mode = hamlib_to_mode(hmode);
     RIG_UNLOCK();
 
     hamlib_sync_txrx_state(radio_h, IN_RX);
     hamlib_update_measurements(radio_h);
 
-    HLOGI(LOG_C, "radio_hamlib_init: rig model %d opened successfully",
-           radio_h->hamlib_model);
+    if (radio_h->trxv1)
+        HLOGI(LOG_C, "radio_hamlib_init: trx_v1 on %s, radiod's own CAT driver",
+              radio_h->rig_pathname);
+    else
+        HLOGI(LOG_C, "radio_hamlib_init: rig model %d opened successfully",
+              radio_h->hamlib_model);
 
     /* FT8 / CW / RTTY pump (text-mode encoders + decoders against the
      * daemon audio rings). Idle when the active mode isn't digital. */
@@ -733,6 +943,20 @@ static bool radio_hamlib_init(radio *radio_h)
 
 static bool radio_hamlib_force_ptt_off(radio *radio_h)
 {
+    /* Opening the trx_v1's port resets its Nano, which boots in receive;
+     * the PTT off is sent all the same. */
+    if (is_trxv1(radio_h))
+    {
+        trxv1 *t = trxv1_open_link(radio_h);
+        if (!t)
+            return false;
+        int ret = trxv1_set_ptt(t, false);
+        if (ret != TRXV1_OK)
+            HLOGE(LOG_C, "radio_hamlib_force_ptt_off: %s", trxv1_strerror(ret));
+        trxv1_free(t);
+        return ret == TRXV1_OK;
+    }
+
     rig_set_debug(RIG_DEBUG_WARN);
 
     RIG *rig = rig_init(radio_h->hamlib_model);
@@ -764,23 +988,26 @@ static void radio_hamlib_shutdown(radio *radio_h)
 {
     hamlib_digi_stop(radio_h);
 
-    if (!radio_h->rig)
+    if (!cat_up(radio_h))
         return;
-
-    RIG *rig = (RIG *) radio_h->rig;
 
     /* Make sure we are in RX before closing, whatever the cached state
      * says (see tr_switch). */
     RIG_LOCK();
-    int ret = rig_set_ptt(rig, RIG_VFO_CURR, RIG_PTT_OFF);
+    int ret = cat_set_ptt(radio_h, RIG_PTT_OFF);
     if (ret != RIG_OK)
         HLOGE(LOG_C, "radio_hamlib_shutdown: PTT off failed: %s",
                 rigerror(ret));
 
-    rig_close(rig);
-    rig_cleanup(rig);
+    if (radio_h->rig)
+    {
+        rig_close((RIG *) radio_h->rig);
+        rig_cleanup((RIG *) radio_h->rig);
+    }
+    trxv1_free(radio_h->trxv1);
     RIG_UNLOCK();
     radio_h->rig = NULL;
+    radio_h->trxv1 = NULL;
 }
 
 static void set_frequency(radio *radio_h, uint32_t frequency, uint32_t profile)
@@ -796,13 +1023,12 @@ static void set_frequency(radio *radio_h, uint32_t frequency, uint32_t profile)
     *radio_freq = frequency;
 
     /* Apply to rig only when this is the active profile */
-    if (profile == radio_h->profile_active_idx && radio_h->rig)
+    if (profile == radio_h->profile_active_idx && cat_up(radio_h))
     {
-        RIG *rig = (RIG *) radio_h->rig;
         RIG_LOCK();
-        int ret = rig_set_freq(rig, RIG_VFO_CURR, (freq_t) frequency);
+        int ret = cat_set_freq(radio_h, frequency);
         if (ret == RIG_OK)
-            hamlib_keep_mode(radio_h, rig, profile);
+            hamlib_keep_mode(radio_h, profile);
         RIG_UNLOCK();
         if (ret != RIG_OK)
             HLOGE(LOG_C, "set_frequency: rig_set_freq failed: %s",
@@ -833,13 +1059,12 @@ static void set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
     *radio_mode = mode;
 
     /* Apply to rig only when this is the active profile */
-    if (profile == radio_h->profile_active_idx && radio_h->rig)
+    if (profile == radio_h->profile_active_idx && cat_up(radio_h))
     {
-        RIG *rig = (RIG *) radio_h->rig;
         rmode_t hmode = mode_to_hamlib(mode,
                                        profile_data_path(&radio_h->profiles[profile]));
         RIG_LOCK();
-        int ret = rig_set_mode(rig, RIG_VFO_CURR, hmode,
+        int ret = cat_set_mode(radio_h, hmode,
                                mode_passband(hmode, &radio_h->profiles[profile]));
         if (ret != RIG_OK)
             HLOGE(LOG_C, "set_mode: rig_set_mode failed: %s",
@@ -848,8 +1073,7 @@ static void set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
          * so a bare USB<->LSB toggle moves the dial. Re-assert the profile's
          * frequency right after the mode (same lock hold) so a mode change
          * alone never changes the frequency. */
-        ret = rig_set_freq(rig, RIG_VFO_CURR,
-                           (freq_t) radio_h->profiles[profile].freq);
+        ret = cat_set_freq(radio_h, radio_h->profiles[profile].freq);
         if (ret != RIG_OK)
             HLOGE(LOG_C, "set_mode: rig_set_freq failed: %s",
                     rigerror(ret));
@@ -883,16 +1107,22 @@ static void tr_switch(radio *radio_h, bool txrx_state)
         return;
     }
 
-    if (radio_h->rig)
+    if (cat_up(radio_h))
     {
-        RIG *rig = (RIG *) radio_h->rig;
         ptt_t ptt_val = RIG_PTT_OFF;
         if (txrx_state == IN_TX)
             ptt_val = (radio_h->ptt_type == PTT_RIG_MICDATA) ? RIG_PTT_ON_DATA
                                                              : RIG_PTT_ON;
         RIG_LOCK();
-        int ret = rig_set_ptt(rig, RIG_VFO_CURR, ptt_val);
+        int ret = cat_set_ptt(radio_h, ptt_val);
         RIG_UNLOCK();
+        if (ret == -RIG_ERJCTED && radio_h->trxv1)
+        {
+            /* the trx_v1's own protection refused it */
+            RIG_LOCK();
+            trxv1_note_protection(radio_h);
+            RIG_UNLOCK();
+        }
         if (ret != RIG_OK)
         {
             HLOGE(LOG_C, "tr_switch: rig_set_ptt(%s) failed: %s",
@@ -1015,13 +1245,12 @@ static void set_digital_voice(radio *radio_h, bool digital_voice, uint32_t profi
     /* Toggling RADAE flips data_path → re-apply the rig mode so the rig
      * follows the audio source (USB ↔ PKTUSB on USB-side profiles, etc.).
      * Only meaningful for the active profile; others get applied on switch. */
-    if (profile == radio_h->profile_active_idx && radio_h->rig)
+    if (profile == radio_h->profile_active_idx && cat_up(radio_h))
     {
-        RIG *rig = (RIG *) radio_h->rig;
         rmode_t hmode = mode_to_hamlib(radio_h->profiles[profile].mode,
                                        profile_data_path(&radio_h->profiles[profile]));
         RIG_LOCK();
-        int ret = rig_set_mode(rig, RIG_VFO_CURR, hmode,
+        int ret = cat_set_mode(radio_h, hmode,
                                mode_passband(hmode, &radio_h->profiles[profile]));
         RIG_UNLOCK();
         if (ret != RIG_OK)
@@ -1084,7 +1313,7 @@ static void set_profile(radio *radio_h, uint32_t profile)
 
 static uint32_t get_fwd_power(radio *radio_h)
 {
-    if (!radio_h->rig)
+    if (!cat_up(radio_h))
         return radio_h->fwd_power;
 
     hamlib_update_measurements(radio_h);
@@ -1098,7 +1327,7 @@ static uint32_t last_ref_power(radio *radio_h) { return radio_h->ref_power; }
 
 static uint32_t get_ref_power(radio *radio_h)
 {
-    if (!radio_h || !radio_h->rig)
+    if (!cat_up(radio_h))
         return 0;
     hamlib_update_measurements(radio_h);
     return radio_h->ref_power;
@@ -1106,6 +1335,9 @@ static uint32_t get_ref_power(radio *radio_h)
 
 static uint32_t get_swr(radio *radio_h)
 {
+    if (radio_h->trxv1)
+        return hamlib_update_measurements(radio_h) ? trxv1_swr : TRXV1_SWR_SCALE;
+
     if (!radio_h->rig)
         return 10; /* 1.0 SWR */
 
@@ -1129,6 +1361,18 @@ static uint32_t get_swr(radio *radio_h)
         return 100;
 
     return (10 * (vfwd + vref)) / (vfwd - vref);
+}
+
+/* The trx_v1 latches its own SWR protection (trxv1_note_protection). */
+static void hl_reset_protection(radio *radio_h)
+{
+    if (!radio_h->trxv1)
+        return;
+    RIG_LOCK();
+    int ret = trxv1_reset_protection(radio_h->trxv1);
+    RIG_UNLOCK();
+    if (ret != TRXV1_OK)
+        HLOGE(LOG_C, "resetting the trx_v1's SWR protection: %s", trxv1_strerror(ret));
 }
 
 static bool update_power_measurements(radio *radio_h)
@@ -1172,10 +1416,9 @@ static void swr_protection_check(radio *radio_h)
  * value is still what's restored on restart. */
 static void hamlib_poll_vfo_state(radio *radio_h)
 {
-    RIG *rig = (RIG *) radio_h->rig;
     uint32_t profile = radio_h->profile_active_idx;
 
-    if (!rig || profile >= radio_h->profiles_count)
+    if (!cat_up(radio_h) || profile >= radio_h->profiles_count)
         return;
 
     freq_t    hfreq = 0;
@@ -1183,8 +1426,8 @@ static void hamlib_poll_vfo_state(radio *radio_h)
     pbwidth_t width = 0;
 
     RIG_LOCK();
-    int fr = rig_get_freq(rig, RIG_VFO_CURR, &hfreq);
-    int mr = rig_get_mode(rig, RIG_VFO_CURR, &hmode, &width);
+    int fr = cat_get_freq(radio_h, &hfreq);
+    int mr = cat_get_mode(radio_h, &hmode, &width);
     RIG_UNLOCK();
     cat_note(&cat_freq_failing, fr);
 
@@ -1231,7 +1474,7 @@ static void hamlib_cat_watch(radio *radio_h)
     int64_t now = monotonic_ms();
     int64_t freq_since = cat_freq_failing, ptt_since = cat_ptt_failing;
 
-    if (!rig)
+    if (!cat_up(radio_h))
         return;
     if (tries)
     {
@@ -1248,11 +1491,18 @@ static void hamlib_cat_watch(radio *radio_h)
                 radio_h->rig_pathname, CAT_LOST_MS / 1000);
     }
 
+    int ret;
     RIG_LOCK();
-    rig_close(rig);
-    int ret = hamlib_open(rig, cat_defaulted);
+    if (rig)
+    {
+        rig_close(rig);
+        ret = hamlib_open(rig, cat_defaulted);
+    }
+    else
+        /* resets the Nano: a few seconds, with every other CAT call waiting */
+        ret = trxv1_rc(trxv1_connect(radio_h->trxv1));
     if (ret == RIG_OK)
-        ret = rig_set_ptt(rig, RIG_VFO_CURR, RIG_PTT_OFF);
+        ret = cat_set_ptt(radio_h, RIG_PTT_OFF);
     RIG_UNLOCK();
 
     tries++;
@@ -2045,16 +2295,15 @@ static int hl_set_width(radio *radio_h, uint32_t hz)
  * back rather than the daemon's internal MODE_USB flattened to "USB". */
 static int hl_get_mode_name(radio *radio_h, char *out, size_t out_len, uint32_t *width)
 {
-    RIG *rig = hl_rig(radio_h);
     rmode_t rmode = RIG_MODE_NONE;
     pbwidth_t pb = 0;
     int ret;
 
-    if (!rig || !out || out_len == 0)
+    if (!cat_up(radio_h) || !out || out_len == 0)
         return RADIO_CTRL_EINVAL;
 
     RIG_LOCK();
-    ret = rig_get_mode(rig, RIG_VFO_CURR, &rmode, &pb);
+    ret = cat_get_mode(radio_h, &rmode, &pb);
     RIG_UNLOCK();
     if (ret != RIG_OK)
         return hl_rc(ret);
@@ -2073,11 +2322,10 @@ static int hl_get_mode_name(radio *radio_h, char *out, size_t out_len, uint32_t 
  * silently re-route the station's audio. */
 static int hl_set_mode_name(radio *radio_h, const char *mode, uint32_t width)
 {
-    RIG *rig = hl_rig(radio_h);
     rmode_t rmode;
     int ret;
 
-    if (!rig || !mode || !*mode)
+    if (!cat_up(radio_h) || !mode || !*mode)
         return RADIO_CTRL_EINVAL;
 
     rmode = rig_parse_mode(mode);
@@ -2085,7 +2333,7 @@ static int hl_set_mode_name(radio *radio_h, const char *mode, uint32_t width)
         return RADIO_CTRL_EINVAL;
 
     RIG_LOCK();
-    ret = rig_set_mode(rig, RIG_VFO_CURR, rmode,
+    ret = cat_set_mode(radio_h, rmode,
                        width ? (pbwidth_t) width : RIG_PASSBAND_NORMAL);
     RIG_UNLOCK();
     if (ret != RIG_OK)
@@ -2418,16 +2666,45 @@ static int hl_cat_raw(radio *radio_h, const uint8_t *req, size_t req_len,
     return RADIO_CTRL_OK;
 }
 
+/* What the trx_v1 has, as a rigctld client is told (Hamlib has no model
+ * for it): HF, USB and LSB (the data modes on them, see trxv1_mode), 1 Hz
+ * steps, CAT PTT, no levels or functions over CAT. The uBitx v6 receives
+ * 0.5-30 MHz and transmits about 10 W. */
+#define TRXV1_MODES  (RIG_MODE_USB | RIG_MODE_LSB | RIG_MODE_PKTUSB | RIG_MODE_PKTLSB)
+#define TRXV1_RX_MIN kHz(500)
+#define TRXV1_RX_MAX MHz(30)
+#define TRXV1_TX_MIN MHz(1.8)
+#define TRXV1_TX_MAX MHz(30)
+#define TRXV1_TX_W   W(10)
+#define TRXV1_STEP   Hz(1)
+
+static const struct rig_caps trxv1_caps = {
+    .rig_model = RIG_MODEL_NONE,
+    .rx_range_list1 = {
+        { .startf = TRXV1_RX_MIN, .endf = TRXV1_RX_MAX, .modes = TRXV1_MODES,
+          .low_power = -1, .high_power = -1, .vfo = RIG_VFO_A, .ant = RIG_ANT_1 },
+        RIG_FRNG_END,
+    },
+    .tx_range_list1 = {
+        { .startf = TRXV1_TX_MIN, .endf = TRXV1_TX_MAX, .modes = TRXV1_MODES,
+          .low_power = TRXV1_TX_W, .high_power = TRXV1_TX_W,
+          .vfo = RIG_VFO_A, .ant = RIG_ANT_1 },
+        RIG_FRNG_END,
+    },
+    .tuning_steps = { { TRXV1_MODES, TRXV1_STEP }, RIG_TS_END },
+};
+
 static int hl_dump_state(radio *radio_h, char *out, size_t out_len)
 {
     RIG *rig = hl_rig(radio_h);
     size_t off = 0;
     int region = 1;
+    const struct rig_caps *caps = radio_h && radio_h->trxv1 ? &trxv1_caps
+                                : rig ? rig->caps : NULL;
 
-    if (!rig || !rig->caps || !out || out_len == 0)
+    if (!caps || !out || out_len == 0)
         return RADIO_CTRL_ENOTSUP;
 
-    const struct rig_caps *caps = rig->caps;
     const freq_range_t *rx = caps->rx_range_list1;
     const freq_range_t *tx = caps->tx_range_list1;
 
@@ -2524,6 +2801,7 @@ const radio_backend_ops hamlib_backend_ops = {
     .last_fwd_power          = last_fwd_power,
     .last_ref_power          = last_ref_power,
     .get_swr                 = get_swr,
+    .reset_protection        = hl_reset_protection,
 
     .get_level               = hl_get_level,
     .set_level               = hl_set_level,

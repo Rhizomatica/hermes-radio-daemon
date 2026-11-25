@@ -13,6 +13,9 @@
  *      A normal client logged "unknown value returned from
  *      netrigctl_transaction=9" -- 9 being the length of that string.
  *
+ *   3. "\get_lock_mode" answered "RPRT -11". rig_set_mode asks for it
+ *      first; the client then stalled 20 s and dropped the set_mode.
+ *
  * Copyright (C) 2026 Rhizomatica
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
@@ -134,6 +137,26 @@ static void test_quit_replies_and_closes(void)
 }
 
 /* "\chk_vfo" must answer a bare value, not the extended "CHKVFO n" form. */
+/* "\get_lock_mode" answers a bare 0 (never locked); turning it off is
+ * accepted, on is not available. */
+static void test_lock_mode_is_off(void)
+{
+    int fd = connect_server();
+    char buf[128];
+
+    send_line(fd, "\\get_lock_mode\n");
+    TEST_ASSERT_GREATER_THAN_INT64(0, read_line(fd, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("0\n", buf, "hamlib's rig_set_mode stalls 20 s and drops the mode without it");
+    send_line(fd, "\\set_lock_mode 0\n");
+    TEST_ASSERT_GREATER_THAN_INT64(0, read_line(fd, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("RPRT 0\n", buf);
+    send_line(fd, "\\set_lock_mode 1\n");
+    TEST_ASSERT_GREATER_THAN_INT64(0, read_line(fd, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("RPRT -11\n", buf);
+    close(fd);
+    printf("  lock mode reads 0, cannot be set ..... ok\n");
+}
+
 static void test_chk_vfo_is_a_bare_value(void)
 {
     int fd = connect_server();
@@ -266,6 +289,7 @@ int main(void)
     UNITY_BEGIN();
     RUN_TEST(test_ordinary_and_unknown);
     RUN_TEST(test_chk_vfo_is_a_bare_value);
+    RUN_TEST(test_lock_mode_is_off);
     RUN_TEST(test_quit_replies_and_closes);
     RUN_TEST(test_ptt_released_when_keyer_disconnects);
     RUN_TEST(test_ptt_kept_for_other_clients);

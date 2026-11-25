@@ -86,6 +86,9 @@ void radio_backend_set_bfo(radio *radio_h, uint32_t f)
 void radio_backend_set_reflected_threshold(radio *radio_h, uint32_t t)
 { backend_call.ref_threshold = t; radio_h->reflected_threshold = t; }
 
+void radio_backend_reset_protection(radio *radio_h)
+{ radio_h->swr_protection_enabled = false; }
+
 void radio_backend_set_speaker_volume(radio *radio_h, uint32_t v, uint32_t p)
 { backend_call.speaker_level = v; backend_call.profile = p;
   if (p < radio_h->profiles_count) radio_h->profiles[p].speaker_level = v; }
