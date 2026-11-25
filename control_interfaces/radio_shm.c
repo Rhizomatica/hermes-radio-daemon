@@ -758,7 +758,12 @@ bool shm_controller_init(radio *radio_h, pthread_t *shm_tid)
 
     connector_local = connector;
 
-    return pthread_create(shm_tid, NULL, process_radio_command_thread, (void *) connector) == 0;
+    if (pthread_create(shm_tid, NULL, process_radio_command_thread, (void *) connector) != 0)
+    {
+        HLOGE(LOG_C, "cannot start the hermes_shm command thread");
+        return false;
+    }
+    return true;
 }
 
 void shm_controller_shutdown(pthread_t *shm_tid)
