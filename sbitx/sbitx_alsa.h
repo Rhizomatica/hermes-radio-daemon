@@ -63,7 +63,13 @@ void set_speaker_level(uint32_t speaker_level);
 void set_tx_level(uint32_t tx_level);
 
 void sound_mixer(char *card_name, char *element, int make_on);
-void clear_buffers();
+/* At a T/R switch: empty the loopback cable's rings (never the codec's). */
+void clear_loopback_buffers(void);
+
+/* The codec's radio channel as the DSP takes it: mono S32. */
+#define RADIO_FRAME_BYTES 4
+/* Captured radio samples (frames) waiting for the DSP. */
+uint32_t sound_rx_queued_frames(void);
 
 /* Audio already queued towards the transmitter, in ms (see sbitx_alsa.c). */
 uint32_t sound_tx_pipeline_ms(void);
