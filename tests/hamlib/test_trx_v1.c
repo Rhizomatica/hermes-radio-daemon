@@ -162,49 +162,49 @@ static size_t fw_reply_v22(const uint8_t *cmd, uint8_t *r)
 
     switch (cmd[4])
     {
-    case V22_PTT_ON:
+    case TRXV1_PTT_ON:
         fw.ptt_on++;
-        if (fw.protect)      r[0] = V22_ALERT_PROTECTION_ON;
-        else if (!fw.in_tx) { r[0] = V22_RESP_PTT_ON_ACK; fw.in_tx = true; }
-        else                 r[0] = V22_RESP_PTT_ON_NACK;
+        if (fw.protect)      r[0] = TRXV1_ALERT_PROTECTION_ON;
+        else if (!fw.in_tx) { r[0] = TRXV1_RESP_PTT_ON_ACK; fw.in_tx = true; }
+        else                 r[0] = TRXV1_RESP_PTT_ON_NACK;
         return 1;
-    case V22_PTT_OFF:
+    case TRXV1_PTT_OFF:
         fw.ptt_off++;
-        if (fw.protect)      r[0] = V22_ALERT_PROTECTION_ON;
-        else if (fw.in_tx) { r[0] = V22_RESP_PTT_OFF_ACK; fw.in_tx = false; }
-        else                 r[0] = V22_RESP_PTT_OFF_NACK;
+        if (fw.protect)      r[0] = TRXV1_ALERT_PROTECTION_ON;
+        else if (fw.in_tx) { r[0] = TRXV1_RESP_PTT_OFF_ACK; fw.in_tx = false; }
+        else                 r[0] = TRXV1_RESP_PTT_OFF_NACK;
         return 1;
-    case V22_RESET_PROTECTION:
+    case TRXV1_RESET_PROTECTION:
         fw.resets++;
         fw.protect = false;
-        r[0] = V22_RESP_RESET_PROTECTION_ACK;
+        r[0] = TRXV1_RESP_RESET_PROTECTION_ACK;
         return 1;
-    case V22_GET_FREQ:
-        r[0] = V22_RESP_GET_FREQ_ACK; put32(r + 1, fw.freq);
+    case TRXV1_GET_FREQ:
+        r[0] = TRXV1_RESP_GET_FREQ_ACK; put32(r + 1, fw.freq);
         return 5;
-    case V22_SET_FREQ:
-        fw.freq = arg; r[0] = V22_RESP_SET_FREQ_ACK;
+    case TRXV1_SET_FREQ:
+        fw.freq = arg; r[0] = TRXV1_RESP_SET_FREQ_ACK;
         return 1;
-    case V22_SET_MODE:
-        fw.usb = !(cmd[0] == 0x00 || cmd[0] == 0x03); r[0] = V22_RESP_SET_MODE_ACK;
+    case TRXV1_SET_MODE:
+        fw.usb = !(cmd[0] == 0x00 || cmd[0] == 0x03); r[0] = TRXV1_RESP_SET_MODE_ACK;
         return 1;
-    case V22_GET_MODE:
-        r[0] = fw.usb ? V22_RESP_GET_MODE_USB : V22_RESP_GET_MODE_LSB;
+    case TRXV1_GET_MODE:
+        r[0] = fw.usb ? TRXV1_RESP_GET_MODE_USB : TRXV1_RESP_GET_MODE_LSB;
         return 1;
-    case V22_GET_TXRX_STATUS:
-        r[0] = fw.in_tx ? V22_RESP_GET_TXRX_INTX : V22_RESP_GET_TXRX_INRX;
+    case TRXV1_GET_TXRX_STATUS:
+        r[0] = fw.in_tx ? TRXV1_RESP_GET_TXRX_INTX : TRXV1_RESP_GET_TXRX_INRX;
         return 1;
-    case V22_GET_PROTECTION_STATUS:
-        r[0] = fw.protect ? V22_RESP_GET_PROTECTION_ON : V22_RESP_GET_PROTECTION_OFF;
+    case TRXV1_GET_PROTECTION_STATUS:
+        r[0] = fw.protect ? TRXV1_RESP_GET_PROTECTION_ON : TRXV1_RESP_GET_PROTECTION_OFF;
         return 1;
-    case V22_GET_FWD:       /* as seen on a radio: the padding is the frequency's */
-        r[0] = V22_RESP_GET_FWD_ACK; put32(r + 1, (fw.freq & 0xFFFF0000u) | fw.fwd);
+    case TRXV1_GET_FWD:       /* as seen on a radio: the padding is the frequency's */
+        r[0] = TRXV1_RESP_GET_FWD_ACK; put32(r + 1, (fw.freq & 0xFFFF0000u) | fw.fwd);
         return 5;
-    case V22_GET_REF:
-        r[0] = V22_RESP_GET_REF_ACK; put32(r + 1, (fw.freq & 0xFFFF0000u) | fw.ref);
+    case TRXV1_GET_REF:
+        r[0] = TRXV1_RESP_GET_REF_ACK; put32(r + 1, (fw.freq & 0xFFFF0000u) | fw.ref);
         return 5;
     default:
-        r[0] = V22_RESP_WRONG_COMMAND;
+        r[0] = TRXV1_RESP_WRONG_COMMAND;
         return 1;
     }
 }
