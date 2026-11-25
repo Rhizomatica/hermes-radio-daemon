@@ -65,20 +65,6 @@ static bool tx_bands_rewritten;
 #define TRANSPORT_PREFER_DEFAULT "nncp"
 extern _Atomic bool shutdown_;
 
-static int cfg_getint_alias(dictionary *ini,
-                            const char *primary,
-                            const char *fallback,
-                            int default_value)
-{
-    if (primary && iniparser_find_entry(ini, primary))
-        return iniparser_getint(ini, primary, default_value);
-
-    if (fallback && iniparser_find_entry(ini, fallback))
-        return iniparser_getint(ini, fallback, default_value);
-
-    return default_value;
-}
-
 static const char *cfg_getstring_alias(dictionary *ini,
                                        const char *primary,
                                        const char *fallback,
@@ -592,9 +578,10 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     radio_h->backend_kind = cfg_backend_kind_from_string(
         iniparser_getstring(ini, "main:radio_backend", "hamlib"));
 
-    /* Hamlib rig model */
-    i = cfg_getint_alias(ini, "main:radio_model", "main:hamlib_model", 1);
-    radio_h->hamlib_model = i;
+    /* Hamlib rig model, or trx_v1 (RADIO_MODEL_TRXV1) */
+    s = cfg_getstring_alias(ini, "main:radio_model", "main:hamlib_model", "1");
+    radio_h->hamlib_model = !strcasecmp(s, RADIO_MODEL_TRXV1_NAME)
+                            ? RADIO_MODEL_TRXV1 : (int) strtol(s, NULL, 0);
 
     /* Rig port */
     s = cfg_getstring_alias(ini, "main:rig_pathname", "main:rig_path", "");

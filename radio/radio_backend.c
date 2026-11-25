@@ -555,6 +555,16 @@ uint32_t radio_backend_get_swr(radio *radio_h)
     return 10;
 }
 
+void radio_backend_reset_protection(radio *radio_h)
+{
+    const radio_backend_ops *ops = radio_backend_ops_from_radio(radio_h);
+    if (!radio_h)
+        return;
+    if (ops && ops->reset_protection)
+        ops->reset_protection(radio_h);
+    radio_h->swr_protection_enabled = false;
+}
+
 /* ── generic control dispatch ─────────────────────────────────────────
  * A backend that does not implement an op simply leaves the slot NULL and
  * the control reports "not supported" rather than lying with a fake value.

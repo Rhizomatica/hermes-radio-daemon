@@ -69,6 +69,7 @@ DAEMON_TOP_OBJS = radio_daemon.o \
                   radio/radio_pipeline.o \
                   hamlib/radio_hamlib.o \
                   hamlib/hamlib_digi.o \
+                  hamlib/trx_v1.o \
                   control_interfaces/rig_server.o \
                   control_interfaces/cat_server.o \
                   radio/radio_media.o \

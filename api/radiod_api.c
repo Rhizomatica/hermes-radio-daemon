@@ -430,7 +430,7 @@ int radiod_api_ptt(long conn_id, bool on)
 void radiod_api_reset_protection(void)
 {
     if (s_radio)
-        s_radio->swr_protection_enabled = false;
+        radio_backend_reset_protection(s_radio);
 }
 
 int radiod_api_tx_calibrate(bool start)

@@ -210,6 +210,12 @@ typedef enum {
 #define PTT_GPIO        6
 #define PTT_RIG_MICDATA 7
 
+/* main:radio_model = trx_v1: the HERMES trx_v1 (uBitx v6), whose CAT
+ * protocol Hamlib does not know, on the hamlib backend with radiod's own
+ * driver (hamlib/trx_v1.h). Not a Hamlib model number: those are positive. */
+#define RADIO_MODEL_TRXV1      (-1)
+#define RADIO_MODEL_TRXV1_NAME "trx_v1"
+
 typedef enum {
     RADIO_BACKEND_HAMLIB    = 0,
     RADIO_BACKEND_HFSIGNALS = 1,
@@ -305,13 +311,16 @@ typedef struct {
     _Atomic(const struct radio_pipeline_descriptor *) pipeline;
 
     /* ── hamlib backend ──────────────────────────────────────────── */
-    int  hamlib_model;
+    int  hamlib_model;                /* a Hamlib model, or RADIO_MODEL_TRXV1 */
     char rig_pathname[256];
     int  serial_rate;
     int  ptt_type;
     char ptt_pathname[256];
     char hamlib_conf[256];            /* extra Hamlib settings, "key=value,..." (rigctl --set-conf) */
     void *rig;                        /* hamlib RIG* (opaque) */
+    /* With RADIO_MODEL_TRXV1, radiod's own CAT driver (hamlib/trx_v1.h,
+     * a trxv1*) in place of libhamlib's, and rig stays NULL. */
+    void *trxv1;
 
     /* ── sbitx hardware backend ──────────────────────────────────── */
     char i2c_device[64];

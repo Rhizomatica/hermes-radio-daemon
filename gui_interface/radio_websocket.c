@@ -646,7 +646,7 @@ static void handle_ws_command(radio *radio_h, ws_conn_t *c,
         return;
     }
 
-    if (!strcmp(cmd, "reset_protection")) { radio_h->swr_protection_enabled = false; send_cmd_result(c, cmd, true, "OK"); return; }
+    if (!strcmp(cmd, "reset_protection")) { radio_backend_reset_protection(radio_h); send_cmd_result(c, cmd, true, "OK"); return; }
     if (!strcmp(cmd, "reset_timeout"))    { radio_backend_reset_timeout_timer();     send_cmd_result(c, cmd, true, "OK"); return; }
 
     if (!strcmp(cmd, "get_bfo")) { send_value_number(c, cmd, radio_h->bfo_frequency); return; }

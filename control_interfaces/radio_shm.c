@@ -229,7 +229,7 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
 
     case CMD_RESET_PROTECTION:
         response[0] = CMD_RESP_ACK;
-        radio_h->swr_protection_enabled = false;
+        radio_backend_reset_protection(radio_h);
         break;
 
     case CMD_TIMEOUT_RESET:

@@ -49,7 +49,7 @@ hermes-radio-daemon/
 │   ├── radio_controls.c     Hamlib-named levels/funcs/parms surface
 │   ├── radio_pipeline.c     Per-backend capability descriptor
 │   └── radio_media.c        Audio rings, WAV recording, spectrum FFT
-├── hamlib/                  Hamlib backend (radio_hamlib, digital modes over a rig codec)
+├── hamlib/                  Hamlib backend (radio_hamlib, digital modes over a rig codec; trx_v1 CAT driver)
 ├── sbitx/                   HF Signals hardware backend (GPIO, I2C, Si5351, ALSA, encoders)
 ├── dsp/                     SSB DSP, FM/AM demodulators, DRM, digital modes, voice codecs
 ├── modem/                   Radio <-> data modem audio: modem_audio (8 kHz, PTT_SRC_MODEM)
@@ -301,7 +301,8 @@ radio_backend = hfsignals       ; hfsignals or hamlib
 ; Hardware profile: sbitx or zbitx (GPIO layout, BFO frequency, TR switching)
 hw_profile = sbitx              ; hfsignals only
 
-; Hamlib model (only for hamlib backend)
+; Hamlib model (only for hamlib backend), or trx_v1 for the HERMES trx_v1
+; (radiod's own CAT driver, see "HERMES trx_v1" below)
 radio_model = 3070              ; IC-7100; see rigctl -l for full list
 
 ; BFO frequency in Hz (defaults to per-profile value: 40035000 sbitx, 40048000 zbitx)
@@ -1414,6 +1415,45 @@ Set `hw_profile = zbitx` in `core.ini` to enable zBitx-specific GPIO handling:
 - Extra pins: `ZBITX_RX_LINE` (GPIO 15), `ZBITX_LPF_E` (GPIO 12)
 - Different BFO frequency: 40048000 Hz (vs 40035000 for sbitx)
 - Modified TX/RX switching sequence (RX line polarity before TX line)
+
+## HERMES trx_v1
+
+The trx_v1 is Rhizomatica's HF transceiver on the uBitx v6. Its Arduino
+firmware (hermes-net's `trx_v1-firmware`) has a CAT protocol of its own,
+which Hamlib does not know, so radiod speaks it itself (`hamlib/trx_v1.c`)
+in place of libhamlib. Everything else is the `hamlib` backend's, as for any
+rig: the sound card, PTT ownership, profiles, the API, the rigctld server.
+Stop hermes-net's `ubitx` service (`ubitx_controller`) first: only one
+program can hold the port.
+
+```ini
+[main]
+radio_backend = hamlib
+radio_model = trx_v1
+rig_pathname = /dev/ttyUSB0         ; the Nano; better its /dev/serial/by-id/ name
+capture_device = hw:CARD=Device,DEV=0
+playback_device = hw:CARD=Device,DEV=0
+```
+
+- **The link.** 38400 8N1 (`serial_rate` and `ptt_type` are not used).
+  Opening the port resets the Nano, so radiod's start and a reopen take a
+  few seconds while its bootloader runs. A radio that stops answering is
+  reopened as a Hamlib rig is.
+- **Frequency, sideband and PTT.** The radio has USB and LSB only, and every
+  mode goes out on one of them: a data profile's PKTUSB is USB, and reads
+  back as PKTUSB while the radio stays there.
+- **No power control.** The radio has none over CAT: the power knob is kept
+  in the profile but changes nothing. The level of the audio into the radio
+  sets the power.
+- **Metering.** The firmware's forward and reflected detectors, read while
+  transmitting. SWR comes from the two, so radiod's own SWR protection
+  (`reflected_threshold`) works as on any rig. Forward power is not
+  calibrated in watts: it is reported as for a rig whose meter is a fraction
+  of full scale (per mille of the forward detector's full scale).
+- **The firmware's SWR protection.** The firmware also unkeys by itself when
+  the reflected reading stays over its own threshold (in its EEPROM), and
+  will not key again until reset. radiod's protection flag follows it, and
+  `reset_protection` (websocket, API, hermes_shm) resets both.
 
 ## Rigctld-Compatible Server
 
