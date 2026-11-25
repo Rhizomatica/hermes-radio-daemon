@@ -435,6 +435,26 @@ static int rig_handle_line(radio *radio_h, int fd, const char *line)
         return 0;
     }
 
+    /* Hamlib's lock mode (the client may not change the mode): never on
+     * here. Hamlib 4.6's rig_set_mode asks for it first, and an "RPRT -11"
+     * stalled the client 20 s and then dropped the set_mode, so a mode
+     * change from WSJT-X or "rigctl -m 2" sometimes never reached the
+     * radio. Turning it on is not available. */
+    if (!strcmp(cmd, "\\get_lock_mode"))
+    {
+        rig_respond(fd, "0\n");
+        return 0;
+    }
+    if (!strcmp(cmd, "\\set_lock_mode"))
+    {
+        long lock = 0;
+        if (sscanf(arg, "%ld", &lock) != 1)
+            rig_respond_rprt(fd, RADIO_CTRL_EINVAL);
+        else
+            rig_respond(fd, lock ? "RPRT -11\n" : "RPRT 0\n");
+        return 0;
+    }
+
     /* Levels / functions / parameters */
     if (!strcmp(cmd, "l") || !strcmp(cmd, "\\get_level")) { handle_get_level(radio_h, fd, arg); return 0; }
     if (!strcmp(cmd, "L") || !strcmp(cmd, "\\set_level")) { handle_set_level(radio_h, fd, arg); return 0; }
