@@ -44,7 +44,7 @@ endif
 
 TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
             tests/radio/test_controls tests/radio/test_dv_codec tests/radio/test_ptt_owner \
-            tests/radio/test_profile_rules \
+            tests/radio/test_profile_rules tests/radio/test_capture_channel \
             tests/hamlib/test_hamlib_ptt tests/hamlib/test_trx_v1 tests/hamlib/test_hamlib_conf \
             tests/control_interfaces/test_rig_server \
             tests/gui_interface/test_ui_hub tests/gui_interface/test_ws_server \
@@ -119,6 +119,9 @@ tests/radio/test_controls: tests/radio/test_controls.c radio/radio_controls.c ra
                            control_interfaces/cat_server.h common/cfg_utils.c common/cfg_utils.h radio/radio.h
 	$(CC) $(TEST_CFLAGS) $< control_interfaces/rig_server.c control_interfaces/cat_server.c \
 	      $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -liniparser -lpthread -lm
+
+tests/radio/test_capture_channel: tests/radio/test_capture_channel.c radio/radio_media.h
+	$(CC) $(TEST_CFLAGS) $< $(UNITY_SRC) -o $@
 
 tests/radio/test_dv_codec: tests/radio/test_dv_codec.c common/cfg_utils.c common/cfg_utils.h \
                            radio/radio_backend.c radio/radio_backend.h radio/radio.h

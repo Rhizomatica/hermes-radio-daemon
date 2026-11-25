@@ -250,7 +250,7 @@ static void recording_destroy(wav_recording *rec)
 }
 
 static snd_pcm_t *open_pcm_device(const char *device, snd_pcm_stream_t stream,
-                                  uint32_t sample_rate)
+                                  uint32_t sample_rate, unsigned channels)
 {
     snd_pcm_t *pcm = NULL;
     int err = snd_pcm_open(&pcm, device, stream, 0);
@@ -287,7 +287,7 @@ static snd_pcm_t *open_pcm_device(const char *device, snd_pcm_stream_t stream,
     if ((err = snd_pcm_hw_params_any(pcm, hw)) < 0 ||
         (err = snd_pcm_hw_params_set_access(pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0 ||
         (err = snd_pcm_hw_params_set_format(pcm, hw, SND_PCM_FORMAT_S16_LE)) < 0 ||
-        (err = snd_pcm_hw_params_set_channels(pcm, hw, 1)) < 0 ||
+        (err = snd_pcm_hw_params_set_channels(pcm, hw, channels)) < 0 ||
         (err = snd_pcm_hw_params_set_rate_near(pcm, hw, &rate, 0)) < 0 ||
         (err = snd_pcm_hw_params_set_period_time_near(pcm, hw, &period_time, 0)) < 0 ||
         (err = snd_pcm_hw_params_set_buffer_time_near(pcm, hw, &buffer_time, 0)) < 0 ||
@@ -339,11 +339,12 @@ static void media_bus_unlock(radio *radio_h)
 
 /* open_pcm_device serialised against CAT (see media_bus_lock). */
 static snd_pcm_t *open_pcm_bus(radio *radio_h, const char *device,
-                               snd_pcm_stream_t stream, uint32_t rate)
+                               snd_pcm_stream_t stream, uint32_t rate,
+                               unsigned channels)
 {
     snd_pcm_t *pcm;
     media_bus_lock(radio_h);
-    pcm = open_pcm_device(device, stream, rate);
+    pcm = open_pcm_device(device, stream, rate, channels);
     media_bus_unlock(radio_h);
     return pcm;
 }
@@ -438,7 +439,11 @@ static void *capture_thread(void *ctx_v)
     uint32_t ring_rate   = radio_h->audio_sample_rate ? radio_h->audio_sample_rate : 48000;
     uint32_t native_rate = radio_h->rig_audio_rate ? radio_h->rig_audio_rate : ring_rate;
     uint32_t frames = radio_h->audio_period_size ? radio_h->audio_period_size : DEFAULT_PERIOD_FRAMES;
-    int16_t *buffer = calloc(frames, sizeof(int16_t));
+    /* one channel of a stereo codec (main:capture_channel), or mono, ALSA
+     * averaging the two (stereo) */
+    unsigned channels = radio_h->capture_channel == CAPTURE_CHANNEL_STEREO ? MEDIA_MONO : MEDIA_STEREO;
+    unsigned pick = radio_h->capture_channel == CAPTURE_CHANNEL_RIGHT ? 1 : 0;
+    int16_t *buffer = calloc((size_t) frames * channels, sizeof(int16_t));
     snd_pcm_t *pcm;
     audio_bridge bridge;
 
@@ -452,9 +457,10 @@ static void *capture_thread(void *ctx_v)
     }
 
     pcm = NULL;   /* opened lazily below: half-duplex owns the codec only in RX */
-    HLOGI(LOG_C, "capture %s @ %u Hz -> ring @ %u Hz (half-duplex=%d)",
+    HLOGI(LOG_C, "capture %s @ %u Hz -> ring @ %u Hz (half-duplex=%d, channel %s)",
             radio_h->capture_device, native_rate, ring_rate,
-            (int) radio_h->audio_half_duplex);
+            (int) radio_h->audio_half_duplex,
+            channels == MEDIA_MONO ? "stereo" : pick ? "right" : "left");
 
     int hard_errors = 0;
     while (!shutdown_)
@@ -491,7 +497,7 @@ static void *capture_thread(void *ctx_v)
             if (shutdown_)
                 break;
             pcm = open_pcm_bus(radio_h, radio_h->capture_device,
-                               SND_PCM_STREAM_CAPTURE, native_rate);
+                               SND_PCM_STREAM_CAPTURE, native_rate, channels);
             if (!pcm)
             {
                 if (hard_errors < 1000)
@@ -547,6 +553,8 @@ static void *capture_thread(void *ctx_v)
         /* Success: clear the failure streak. Pushes to rx_audio_ring at ring_rate
          * (after resample), taps recording and feeds the spectrum FFT. */
         hard_errors = 0;
+        if (channels == MEDIA_STEREO)
+            media_pick_channel(buffer, (size_t) got, pick);
         audio_bridge_push_rx_native(&bridge, radio_h, buffer, (size_t) got);
     }
 
@@ -623,7 +631,7 @@ static void *playback_thread(void *ctx_v)
             if (shutdown_)
                 break;
             pcm = open_pcm_bus(radio_h, radio_h->playback_device,
-                               SND_PCM_STREAM_PLAYBACK, native_rate);
+                               SND_PCM_STREAM_PLAYBACK, native_rate, MEDIA_MONO);
             if (!pcm)
             {
                 if (hard_errors < 1000)

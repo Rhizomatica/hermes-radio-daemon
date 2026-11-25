@@ -801,6 +801,22 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     i = iniparser_getint(ini, "main:rig_audio_rate", 0);
     radio_h->rig_audio_rate = (uint32_t) i;
 
+    /* Which channel of a stereo rig codec is the radio, named as mercury's
+     * main:capture_channel: left, right, or stereo (both averaged, radiod's
+     * behaviour before the setting). A PC sound card's line input may have
+     * the radio on one channel only, and averaging in the other buried it. */
+    s = iniparser_getstring(ini, "main:capture_channel", "stereo");
+    if (!strcasecmp(s, "left"))
+        radio_h->capture_channel = CAPTURE_CHANNEL_LEFT;
+    else if (!strcasecmp(s, "right"))
+        radio_h->capture_channel = CAPTURE_CHANNEL_RIGHT;
+    else
+    {
+        if (strcasecmp(s, "stereo"))
+            HLOGW(LOG_C, "main:capture_channel '%s' is not left, right or stereo: using stereo", s);
+        radio_h->capture_channel = CAPTURE_CHANNEL_STEREO;
+    }
+
     /* 480 samples = 10 ms at 48 kHz; also ≥ SPECTRUM_FFT_SIZE so the spectrum
      * waterfall stays alive on the daemon audio bridge. */
     i = iniparser_getint(ini, "main:audio_period_size", 480);
