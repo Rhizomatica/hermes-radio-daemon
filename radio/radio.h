@@ -27,9 +27,10 @@
 #define CFG_USER_PATH "/etc/hermes/user.ini"
 
 /* main:capture_channel */
-#define CAPTURE_CHANNEL_STEREO   0
-#define CAPTURE_CHANNEL_LEFT  1
-#define CAPTURE_CHANNEL_RIGHT 2
+#define CAPTURE_CHANNEL_STEREO 0
+#define CAPTURE_CHANNEL_LEFT   1
+#define CAPTURE_CHANNEL_RIGHT  2
+
 #define CFG_WEBSOCKET_PATH "/etc/hermes/web"
 #define CFG_SSL_CERT "/etc/ssl/certs/hermes.radio.crt"
 #define CFG_SSL_KEY "/etc/ssl/private/hermes.radio.key"
