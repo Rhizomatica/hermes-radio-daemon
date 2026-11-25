@@ -26,8 +26,9 @@
 #include <pthread.h>
 #include "radio.h"
 
-/* Initialize the SHM controller interface and start the command thread */
-void shm_controller_init(radio *radio_h, pthread_t *shm_tid);
+/* Initialize the SHM controller interface and start the command thread.
+ * False (no thread started) when no segment could be had. */
+bool shm_controller_init(radio *radio_h, pthread_t *shm_tid);
 
 /* Signal the command thread to exit and wait for it to join */
 void shm_controller_shutdown(pthread_t *shm_tid);

@@ -133,11 +133,17 @@ uint32_t radio_backend_last_ref_power(radio *radio_h) { return radio_h->ref_powe
 static bool timeout_reset_called;
 void radio_backend_reset_timeout_timer(void) { timeout_reset_called = true; }
 
-bool shm_is_created(key_t k, size_t s) { (void) k; (void) s; return false; }
-bool shm_create(key_t k, size_t s)     { (void) k; (void) s; return true; }
-bool shm_destroy(key_t k, size_t s)    { (void) k; (void) s; return true; }
+/* One SysV segment, as shmget() treats it: asking for more than its size
+ * fails. seg_size 0 is no segment. */
+static size_t seg_size;
+static int seg_destroys;
+bool shm_is_created(key_t k, size_t s) { (void) k; return seg_size && s <= seg_size; }
+bool shm_create(key_t k, size_t s)
+{ (void) k; if (seg_size) return false; seg_size = s; return true; }
+bool shm_destroy(key_t k, size_t s)
+{ (void) k; if (!seg_size || s > seg_size) return false; seg_size = 0; seg_destroys++; return true; }
 void *shm_attach(key_t k, size_t s)
-{ static controller_conn connector; (void) k; (void) s; return &connector; }
+{ static controller_conn connector; (void) k; return seg_size && s <= seg_size ? &connector : NULL; }
 
 /* modem_audio: whether a modem keyed over RTP holds PTT, and the asks. */
 static struct { bool keyed; int calls; unsigned max_ms; } modem_stub;
@@ -306,6 +312,38 @@ static void test_shm_ptt_off_always_unkeys(void)
 
     destroy_test_radio(&radio_h);
     puts("  shm PTT off always unkeys ............ ok");
+}
+
+/* hermes-net's ubitx_controller leaves a 152-byte segment under the
+ * controller's key: it is replaced by ours, not attached to (the daemon
+ * crashed on it); a segment of our size is reused. */
+enum { UBITX_CONTROLLER_SEG_BYTES = 152 };
+
+static void test_shm_init_replaces_a_smaller_segment(void)
+{
+    radio radio_h;
+    pthread_t tid;
+
+    init_test_radio(&radio_h, RADIO_BACKEND_HAMLIB, false);
+    seg_size = UBITX_CONTROLLER_SEG_BYTES;
+    seg_destroys = 0;
+    TEST_ASSERT_TRUE(shm_controller_init(&radio_h, &tid));
+    TEST_ASSERT_EQUAL_INT64(sizeof(controller_conn), seg_size);
+    TEST_ASSERT_EQUAL_INT64(1, seg_destroys);
+    shutdown_ = true;
+    shm_controller_shutdown(&tid);
+    shutdown_ = false;
+
+    /* ours from a previous run: reused as it is */
+    TEST_ASSERT_TRUE(shm_controller_init(&radio_h, &tid));
+    TEST_ASSERT_EQUAL_INT64(1, seg_destroys);
+    shutdown_ = true;
+    shm_controller_shutdown(&tid);
+    shutdown_ = false;
+
+    seg_size = 0;
+    destroy_test_radio(&radio_h);
+    puts("  shm replaces a smaller segment ....... ok");
 }
 
 /* A modem keyed over RTP holds PTT and a client relaying the modem's own PTT
@@ -533,6 +571,7 @@ int main(void)
     RUN_TEST(test_shm_ptt_off_always_unkeys);
     RUN_TEST(test_shm_keyer_death_releases_ptt);
     RUN_TEST(test_shm_ptt_off_lets_a_modem_over_drain);
+    RUN_TEST(test_shm_init_replaces_a_smaller_segment);
     RUN_TEST(test_pipeline_follows_digital_voice);
     return UNITY_END();
 }

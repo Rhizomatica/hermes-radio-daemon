@@ -701,7 +701,7 @@ err_condattr:
     return false;
 }
 
-void shm_controller_init(radio *radio_h, pthread_t *shm_tid)
+bool shm_controller_init(radio *radio_h, pthread_t *shm_tid)
 {
     radio_h_shm = radio_h;
 
@@ -736,14 +736,29 @@ void shm_controller_init(radio *radio_h, pthread_t *shm_tid)
 
     if (!connector)
     {
-        shm_create(SYSV_SHM_CONTROLLER_KEY_STR, sizeof(controller_conn));
+        /* A segment smaller than ours under the key (hermes-net's
+         * ubitx_controller leaves a 152-byte one) is not seen above:
+         * shmget() with our size fails on it. The create then fails too, and
+         * attaching to nothing crashed the daemon. Remove it and create
+         * ours. */
+        if (!shm_create(SYSV_SHM_CONTROLLER_KEY_STR, sizeof(controller_conn)))
+        {
+            HLOGI(LOG_C, "Connector SHM key held by a segment of another size – recreating.");
+            shm_destroy(SYSV_SHM_CONTROLLER_KEY_STR, 0);
+            shm_create(SYSV_SHM_CONTROLLER_KEY_STR, sizeof(controller_conn));
+        }
         connector = shm_attach(SYSV_SHM_CONTROLLER_KEY_STR, sizeof(controller_conn));
+        if (!connector)
+        {
+            HLOGE(LOG_C, "cannot create the connector SHM segment");
+            return false;
+        }
         initialize_connector(connector);
     }
 
     connector_local = connector;
 
-    pthread_create(shm_tid, NULL, process_radio_command_thread, (void *) connector);
+    return pthread_create(shm_tid, NULL, process_radio_command_thread, (void *) connector) == 0;
 }
 
 void shm_controller_shutdown(pthread_t *shm_tid)
