@@ -310,8 +310,9 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
 
     if (radio_h.enable_shm_control)
     {
-        shm_controller_init(&radio_h, &shm_tid);
-        shm_started = true;
+        shm_started = shm_controller_init(&radio_h, &shm_tid);
+        if (!shm_started)
+            HLOGE(LOG_C, "hermes_shm control is off (see the shm log above)");
     }
 
     /* Optional local-headset path. No-op when devices aren't configured. */
