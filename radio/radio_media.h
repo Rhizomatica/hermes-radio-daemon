@@ -24,6 +24,17 @@
 
 #include "radio.h"
 
+#define MEDIA_MONO   1          /* the daemon rings' channel count */
+#define MEDIA_STEREO 2          /* a stereo codec, one channel kept */
+
+/* Keep channel `ch` (0 left, 1 right) of `frames` interleaved stereo frames,
+ * in place, as mono (main:capture_channel). */
+static inline void media_pick_channel(int16_t *buf, size_t frames, unsigned ch)
+{
+    for (size_t i = 0; i < frames; i++)
+        buf[i] = buf[MEDIA_STEREO * i + ch];
+}
+
 bool radio_media_init(radio *radio_h, pthread_t *capture_tid, pthread_t *playback_tid);
 void radio_media_shutdown(radio *radio_h, pthread_t *capture_tid, pthread_t *playback_tid);
 

@@ -25,6 +25,12 @@
 
 #define CFG_RADIO_PATH "/etc/hermes/core.ini"
 #define CFG_USER_PATH "/etc/hermes/user.ini"
+
+/* main:capture_channel */
+#define CAPTURE_CHANNEL_STEREO 0
+#define CAPTURE_CHANNEL_LEFT   1
+#define CAPTURE_CHANNEL_RIGHT  2
+
 #define CFG_WEBSOCKET_PATH "/etc/hermes/web"
 #define CFG_SSL_CERT "/etc/ssl/certs/hermes.radio.crt"
 #define CFG_SSL_KEY "/etc/ssl/private/hermes.radio.key"
@@ -554,6 +560,10 @@ typedef struct {
      * to mean "same as audio_sample_rate" (back-compat). When different, the
      * audio_bridge resamples between rig native and ring rate. */
     _Atomic uint32_t rig_audio_rate;
+    /* capture_channel: which of a stereo rig codec's channels carries the
+     * radio (CAPTURE_CHANNEL_*, mercury's names). STEREO opens the capture
+     * mono and lets ALSA average the two, as before. */
+    uint8_t capture_channel;
     _Atomic uint32_t audio_period_size;
     _Atomic uint32_t audio_queue_samples;
 
