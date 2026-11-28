@@ -42,6 +42,13 @@ static pthread_mutex_t pushed_lock = PTHREAD_MUTEX_INITIALIZER;
 static int16_t pushed[48000 * 4];
 static size_t npushed;
 
+/* the radio is nobody's (radio:owner): every keyer may key */
+bool radio_backend_ptt_free(const radio *radio_h, ptt_source src, long id)
+{
+    (void) radio_h; (void) src; (void) id;
+    return true;
+}
+
 void radio_backend_set_ptt(radio *radio_h, bool txrx_state, ptt_source src, long id)
 {
     (void) radio_h;

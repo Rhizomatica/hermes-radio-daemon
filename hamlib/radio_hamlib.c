@@ -1043,6 +1043,38 @@ static void set_frequency(radio *radio_h, uint32_t frequency, uint32_t profile)
     radio_h->cfg_user_dirty = true;
 }
 
+/* ALE's channels: the active profile tuned, not saved (radio_backend_ops.retune). */
+static bool retune(radio *radio_h, uint32_t frequency, uint16_t mode)
+{
+    uint32_t profile = radio_h->profile_active_idx;
+    radio_profile *p = &radio_h->profiles[profile];
+    if (!cat_up(radio_h))
+        return false;
+
+    vfo_poll_suppress = 15;             /* the read-back race, as set_mode */
+    const bool mode_changed = p->mode != mode;
+    p->freq = frequency;
+    p->mode = mode;
+    RIG_LOCK();
+    int ret = RIG_OK;
+    if (mode_changed)
+    {
+        rmode_t hmode = mode_to_hamlib(mode, profile_data_path(p));
+        ret = cat_set_mode(radio_h, hmode, mode_passband(hmode, p));
+    }
+    if (ret == RIG_OK)
+        ret = cat_set_freq(radio_h, frequency);
+    if (ret == RIG_OK && !mode_changed)
+        hamlib_keep_mode(radio_h, profile);
+    RIG_UNLOCK();
+    if (ret != RIG_OK)
+    {
+        HLOGE(LOG_C, "retune to %u Hz failed: %s", frequency, rigerror(ret));
+        return false;
+    }
+    return true;
+}
+
 static void set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
 {
     if (profile >= radio_h->profiles_count)
@@ -2784,6 +2816,7 @@ const radio_backend_ops hamlib_backend_ops = {
     .shutdown                = radio_hamlib_shutdown,
     .io_thread               = radio_io_thread,
     .set_frequency           = set_frequency,
+    .retune                  = retune,
     .set_mode                = set_mode,
     .set_txrx_state          = tr_switch,
     .set_bfo                 = set_bfo,

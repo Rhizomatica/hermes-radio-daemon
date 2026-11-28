@@ -36,6 +36,9 @@
 #include "webrtc/radio_webrtc.h"
 #include "beacon.h"
 #include "beacon_tx.h"
+#ifdef HAVE_ALE
+#include "ale_link.h"
+#endif
 #ifdef HAVE_MERCURY
 #include "mercury_link.h"
 #include "mercury_host.h"
@@ -259,16 +262,14 @@ int radiod_api_select_profile(uint32_t p)
         return RADIOD_API_ENOENT;
     if (s_radio->txrx_state == IN_TX)
         return RADIOD_API_EBUSY;
-    radio_backend_set_profile(s_radio, p);
-    return RADIOD_API_OK;
+    return radio_backend_set_profile(s_radio, p) ? RADIOD_API_OK : RADIOD_API_EBUSY;
 }
 
 int radiod_api_set_frequency(uint32_t p, uint32_t hz)
 {
     if (!valid_profile(p))
         return RADIOD_API_ENOENT;
-    radio_backend_set_frequency(s_radio, hz, p);
-    return RADIOD_API_OK;
+    return radio_backend_set_frequency(s_radio, hz, p) ? RADIOD_API_OK : RADIOD_API_EBUSY;
 }
 
 int radiod_api_set_mode(uint32_t p, const char *mode)
@@ -278,8 +279,7 @@ int radiod_api_set_mode(uint32_t p, const char *mode)
         return RADIOD_API_ENOENT;
     if (!mode_value(mode, &m))
         return RADIOD_API_EINVAL;
-    radio_backend_set_mode(s_radio, m, p);
-    return RADIOD_API_OK;
+    return radio_backend_set_mode(s_radio, m, p) ? RADIOD_API_OK : RADIOD_API_EBUSY;
 }
 
 int radiod_api_set_power(uint32_t p, int percent)
@@ -416,6 +416,11 @@ int radiod_api_ptt(long conn_id, bool on)
         /* PTT off stops a TX calibration too, which holds PTT itself */
         if (s_radio->tx_cal_status == TX_CAL_RUNNING) {
             radiod_api_tx_calibrate(false);
+            return RADIOD_API_OK;
+        }
+        /* and stops ALE, which holds PTT itself (the unconditional kill) */
+        if (s_radio->owner == RADIO_OWNER_ALE_FULL) {
+            atomic_store(&s_radio->ale_stop_asked, true);
             return RADIOD_API_OK;
         }
         return radio_backend_unkey_ptt(s_radio, PTT_SRC_WEBSOCKET, conn_id) ?
@@ -1096,4 +1101,117 @@ int radiod_api_ws_close(long conn_id, int code, const char *reason)
         rc = ws_server_close_conn(s_ws, conn_id, (uint16_t) code, reason);
     pthread_mutex_unlock(&s_ws_lock);
     return rc;
+}
+
+/* ── ALE ── */
+
+#ifdef HAVE_ALE
+static int ale_rc(int rc)
+{
+    switch (rc)
+    {
+    case ALE_LINK_OK:          return RADIOD_API_OK;
+    case ALE_LINK_EINVAL:
+    case ALE_LINK_ENOCHANNELS: return RADIOD_API_EINVAL;
+    case ALE_LINK_ENOTRUNNING: return RADIOD_API_ENOTSUP;
+    case ALE_LINK_EBUSY:
+    case ALE_LINK_ETIMEOUT:
+    default:                   return RADIOD_API_EBUSY;
+    }
+}
+#endif
+
+void radiod_api_ale_state_get(radiod_api_ale_state *out)
+{
+    memset(out, 0, sizeof(*out));
+    snprintf(out->state, sizeof(out->state), "OFF");
+#ifdef HAVE_ALE
+    if (!ale_link_running())
+        return;
+    ale_link_status st;
+    ale_link_get_status(&st);
+    out->running = true;
+    out->mode = st.mode;
+    snprintf(out->state, sizeof(out->state), "%s", st.state);
+    snprintf(out->self, sizeof(out->self), "%s", st.self);
+    snprintf(out->peer, sizeof(out->peer), "%s", st.peer);
+    out->frequency_hz = st.hz;
+    out->usb = st.sideband != MODE_LSB;
+    out->transmitting = st.transmitting;
+    out->link_seconds = st.link_seconds;
+    out->votes = st.votes;
+    out->channels = st.channels;
+    out->owner = st.owner;
+    out->auto_respond = s_radio && s_radio->ale_auto_respond;
+    out->samples_dropped = st.samples_dropped;
+#endif
+}
+
+int radiod_api_ale_events(uint64_t after, radiod_api_ale_event *out, int max, uint64_t *last)
+{
+#ifdef HAVE_ALE
+    if (!ale_link_running())
+        return RADIOD_API_ENOTSUP;
+    if (max <= 0)
+        return 0;
+    ale_link_event_rec rec[ALE_LINK_EVENTS_MAX];
+    size_t n = ale_link_events_since(after, rec, (size_t) max < ALE_LINK_EVENTS_MAX ? (size_t) max
+                                                 : ALE_LINK_EVENTS_MAX, last);
+    for (size_t i = 0; i < n; i++)
+    {
+        radiod_api_ale_event *o = &out[i];
+        memset(o, 0, sizeof(*o));
+        o->seq = rec[i].seq;
+        o->time_ms = rec[i].time_ms;
+        o->kind = rec[i].kind;
+        snprintf(o->peer, sizeof(o->peer), "%s", rec[i].peer);
+        snprintf(o->text, sizeof(o->text), "%s", rec[i].text);
+        o->frequency_hz = rec[i].hz;
+        o->combined = rec[i].combined;
+        o->preamble = rec[i].preamble;
+        o->unanimous = rec[i].unanimous;
+    }
+    return (int) n;
+#else
+    (void) after; (void) out; (void) max; (void) last;
+    return RADIOD_API_ENOTSUP;
+#endif
+}
+
+int radiod_api_ale_start(const char *mode)
+{
+#ifdef HAVE_ALE
+    if (!mode)
+        return RADIOD_API_EINVAL;
+    if (!strcmp(mode, "listen"))
+        return ale_rc(ale_link_set_mode(ALE_START_LISTEN));
+    if (!strcmp(mode, "scan"))
+        return ale_rc(ale_link_set_mode(ALE_START_SCAN));
+    return RADIOD_API_EINVAL;
+#else
+    (void) mode;
+    return RADIOD_API_ENOTSUP;
+#endif
+}
+
+#ifdef HAVE_ALE
+#define ALE_OR_ENOTSUP(call) return ale_rc(call)
+#else
+#define ALE_OR_ENOTSUP(call) return RADIOD_API_ENOTSUP
+#endif
+
+int radiod_api_ale_stop(void)      { ALE_OR_ENOTSUP(ale_link_set_mode(ALE_START_MONITOR)); }
+int radiod_api_ale_accept(void)    { ALE_OR_ENOTSUP(ale_link_accept()); }
+int radiod_api_ale_reject(void)    { ALE_OR_ENOTSUP(ale_link_reject()); }
+int radiod_api_ale_terminate(void) { ALE_OR_ENOTSUP(ale_link_terminate()); }
+int radiod_api_ale_sound(void)     { ALE_OR_ENOTSUP(ale_link_sound()); }
+
+int radiod_api_ale_call(const char *to, const char *amd)
+{
+#ifdef HAVE_ALE
+    return ale_rc(ale_link_call(to, amd));
+#else
+    (void) to; (void) amd;
+    return RADIOD_API_ENOTSUP;
+#endif
 }

@@ -337,8 +337,9 @@ static int rig_handle_line(radio *radio_h, int fd, const char *line)
             rig_respond_rprt(fd, RADIO_CTRL_EINVAL);
             return 0;
         }
-        radio_backend_set_frequency(radio_h, (uint32_t) val, radio_h->profile_active_idx);
-        rig_respond(fd, "RPRT 0\n");
+        rig_respond_rprt(fd, radio_backend_set_frequency(radio_h, (uint32_t) val,
+                                                         radio_h->profile_active_idx)
+                             ? RADIO_CTRL_OK : RADIO_CTRL_EBUSY);
         return 0;
     }
 
@@ -374,11 +375,15 @@ static int rig_handle_line(radio *radio_h, int fd, const char *line)
         int rc = radio_backend_set_mode_name(radio_h, modestr, w);
         if (rc == RADIO_CTRL_ENOTSUP)
         {
-            radio_backend_set_mode(radio_h, hamlib_to_mode(modestr),
-                                   radio_h->profile_active_idx);
-            if (w)
-                radio_backend_set_width(radio_h, w);
-            rc = RADIO_CTRL_OK;
+            if (!radio_backend_set_mode(radio_h, hamlib_to_mode(modestr),
+                                        radio_h->profile_active_idx))
+                rc = RADIO_CTRL_EBUSY;
+            else
+            {
+                if (w)
+                    radio_backend_set_width(radio_h, w);
+                rc = RADIO_CTRL_OK;
+            }
         }
         rig_respond_rprt(fd, rc);
         return 0;
@@ -395,6 +400,11 @@ static int rig_handle_line(radio *radio_h, int fd, const char *line)
         if (sscanf(arg, "%ld", &val) != 1)
         {
             rig_respond_rprt(fd, RADIO_CTRL_EINVAL);
+            return 0;
+        }
+        if (val != 0 && !radio_backend_ptt_free(radio_h, PTT_SRC_RIGCTLD, fd))
+        {
+            rig_respond_rprt(fd, RADIO_CTRL_EBUSY);   /* ALE owns the radio */
             return 0;
         }
         radio_backend_set_ptt(radio_h, val != 0, PTT_SRC_RIGCTLD, fd);

@@ -21,6 +21,8 @@
 DEFINE_FFF_GLOBALS;
 FAKE_VOID_FUNC(radio_backend_set_ptt, radio *, bool, ptt_source, long);
 FAKE_VOID_FUNC(radio_backend_end_ptt, radio *, ptt_source, long);
+/* the radio is nobody's (radio:owner): every keyer may key */
+FAKE_VALUE_FUNC(bool, radio_backend_ptt_free, const radio *, ptt_source, long);
 FAKE_VOID_FUNC(radio_media_push_tx_audio, radio *, const int16_t *, size_t);
 
 static size_t npushed;
@@ -54,7 +56,9 @@ void setUp(void)
     RESET_FAKE(radio_backend_set_ptt);
     RESET_FAKE(radio_backend_end_ptt);
     RESET_FAKE(radio_media_push_tx_audio);
+    RESET_FAKE(radio_backend_ptt_free);
     FFF_RESET_HISTORY();
+    radio_backend_ptt_free_fake.return_val = true;
     radio_media_push_tx_audio_fake.custom_fake = count_pushed;
     npushed = sink_a = sink_b = 0;
     modem_audio_init(&r);
@@ -186,6 +190,32 @@ static void test_end_within_drains_then_cuts(void)
     TEST_ASSERT_FALSE(modem_audio_tx_ending());
 }
 
+/* The playout counter: what has left modem_audio for the radio. */
+static void test_tx_played_counts_what_left(void)
+{
+    int16_t pcm[MODEM_AUDIO_FRAME] = { 0 };
+    TEST_ASSERT_TRUE(modem_audio_tx_begin(5));
+    TEST_ASSERT_EQUAL_UINT64(0, modem_audio_tx_played());
+    for (int i = 0; i < 10; i++)
+        modem_audio_tx_feed(pcm, MODEM_AUDIO_FRAME);
+    /* the Hamlib path pushes it all on to the radio's ring (faked here) */
+    TEST_ASSERT_EQUAL_UINT64(10 * MODEM_AUDIO_FRAME, modem_audio_tx_played());
+    modem_audio_tx_unkey("test");
+    TEST_ASSERT_EQUAL_UINT64(10 * MODEM_AUDIO_FRAME, modem_audio_tx_played());
+    TEST_ASSERT_TRUE(modem_audio_tx_begin(6));
+    TEST_ASSERT_EQUAL_UINT64(0, modem_audio_tx_played());
+    modem_audio_tx_unkey("test");
+}
+
+/* ALE owns the radio: another modem may not key. */
+static void test_no_keying_while_ale_owns_the_radio(void)
+{
+    radio_backend_ptt_free_fake.return_val = false;
+    TEST_ASSERT_FALSE(modem_audio_tx_begin(5));
+    TEST_ASSERT_FALSE(modem_audio_tx_active());
+    TEST_ASSERT_EQUAL_INT(0, radio_backend_set_ptt_fake.call_count);
+}
+
 int main(void)
 {
     r.backend_kind = RADIO_BACKEND_HAMLIB;
@@ -200,5 +230,7 @@ int main(void)
     RUN_TEST(test_immediate_unkey);
     RUN_TEST(test_shutdown_unkeys);
     RUN_TEST(test_end_within_drains_then_cuts);
+    RUN_TEST(test_tx_played_counts_what_left);
+    RUN_TEST(test_no_keying_while_ale_owns_the_radio);
     return UNITY_END();
 }

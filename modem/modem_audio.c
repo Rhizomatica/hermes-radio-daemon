@@ -321,6 +321,8 @@ static int64_t         s_tx_end_ms;
  * the over ends once drained, at the latest at this time, whatever the modem
  * still sends. 0 when no one asked. */
 static _Atomic int64_t s_tx_deadline_ms;
+/* 8 kHz samples fed since the over keyed (modem_audio_tx_played). */
+static _Atomic uint64_t s_tx_fed8k;
 
 static bool tx_to_sbitx(void)
 {
@@ -384,6 +386,8 @@ bool modem_audio_tx_begin(long id)
 
     if (!s_started)
         return false;
+    if (!radio_backend_ptt_free(s_radio, PTT_SRC_MODEM, id))
+        return false;                   /* ALE owns the radio */
     pthread_mutex_lock(&s_key_mutex);
     if (s_tx_keyed)
         ok = s_tx_id == id;
@@ -399,6 +403,7 @@ bool modem_audio_tx_begin(long id)
         s_tx_ending = false;
         s_tx_end_ms = 0;
         s_tx_deadline_ms = 0;
+        s_tx_fed8k = 0;
         s_tx_keyed = true;
         ok = keyed_now = true;
     }
@@ -420,6 +425,7 @@ void modem_audio_tx_feed(const int16_t *pcm8k, size_t n)
             s_tx_ending = false;
             s_tx_end_ms = 0;
         }
+        s_tx_fed8k += n;
         while (n)
         {
             size_t chunk = n > MODEM_AUDIO_FRAME ? MODEM_AUDIO_FRAME : n;
@@ -502,6 +508,15 @@ bool modem_audio_tx_poll(void)
     else if (s_tx_deadline_ms && now >= s_tx_deadline_ms)
         modem_audio_tx_unkey("cut: another client asked to unkey and the modem went on");
     return s_tx_keyed;
+}
+
+uint64_t modem_audio_tx_played(void)
+{
+    uint64_t fed = s_tx_fed8k;
+    if (!s_tx_keyed)
+        return fed;
+    uint64_t queued = (uint64_t) tx_queued() * MODEM_AUDIO_RATE / tx_rate();
+    return fed > queued ? fed - queued : 0;
 }
 
 bool modem_audio_tx_keyed_by(long id)

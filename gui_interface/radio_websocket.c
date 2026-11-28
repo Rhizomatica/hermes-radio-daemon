@@ -541,6 +541,8 @@ static void handle_ws_command(radio *radio_h, ws_conn_t *c,
     {
         if (radio_h->swr_protection_enabled)             send_cmd_result(c, cmd, false, "SWR");
         else if (radio_h->txrx_state == IN_TX)           send_cmd_result(c, cmd, false, "NOK");
+        else if (!radio_backend_ptt_free(radio_h, PTT_SRC_WEBSOCKET, ws_conn_id(c)))
+                                                         send_cmd_result(c, cmd, false, "busy: ALE owns the radio");
         else
         {
             radio_backend_set_ptt(radio_h, IN_TX, PTT_SRC_WEBSOCKET, ws_conn_id(c));
@@ -566,14 +568,14 @@ static void handle_ws_command(radio *radio_h, ws_conn_t *c,
     {
         if (!extract_json_int_any(payload, "profile", "value", &value)) { send_cmd_error(c, cmd, "missing profile"); return; }
         if (value < 0 || value >= (long) radio_h->profiles_count) { send_cmd_error(c, cmd, "invalid profile"); return; }
-        radio_backend_set_profile(radio_h, (uint32_t) value);
+        if (!radio_backend_set_profile(radio_h, (uint32_t) value)) { send_cmd_result(c, cmd, false, "busy: ALE owns the radio"); return; }
         send_cmd_result(c, cmd, true, "OK"); return;
     }
 
     if (!strcmp(cmd, "get_frequency")) { send_value_number(c, cmd, radio_h->profiles[profile].freq); return; }
     if (!strcmp(cmd, "set_frequency") && extract_json_int_any(payload, "frequency", "value", &value))
     {
-        radio_backend_set_frequency(radio_h, (uint32_t) value, (uint32_t) profile);
+        if (!radio_backend_set_frequency(radio_h, (uint32_t) value, (uint32_t) profile)) { send_cmd_result(c, cmd, false, "busy: ALE owns the radio"); return; }
         send_cmd_result(c, cmd, true, "OK"); return;
     }
 
@@ -583,7 +585,7 @@ static void handle_ws_command(radio *radio_h, ws_conn_t *c,
         char mode[16]; uint16_t mode_v;
         if (!extract_json_string_any(payload, "mode", "value", mode, sizeof(mode))) { send_cmd_error(c, cmd, "missing mode"); return; }
         if (!mode_from_string(mode, &mode_v)) { send_cmd_error(c, cmd, "unknown mode"); return; }
-        radio_backend_set_mode(radio_h, mode_v, (uint32_t) profile);
+        if (!radio_backend_set_mode(radio_h, mode_v, (uint32_t) profile)) { send_cmd_result(c, cmd, false, "busy: ALE owns the radio"); return; }
         send_cmd_result(c, cmd, true, "OK"); return;
     }
 

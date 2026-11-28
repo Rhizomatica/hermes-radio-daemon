@@ -200,6 +200,11 @@ tags:
     description: Audit log.
   - name: digi
     description: Digital-mode traffic (FT8, CW, RTTY, D-STAR) sent and heard by the radio.
+  - name: ale
+    description: |
+      ALE 2G (MIL-STD-188-141B Appendix A): listening, scanning, calls with their handshake,
+      AMD text, sounding. Monitor mode only decodes; listen and scan run the link layer, which
+      owns the radio until it stops.
   - name: setup
     description: First-boot setup.
   - name: apps
@@ -2614,6 +2619,224 @@ paths:
               schema: {$ref: "#/components/schemas/App"}
         "404": {$ref: "#/components/responses/NotFound"}
 
+  /ale:
+    get:
+      tags: [ale]
+      operationId: getAleState
+      summary: ALE's state.
+      description: |
+        The same as the `ale.state` WebSocket topic. Without ALE (not built, or `ale:enable_ale`
+        off) the state is `running: false`.
+      x-hermes-role: readonly
+      responses:
+        "200":
+          description: The state.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AleState"}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /ale/events:
+    get:
+      tags: [ale]
+      operationId: getAleEvents
+      summary: What ALE heard and did, oldest first.
+      description: |
+        Words its receivers decoded, calls, links, AMD and state changes: the last 256, in memory.
+        The live feed is the `ale.events` WebSocket topic. Addresses and AMD came over the air:
+        untrusted, render as plain text.
+      x-hermes-role: readonly
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Events.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: "#/components/schemas/AleEvent"}
+                  next_cursor: {type: [string, "null"]}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /ale/start:
+    post:
+      tags: [ale]
+      operationId: startAle
+      summary: Listen on the radio's channel, or scan the channel list.
+      description: |
+        From then on ALE owns the radio: other clients' frequency, mode, filter, profile and PTT
+        changes are refused (`busy`) until `stopAle`, which tunes the radio back to the
+        operator's frequency and mode. A PTT off from any client also stops ALE. Calls for this
+        station wait for `acceptAle` unless `ale:auto_respond` is on. While a link is up and
+        `ale:handoff` is voice, others may key on the channel. Needs `ale:self_address`.
+      x-hermes-role: operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AleStartArgs"}
+      responses:
+        "200":
+          description: Done; ALE's state after it.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AleState"}
+        "422":
+          description: No `ale:self_address`, or scan with no channel list.
+          content:
+            application/problem+json:
+              schema: {$ref: "#/components/schemas/Problem"}
+        "409":
+          description: The ALE state does not allow it now (`busy`).
+          content:
+            application/problem+json:
+              schema: {$ref: "#/components/schemas/Problem"}
+        "503": {$ref: "#/components/responses/NotRunning"}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /ale/stop:
+    post:
+      tags: [ale]
+      operationId: stopAle
+      summary: Back to monitor, releasing the radio.
+      description: |
+        Ends any call or link at once (unkeying), and tunes the radio back to the operator's
+        frequency and mode.
+      x-hermes-role: operator
+      responses:
+        "200":
+          description: Done; ALE's state after it.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AleState"}
+        "409":
+          description: The ALE state does not allow it now (`busy`).
+          content:
+            application/problem+json:
+              schema: {$ref: "#/components/schemas/Problem"}
+        "503": {$ref: "#/components/responses/NotRunning"}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /ale/call:
+    post:
+      tags: [ale]
+      operationId: callAle
+      summary: Call a station, with optional AMD text.
+      description: |
+        The radio transmits a scanning call and, when the station answers, completes the
+        three-way handshake. `ale.events` reports `linked`, or the call's failure. Needs listen or
+        scan mode.
+      x-hermes-role: operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AleCallArgs"}
+      responses:
+        "200":
+          description: Done; ALE's state after it.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AleState"}
+        "422":
+          description: Not an ALE address, or AMD text outside the expanded set.
+          content:
+            application/problem+json:
+              schema: {$ref: "#/components/schemas/Problem"}
+        "409":
+          description: The ALE state does not allow it now (`busy`).
+          content:
+            application/problem+json:
+              schema: {$ref: "#/components/schemas/Problem"}
+        "503": {$ref: "#/components/responses/NotRunning"}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /ale/accept:
+    post:
+      tags: [ale]
+      operationId: acceptAle
+      summary: Answer the call waiting for this station.
+      description: |
+        The radio transmits the handshake's response.
+      x-hermes-role: operator
+      responses:
+        "200":
+          description: Done; ALE's state after it.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AleState"}
+        "409":
+          description: The ALE state does not allow it now (`busy`).
+          content:
+            application/problem+json:
+              schema: {$ref: "#/components/schemas/Problem"}
+        "503": {$ref: "#/components/responses/NotRunning"}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /ale/reject:
+    post:
+      tags: [ale]
+      operationId: rejectAle
+      summary: Refuse the call waiting for this station.
+      description: |
+        The radio transmits a TWAS to the caller.
+      x-hermes-role: operator
+      responses:
+        "200":
+          description: Done; ALE's state after it.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AleState"}
+        "409":
+          description: The ALE state does not allow it now (`busy`).
+          content:
+            application/problem+json:
+              schema: {$ref: "#/components/schemas/Problem"}
+        "503": {$ref: "#/components/responses/NotRunning"}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /ale/terminate:
+    post:
+      tags: [ale]
+      operationId: terminateAle
+      summary: End the link.
+      description: |
+        The radio transmits the termination; ALE goes back to listening or scanning.
+      x-hermes-role: operator
+      responses:
+        "200":
+          description: Done; ALE's state after it.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AleState"}
+        "409":
+          description: The ALE state does not allow it now (`busy`).
+          content:
+            application/problem+json:
+              schema: {$ref: "#/components/schemas/Problem"}
+        "503": {$ref: "#/components/responses/NotRunning"}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /ale/sound:
+    post:
+      tags: [ale]
+      operationId: soundAle
+      summary: Send a sounding on the current channel.
+      description: |
+        The radio transmits this station's address, for the other stations' LQA.
+      x-hermes-role: operator
+      responses:
+        "200":
+          description: Done; ALE's state after it.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AleState"}
+        "409":
+          description: The ALE state does not allow it now (`busy`).
+          content:
+            application/problem+json:
+              schema: {$ref: "#/components/schemas/Problem"}
+        "503": {$ref: "#/components/responses/NotRunning"}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
 components:
   securitySchemes:
     sessionCookie:
@@ -4035,6 +4258,54 @@ components:
     DigiMode:
       type: string
       enum: [FT8, JS8, CW, RTTY, DSTAR, BEACON]
+    AleState:
+      type: object
+      required: [running, mode, state]
+      properties:
+        running: {type: boolean, description: "ALE is built in and `ale:enable_ale` is on."}
+        mode: {type: string, enum: [monitor, listen, scan]}
+        state:
+          type: string
+          enum: [OFF, IDLE, SCANNING, CALLING, HANDSHAKE, LINKED, SOUNDING, ERROR]
+          description: The link layer's; OFF in monitor mode.
+        self: {type: string, maxLength: 15}
+        peer: {type: [string, "null"], maxLength: 15, description: "Called, calling or linked."}
+        frequency_hz: {type: integer, format: int64}
+        sideband: {type: string, enum: [USB, LSB]}
+        transmitting: {type: boolean}
+        link_seconds: {type: integer}
+        votes: {type: integer, minimum: 0, maximum: 48, description: "The last word heard: unanimous votes of the 2/3 majority voter."}
+        channels: {type: integer, description: In the channel list.}
+        owner: {type: string, enum: [none, ale, ale_channel], description: "Who may tune and key: anyone, ALE alone, or anyone may key on ALE's channel (a voice hand-off)."}
+        auto_respond: {type: boolean}
+        samples_dropped: {type: integer, format: int64, description: RX audio the receivers fell behind on.}
+    AleEvent:
+      type: object
+      required: [id, at, kind]
+      properties:
+        id: {type: integer, format: int64}
+        at: {$ref: "#/components/schemas/Timestamp"}
+        kind: {type: string, enum: [word, state, call, linked, terminated, amd, channel]}
+        peer: {type: [string, "null"], maxLength: 15, description: "An address; a word's 3 characters."}
+        text: {type: [string, "null"], maxLength: 90, description: "AMD text, the new state, or why a link ended."}
+        frequency_hz: {type: [integer, "null"], format: int64}
+        receiver: {type: [string, "null"], enum: [stock, combining, null], description: A word's receiver.}
+        combined: {type: [integer, "null"], description: Words the combining receiver summed.}
+        preamble: {type: [string, "null"], enum: [DATA, THRU, TO, TWAS, FROM, TIS, CMD, REP, null]}
+        unanimous: {type: [integer, "null"], minimum: 0, maximum: 48}
+    AleStartArgs:
+      type: object
+      required: [mode]
+      additionalProperties: false
+      properties:
+        mode: {type: string, enum: [listen, scan]}
+    AleCallArgs:
+      type: object
+      required: [to]
+      additionalProperties: false
+      properties:
+        to: {type: string, minLength: 1, maxLength: 15, pattern: "^[A-Z0-9@?]+$"}
+        amd: {type: string, maxLength: 90, description: "The expanded set, space to underscore (0x20-0x5F): upper case."}
     DigiEntry:
       type: object
       required: [id, at, mode, dir, frequency_hz]

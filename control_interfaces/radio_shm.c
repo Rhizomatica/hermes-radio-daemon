@@ -204,7 +204,8 @@ static void process_radio_command(uint8_t *cmd, uint8_t *response)
         {
             response[0] = CMD_ALERT_PROTECTION_ON;
         }
-        else if (radio_h->txrx_state == IN_RX)
+        else if (radio_h->txrx_state == IN_RX
+                 && radio_backend_ptt_free(radio_h, PTT_SRC_SHM, shm_command_sender(connector_local)))
         {
             pid_t pid = shm_command_sender(connector_local);
             shm_keyer_watch(pid);

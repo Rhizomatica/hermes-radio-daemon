@@ -29,6 +29,9 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
 #include "common/cfg_utils.c"
 #include "radio/radio_backend.c"
 
+/* mercury_link.h's MERCURY_LINK_PTT_ID, without its header */
+#define MERCURY_PTT_ID_FOR_TEST (-1L)
+
 static int keyings;
 
 static void stub_set_txrx_state(radio *radio_h, bool state)
@@ -37,9 +40,25 @@ static void stub_set_txrx_state(radio *radio_h, bool state)
     keyings++;
 }
 
+static int freq_sets, retunes;
+static void stub_set_frequency(radio *radio_h, uint32_t f, uint32_t p)
+{
+    radio_h->profiles[p].freq = f;
+    freq_sets++;
+}
+static bool stub_retune(radio *radio_h, uint32_t f, uint16_t mode)
+{
+    radio_h->profiles[radio_h->profile_active_idx].freq = f;
+    radio_h->profiles[radio_h->profile_active_idx].mode = mode;
+    retunes++;
+    return true;
+}
+
 static const radio_backend_ops stub_ops = {
     .name = "stub",
     .set_txrx_state = stub_set_txrx_state,
+    .set_frequency = stub_set_frequency,
+    .retune = stub_retune,
 };
 
 static radio radio_h;
@@ -50,11 +69,50 @@ void setUp(void)
     radio_h.backend_ops = &stub_ops;
     radio_h.txrx_state = IN_RX;
     keyings = 0;
+    freq_sets = retunes = 0;
+    radio_h.profiles_count = 1;
     /* no owner left over from the previous test */
     ptt_owner_src = PTT_SRC_NONE;
     ptt_owner_id = 0;
 }
 void tearDown(void) {}
+
+/* While ALE owns the radio, other clients' tuning and keying are refused;
+ * ALE's own are not, and anyone's PTT off asks ALE to stop. */
+static void test_ale_owner_refuses_others(void)
+{
+    radio_h.owner = RADIO_OWNER_ALE_FULL;
+    TEST_ASSERT_FALSE(radio_backend_set_frequency(&radio_h, 7102000, 0));
+    TEST_ASSERT_EQUAL_INT(0, freq_sets);
+    TEST_ASSERT_TRUE(radio_backend_retune(&radio_h, 7102000, MODE_USB));
+    TEST_ASSERT_EQUAL_UINT32(7102000, radio_h.profiles[0].freq);
+
+    TEST_ASSERT_EQUAL_INT(-1, radio_backend_claim_ptt(&radio_h, PTT_SRC_WEBSOCKET, 7));
+    radio_backend_set_ptt(&radio_h, IN_TX, PTT_SRC_RIGCTLD, 3);
+    TEST_ASSERT_EQUAL_INT(IN_RX, radio_h.txrx_state);
+    TEST_ASSERT_FALSE(radio_backend_ptt_free(&radio_h, PTT_SRC_MODEM, MERCURY_PTT_ID_FOR_TEST));
+
+    TEST_ASSERT_TRUE(radio_backend_ptt_free(&radio_h, PTT_SRC_MODEM, ALE_LINK_PTT_ID));
+    radio_backend_set_ptt(&radio_h, IN_TX, PTT_SRC_MODEM, ALE_LINK_PTT_ID);
+    TEST_ASSERT_EQUAL_INT(IN_TX, radio_h.txrx_state);
+    TEST_ASSERT_FALSE(atomic_load(&radio_h.ale_stop_asked));
+
+    radio_backend_set_ptt(&radio_h, IN_RX, PTT_SRC_WEBSOCKET, 7);   /* the kill */
+    TEST_ASSERT_EQUAL_INT(IN_RX, radio_h.txrx_state);
+    TEST_ASSERT_TRUE(atomic_load(&radio_h.ale_stop_asked));
+}
+
+/* A voice hand-off: others may key on ALE's channel, still not tune. */
+static void test_ale_channel_owner_frees_ptt_only(void)
+{
+    radio_h.owner = RADIO_OWNER_ALE_CHANNEL;
+    TEST_ASSERT_FALSE(radio_backend_set_frequency(&radio_h, 7102000, 0));
+    TEST_ASSERT_EQUAL_INT(0, radio_backend_claim_ptt(&radio_h, PTT_SRC_WEBSOCKET, 7));
+    TEST_ASSERT_EQUAL_INT(IN_TX, radio_h.txrx_state);
+    radio_h.owner = RADIO_OWNER_NONE;
+    TEST_ASSERT_TRUE(radio_backend_set_frequency(&radio_h, 7102000, 0));
+    TEST_ASSERT_EQUAL_INT(1, freq_sets);
+}
 
 static void test_claim_keys_once_and_refuses_others(void)
 {
@@ -123,5 +181,7 @@ int main(void)
     RUN_TEST(test_keyed_by_someone_else_or_the_daemon);
     RUN_TEST(test_disconnect_releases_the_claim);
     RUN_TEST(test_holds_only_while_keyed);
+    RUN_TEST(test_ale_owner_refuses_others);
+    RUN_TEST(test_ale_channel_owner_frees_ptt_only);
     return UNITY_END();
 }

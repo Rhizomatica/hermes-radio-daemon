@@ -195,6 +195,8 @@ channels:
       gps: { $ref: "#/components/messages/GpsEvent" }
       broadcasts: { $ref: "#/components/messages/BroadcastsEvent" }
       reticulum: { $ref: "#/components/messages/ReticulumEvent" }
+      aleState: { $ref: "#/components/messages/AleStateEvent" }
+      aleEvents: { $ref: "#/components/messages/AleEventsEvent" }
       binaryDown: { $ref: "#/components/messages/BinaryFrame" }
 
 operations:
@@ -496,6 +498,29 @@ components:
                   status: { $ref: "api-rest.yaml#/components/schemas/ReticulumStatus" }
                   link: { $ref: "api-rest.yaml#/components/schemas/ReticulumLink" }
                   peer: { $ref: "api-rest.yaml#/components/schemas/LxmfPeer" }
+    AleStateEvent:
+      name: ale.state
+      summary: ALE's state, as `GET /ale` gives it, pushed as it changes.
+      payload:
+        allOf:
+          - $ref: "#/components/schemas/EventEnvelope"
+          - type: object
+            properties:
+              topic: { const: ale.state }
+              data: { $ref: "api-rest.yaml#/components/schemas/AleState" }
+    AleEventsEvent:
+      name: ale.events
+      summary: |
+        One event per word a receiver decoded, call, link, AMD and state change. The snapshot
+        is what radiod keeps in memory (its last 256). Addresses and AMD came over the air:
+        untrusted, render as plain text.
+      payload:
+        allOf:
+          - $ref: "#/components/schemas/EventEnvelope"
+          - type: object
+            properties:
+              topic: { const: ale.events }
+              data: { $ref: "api-rest.yaml#/components/schemas/AleEvent" }
     BinaryFrame:
       name: binary
       contentType: application/octet-stream
@@ -524,6 +549,8 @@ components:
         - gps
         - broadcasts
         - reticulum
+        - ale.state
+        - ale.events
     Hello:
       type: object
       required: [type, protocol, service, version, role, topics, commands]
@@ -594,6 +621,13 @@ components:
         - rtc.offer
         - rtc.close
         - modem.chat.send
+        - ale.start
+        - ale.stop
+        - ale.call
+        - ale.accept
+        - ale.reject
+        - ale.terminate
+        - ale.sound
     Command:
       type: object
       required: [type, id, cmd]
@@ -614,9 +648,14 @@ components:
             - $ref: "#/components/schemas/RecordingArgs"
             - $ref: "#/components/schemas/RtcOfferArgs"
             - $ref: "#/components/schemas/ChatSendArgs"
+            - $ref: "api-rest.yaml#/components/schemas/AleStartArgs"
+            - $ref: "api-rest.yaml#/components/schemas/AleCallArgs"
             - type: object
               maxProperties: 0
-              description: For `radio.reset_protection` and `rtc.close`.
+              description: |
+                For `radio.reset_protection`, `rtc.close`, and `ale.stop`, `ale.accept`,
+                `ale.reject`, `ale.terminate`, `ale.sound` (operator; each as its `/ale` REST
+                operation, replying with ALE's state).
     RadioSetArgs:
       type: object
       title: radio.set (operator)

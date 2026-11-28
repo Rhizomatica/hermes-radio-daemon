@@ -499,6 +499,56 @@ typedef struct {
     size_t body_len;
 } radiod_api_http_out;
 
+/* ── ALE (modem/ale_link.h) ── */
+
+typedef struct {
+    bool     running;            /* built in, ale:enable_ale on */
+    uint8_t  mode;               /* 0 monitor, 1 listen, 2 scan (ALE_START_*) */
+    char     state[16];          /* OFF, IDLE, SCANNING, CALLING, HANDSHAKE, LINKED, SOUNDING, ERROR */
+    char     self[16];
+    char     peer[16];           /* "" for none */
+    uint32_t frequency_hz;
+    bool     usb;                /* else LSB */
+    bool     transmitting;
+    uint32_t link_seconds;
+    uint8_t  votes;
+    uint16_t channels;
+    uint8_t  owner;              /* 0 none, 1 ALE, 2 ALE's channel (RADIO_OWNER_*) */
+    bool     auto_respond;
+    uint64_t samples_dropped;
+} radiod_api_ale_state;
+
+void radiod_api_ale_state_get(radiod_api_ale_state *out);
+
+#define RADIOD_API_ALE_EVENT_PEER 16
+#define RADIOD_API_ALE_EVENT_TEXT 96
+typedef struct {
+    uint64_t seq;
+    int64_t  time_ms;            /* since the epoch */
+    uint8_t  kind;               /* 1 state, 2 call, 3 linked, 4 terminated, 5 amd, 6 channel, 100 word */
+    char     peer[RADIOD_API_ALE_EVENT_PEER];
+    char     text[RADIOD_API_ALE_EVENT_TEXT];
+    uint32_t frequency_hz;
+    uint8_t  combined;           /* a word's: 0 the stock receiver, else K */
+    uint8_t  preamble;           /* a word's: 0 DATA .. 7 REP */
+    uint8_t  unanimous;
+} radiod_api_ale_event;
+
+/* Up to max events after seq `after`, oldest first; returns how many, or
+ * RADIOD_API_ENOTSUP without ALE.  *last: the newest seq. */
+int radiod_api_ale_events(uint64_t after, radiod_api_ale_event *out, int max, uint64_t *last);
+
+/* The operator's actions.  RADIOD_API_OK, EBUSY (the state does not allow
+ * it), EINVAL (address, text, mode; no self address or no channels to
+ * scan), ENOTSUP (no ALE running). */
+int radiod_api_ale_start(const char *mode);           /* "listen" or "scan" */
+int radiod_api_ale_stop(void);
+int radiod_api_ale_call(const char *to, const char *amd);   /* amd may be NULL */
+int radiod_api_ale_accept(void);
+int radiod_api_ale_reject(void);
+int radiod_api_ale_terminate(void);
+int radiod_api_ale_sound(void);
+
 /* ── station ── */
 
 /* main:api_cors_origins as configured ("*", any, when unset; "" for none):
