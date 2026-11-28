@@ -19,6 +19,7 @@ Radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-net)
 - **Station API** (`/api/v2` REST and the `hermes.v1` WebSocket, as specified in `api/spec/`): handlers written in Go (`api/`), linked into the daemon; the daemon's C code owns every socket. Off by default; see [Station API](#station-api-apiv2-hermesv1)
 - **Mercury HF modem inside the daemon** (`enable_mercury`): keyed and fed audio by the daemon directly, its UI traffic on the daemon's websocket
 - **Broadcast plane and position beacons** (`broadcast_enable`): radiod is Mercury's broadcast client, sending files as a RaptorQ carousel from a spool directory, filing the ones it receives, and sending and receiving the HERMES position beacon ([docs/BEACON-FORMAT.md](docs/BEACON-FORMAT.md)); see [Broadcast Plane and Position Beacons](#broadcast-plane-and-position-beacons)
+- **ALE 2G receiver** (`[ale] enable_ale`): listens for MIL-STD-188-141B ALE calls on the radio's RX audio with a standard receiver and a combining one that hears scanning calls about 6 dB weaker; receive only, see [ALE 2G Receiver](#ale-2g-receiver)
 - **GPS tracks** (`gps_logging`): the station's positions and every station's beacons, recorded in fixed records and read by time range; see [GPS Tracks](#gps-tracks)
 - WAV recording with remote start/stop on both backends
 - INI configuration at `/etc/hermes/core.ini` and `/etc/hermes/user.ini`
@@ -138,6 +139,11 @@ Mercury (`vendor/mercury`, a submodule of Rhizomatica/mercury) is linked
 into the daemon when it is checked out; `make` builds it there as
 `libmercury_host.a`.  Without it (`git clone` with no `--recursive` and no
 `submodule update`) the daemon builds as before, without the modem.
+
+The ALE 2G receiver is built the same way from `vendor/pc-ale` (a submodule
+of Rhizomatica/pc-ale, MIT): when it is checked out, `make` compiles its
+word, FEC, codec and modem sources into the daemon with a C++17 compiler
+(`g++`), and builds `ale_tool`.  Without it the daemon builds without ALE.
 
 ## Tests
 
@@ -387,6 +393,15 @@ audio_period_size = 480        ; ALSA period, must be >= 256 for spectrum
 ; enable_mercury = 1
 ; mercury_config = /etc/mercury/mercury.ini
 ; mercury_args   =
+
+[ale]
+; ALE 2G receiver (built when vendor/pc-ale is checked out; see
+; "ALE 2G Receiver" below). Receive only.
+enable_ale = 0
+stock_receiver = 1              ; PC-ALE's per-word receiver
+combine = 4,8,16                ; combining receiver: words summed, each K 2-16
+
+[main]
 
 ; Dream DRM receiver binary path
 dream_path = /usr/bin/dream
@@ -879,6 +894,66 @@ All three digital text modes (FT8/CW/RTTY) share a common interface:
 FT8 rx 14.074: CQ YL3JG KO26
 CW rx 14.025: CQ DE CALLSIGN K
 RTTY tx 14.080: CQ CQ DE HERMES TEST
+```
+
+## ALE 2G Receiver
+
+With `enable_ale = 1` in `[ale]`, radiod listens for ALE 2G words
+(MIL-STD-188-141B Appendix A: 8-FSK, 125 baud, 392 ms words) on the radio's
+RX audio. That is the same 8 kHz feed Mercury and the RTP stream get: before
+noise reduction and AGC in SSB and data modes, after AGC in FM, and the
+decoded speech in D-STAR and RADE modes, where ALE hears nothing. Each word
+is logged with the receiver that decoded it:
+
+```
+[ale] TO BOB: stock receiver, 42/48 unanimous votes, 0 corrected (314.77 s into the audio)
+[ale] TO BOB: combining 16 words, 40/48 unanimous votes, tone 2.8 dB over the others (76.00 s into the audio)
+```
+
+Two receivers run side by side, on PC-ALE (`vendor/pc-ale`):
+
+- **stock** (`stock_receiver = 1`, the default): PC-ALE's per-word
+  demodulator, which decodes as a standard ALE radio does.
+- **combining** (`combine = 4,8,16`, the default): a scanning call repeats
+  one word many times, so for each K listed the tone energies of K repeated
+  words are summed before the ordinary decode. The receiver finds the symbol
+  timing and the word start itself, decodes at Golay correction power 2,
+  needs 33 unanimous votes of the 2/3 majority voter and a TO, TIS or TWAS
+  preamble. It accepts a word only when it decodes the same word again one
+  word later on the same timing grid. Nothing changes on the air: it hears
+  any standard ALE station's scanning call.
+
+A word is logged once per run of repeats. Measured between two sBitx radios
+into dummy loads, a 32-word scanning call sent over RTP at falling levels,
+the SNR in 3 kHz, three calls a level:
+
+| SNR | stock | K=4 | K=8 | K=16 |
+|---|---|---|---|---|
+| -5 dB | 3/3 | 3/3 | 3/3 | 3/3 |
+| -8 dB | 1/3 | 3/3 | 3/3 | 3/3 |
+| -11 dB | 0/3 | 3/3 | 3/3 | 3/3 |
+| -14 dB | 0/3 | 0/3 | 2/3 | 3/3 |
+| -17 dB | 0/3 | 0/3 | 0/3 | 0/3 |
+
+No wrong words were decoded, and nothing in 10 minutes of the channel with
+no call. K=16 takes about 6 s of call to decide at its limit; a strong call
+is decoded within a word or two by every receiver.
+
+On a Raspberry Pi 4 the ALE thread takes 22 % of one core, nearly all of it
+the stock receiver, which attempts a decode every 16 samples; the combining
+receiver at K = 4, 8 and 16 takes about 3 % (from the two receivers' split
+measured on a PC). `stock_receiver = 0` leaves only the combining one.
+
+Receive only: ALE does not key the radio, retune it or answer calls, and its
+words are not yet on the station API. The design for scanning, calls and
+hand-off to voice or Mercury is in [docs/ALE-DESIGN.md](docs/ALE-DESIGN.md).
+
+`ale_tool` (built with the submodule, not installed) works on raw audio
+files: mono, signed 16-bit little-endian, 8 kHz, the RTP RX stream's audio:
+
+```bash
+ale_tool gen -w 32 BOB call.raw     # a 32-word scanning call TO BOB
+ale_tool rx call.raw                # the words both receivers decode in it
 ```
 
 ## Broadcast Plane and Position Beacons

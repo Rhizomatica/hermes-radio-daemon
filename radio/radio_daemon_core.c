@@ -39,6 +39,9 @@
 #include "mercury_link.h"
 #include "bcast_plane.h"
 #endif
+#ifdef HAVE_ALE
+#include "ale_link.h"
+#endif
 #include "voice_crypto.h"
 #include "gps.h"
 #include "beacon_tx.h"
@@ -187,6 +190,9 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     bool mercury_started = false;
     bool bcast_started = false;
 #endif
+#ifdef HAVE_ALE
+    bool ale_started = false;
+#endif
     cpu_set_t unpinned_cpus;
     bool websocket_started = false;
     bool beacon_started = false;
@@ -271,6 +277,16 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
 #else
         HLOGE(LOG_C, "main:enable_mercury is set, but this radio_daemon was built "
                      "without mercury (vendor/mercury not checked out); running without the modem");
+#endif
+    }
+
+    if (radio_h.enable_ale)
+    {
+#ifdef HAVE_ALE
+        ale_started = ale_link_start(&radio_h, &unpinned_cpus);
+#else
+        HLOGE(LOG_C, "ale:enable_ale is set, but this radio_daemon was built "
+                     "without ALE (vendor/pc-ale not checked out); running without it");
 #endif
     }
 
@@ -373,6 +389,10 @@ int radio_daemon_core_run(const radio_backend_selection *selection,
     if (mercury_started)
         mercury_link_stop();
 #endif
+#ifdef HAVE_ALE
+    if (ale_started)
+        ale_link_stop();
+#endif
     if (beacon_started)
         beacon_receiver_stop();     /* after the plane: it saves the table last */
     modem_audio_shutdown();         /* after every modem transport */
@@ -410,6 +430,10 @@ fail:
         bcast_plane_stop();
     if (mercury_started)
         mercury_link_stop();
+#endif
+#ifdef HAVE_ALE
+    if (ale_started)
+        ale_link_stop();
 #endif
     if (beacon_started)
         beacon_receiver_stop();     /* after the plane: it saves the table last */

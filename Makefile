@@ -188,6 +188,36 @@ FT8_TEST_LIBS =
 DAEMON_TOP_OBJS += vendor/hermes_log/hermes_log.o
 endif
 
+# ── ALE 2G receiver (modem/ale_link.c, modem/ale_engine.cpp) ──────
+# vendor/pc-ale is the Rhizomatica/pc-ale submodule (MIT).  Only its word,
+# FEC, codec and modem sources are built, here, with the daemon: no CMake,
+# none of its apps, GUI, Hamlib or audio drivers.  ale_engine.cpp is the
+# daemon's only C++.  With the submodule not checked out the daemon builds as
+# before, and refuses ale:enable_ale at startup.
+PCALE_DIR ?= vendor/pc-ale
+HAVE_ALE  ?= $(if $(wildcard $(PCALE_DIR)/include/Codec/ale_decoder.h),1,0)
+CXX       ?= g++
+ALE_SRCS   = modem/ale_engine.cpp \
+             $(addprefix $(PCALE_DIR)/src/, FSK/tone_generator.cpp FEC/golay.cpp \
+                 FEC/word_interleaver.cpp FEC/ale_fec_codec.cpp Word/ale_word.cpp \
+                 Word/ale_sequence.cpp Word/address_encoder.cpp Protocol/Message/ale_message.cpp \
+                 Protocol/ale_orderwire_protocols.cpp Codec/ale_encoder.cpp Codec/ale_decoder.cpp \
+                 Modem/ale2g_modem.cpp)
+ALE_OBJS   = $(ALE_SRCS:.cpp=.o)
+ALE_CXXFLAGS_INC = -I$(PCALE_DIR)/include -Imodem
+ALE_CXXFLAGS = -O2 -std=c++17 -Wall -MMD -MP $(ALE_CXXFLAGS_INC)
+ifeq ($(HAVE_ALE),1)
+CFLAGS          += -DHAVE_ALE=1
+DAEMON_TOP_OBJS += modem/ale_link.o $(ALE_OBJS)
+LDFLAGS         += -lstdc++
+$(ALE_OBJS): %.o: %.cpp
+	$(CXX) $(ALE_CXXFLAGS) -c $< -o $@
+all: ale_tool
+endif
+# ALE calls and recordings offline (utils/ale_tool.c): not installed.
+ale_tool: utils/ale_tool.c modem/ale_engine.h $(ALE_OBJS)
+	$(CC) $(CFLAGS) -Imodem utils/ale_tool.c $(ALE_OBJS) -o ale_tool -lstdc++ -lm
+
 # ── Go API layer (api), linked in as a C archive ──────
 # The /api/v2 REST API and the hermes.v1 websocket: radiod's C server owns
 # the sockets and calls the Go handlers (docs/API-WRITERS.md).  Built when
@@ -372,10 +402,10 @@ install: radio_daemon radio_client dec_beacon
 
 # ── clean ───────────────────────────────────────────────────────
 clean:
-	rm -f radio_daemon radio_client dec_beacon ws_client dstar_crypt_sim rade_crypt_sim \
+	rm -f radio_daemon radio_client dec_beacon ale_tool ws_client dstar_crypt_sim rade_crypt_sim \
 	      utils/dstar_crypt_sim.[od] utils/rade_crypt_sim.[od] \
 	      $(DAEMON_OBJS) $(DAEMON_OBJS:.o=.d) $(TEST_BINS) tests/modem/dec_beacon_t $(TEST_STAMP) \
 	      $(GO_API_LIB) $(GO_API_DIR)/libhermes_api.h .radiod_version
 
 # Auto-generated header dependencies (from -MMD). Hyphen: ignore on first build.
--include $(DAEMON_OBJS:.o=.d) $(RADE_CRYPT_SIM_OBJS:.o=.d) $(DSTAR_CRYPT_SIM_OBJS:.o=.d)
+-include $(DAEMON_OBJS:.o=.d) $(ALE_OBJS:.o=.d) $(RADE_CRYPT_SIM_OBJS:.o=.d) $(DSTAR_CRYPT_SIM_OBJS:.o=.d)

@@ -44,7 +44,7 @@ endif
 
 TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
             tests/radio/test_controls tests/radio/test_dv_codec tests/radio/test_ptt_owner \
-            tests/radio/test_profile_rules tests/radio/test_capture_channel \
+            tests/radio/test_profile_rules tests/radio/test_capture_channel tests/radio/test_cfg_ale \
             tests/hamlib/test_hamlib_ptt tests/hamlib/test_trx_v1 tests/hamlib/test_hamlib_conf \
             tests/control_interfaces/test_rig_server \
             tests/gui_interface/test_ui_hub tests/gui_interface/test_ws_server \
@@ -63,6 +63,10 @@ TEST_BINS = tests/radio/test_backend_selection tests/radio/test_compat_surface \
 # parsed.
 ifeq ($(HAVE_MERCURY),1)
 TEST_BINS += tests/modem/test_bcast_link tests/modem/test_bcast_host tests/modem/test_bcast_spool
+endif
+# The ALE receiver is PC-ALE's decoder: its test needs the submodule.
+ifeq ($(HAVE_ALE),1)
+TEST_BINS += tests/modem/test_ale_engine
 endif
 # Browser audio end to end, against a real libdatachannel peer: only where
 # radiod itself builds with WebRTC.
@@ -125,6 +129,11 @@ tests/radio/test_capture_channel: tests/radio/test_capture_channel.c radio/radio
 
 tests/radio/test_dv_codec: tests/radio/test_dv_codec.c common/cfg_utils.c common/cfg_utils.h \
                            radio/radio_backend.c radio/radio_backend.h radio/radio.h
+	$(CC) $(TEST_CFLAGS) $< control_interfaces/rig_server.c radio/radio_controls.c control_interfaces/cat_server.c \
+	      $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -liniparser -lpthread -lm
+
+tests/radio/test_cfg_ale: tests/radio/test_cfg_ale.c common/cfg_utils.c common/cfg_utils.h \
+                          radio/radio_backend.c radio/radio_backend.h radio/radio.h
 	$(CC) $(TEST_CFLAGS) $< control_interfaces/rig_server.c radio/radio_controls.c control_interfaces/cat_server.c \
 	      $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -liniparser -lpthread -lm
 
@@ -215,6 +224,14 @@ tests/modem/test_beacon: tests/modem/test_beacon.c modem/beacon.c modem/beacon.h
 tests/modem/test_rtp_audio: tests/modem/test_rtp_audio.c modem/rtp_audio.c modem/rtp_audio.h \
                             modem/modem_audio.c modem/modem_audio.h radio/radio.h
 	$(CC) $(TEST_CFLAGS) $< modem/rtp_audio.c modem/modem_audio.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread -lm
+
+# C++ (the engine and PC-ALE) under the same sanitizer as the test.
+tests/modem/test_ale_engine: tests/modem/test_ale_engine.c $(ALE_SRCS) modem/ale_engine.h
+	$(CC) $(TEST_CFLAGS) -c $< -o $@.o
+	$(CC) $(TEST_CFLAGS) -c $(UNITY_SRC) -o $@.unity.o
+	$(CXX) -O1 -g -std=c++17 -Wall $(SAN_FLAGS) -pthread $(ALE_CXXFLAGS_INC) \
+	    $@.o $@.unity.o $(ALE_SRCS) -o $@ -lm
+	rm -f $@.o $@.unity.o
 
 tests/modem/test_modem_audio: tests/modem/test_modem_audio.c modem/modem_audio.c modem/modem_audio.h radio/radio.h
 	$(CC) $(TEST_CFLAGS) $< modem/modem_audio.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread -lm

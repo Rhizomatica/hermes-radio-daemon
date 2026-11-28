@@ -42,6 +42,11 @@ radio_backend_kind cfg_backend_kind_from_string(const char *backend_name);
  * unknown name leaves *mode alone and returns false. */
 bool cfg_mode_from_name(const char *name, uint16_t *mode);
 
+/* ale:combine: a comma-separated list of K values, each ALE_COMBINE_K_MIN
+ * to ALE_COMBINE_K_MAX; others and repeats are skipped with a warning.
+ * Stores at most max of them; returns how many. */
+size_t cfg_parse_ale_combine(const char *list, uint8_t *out, size_t max);
+
 /* The ranges the digital-mode modems handle, for cw_wpm, cw_pitch,
  * rtty_baud, rtty_mark and rtty_shift. The one definition: the config file
  * loader and the WebSocket digi_config command both check against it, so a
