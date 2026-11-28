@@ -363,11 +363,25 @@ static void set_profile_timeout(radio *radio_h, int32_t timeout)
     radio_h->cfg_user_dirty = true;
 }
 
+/* The dial range the synthesiser is programmed for. */
+#define SBITX_FREQ_MIN_HZ   500000
+#define SBITX_FREQ_MAX_HZ 30000000
+
+/* The synthesiser for the active profile's frequency. */
+static void program_dial(radio *radio_h)
+{
+    const radio_profile *p = &radio_h->profiles[radio_h->profile_active_idx];
+    if (p->operating_mode == OPERATING_MODE_CONTROLS_ONLY)
+        si5351bx_setfreq(2, p->freq + radio_h->bfo_frequency - 15000); // here we set the real frequency of the radio (in USB, which is the current setup) - 15000 which is the carrier offset in Mercury in sbitx mode
+    else
+        si5351bx_setfreq(2, p->freq + radio_h->bfo_frequency - 24000); // 24 kHz offset to provide the user the "real" dial frequency after the DSP processing (just "- 24000")
+}
+
 static void set_frequency(radio *radio_h, uint32_t frequency, uint32_t profile)
 {
     _Atomic uint32_t *radio_freq = &radio_h->profiles[profile].freq;
 
-    if ( (frequency > 30000000) || (frequency < 500000) )
+    if ( (frequency > SBITX_FREQ_MAX_HZ) || (frequency < SBITX_FREQ_MIN_HZ) )
         return;
 
     /* Whether the CACHED value moved. This used to gate the whole function,
@@ -395,12 +409,7 @@ static void set_frequency(radio *radio_h, uint32_t frequency, uint32_t profile)
     *radio_freq = frequency;
 
     if (profile == radio_h->profile_active_idx)
-    {
-        if (radio_h->profiles[radio_h->profile_active_idx].operating_mode == OPERATING_MODE_CONTROLS_ONLY)
-            si5351bx_setfreq(2, *radio_freq + radio_h->bfo_frequency - 15000); // here we set the real frequency of the radio (in USB, which is the current setup) - 15000 which is the carrier offset in Mercury in sbitx mode
-        else
-            si5351bx_setfreq(2, *radio_freq + radio_h->bfo_frequency - 24000); // 24 kHz offset to provide the user the "real" dial frequency after the DSP processing (just "- 24000")
-    }
+        program_dial(radio_h);
 
     if (!value_changed)
         return;             /* hardware re-asserted above; nothing to persist */
@@ -469,6 +478,22 @@ static void set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
     radio_h->cfg_user_dirty = true;
 }
 
+
+/* ALE's channels: the active profile tuned, not saved (radio_backend_ops.retune). */
+static bool retune(radio *radio_h, uint32_t frequency, uint16_t mode)
+{
+    if (frequency > SBITX_FREQ_MAX_HZ || frequency < SBITX_FREQ_MIN_HZ)
+        return false;
+    radio_profile *p = &radio_h->profiles[radio_h->profile_active_idx];
+    const bool mode_changed = p->mode != mode;
+    p->freq = frequency;
+    p->mode = mode;
+    program_dial(radio_h);
+    dsp_set_filters();
+    if (mode_changed)
+        radio_pipeline_refresh(radio_h);
+    return true;
+}
 
 static void set_bfo(radio *radio_h, uint32_t frequency)
 {
@@ -1692,6 +1717,7 @@ const radio_backend_ops sbitx_backend_ops = {
     .shutdown                = sbitx_op_shutdown,
     .io_thread               = sbitx_op_io_thread,
     .set_frequency           = set_frequency,
+    .retune                  = retune,
     .set_mode                = set_mode,
     .set_txrx_state          = tr_switch,
     .set_bfo                 = set_bfo,

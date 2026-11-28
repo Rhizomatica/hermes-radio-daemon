@@ -47,13 +47,15 @@ static struct {
     bool     set_profile_called;
 } backend_call;
 
-void radio_backend_set_frequency(radio *radio_h, uint32_t f, uint32_t p)
+bool radio_backend_set_frequency(radio *radio_h, uint32_t f, uint32_t p)
 { backend_call.frequency = f; backend_call.profile = p;
-  if (p < radio_h->profiles_count) radio_h->profiles[p].freq = f; }
+  if (p < radio_h->profiles_count) radio_h->profiles[p].freq = f;
+  return true; }
 
-void radio_backend_set_mode(radio *radio_h, uint16_t m, uint32_t p)
+bool radio_backend_set_mode(radio *radio_h, uint16_t m, uint32_t p)
 { backend_call.mode = m; backend_call.profile = p;
-  if (p < radio_h->profiles_count) radio_h->profiles[p].mode = m; }
+  if (p < radio_h->profiles_count) radio_h->profiles[p].mode = m;
+  return true; }
 
 void radio_backend_set_txrx_state(radio *radio_h, bool s)
 { backend_call.txrx_state = s; backend_call.txrx_calls++; radio_h->txrx_state = s; }
@@ -121,9 +123,14 @@ void radio_backend_set_step_size(radio *radio_h, uint32_t s)
 void radio_backend_set_tone_generation(radio *radio_h, bool t)
 { backend_call.tone_generation = t; radio_h->tone_generation = t; }
 
-void radio_backend_set_profile(radio *radio_h, uint32_t p)
+bool radio_backend_set_profile(radio *radio_h, uint32_t p)
 { backend_call.profile = p; backend_call.set_profile_called = true;
-  radio_h->profile_active_idx = p; radio_pipeline_refresh(radio_h); }
+  radio_h->profile_active_idx = p; radio_pipeline_refresh(radio_h);
+  return true; }
+
+/* the radio is nobody's (radio:owner) */
+bool radio_backend_ptt_free(const radio *radio_h, ptt_source src, long id)
+{ (void) radio_h; (void) src; (void) id; return true; }
 
 uint32_t radio_backend_get_fwd_power(radio *radio_h) { return radio_h->fwd_power; }
 uint32_t radio_backend_get_swr(radio *radio_h)       { return radio_h->ref_power; }

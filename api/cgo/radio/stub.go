@@ -48,6 +48,8 @@ type Stub struct {
 	link            bool          // an ARQ session up
 	chat            []ChatLine
 	gainDB          float64
+	ale             AleState // off (Running false) until SetAle
+	aleEvents       []AleEvent
 	wfall           bool
 	logs            []string
 	Sent            map[int64][][]byte // frames by connection; 0 = broadcast
@@ -457,6 +459,112 @@ func (s *Stub) SetBfo(hz uint32) error {
 
 // TripProtection sets the high-SWR protection (for tests).
 func (s *Stub) TripProtection() { s.mu.Lock(); s.state.Protection = true; s.mu.Unlock() }
+
+// SetAle makes ALE run (or not) with this state, for tests.
+func (s *Stub) SetAle(st AleState) { s.mu.Lock(); defer s.mu.Unlock(); s.ale = st }
+
+// AddAleEvent adds an event as radiod would, numbering it.
+func (s *Stub) AddAleEvent(e AleEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e.Seq = uint64(len(s.aleEvents) + 1)
+	if e.TimeMs == 0 {
+		e.TimeMs = time.Now().UnixMilli()
+	}
+	s.aleEvents = append(s.aleEvents, e)
+}
+
+func (s *Stub) AleState() AleState { s.mu.Lock(); defer s.mu.Unlock(); return s.ale }
+
+func (s *Stub) AleEvents(after uint64, max int) ([]AleEvent, uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.ale.Running {
+		return nil, 0, ErrNotSupported
+	}
+	var out []AleEvent
+	for _, e := range s.aleEvents {
+		if e.Seq > after && len(out) < max {
+			out = append(out, e)
+		}
+	}
+	return out, uint64(len(s.aleEvents)), nil
+}
+
+// The stub's link layer: the states radiod's would go through, no air.
+func (s *Stub) aleAct(f func(a *AleState) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.ale.Running {
+		return ErrNotSupported
+	}
+	return f(&s.ale)
+}
+
+func (s *Stub) AleStart(mode string) error {
+	return s.aleAct(func(a *AleState) error {
+		if (mode != "listen" && mode != "scan") || a.Self == "" || (mode == "scan" && a.Channels == 0) {
+			return ErrInvalid
+		}
+		if a.State != "OFF" && a.State != "IDLE" && a.State != "SCANNING" {
+			return ErrBusy
+		}
+		a.Mode, a.Owner = mode, "ale"
+		a.State = map[string]string{"listen": "IDLE", "scan": "SCANNING"}[mode]
+		return nil
+	})
+}
+
+func (s *Stub) AleStop() error {
+	return s.aleAct(func(a *AleState) error {
+		a.Mode, a.State, a.Owner, a.Peer, a.Transmitting = "monitor", "OFF", "none", "", false
+		return nil
+	})
+}
+
+func (s *Stub) AleCall(to, amd string) error {
+	return s.aleAct(func(a *AleState) error {
+		if a.Mode == "monitor" {
+			return ErrNotSupported
+		}
+		if a.State != "IDLE" && a.State != "SCANNING" {
+			return ErrBusy
+		}
+		a.State, a.Peer, a.Transmitting = "CALLING", to, true
+		return nil
+	})
+}
+
+func (s *Stub) aleFrom(want, to string) error {
+	return s.aleAct(func(a *AleState) error {
+		if a.Mode == "monitor" {
+			return ErrNotSupported
+		}
+		if a.State != want {
+			return ErrBusy
+		}
+		a.State = to
+		if to != "LINKED" {
+			a.Peer = ""
+		}
+		return nil
+	})
+}
+
+func (s *Stub) AleAccept() error    { return s.aleFrom("HANDSHAKE", "LINKED") }
+func (s *Stub) AleReject() error    { return s.aleFrom("HANDSHAKE", "IDLE") }
+func (s *Stub) AleTerminate() error { return s.aleFrom("LINKED", "IDLE") }
+func (s *Stub) AleSound() error {
+	return s.aleAct(func(a *AleState) error {
+		if a.Mode == "monitor" {
+			return ErrNotSupported
+		}
+		if a.State != "IDLE" && a.State != "SCANNING" {
+			return ErrBusy
+		}
+		return nil
+	})
+}
 
 func (s *Stub) DigiSettings() DigiSettings { s.mu.Lock(); defer s.mu.Unlock(); return s.digi }
 

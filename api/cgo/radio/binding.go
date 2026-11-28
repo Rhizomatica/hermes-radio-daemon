@@ -99,6 +99,83 @@ func (binding) Recording(start bool, stream string) (bool, bool, error) {
 	return bool(rx), bool(tx), err
 }
 
+func (binding) AleState() AleState {
+	var c C.radiod_api_ale_state
+	C.radiod_api_ale_state_get(&c)
+	st := AleState{
+		Running:        bool(c.running),
+		State:          cstr(c.state[:]),
+		Self:           cstr(c.self[:]),
+		Peer:           cstr(c.peer[:]),
+		FrequencyHz:    uint32(c.frequency_hz),
+		USB:            bool(c.usb),
+		Transmitting:   bool(c.transmitting),
+		LinkSeconds:    uint32(c.link_seconds),
+		Votes:          int(c.votes),
+		Channels:       int(c.channels),
+		AutoRespond:    bool(c.auto_respond),
+		SamplesDropped: uint64(c.samples_dropped),
+		Mode:           "monitor",
+		Owner:          "none",
+	}
+	if int(c.mode) < len(AleModes) {
+		st.Mode = AleModes[c.mode]
+	}
+	if int(c.owner) < len(AleOwners) {
+		st.Owner = AleOwners[c.owner]
+	}
+	return st
+}
+
+func (binding) AleEvents(after uint64, max int) ([]AleEvent, uint64, error) {
+	if max <= 0 {
+		return nil, 0, nil
+	}
+	buf := make([]C.radiod_api_ale_event, max)
+	var last C.uint64_t
+	n := int(C.radiod_api_ale_events(C.uint64_t(after), &buf[0], C.int(max), &last))
+	if n < 0 {
+		return nil, 0, codeErr(n)
+	}
+	out := make([]AleEvent, 0, n)
+	for i := 0; i < n; i++ {
+		e := buf[i]
+		ev := AleEvent{
+			Seq:         uint64(e.seq),
+			TimeMs:      int64(e.time_ms),
+			Kind:        AleKinds[int(e.kind)],
+			Peer:        cstr(e.peer[:]),
+			Text:        cstr(e.text[:]),
+			FrequencyHz: uint32(e.frequency_hz),
+			Combined:    int(e.combined),
+			Unanimous:   int(e.unanimous),
+		}
+		if int(e.preamble) < len(AlePreambles) {
+			ev.Preamble = AlePreambles[e.preamble]
+		}
+		out = append(out, ev)
+	}
+	return out, uint64(last), nil
+}
+
+func (binding) AleStart(mode string) error {
+	cs := C.CString(mode)
+	defer C.free(unsafe.Pointer(cs))
+	return codeErr(int(C.radiod_api_ale_start(cs)))
+}
+func (binding) AleStop() error      { return codeErr(int(C.radiod_api_ale_stop())) }
+func (binding) AleAccept() error    { return codeErr(int(C.radiod_api_ale_accept())) }
+func (binding) AleReject() error    { return codeErr(int(C.radiod_api_ale_reject())) }
+func (binding) AleTerminate() error { return codeErr(int(C.radiod_api_ale_terminate())) }
+func (binding) AleSound() error     { return codeErr(int(C.radiod_api_ale_sound())) }
+func (binding) AleCall(to, amd string) error {
+	ct := C.CString(to)
+	defer C.free(unsafe.Pointer(ct))
+	ca := C.CString(amd)
+	defer C.free(unsafe.Pointer(ca))
+	return codeErr(int(C.radiod_api_ale_call(ct, ca)))
+}
+
 func (binding) DigiSend(text string) error {
 	ct := C.CString(text)
 	defer C.free(unsafe.Pointer(ct))

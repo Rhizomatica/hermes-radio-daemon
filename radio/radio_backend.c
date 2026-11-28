@@ -7,6 +7,7 @@
  */
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -134,21 +135,59 @@ void *radio_backend_io_thread(void *radio_h_v)
     return ops->io_thread(radio_h_v);
 }
 
-void radio_backend_set_frequency(radio *radio_h, uint32_t frequency, uint32_t profile)
+bool radio_backend_tuning_free(const radio *radio_h)
 {
+    return radio_h->owner == RADIO_OWNER_NONE;
+}
+
+bool radio_backend_ptt_free(const radio *radio_h, ptt_source src, long id)
+{
+    return radio_h->owner != RADIO_OWNER_ALE_FULL
+        || (src == PTT_SRC_MODEM && id == ALE_LINK_PTT_ID);
+}
+
+/* An operator's change while ALE owns the radio: refused, and said so once
+ * per run of them, as a client may retry. */
+static bool tuning_refused(radio *radio_h, const char *what)
+{
+    static _Atomic bool logged;
+    if (radio_backend_tuning_free(radio_h))
+    {
+        atomic_store(&logged, false);
+        return false;
+    }
+    if (!atomic_exchange(&logged, true))
+        HLOGW(LOG_C, "%s refused: ALE owns the radio (ale.stop releases it)", what);
+    return true;
+}
+
+bool radio_backend_set_frequency(radio *radio_h, uint32_t frequency, uint32_t profile)
+{
+    if (tuning_refused(radio_h, "frequency change"))
+        return false;
     const radio_backend_ops *ops = radio_backend_ops_from_radio(radio_h);
     if (ops && ops->set_frequency)
         ops->set_frequency(radio_h, frequency, profile);
+    return true;
+}
+
+bool radio_backend_retune(radio *radio_h, uint32_t frequency, uint16_t mode)
+{
+    const radio_backend_ops *ops = radio_backend_ops_from_radio(radio_h);
+    return ops && ops->retune && ops->retune(radio_h, frequency, mode);
 }
 
 static void ptt_check_ownerless(radio *radio_h);
 
-void radio_backend_set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
+bool radio_backend_set_mode(radio *radio_h, uint16_t mode, uint32_t profile)
 {
+    if (tuning_refused(radio_h, "mode change"))
+        return false;
     const radio_backend_ops *ops = radio_backend_ops_from_radio(radio_h);
     if (ops && ops->set_mode)
         ops->set_mode(radio_h, mode, profile);
     ptt_check_ownerless(radio_h);
+    return true;
 }
 
 /* Serialises every PTT change with the owner bookkeeping, so a release can
@@ -179,9 +218,26 @@ static void ptt_apply(radio *radio_h, bool txrx_state)
         ops->set_txrx_state(radio_h, txrx_state);
 }
 
+/* ALE's own keying is a modem's (modem_audio); the daemon's (an SWR trip) is
+ * internal. */
+static bool is_ale(ptt_source src, long id)
+{
+    return src == PTT_SRC_MODEM && id == ALE_LINK_PTT_ID;
+}
+
 void radio_backend_set_ptt(radio *radio_h, bool txrx_state,
                            ptt_source src, long id)
 {
+    if (src != PTT_SRC_INTERNAL && !is_ale(src, id) && radio_h->owner != RADIO_OWNER_NONE)
+    {
+        if (txrx_state == IN_TX && !radio_backend_ptt_free(radio_h, src, id))
+        {
+            HLOGW(LOG_C, "PTT ON by %s %ld refused: ALE owns the radio", ptt_source_name(src), id);
+            return;
+        }
+        if (txrx_state == IN_RX && radio_h->owner == RADIO_OWNER_ALE_FULL)
+            atomic_store(&radio_h->ale_stop_asked, true);   /* the unconditional kill */
+    }
     pthread_mutex_lock(&ptt_lock);
     if (txrx_state == IN_TX)
     {
@@ -217,6 +273,8 @@ int radio_backend_claim_ptt(radio *radio_h, ptt_source src, long id)
 {
     int rc = 0;
 
+    if (!radio_backend_ptt_free(radio_h, src, id))
+        return -1;                      /* ALE owns the radio */
     pthread_mutex_lock(&ptt_lock);
     if (ptt_owner_src != PTT_SRC_NONE && !(ptt_owner_src == src && ptt_owner_id == id))
         rc = -1;
@@ -502,12 +560,15 @@ void radio_backend_set_tone_generation(radio *radio_h, bool tone_generation)
         ops->set_tone_generation(radio_h, tone_generation);
 }
 
-void radio_backend_set_profile(radio *radio_h, uint32_t profile)
+bool radio_backend_set_profile(radio *radio_h, uint32_t profile)
 {
+    if (tuning_refused(radio_h, "profile change"))
+        return false;
     const radio_backend_ops *ops = radio_backend_ops_from_radio(radio_h);
     if (ops && ops->set_profile)
         ops->set_profile(radio_h, profile);
     ptt_check_ownerless(radio_h);
+    return true;
 }
 
 uint32_t radio_backend_get_fwd_power(radio *radio_h)
@@ -717,6 +778,7 @@ int radio_backend_set_mode_name(radio *radio_h, const char *mode, uint32_t width
 {
     BACKEND_OPS();
     if (!ops || !ops->set_mode_name) return RADIO_CTRL_ENOTSUP;
+    if (tuning_refused(radio_h, "mode change")) return RADIO_CTRL_EBUSY;
     int rc = ops->set_mode_name(radio_h, mode, width);
     ptt_check_ownerless(radio_h);
     return rc;
@@ -733,6 +795,7 @@ int radio_backend_set_width(radio *radio_h, uint32_t hz)
 {
     BACKEND_OPS();
     if (!ops || !ops->set_width) return RADIO_CTRL_ENOTSUP;
+    if (tuning_refused(radio_h, "filter change")) return RADIO_CTRL_EBUSY;
     return ops->set_width(radio_h, hz);
 }
 

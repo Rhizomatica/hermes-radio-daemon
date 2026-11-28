@@ -30,6 +30,10 @@ typedef struct radio_backend_ops {
     void *(*io_thread)(void *radio_h_v);
     void (*set_frequency)(radio *radio_h, uint32_t frequency, uint32_t profile);
     void (*set_mode)(radio *radio_h, uint16_t mode, uint32_t profile);
+    /* Tune the active profile to frequency and mode without saving either
+     * (ALE's channels): the profile shows them while ALE runs, and the
+     * configuration keeps what the operator set. */
+    bool (*retune)(radio *radio_h, uint32_t frequency, uint16_t mode);
     void (*set_txrx_state)(radio *radio_h, bool txrx_state);
     void (*set_bfo)(radio *radio_h, uint32_t frequency);
     void (*set_reflected_threshold)(radio *radio_h, uint32_t ref_threshold);
@@ -135,8 +139,16 @@ bool radio_backend_init(radio *radio_h);
 void radio_backend_shutdown(radio *radio_h);
 void *radio_backend_io_thread(void *radio_h_v);
 
-void radio_backend_set_frequency(radio *radio_h, uint32_t frequency, uint32_t profile);
-void radio_backend_set_mode(radio *radio_h, uint16_t mode, uint32_t profile);
+/* An operator's (or a client's) change: refused, false, while ALE owns the
+ * radio (radio:owner); true when it was applied. */
+bool radio_backend_set_frequency(radio *radio_h, uint32_t frequency, uint32_t profile);
+bool radio_backend_set_mode(radio *radio_h, uint16_t mode, uint32_t profile);
+/* ALE's own tuning (radio_backend_ops.retune): not saved, never refused.
+ * False when the backend cannot. */
+bool radio_backend_retune(radio *radio_h, uint32_t frequency, uint16_t mode);
+/* Whether a client other than ALE may change frequency, mode, filter or
+ * profile, and whether it may key (src, id). */
+bool radio_backend_tuning_free(const radio *radio_h);
 void radio_backend_set_txrx_state(radio *radio_h, bool txrx_state);
 
 /* PTT ownership. Every key request names who made it; the daemon remembers
@@ -156,8 +168,17 @@ typedef enum {
     PTT_SRC_TXCAL,      /* the TX power calibration (sbitx_txcal.h), id 0 */
 } ptt_source;
 
+/* ALE's PTT id with modem_audio (modem/ale_link.c), beside mercury's -1. */
+#define ALE_LINK_PTT_ID (-2L)
+
+/* Keying by someone other than ALE is refused while ALE owns the radio
+ * (RADIO_OWNER_ALE_FULL; see radio_backend_ptt_free); unkeying never is, and
+ * one from someone else then also asks ALE to stop (radio:ale_stop_asked). */
 void radio_backend_set_ptt(radio *radio_h, bool txrx_state,
                            ptt_source src, long id);
+/* Whether (src, id) may key now: anyone, but only ALE (PTT_SRC_MODEM,
+ * ALE_LINK_PTT_ID) while ALE owns the radio. */
+bool radio_backend_ptt_free(const radio *radio_h, ptt_source src, long id);
 /* (src, id) finished its transmission: unkey if it still owns PTT. */
 void radio_backend_end_ptt(radio *radio_h, ptt_source src, long id);
 /* Unkey if (src, id) still owns PTT. Returns true when it did. */
@@ -191,7 +212,8 @@ bool radio_backend_dv_codec_supported(const radio *radio_h, uint16_t codec);
 bool radio_backend_set_digital_voice_codec(radio *radio_h, uint16_t codec);
 void radio_backend_set_step_size(radio *radio_h, uint32_t step_size);
 void radio_backend_set_tone_generation(radio *radio_h, bool tone_generation);
-void radio_backend_set_profile(radio *radio_h, uint32_t profile);
+/* Refused (false) while ALE owns the radio, as set_frequency. */
+bool radio_backend_set_profile(radio *radio_h, uint32_t profile);
 uint32_t radio_backend_get_fwd_power(radio *radio_h);
 uint32_t radio_backend_get_ref_power(radio *radio_h);
 uint32_t radio_backend_get_swr(radio *radio_h);
@@ -224,9 +246,9 @@ int radio_backend_set_rit(radio *radio_h, int32_t hz);
 int radio_backend_get_xit(radio *radio_h, int32_t *hz);
 int radio_backend_set_xit(radio *radio_h, int32_t hz);
 int radio_backend_get_mode_name(radio *radio_h, char *out, size_t out_len, uint32_t *width);
-int radio_backend_set_mode_name(radio *radio_h, const char *mode, uint32_t width);
+int radio_backend_set_mode_name(radio *radio_h, const char *mode, uint32_t width);  /* EBUSY while ALE owns the radio */
 int radio_backend_get_width(radio *radio_h, uint32_t *hz);
-int radio_backend_set_width(radio *radio_h, uint32_t hz);
+int radio_backend_set_width(radio *radio_h, uint32_t hz);  /* EBUSY while ALE owns the radio */
 int radio_backend_get_ant(radio *radio_h, int *ant);
 int radio_backend_set_ant(radio *radio_h, int ant);
 int radio_backend_get_mem(radio *radio_h, int *ch);

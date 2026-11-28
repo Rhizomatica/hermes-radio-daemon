@@ -264,6 +264,49 @@ const (
 
 // Radio is what the API layer may do with the daemon. Every method is safe
 // from any goroutine.
+// AleState is ALE's state (radiod_api_ale_state).
+type AleState struct {
+	Running        bool
+	Mode           string // monitor, listen, scan
+	State          string // OFF, IDLE, SCANNING, CALLING, HANDSHAKE, LINKED, SOUNDING, ERROR
+	Self           string
+	Peer           string // "" for none
+	FrequencyHz    uint32
+	USB            bool
+	Transmitting   bool
+	LinkSeconds    uint32
+	Votes          int
+	Channels       int
+	Owner          string // none, ale, ale_channel
+	AutoRespond    bool
+	SamplesDropped uint64
+}
+
+// AleEvent is one of ALE's events (radiod_api_ale_event).
+type AleEvent struct {
+	Seq         uint64
+	TimeMs      int64
+	Kind        string // word, state, call, linked, terminated, amd, channel
+	Peer        string
+	Text        string
+	FrequencyHz uint32
+	Combined    int // a word's: 0 the stock receiver, else K
+	Preamble    string
+	Unanimous   int
+}
+
+// AleKinds are radiod's event kinds by number (ale_engine.h ALE_EV_*, ALE_LINK_EV_WORD).
+var AleKinds = map[int]string{1: "state", 2: "call", 3: "linked", 4: "terminated", 5: "amd", 6: "channel", 100: "word"}
+
+// AlePreambles are the ALE word preambles by number.
+var AlePreambles = []string{"DATA", "THRU", "TO", "TWAS", "FROM", "TIS", "CMD", "REP"}
+
+// AleModes are ALE's modes by number (ALE_START_*).
+var AleModes = []string{"monitor", "listen", "scan"}
+
+// AleOwners are who may tune and key, by number (RADIO_OWNER_*).
+var AleOwners = []string{"none", "ale", "ale_channel"}
+
 type Radio interface {
 	State() State
 	ProfileCount() int
@@ -305,6 +348,23 @@ type Radio interface {
 	// SetControl sets one control (a Func: value != 0 is on). ErrInvalid
 	// outside its range, ErrNotSupported, ErrIO.
 	SetControl(name string, value float64) error
+
+	// AleState is ALE's state; Running false without ALE.
+	AleState() AleState
+	// AleEvents returns up to max events after seq `after`, oldest first,
+	// and the newest seq: ErrNotSupported without ALE.
+	AleEvents(after uint64, max int) ([]AleEvent, uint64, error)
+	// AleStart starts listening ("listen") or scanning ("scan"); AleStop goes
+	// back to monitor. The others act on a call or link. ErrBusy when the
+	// state does not allow it, ErrInvalid (an address, text or mode; no self
+	// address, no channels), ErrNotSupported without ALE.
+	AleStart(mode string) error
+	AleStop() error
+	AleCall(to, amd string) error
+	AleAccept() error
+	AleReject() error
+	AleTerminate() error
+	AleSound() error
 
 	DigiSettings() DigiSettings
 	// SetDigi takes radiod's keys: cw_wpm, cw_pitch, rtty_baud, rtty_mark,

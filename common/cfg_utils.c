@@ -739,6 +739,33 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
     s = iniparser_getstring(ini, "ale:combine", ALE_COMBINE_DEFAULT);
     radio_h->ale_combine_count = (uint8_t) cfg_parse_ale_combine(s, radio_h->ale_combine,
                                                                  ALE_COMBINE_MAX);
+    s = iniparser_getstring(ini, "ale:self_address", "");
+    snprintf(radio_h->ale_self, sizeof(radio_h->ale_self), "%s", s);
+    s = iniparser_getstring(ini, "ale:channel_file", ALE_CHANNEL_FILE_DEFAULT);
+    snprintf(radio_h->ale_channel_file, sizeof(radio_h->ale_channel_file), "%s", s);
+    s = iniparser_getstring(ini, "ale:lqa_file", ALE_LQA_FILE_DEFAULT);
+    snprintf(radio_h->ale_lqa_file, sizeof(radio_h->ale_lqa_file), "%s", s);
+    i = iniparser_getint(ini, "ale:scan_dwell_ms", ALE_SCAN_DWELL_MS_DEFAULT);
+    radio_h->ale_scan_dwell_ms = (uint32_t) (i >= ALE_SCAN_DWELL_MS_MIN && i <= ALE_SCAN_DWELL_MS_MAX
+                                             ? i : ALE_SCAN_DWELL_MS_DEFAULT);
+    radio_h->ale_auto_respond = (bool) iniparser_getboolean(ini, "ale:auto_respond", 0);
+    i = iniparser_getint(ini, "ale:accept_timeout_s", ALE_ACCEPT_TIMEOUT_S_DEFAULT);
+    radio_h->ale_accept_timeout_s = (uint32_t) (i > 0 && i <= ALE_ACCEPT_TIMEOUT_S_MAX
+                                                ? i : ALE_ACCEPT_TIMEOUT_S_DEFAULT);
+    radio_h->ale_auto_sounding = (bool) iniparser_getboolean(ini, "ale:auto_sounding", 0);
+    {
+        const int tail = radio_h->backend_kind == RADIO_BACKEND_HAMLIB ? ALE_TX_TAIL_MS_HAMLIB
+                                                                        : ALE_TX_TAIL_MS_SBITX;
+        i = iniparser_getint(ini, "ale:tx_tail_ms", tail);
+        radio_h->ale_tx_tail_ms = (uint32_t) (i >= 0 && i <= ALE_TX_TAIL_MS_MAX ? i : tail);
+    }
+    s = iniparser_getstring(ini, "ale:start", "monitor");
+    radio_h->ale_start = !strcasecmp(s, "scan") ? ALE_START_SCAN
+                       : !strcasecmp(s, "listen") ? ALE_START_LISTEN : ALE_START_MONITOR;
+    s = iniparser_getstring(ini, "ale:handoff", "voice");
+    radio_h->ale_handoff = !strcasecmp(s, "none") ? ALE_HANDOFF_NONE : ALE_HANDOFF_VOICE;
+    s = iniparser_getstring(ini, "ale:voice_mode", "ssb");
+    radio_h->ale_voice_mode = !strcasecmp(s, "rade") ? ALE_VOICE_RADE : ALE_VOICE_SSB;
     s = iniparser_getstring(ini, "main:mercury_config", "/etc/mercury/mercury.ini");
     snprintf(radio_h->mercury_config, sizeof(radio_h->mercury_config), "%s", s);
     s = iniparser_getstring(ini, "main:mercury_args", "");

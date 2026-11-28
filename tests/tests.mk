@@ -66,7 +66,7 @@ TEST_BINS += tests/modem/test_bcast_link tests/modem/test_bcast_host tests/modem
 endif
 # The ALE receiver is PC-ALE's decoder: its test needs the submodule.
 ifeq ($(HAVE_ALE),1)
-TEST_BINS += tests/modem/test_ale_engine
+TEST_BINS += tests/modem/test_ale_engine tests/modem/test_ale_handshake
 endif
 # Browser audio end to end, against a real libdatachannel peer: only where
 # radiod itself builds with WebRTC.
@@ -226,6 +226,13 @@ tests/modem/test_rtp_audio: tests/modem/test_rtp_audio.c modem/rtp_audio.c modem
 	$(CC) $(TEST_CFLAGS) $< modem/rtp_audio.c modem/modem_audio.c $(UNITY_SRC) $(HERMES_LOG_SRC) -o $@ -lpthread -lm
 
 # C++ (the engine and PC-ALE) under the same sanitizer as the test.
+tests/modem/test_ale_handshake: tests/modem/test_ale_handshake.c $(ALE_SRCS) modem/ale_engine.h
+	$(CC) $(TEST_CFLAGS) -c $< -o $@.o
+	$(CC) $(TEST_CFLAGS) -c $(UNITY_SRC) -o $@.unity.o
+	$(CXX) -O1 -g -std=c++17 -w $(SAN_FLAGS) -pthread $(ALE_CXXFLAGS_INC) \
+	    $@.o $@.unity.o $(ALE_SRCS) -o $@ -lm
+	rm -f $@.o $@.unity.o
+
 tests/modem/test_ale_engine: tests/modem/test_ale_engine.c $(ALE_SRCS) modem/ale_engine.h
 	$(CC) $(TEST_CFLAGS) -c $< -o $@.o
 	$(CC) $(TEST_CFLAGS) -c $(UNITY_SRC) -o $@.unity.o

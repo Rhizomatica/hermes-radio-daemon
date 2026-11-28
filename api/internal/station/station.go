@@ -4,6 +4,7 @@ package station
 
 import (
 	rad "github.com/Rhizomatica/hermes-radio-daemon/api/cgo/radio"
+	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/ale"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/api"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/auth"
 	"github.com/Rhizomatica/hermes-radio-daemon/api/internal/broadcasts"
@@ -39,6 +40,7 @@ func newRouter(r rad.Radio, st *store.Store, cfg setup.Config) *api.Router {
 	health.Register(rt)
 	radio.Register(rt)
 	digi.Register(rt)
+	ale.Register(rt)
 	modem.Register(rt)
 	gps.Register(rt, st)
 	broadcasts.Register(rt)

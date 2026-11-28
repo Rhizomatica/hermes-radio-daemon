@@ -202,7 +202,11 @@ ALE_SRCS   = modem/ale_engine.cpp \
                  FEC/word_interleaver.cpp FEC/ale_fec_codec.cpp Word/ale_word.cpp \
                  Word/ale_sequence.cpp Word/address_encoder.cpp Protocol/Message/ale_message.cpp \
                  Protocol/ale_orderwire_protocols.cpp Codec/ale_encoder.cpp Codec/ale_decoder.cpp \
-                 Modem/ale2g_modem.cpp)
+                 Modem/ale2g_modem.cpp Protocol/Control/ale_state_machine.cpp \
+                 Protocol/Control/ale_channel_manager.cpp Protocol/Control/ale_channel_selector.cpp \
+                 Word/ale_word_decoder.cpp LQA/lqa_database.cpp LQA/lqa_metrics.cpp \
+                 LQA/lqa_analyzer.cpp Stores/ale_data_store.cpp Stores/address_book.cpp \
+                 App/ale_controller.cpp)
 ALE_OBJS   = $(ALE_SRCS:.cpp=.o)
 ALE_CXXFLAGS_INC = -I$(PCALE_DIR)/include -Imodem
 ALE_CXXFLAGS = -O2 -std=c++17 -Wall -MMD -MP $(ALE_CXXFLAGS_INC)
@@ -211,7 +215,9 @@ CFLAGS          += -DHAVE_ALE=1
 DAEMON_TOP_OBJS += modem/ale_link.o $(ALE_OBJS)
 LDFLAGS         += -lstdc++
 $(ALE_OBJS): %.o: %.cpp
-	$(CXX) $(ALE_CXXFLAGS) -c $< -o $@
+	$(CXX) $(ALE_CXXFLAGS) $(ALE_WARN) -c $< -o $@
+# PC-ALE's own sources: its warnings are its project's.
+$(filter $(PCALE_DIR)/%,$(ALE_OBJS)): ALE_WARN = -w
 all: ale_tool
 endif
 # ALE calls and recordings offline (utils/ale_tool.c): not installed.

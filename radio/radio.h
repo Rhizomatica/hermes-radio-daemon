@@ -43,9 +43,48 @@
  * and the default list (modem/ale_engine.h). */
 #define ALE_COMBINE_MAX      4
 #define ALE_COMBINE_DEFAULT  "4,8,16"
+/* ale:start, what ALE does at startup (and ale.start's modes): monitor only
+ * logs what its receivers decode; listen and scan run the link layer, which
+ * owns the radio (RADIO_OWNER_*). */
+#define ALE_START_MONITOR 0
+#define ALE_START_LISTEN  1
+#define ALE_START_SCAN    2
+/* ale:handoff, what an established link gives the channel to: nothing (ALE
+ * keeps the radio), or voice in ale:voice_mode on the channel. */
+#define ALE_HANDOFF_NONE  0
+#define ALE_HANDOFF_VOICE 1
+#define ALE_VOICE_SSB     0
+#define ALE_VOICE_RADE    1
+#define ALE_PATH_MAX      256
+#define ALE_CHANNEL_FILE_DEFAULT "/etc/hermes/ale-channels.ale"
+#define ALE_LQA_FILE_DEFAULT     "/var/lib/hermes/ale-lqa.dat"
+/* ale:scan_dwell_ms: time on each channel while scanning.  A scanning call
+ * gives each channel two word periods (2 x 392 ms, PC-ALE's C x 2 x Trw), and
+ * the receivers decode whole words: a dwell of two word periods sees a whole
+ * one on the right channel (on the bench 400 ms missed every call). */
+#define ALE_SCAN_DWELL_MS_DEFAULT 784
+#define ALE_SCAN_DWELL_MS_MIN     100
+#define ALE_SCAN_DWELL_MS_MAX     10000
+/* ale:tx_tail_ms: the silence a transmission ends with, for the rig's own
+ * audio latency */
+#define ALE_TX_TAIL_MS_SBITX  120   /* its codec: the ALSA buffer */
+#define ALE_TX_TAIL_MS_HAMLIB 300   /* a USB codec and the rig's TX chain: an IC-7100 cut the last word at 120 */
+#define ALE_TX_TAIL_MS_MAX     1000
+/* ale:accept_timeout_s: a call not accepted in this long is dropped */
+#define ALE_ACCEPT_TIMEOUT_S_DEFAULT 20
+#define ALE_ACCEPT_TIMEOUT_S_MAX     300
+
 /* each K: words combined, 2 to 16 (12.5 s of a 32-word call holds 32) */
 #define ALE_COMBINE_K_MIN    2
 #define ALE_COMBINE_K_MAX    16
+
+/* Who may tune and key the radio (radio:owner): everyone, or ALE while it
+ * runs.  ALE_FULL: ALE alone tunes and keys (listening, scanning, calling,
+ * handshake); ALE_CHANNEL: ALE keeps the channel (frequency, mode, filter)
+ * and others may key, as in a voice or data session the call handed over. */
+#define RADIO_OWNER_NONE         0
+#define RADIO_OWNER_ALE_FULL     1
+#define RADIO_OWNER_ALE_CHANNEL  2
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -488,9 +527,29 @@ typedef struct {
      * modem_audio; ale:stock_receiver runs PC-ALE's per-word receiver,
      * ale:combine the combining one at each K listed (ALE_COMBINE_MAX). */
     bool    enable_ale;
+    _Atomic uint8_t owner;          /* RADIO_OWNER_* */
+    /* A PTT off from someone else while ALE owns the radio: ALE stops
+     * (radio_backend_set_ptt sets it, modem/ale_link.c clears it). */
+    _Atomic bool    ale_stop_asked;
     bool    ale_stock_receiver;
     uint8_t ale_combine[ALE_COMBINE_MAX];
     uint8_t ale_combine_count;
+    /* The link layer (calls, scanning): ale:self_address, ale:channel_file
+     * (PC-ALE's format), ale:lqa_file, ale:scan_dwell_ms, ale:auto_respond
+     * (answer calls without ale.accept; off by default),
+     * ale:accept_timeout_s, ale:auto_sounding (off by default), ale:start,
+     * ale:handoff, ale:voice_mode. */
+    char     ale_self[16];
+    char     ale_channel_file[ALE_PATH_MAX];
+    char     ale_lqa_file[ALE_PATH_MAX];
+    uint32_t ale_scan_dwell_ms;
+    bool     ale_auto_respond;
+    uint32_t ale_accept_timeout_s;
+    bool     ale_auto_sounding;
+    uint8_t  ale_start;
+    uint8_t  ale_handoff;
+    uint8_t  ale_voice_mode;
+    uint32_t ale_tx_tail_ms;
     /* The /api/v2 REST API and the hermes.v1 websocket (api,
      * Go), on the websocket_url listener.  With sessions they answer any
      * authenticated client; without them loopback only. */

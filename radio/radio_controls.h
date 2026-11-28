@@ -64,6 +64,7 @@ typedef struct {
 #define RADIO_CTRL_ENOTSUP (-1)   /* rig/backend does not have this control */
 #define RADIO_CTRL_EINVAL  (-2)   /* unknown name or out-of-range value */
 #define RADIO_CTRL_EIO     (-3)   /* rig refused / CAT error */
+#define RADIO_CTRL_EBUSY   (-4)   /* ALE owns the radio (radio:owner) */
 
 /* Enumerate the controls the active backend really supports. Returns the
  * number written. Cheap: capability masks only, no CAT traffic. */

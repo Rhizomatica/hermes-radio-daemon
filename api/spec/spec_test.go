@@ -54,8 +54,8 @@ func TestCommands(t *testing.T) {
 
 func TestTopics(t *testing.T) {
 	got := Topics()
-	if len(got) != 16 {
-		t.Fatalf("read %d topics from api-ws.yaml, want 16: %v", len(got), got)
+	if len(got) != 18 {
+		t.Fatalf("read %d topics from api-ws.yaml, want 18: %v", len(got), got)
 	}
 	for _, name := range []string{"radio.state", "radio.spectrum.rx", "digi", "modem.status", "broadcasts", "reticulum"} {
 		if !HasTopic(name) {

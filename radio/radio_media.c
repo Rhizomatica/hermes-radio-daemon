@@ -595,6 +595,7 @@ static void *playback_thread(void *ctx_v)
             (int) radio_h->audio_half_duplex);
 
     int hard_errors = 0;
+    unsigned tx_periods = 0, tx_short_periods = 0;
     while (!shutdown_)
     {
         /* In half-duplex the playback stream may only hold the codec during TX
@@ -690,6 +691,21 @@ static void *playback_thread(void *ctx_v)
              * native_rate, taps TX recording, returns native-rate
              * samples in `buffer`. */
             got = audio_bridge_pop_tx_native(&bridge, radio_h, buffer, frames);
+        }
+        /* While transmitting, a period the TX queue could not fill is a
+         * gap on the air: counted, and said at the end of the over. */
+        if (radio_h->txrx_state == IN_TX)
+        {
+            tx_periods++;
+            if (got < frames)
+                tx_short_periods++;
+        }
+        else if (tx_periods)
+        {
+            if (tx_short_periods)
+                HLOGW(LOG_C, "TX playback: %u of %u periods short (silence filled in)",
+                      tx_short_periods, tx_periods);
+            tx_periods = tx_short_periods = 0;
         }
         if (got == 0)
         {

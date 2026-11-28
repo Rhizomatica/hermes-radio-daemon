@@ -115,6 +115,7 @@ int radio_controls_rprt(int rc)
     case RADIO_CTRL_OK:      return 0;
     case RADIO_CTRL_ENOTSUP: return -11;  /* RIG_ENAVAIL */
     case RADIO_CTRL_EINVAL:  return -1;   /* RIG_EINVAL */
+    case RADIO_CTRL_EBUSY:   return -9;   /* RIG_ERJCTED */
     case RADIO_CTRL_EIO:
     default:                 return -8;   /* RIG_EIO */
     }

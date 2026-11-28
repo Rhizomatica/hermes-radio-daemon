@@ -88,6 +88,10 @@ void modem_audio_tx_unkey(const char *why);
 bool modem_audio_tx_poll(void);
 
 bool modem_audio_tx_keyed_by(long id);
+/* How much of this over has left for the radio, in 8 kHz samples: fed since
+ * it keyed, less what is still queued here.  The radio's own buffer (a USB
+ * codec's) is not counted.  After the over, all it was fed. */
+uint64_t modem_audio_tx_played(void);
 bool modem_audio_tx_ending(void);
 
 /* ── TX consumers ── */

@@ -1,7 +1,7 @@
 # ALE 2G in radiod — design note
 
-Status: **draft for discussion**. Implemented so far: the receiver alone (section 16), receive
-only; everything else here is design.
+Status: **draft for discussion**. Implemented: the receiver (section 16) and the link layer with
+the voice hand-off (section 17); the data hand-off, LQA and the robust call layer are design.
 
 Adds MIL-STD-188-141B 2G ALE (8-FSK link establishment: scan, call, handshake, AMD text,
 sounding, LQA) to radiod as one more in-process modem, next to Mercury. ALE finds the channel
@@ -48,7 +48,10 @@ the two in simulation, at the waveform level:
   decodes ALELite's waveform down to about -4 dB SNR (3 kHz) and under CCIR fading.
 - Caveats: AWGN/offset/drift/Watterson only; the ALELite receive-session loop is a
   reconstruction; **false-alarm rate is unmeasured**; no on-air test. Do not enable unattended
-  TX (section 9) before the false-alarm test and an on-air test against an ALELite station.
+  TX (section 9) before the false-alarm test.
+- No on-air test against ALELite is planned (decided 2026-11-28): no station runs it, and the
+  cross-validation above is the evidence that the two interoperate. A check against another
+  implementation, if one is wanted, is with a stock ALE radio.
 
 The harnesses stay in the ALELite repo; a copy of the word-level subset becomes a regression test
 here (section 11).
@@ -377,10 +380,10 @@ ALELite public domain; all compatible with the combined binary. Keep PC-ALE's li
 | Phase | Deliverable | TX? | Exit criterion |
 |---|---|---|---|
 | 0 | Measure retune latency (sBitx, one Hamlib rig); false-alarm test in `xval`, with a corpus that includes **RADEv2, SSB speech and Mercury waveforms** as the interferers; read `modem_audio` for the playout hook (open item 1); check where `modem_audio_push_rx` taps relative to NR/AGC and DV (open item 11) | no | Numbers in this note; scan dwell choice; demodulator policy per voice mode |
-| 1 | `ale_link` RX-only: `listen` on one channel, `ale.events`/`ale.state`/`ale.config`, Go package, spec | no | Decodes an ALELite station's call on air; zero false events in 24 h of listening |
+| 1 | `ale_link` RX-only: `listen` on one channel, `ale.events`/`ale.state`/`ale.config`, Go package, spec | no | Decodes another radiod's call on air; zero false events in 24 h of listening |
 | 2 | Scanning on the channel list, `ale.start/stop`, ownership (4.5), non-persistent retune | no | Scans N channels at target dwell without drift; operator commands return `busy` |
-| 3 | Calls and handshake, AMD, accept/reject; PTT through `modem_audio` | yes | Link both directions against ALELite on air |
-| 4a | **Voice hand-off** (5.1): SSB first, then RADEv2, then FM; ownership split (4.5); hang-up and idle timeout | yes | ALE call then a two-way RADEv2 voice over, both ends HERMES; SSB over with an ALELite/stock ALE station |
+| 3 | Calls and handshake, AMD, accept/reject; PTT through `modem_audio` | yes | Link both directions between radiod stations on air, sBitx and Hamlib |
+| 4a | **Voice hand-off** (5.1): SSB first, then RADEv2, then FM; ownership split (4.5); hang-up and idle timeout | yes | ALE call then a two-way RADEv2 voice over, both ends HERMES; SSB over with a stock ALE radio, if one is at hand |
 | 4b | Mercury hand-off (5.2) incl. busy-slot policy (open item 3) | yes | File over uucp or JNOS after an ALE call, both ends HERMES |
 | 5 | Sounding and LQA-ranked channel choice, `ale.lqa` topic | yes | LQA ranks channels sensibly vs. measured throughput |
 
@@ -394,7 +397,8 @@ ALELite public domain; all compatible with the combined binary. Keep PC-ALE's li
 - **Integration** (`tests/integration`, Go driving the real `radio_daemon` with a null codec):
   two daemons over a loopback audio channel: scan, call, link, AMD, hand-off to Mercury,
   terminate.
-- **On air**: ALELite station as peer, both directions, plus the 24 h false-event soak.
+- **On air**: radiod stations as peers (sBitx and Hamlib rigs), both directions, plus the 24 h
+  false-event soak. Interoperability with ALELite rests on the cross-validation (section 3).
 
 ## 12. Open items (decide before Phase 2)
 
@@ -680,3 +684,42 @@ CPU on a Raspberry Pi 4: 22 % of one core for the ALE thread, nearly all the sto
 
 Next: the words on the API (`ale.events`, `ale.state`; Phase 1), then the transient retune and
 the playout position (open items 1 and 2) for scanning and calls.
+
+## 17. Implemented: the link layer (Phases 1-3 and the voice hand-off)
+
+PC-ALE's `ALEController` runs in `ale_engine.cpp` behind the C ABI, on radiod's callbacks:
+an `IAudioDriver` whose frames are rendered (PC-ALE's tone generator and TX band-pass) and fed
+to `modem_audio` 200 ms ahead of playout, and an `IRadio` whose `set_channel` is the new
+`radio_backend_retune` (not saved, both backends) and whose PTT is `modem_audio` keying as
+`ALE_LINK_PTT_ID` (-2). A frame counts as sent once `modem_audio_tx_played()` (a new playout
+count: fed less still queued) passes its end, and a transmission ends with `ale:tx_tail_ms` of
+silence; the radio is keyed only when there is audio to send. The words reach the controller
+through `ALEController::receive_word` (PC-ALE #1): every word of the stock receiver, and a
+combining receiver's word only while idle or scanning, once the stock receiver has heard
+nothing for 16 word periods (the "ghosts" of section 14.5's window would read as a busy
+channel in a handshake).
+
+`modem/ale_link.c`: modes monitor, listen and scan; a command mailbox (the API's actions run on
+the worker); an event ring; ownership (4.5) as `radio:owner` with two levels,
+`RADIO_OWNER_ALE_FULL` and, for the voice hand-off, `RADIO_OWNER_ALE_CHANNEL`; the operator's
+frequency, mode and digital voice saved at the start and restored at `ale.stop`. Calls wait
+for `ale.accept` unless `ale:auto_respond`; listen mode comes back to its channel after a call
+that tried the list. The station API: section 6's commands and topics as `ale.start`
+(`listen`/`scan`), `ale.stop`, `ale.call`, `ale.accept`, `ale.reject`, `ale.terminate`,
+`ale.sound`, `ale.state`, `ale.events`, with their REST mirror under `/ale`.
+
+Found on the bench and fixed in PC-ALE: scanning never hopped (the scan list was never filled,
+PC-ALE #2); a TWAS from a peer whose address shares our first three characters (ABCA, ABCH)
+read as a call to us, so a termination was missed (PC-ALE #3). In radiod: a Hamlib rig's TX
+ring holds 333 ms, so frames are fed in pieces; the IC-7100 cut the last word of a
+transmission without a 300 ms tail; a scan dwell of one word period missed every call (now two:
+784 ms).
+
+**Measured** on two sBitx radios and an IC-7100 into dummy loads, 7050 kHz USB, under 4 W
+out, SWR 1.0: calls linked in 16-19 s between the sBitx radios and between an sBitx and the
+IC-7100 in both directions, with AMD text; reject; terminate on both sides; a scanning station
+(7050/7060 kHz) caught a call and linked; rigctld's PTT was refused while ALE listened and keyed
+in the voice hand-off without breaking the link. Retune: 11 ms on the sBitx.
+
+**Not yet:** the data hand-off to Mercury (5.2), LQA from sounding (Phase 5), the robust call
+layer (14), and the 24 h false-event soak.
