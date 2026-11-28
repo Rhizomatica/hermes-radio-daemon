@@ -48,7 +48,10 @@ the two in simulation, at the waveform level:
   decodes ALELite's waveform down to about -4 dB SNR (3 kHz) and under CCIR fading.
 - Caveats: AWGN/offset/drift/Watterson only; the ALELite receive-session loop is a
   reconstruction; **false-alarm rate is unmeasured**; no on-air test. Do not enable unattended
-  TX (section 9) before the false-alarm test and an on-air test against an ALELite station.
+  TX (section 9) before the false-alarm test.
+- No on-air test against ALELite is planned (decided 2026-11-28): no station runs it, and the
+  cross-validation above is the evidence that the two interoperate. A check against another
+  implementation, if one is wanted, is with a stock ALE radio.
 
 The harnesses stay in the ALELite repo; a copy of the word-level subset becomes a regression test
 here (section 11).
@@ -377,10 +380,10 @@ ALELite public domain; all compatible with the combined binary. Keep PC-ALE's li
 | Phase | Deliverable | TX? | Exit criterion |
 |---|---|---|---|
 | 0 | Measure retune latency (sBitx, one Hamlib rig); false-alarm test in `xval`, with a corpus that includes **RADEv2, SSB speech and Mercury waveforms** as the interferers; read `modem_audio` for the playout hook (open item 1); check where `modem_audio_push_rx` taps relative to NR/AGC and DV (open item 11) | no | Numbers in this note; scan dwell choice; demodulator policy per voice mode |
-| 1 | `ale_link` RX-only: `listen` on one channel, `ale.events`/`ale.state`/`ale.config`, Go package, spec | no | Decodes an ALELite station's call on air; zero false events in 24 h of listening |
+| 1 | `ale_link` RX-only: `listen` on one channel, `ale.events`/`ale.state`/`ale.config`, Go package, spec | no | Decodes another radiod's call on air; zero false events in 24 h of listening |
 | 2 | Scanning on the channel list, `ale.start/stop`, ownership (4.5), non-persistent retune | no | Scans N channels at target dwell without drift; operator commands return `busy` |
-| 3 | Calls and handshake, AMD, accept/reject; PTT through `modem_audio` | yes | Link both directions against ALELite on air |
-| 4a | **Voice hand-off** (5.1): SSB first, then RADEv2, then FM; ownership split (4.5); hang-up and idle timeout | yes | ALE call then a two-way RADEv2 voice over, both ends HERMES; SSB over with an ALELite/stock ALE station |
+| 3 | Calls and handshake, AMD, accept/reject; PTT through `modem_audio` | yes | Link both directions between radiod stations on air, sBitx and Hamlib |
+| 4a | **Voice hand-off** (5.1): SSB first, then RADEv2, then FM; ownership split (4.5); hang-up and idle timeout | yes | ALE call then a two-way RADEv2 voice over, both ends HERMES; SSB over with a stock ALE radio, if one is at hand |
 | 4b | Mercury hand-off (5.2) incl. busy-slot policy (open item 3) | yes | File over uucp or JNOS after an ALE call, both ends HERMES |
 | 5 | Sounding and LQA-ranked channel choice, `ale.lqa` topic | yes | LQA ranks channels sensibly vs. measured throughput |
 
@@ -394,7 +397,8 @@ ALELite public domain; all compatible with the combined binary. Keep PC-ALE's li
 - **Integration** (`tests/integration`, Go driving the real `radio_daemon` with a null codec):
   two daemons over a loopback audio channel: scan, call, link, AMD, hand-off to Mercury,
   terminate.
-- **On air**: ALELite station as peer, both directions, plus the 24 h false-event soak.
+- **On air**: radiod stations as peers (sBitx and Hamlib rigs), both directions, plus the 24 h
+  false-event soak. Interoperability with ALELite rests on the cross-validation (section 3).
 
 ## 12. Open items (decide before Phase 2)
 
@@ -718,4 +722,4 @@ IC-7100 in both directions, with AMD text; reject; terminate on both sides; a sc
 in the voice hand-off without breaking the link. Retune: 11 ms on the sBitx.
 
 **Not yet:** the data hand-off to Mercury (5.2), LQA from sounding (Phase 5), the robust call
-layer (14), and an on-air test against an ALELite station.
+layer (14), and the 24 h false-event soak.
