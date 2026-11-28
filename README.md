@@ -19,7 +19,7 @@ Radio control daemon for the [HERMES](https://github.com/Rhizomatica/hermes-net)
 - **Station API** (`/api/v2` REST and the `hermes.v1` WebSocket, as specified in `api/spec/`): handlers written in Go (`api/`), linked into the daemon; the daemon's C code owns every socket. Off by default; see [Station API](#station-api-apiv2-hermesv1)
 - **Mercury HF modem inside the daemon** (`enable_mercury`): keyed and fed audio by the daemon directly, its UI traffic on the daemon's websocket
 - **Broadcast plane and position beacons** (`broadcast_enable`): radiod is Mercury's broadcast client, sending files as a RaptorQ carousel from a spool directory, filing the ones it receives, and sending and receiving the HERMES position beacon ([docs/BEACON-FORMAT.md](docs/BEACON-FORMAT.md)); see [Broadcast Plane and Position Beacons](#broadcast-plane-and-position-beacons)
-- **ALE 2G receiver** (`[ale] enable_ale`): listens for MIL-STD-188-141B ALE calls on the radio's RX audio with a standard receiver and a combining one that hears scanning calls about 6 dB weaker; receive only, see [ALE 2G Receiver](#ale-2g-receiver)
+- **ALE 2G** (`[ale] enable_ale`): MIL-STD-188-141B ALE through PC-ALE: listening, scanning, calls with the three-way handshake, AMD text, sounding, and a hand-off of the link to voice; a combining receiver hears scanning calls about 6 dB weaker than a standard one. Driven by the station API (`/api/v2/ale`, `ale.*`); see [ALE 2G](#ale-2g)
 - **GPS tracks** (`gps_logging`): the station's positions and every station's beacons, recorded in fixed records and read by time range; see [GPS Tracks](#gps-tracks)
 - WAV recording with remote start/stop on both backends
 - INI configuration at `/etc/hermes/core.ini` and `/etc/hermes/user.ini`
@@ -395,9 +395,15 @@ audio_period_size = 480        ; ALSA period, must be >= 256 for spectrum
 ; mercury_args   =
 
 [ale]
-; ALE 2G receiver (built when vendor/pc-ale is checked out; see
-; "ALE 2G Receiver" below). Receive only.
+; ALE 2G (built when vendor/pc-ale is checked out; see "ALE 2G" below)
 enable_ale = 0
+start = monitor                 ; monitor (decode only), listen or scan
+self_address =                  ; this station's ALE address (listen, scan)
+auto_respond = 0                ; 0: a call waits for ale.accept
+channel_file = /etc/hermes/ale-channels.ale   ; the scan list
+scan_dwell_ms = 784             ; two word periods on each channel
+handoff = voice                 ; a link gives the channel to voice
+voice_mode = ssb                ; or rade
 stock_receiver = 1              ; PC-ALE's per-word receiver
 combine = 4,8,16                ; combining receiver: words summed, each K 2-16
 
@@ -896,11 +902,37 @@ CW rx 14.025: CQ DE CALLSIGN K
 RTTY tx 14.080: CQ CQ DE HERMES TEST
 ```
 
-## ALE 2G Receiver
+## ALE 2G
 
-With `enable_ale = 1` in `[ale]`, radiod listens for ALE 2G words
-(MIL-STD-188-141B Appendix A: 8-FSK, 125 baud, 392 ms words) on the radio's
-RX audio. That is the same 8 kHz feed Mercury and the RTP stream get: before
+With `enable_ale = 1` in `[ale]`, radiod runs ALE 2G (MIL-STD-188-141B
+Appendix A: 8-FSK, 125 baud, 392 ms words) on the radio's audio, in one of
+three modes (`start`, and the station API's `ale.start`/`ale.stop`):
+
+- **monitor**: the receivers only; each word decoded is logged and is an
+  `ale.events` event. ALE never transmits, tunes or answers.
+- **listen**: PC-ALE's link layer, idle on the radio's channel (in USB): it
+  answers calls for `self_address` and places calls.
+- **scan**: the same, scanning the channels of `channel_file` (PC-ALE's
+  format: one channel a line, `rx_hz[:tx_hz] [USB|LSB] [label]`).
+
+In listen and scan ALE owns the radio: other clients' frequency, mode,
+filter, profile and PTT changes are refused (`busy` on the station API,
+`RPRT -9` on rigctld) until `ale.stop`, which tunes the radio back to the
+operator's frequency and mode; ALE's own tuning is never saved. A PTT off
+from any client stops ALE too. A call for this station waits for `ale.accept`
+(or `ale.reject`) unless `auto_respond = 1`; one not answered in
+`accept_timeout_s` (20) is dropped with nothing sent. Sounding is manual
+(`ale.sound`) unless `auto_sounding = 1`. Once a link is up, `handoff = voice`
+lets others key on the channel, in SSB or RADEv2 (`voice_mode`), until the
+link ends; ALE still holds the frequency.
+
+The station API (`/api/v2`, operator role to act): `GET /ale` and the
+`ale.state` topic, `GET /ale/events` and the `ale.events` stream, and
+`POST /ale/start`, `stop`, `call` (`{"to": "ABCH", "amd": "QSY 7102"}`),
+`accept`, `reject`, `terminate`, `sound`, with the matching `ale.*` commands
+([docs/API-REFERENCE.md](docs/API-REFERENCE.md)).
+
+The receivers listen on the radio's RX audio. That is the same 8 kHz feed Mercury and the RTP stream get: before
 noise reduction and AGC in SSB and data modes, after AGC in FM, and the
 decoded speech in D-STAR and RADE modes, where ALE hears nothing. Each word
 is logged with the receiver that decoded it:
@@ -944,9 +976,19 @@ the stock receiver, which attempts a decode every 16 samples; the combining
 receiver at K = 4, 8 and 16 takes about 3 % (from the two receivers' split
 measured on a PC). `stock_receiver = 0` leaves only the combining one.
 
-Receive only: ALE does not key the radio, retune it or answer calls, and its
-words are not yet on the station API. The design for scanning, calls and
-hand-off to voice or Mercury is in [docs/ALE-DESIGN.md](docs/ALE-DESIGN.md).
+In listen and scan the link layer hears every word of the stock receiver, and
+a combining receiver's word only while idle or scanning, when the stock one
+has heard nothing for 16 word periods: after a call the combining window
+goes on decoding its words, which in a handshake reads as a busy channel.
+
+Measured on two sBitx radios and an IC-7100 into dummy loads, 7050 kHz,
+under 4 W: calls linked in 16-19 s, sBitx to sBitx and sBitx to IC-7100 both
+ways, with AMD; reject, terminate and a scanning station (two channels) all
+worked; rigctld's PTT was refused while ALE listened and allowed in the voice
+hand-off. A transmission ends with `tx_tail_ms` of silence before ALE unkeys
+(120 ms on the sBitx, 300 ms on Hamlib rigs: the IC-7100 cut its last word
+at 120). The design, the open items and what is still to come (a hand-off to
+Mercury, LQA from sounding) are in [docs/ALE-DESIGN.md](docs/ALE-DESIGN.md).
 
 `ale_tool` (built with the submodule, not installed) works on raw audio
 files: mono, signed 16-bit little-endian, 8 kHz, the RTP RX stream's audio:
