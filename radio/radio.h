@@ -39,6 +39,14 @@
  * between them (api-rest.yaml UucpName). */
 #define RADIO_SOS_RECIPIENTS_LEN 272
 
+/* ale:combine: the most K values the ALE combining receiver runs at once,
+ * and the default list (modem/ale_engine.h). */
+#define ALE_COMBINE_MAX      4
+#define ALE_COMBINE_DEFAULT  "4,8,16"
+/* each K: words combined, 2 to 16 (12.5 s of a 32-word call holds 32) */
+#define ALE_COMBINE_K_MIN    2
+#define ALE_COMBINE_K_MAX    16
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <pthread.h>
@@ -476,6 +484,13 @@ typedef struct {
      * in-process on modem_audio, with main:mercury_config as its mercury.ini
      * and main:mercury_args as extra command-line options. */
     _Atomic bool enable_mercury;
+    /* The ALE 2G receiver (modem/ale_link.c): ale:enable_ale listens on
+     * modem_audio; ale:stock_receiver runs PC-ALE's per-word receiver,
+     * ale:combine the combining one at each K listed (ALE_COMBINE_MAX). */
+    bool    enable_ale;
+    bool    ale_stock_receiver;
+    uint8_t ale_combine[ALE_COMBINE_MAX];
+    uint8_t ale_combine_count;
     /* The /api/v2 REST API and the hermes.v1 websocket (api,
      * Go), on the websocket_url listener.  With sessions they answer any
      * authenticated client; without them loopback only. */

@@ -2,3 +2,6 @@
 	path = vendor/mercury
 	url = https://github.com/Rhizomatica/mercury.git
 	branch = mercuryv2
+[submodule "vendor/pc-ale"]
+	path = vendor/pc-ale
+	url = https://github.com/Rhizomatica/pc-ale

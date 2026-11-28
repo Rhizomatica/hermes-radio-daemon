@@ -229,6 +229,43 @@ static uint16_t cfg_digi_param(dictionary *ini, const char *key, int def)
     return (uint16_t) v;
 }
 
+size_t cfg_parse_ale_combine(const char *list, uint8_t *out, size_t max)
+{
+    size_t n = 0;
+    const char *p = list ? list : "";
+
+    while (*p)
+    {
+        char *end;
+        long k = strtol(p, &end, 10);
+        if (end == p)                       /* not a number: skip to the next comma */
+        {
+            while (*end && *end != ',')
+                end++;
+            HLOGW(LOG_C, "ale:combine: skipping \"%.*s\"", (int) (end - p), p);
+        }
+        else
+        {
+            bool repeat = false;
+            for (size_t i = 0; i < n; i++)
+                repeat |= out[i] == k;
+            if (k < ALE_COMBINE_K_MIN || k > ALE_COMBINE_K_MAX)
+                HLOGW(LOG_C, "ale:combine: skipping %ld (each K is %d to %d)", k,
+                      ALE_COMBINE_K_MIN, ALE_COMBINE_K_MAX);
+            else if (repeat)
+                HLOGW(LOG_C, "ale:combine: skipping %ld, listed twice", k);
+            else if (n == max)
+                HLOGW(LOG_C, "ale:combine: skipping %ld, at most %zu values", k, max);
+            else
+                out[n++] = (uint8_t) k;
+        }
+        p = end;
+        while (*p == ',' || *p == ' ')
+            p++;
+    }
+    return n;
+}
+
 bool cfg_mode_from_name(const char *name, uint16_t *mode)
 {
     if (!name || !mode)
@@ -696,6 +733,12 @@ bool init_config_radio(radio *radio_h, const char *ini_name)
 
     b = iniparser_getboolean(ini, "main:enable_mercury", 0);
     radio_h->enable_mercury = (bool) b;
+
+    radio_h->enable_ale = (bool) iniparser_getboolean(ini, "ale:enable_ale", 0);
+    radio_h->ale_stock_receiver = (bool) iniparser_getboolean(ini, "ale:stock_receiver", 1);
+    s = iniparser_getstring(ini, "ale:combine", ALE_COMBINE_DEFAULT);
+    radio_h->ale_combine_count = (uint8_t) cfg_parse_ale_combine(s, radio_h->ale_combine,
+                                                                 ALE_COMBINE_MAX);
     s = iniparser_getstring(ini, "main:mercury_config", "/etc/mercury/mercury.ini");
     snprintf(radio_h->mercury_config, sizeof(radio_h->mercury_config), "%s", s);
     s = iniparser_getstring(ini, "main:mercury_args", "");

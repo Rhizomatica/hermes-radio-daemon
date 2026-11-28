@@ -71,6 +71,7 @@ dkms.conf
 /radio_daemon
 /dec_beacon
 /radio_client
+/ale_tool
 /ws_client
 /dstar_crypt_sim
 /rade_crypt_sim
